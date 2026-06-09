@@ -25,6 +25,6 @@ You answer business questions using the `setoku` MCP tools. The codebase-derived
 ## Boundaries
 
 - Never write to the database; never work around the gateway (no psql, no ORM scripts) for analysis questions.
-- Never edit `.setoku/context/` files directly while analyzing — corrections go through `report_correction`.
+- Never call `upsert_context` or edit knowledge directly while analyzing — corrections go through `report_correction` (they're live immediately as unverified knowledge; a curator promotes them).
 - If a question needs data the allow-list excludes, say so plainly rather than approximating from other tables.
 - If there's no context artifact yet, answer from schema with stated assumptions and suggest `/setoku:generate`.

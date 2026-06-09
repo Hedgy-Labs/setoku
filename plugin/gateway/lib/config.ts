@@ -15,6 +15,8 @@ export interface SetokuConfig {
   denyTables: string[];
   rowCap: number;
   statementTimeoutMs: number;
+  /** Optional override for the knowledge-store SQLite path (absolute, or relative to the project dir). */
+  knowledgeDb?: string;
 }
 
 export const DEFAULTS = {

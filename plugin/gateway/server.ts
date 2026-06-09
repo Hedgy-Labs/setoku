@@ -3,10 +3,12 @@
  * Setoku MCP gateway (v0, stdio, run with Bun).
  *
  * Governed access for a Claude Code/Cowork session to:
- *   - the business's verified context artifact (.setoku/context/)   [context tools]
+ *   - the business's knowledge store (gateway-owned SQLite — D9)   [context tools]
  *   - the business's Postgres database, read-only + capped + audited [data tools]
  *
  * This process never calls an LLM and never reveals database credentials.
+ * Knowledge lives in the service's DB (default ~/.setoku/projects/<slug>/knowledge.db);
+ * `.setoku/context/` files, if present, are imported once as a seed.
  */
 import path from "node:path";
 import { z } from "zod";
@@ -21,18 +23,33 @@ import {
   type SetokuConfig,
 } from "./lib/config";
 import { closePools, introspectSchema, runReadOnlyQuery } from "./lib/db";
-import {
-  appendCorrection,
-  loadArtifact,
-  loadCorrections,
-} from "./lib/artifact";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
-import { auditLog } from "./lib/audit";
+import {
+  KnowledgeStore,
+  defaultDbPath,
+  seedFromFiles,
+  type DocType,
+} from "./lib/store";
 
 const projectDir = resolveProjectDir();
 const user = resolveUser(projectDir);
 
-const server = new McpServer({ name: "setoku", version: "0.1.0" });
+function storePath(): string {
+  const res = loadConfig(projectDir);
+  if (res.ok && typeof res.config.knowledgeDb === "string") {
+    const p = res.config.knowledgeDb;
+    return path.isAbsolute(p) ? p : path.join(projectDir, p);
+  }
+  return defaultDbPath(projectDir);
+}
+
+const store = new KnowledgeStore(storePath());
+if (store.empty) {
+  const imported = seedFromFiles(store, projectDir);
+  if (imported > 0) store.audit(user, "seed_from_files", { imported });
+}
+
+const server = new McpServer({ name: "setoku", version: "0.3.0" });
 
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 const errorText = (s: string) => ({
@@ -52,21 +69,22 @@ function requireDb(config: SetokuConfig): string {
   return res.url;
 }
 
-const NO_ARTIFACT_HINT =
-  "No context artifact found at .setoku/context/. Answers will rely on raw schema only — " +
-  "run the /setoku:generate skill to derive verified business context from the codebase.";
+const NO_KNOWLEDGE_HINT =
+  "The knowledge store is empty. Answers will rely on raw schema only — " +
+  "run the /setoku:generate skill to derive verified business context (from the codebase, " +
+  "SaaS schemas, or an interview) and save it via upsert_context.";
 
 /* ------------------------------ context tools ------------------------------ */
 
 server.registerTool(
   "find_context",
   {
-    title: "Find verified business context",
+    title: "Find business context (verified + unverified)",
     description:
-      "ALWAYS call this FIRST, before writing any SQL. Retrieves verified business context " +
-      "(entity semantics, canonical metric definitions, known-good queries, gotchas) relevant " +
-      "to a natural-language question. Trust this context over your own inference from table/column names — " +
-      "it encodes how this business actually computes things.",
+      "ALWAYS call this FIRST, before writing any SQL. Retrieves business context " +
+      "(entity semantics, canonical metric definitions, known-good queries, gotchas, and pending " +
+      "unverified team knowledge) relevant to a natural-language question. Trust this context over " +
+      "your own inference from table/column names — it encodes how this business actually computes things.",
     inputSchema: {
       question: z
         .string()
@@ -82,48 +100,39 @@ server.registerTool(
   },
   async ({ question, max_results }) => {
     const started = Date.now();
-    const { docs, gotchas, exists } = loadArtifact(projectDir);
-    // D10: pending corrections are live, labeled knowledge — never blocked on curation
-    const matchedCorrections = matchByTokens(
-      loadCorrections(projectDir),
+    const docs = store.listDocs().filter((d) => d.type !== "gotcha");
+    const gotchas = store.gotchas();
+    const pending = matchByTokens(
+      store.listCorrections("pending"),
       (c) => `${c.content} ${c.relatesTo ?? ""}`,
       question,
     ).slice(0, 5);
-    if (!exists || docs.length === 0) {
-      auditLog(projectDir, {
-        user,
-        tool: "find_context",
-        question,
-        ok: true,
-        results: 0,
-        ms: Date.now() - started,
-      });
-      const extra = matchedCorrections.length
-        ? "\n\n## Unverified team knowledge (pending curation — treat as likely true; attribute it when used)\n" +
-          matchedCorrections
-            .map((c) => `- ${c.content} (${c.user}, ${c.ts.slice(0, 10)})`)
-            .join("\n")
-        : "";
-      return text(NO_ARTIFACT_HINT + extra);
-    }
     const out: string[] = [];
-    const top = scoreDocs(docs, question).slice(0, max_results ?? 5);
     const matchedGotchas = matchGotchas(gotchas, question);
     if (matchedGotchas.length) {
       out.push("## Gotchas (read carefully — these prevent wrong answers)");
       for (const g of matchedGotchas) out.push(`- ${g}`);
       out.push("");
     }
-    if (matchedCorrections.length) {
+    if (pending.length) {
       out.push(
         "## Unverified team knowledge (pending curation — treat as likely true; attribute it when used)",
       );
-      for (const c of matchedCorrections) {
+      for (const c of pending) {
         out.push(
           `- ${c.content} (${c.user}, ${c.ts.slice(0, 10)}${c.relatesTo ? `, re: ${c.relatesTo}` : ""})`,
         );
       }
       out.push("");
+    }
+    const top = scoreDocs(docs, question).slice(0, max_results ?? 5);
+    if (docs.length === 0 && !pending.length) {
+      store.audit(user, "find_context", {
+        question,
+        results: 0,
+        ms: Date.now() - started,
+      });
+      return text(NO_KNOWLEDGE_HINT);
     }
     if (top.length === 0) {
       out.push(
@@ -146,13 +155,11 @@ server.registerTool(
         );
       }
     }
-    auditLog(projectDir, {
-      user,
-      tool: "find_context",
+    store.audit(user, "find_context", {
       question,
-      ok: true,
       results: top.length,
       gotchas: matchedGotchas.length,
+      unverified: pending.length,
       ms: Date.now() - started,
     });
     return text(out.join("\n"));
@@ -164,15 +171,15 @@ server.registerTool(
   {
     title: "List documented business entities",
     description:
-      "Lists every documented entity, metric, and canonical query in the verified context artifact " +
+      "Lists every documented entity, metric, and canonical query in the knowledge store " +
       "(name + one-line summary). Cheap index — use it to discover what context exists.",
     inputSchema: {},
   },
   async () => {
-    const { docs, gotchas, exists } = loadArtifact(projectDir);
-    if (!exists || docs.length === 0) return text(NO_ARTIFACT_HINT);
+    const docs = store.listDocs();
+    if (docs.length === 0) return text(NO_KNOWLEDGE_HINT);
     const lines: string[] = [];
-    const sections: [string, string][] = [
+    const sections: [DocType, string][] = [
       ["overview", "overview"],
       ["entity", "entities"],
       ["metric", "metrics"],
@@ -189,13 +196,19 @@ server.registerTool(
         );
       }
     }
-    if (gotchas.length) {
+    const gotchaCount = docs.filter((d) => d.type === "gotcha").length;
+    if (gotchaCount)
       lines.push(
         "# gotchas",
-        `${gotchas.length} recorded — surfaced automatically by find_context.`,
+        `${gotchaCount} recorded — surfaced automatically by find_context.`,
       );
-    }
-    auditLog(projectDir, { user, tool: "list_entities", ok: true });
+    const pending = store.listCorrections("pending").length;
+    if (pending)
+      lines.push(
+        "# pending corrections",
+        `${pending} awaiting curation (/setoku:curate).`,
+      );
+    store.audit(user, "list_entities", {});
     return text(lines.join("\n"));
   },
 );
@@ -205,17 +218,12 @@ server.registerTool(
   {
     title: "Full context doc for one entity",
     description:
-      "Returns the complete verified context document for one entity (or query/overview) by name.",
+      "Returns the complete context document for one entity (or query/overview) by name or table.",
     inputSchema: { name: z.string() },
   },
   async ({ name }) => {
-    const { docs } = loadArtifact(projectDir);
-    const needle = name.toLowerCase();
-    const doc =
-      docs.find((d) => d.name.toLowerCase() === needle) ??
-      docs.find((d) => String(d.meta.table ?? "").toLowerCase() === needle) ??
-      docs.find((d) => d.name.toLowerCase().includes(needle));
-    auditLog(projectDir, { user, tool: "describe_entity", name, ok: !!doc });
+    const doc = store.getDoc(null, name);
+    store.audit(user, "describe_entity", { name, ok: !!doc });
     if (!doc)
       return errorText(
         `No context doc named "${name}". Call list_entities to see what exists.`,
@@ -223,6 +231,10 @@ server.registerTool(
     const head = [`# [${doc.type}] ${doc.name}`];
     for (const [k, v] of Object.entries(doc.meta))
       head.push(`${k}: ${Array.isArray(v) ? v.join(", ") : v}`);
+    if (doc.updatedBy)
+      head.push(
+        `last updated: ${doc.updatedBy}, ${doc.updatedAt?.slice(0, 10) ?? ""}`,
+      );
     return text([...head, "", doc.body].join("\n"));
   },
 );
@@ -237,16 +249,15 @@ server.registerTool(
     inputSchema: { name: z.string() },
   },
   async ({ name }) => {
-    const { docs } = loadArtifact(projectDir);
-    const metrics = docs.filter((d) => d.type === "metric");
-    const needle = name.toLowerCase();
-    const doc =
-      metrics.find((d) => d.name.toLowerCase() === needle) ??
-      metrics.find((d) => d.name.toLowerCase().includes(needle));
-    auditLog(projectDir, { user, tool: "get_metric", name, ok: !!doc });
+    const doc = store.getDoc("metric", name);
+    store.audit(user, "get_metric", { name, ok: !!doc });
     if (!doc) {
       const known =
-        metrics.map((m) => m.name).join(", ") || "(none documented yet)";
+        store
+          .listDocs()
+          .filter((d) => d.type === "metric")
+          .map((m) => m.name)
+          .join(", ") || "(none documented yet)";
       return errorText(`No metric "${name}". Known metrics: ${known}`);
     }
     return text(
@@ -260,16 +271,16 @@ server.registerTool(
   {
     title: "Record a context correction / clarification",
     description:
-      "Records a candidate addition or correction to the business-context artifact (a new gotcha, a metric " +
+      "Records a candidate addition or correction to the knowledge store (a new gotcha, a metric " +
       "definition the user clarified, an entity annotation fix). Call this whenever the user corrects you or " +
-      "resolves an ambiguity — that's how the whole team's answers improve. Candidates are reviewed by a human " +
-      "before becoming ground truth; never edit .setoku/context/ files directly during analysis.",
+      "resolves an ambiguity — that's how the whole team's answers improve. The candidate is live immediately " +
+      "as unverified knowledge; a curator later promotes or rejects it via /setoku:curate.",
     inputSchema: {
       kind: z.enum(["gotcha", "metric", "entity", "query", "other"]),
       content: z
         .string()
         .describe(
-          "The correction/clarification, written so a reviewer can apply it",
+          "The correction/clarification, written so a curator can apply it",
         ),
       relates_to: z
         .string()
@@ -278,17 +289,102 @@ server.registerTool(
     },
   },
   async ({ kind, content, relates_to }) => {
-    const file = appendCorrection(projectDir, {
-      ts: new Date().toISOString(),
+    const id = store.addCorrection({
       user,
       kind,
       content,
       relatesTo: relates_to,
     });
-    auditLog(projectDir, { user, tool: "report_correction", kind, ok: true });
+    store.audit(user, "report_correction", { id, kind });
     return text(
-      `Recorded as a candidate ${kind} in ${path.relative(projectDir, file)} (attributed to ${user}). ` +
-        "A human reviews corrections and folds accepted ones into .setoku/context/ — typically via /setoku:generate or a manual edit.",
+      `Recorded as pending correction #${id} (attributed to ${user}). It is live immediately as unverified ` +
+        "knowledge in find_context; a curator promotes or rejects it via /setoku:curate.",
+    );
+  },
+);
+
+server.registerTool(
+  "list_corrections",
+  {
+    title: "List pending knowledge corrections",
+    description:
+      "Lists corrections awaiting curation (id, author, kind, content). Used by the /setoku:curate workflow.",
+    inputSchema: {
+      status: z
+        .enum(["pending", "accepted", "rejected"])
+        .optional()
+        .describe("Default: pending"),
+    },
+  },
+  async ({ status }) => {
+    const rows = store.listCorrections(status ?? "pending");
+    store.audit(user, "list_corrections", {
+      status: status ?? "pending",
+      count: rows.length,
+    });
+    if (!rows.length) return text(`No ${status ?? "pending"} corrections.`);
+    return text(
+      rows
+        .map(
+          (c) =>
+            `#${c.id} [${c.kind}] ${c.content} (${c.user}, ${c.ts.slice(0, 10)}${c.relatesTo ? `, re: ${c.relatesTo}` : ""})`,
+        )
+        .join("\n"),
+    );
+  },
+);
+
+server.registerTool(
+  "resolve_correction",
+  {
+    title: "Resolve a pending correction (curator)",
+    description:
+      "Marks a pending correction accepted or rejected. Curation workflow: on accept, ALSO fold the knowledge " +
+      "into the store via upsert_context (a gotcha bullet, a metric doc, an entity edit) — resolving alone only " +
+      "updates the queue status.",
+    inputSchema: {
+      id: z.number().int(),
+      action: z.enum(["accepted", "rejected"]),
+    },
+  },
+  async ({ id, action }) => {
+    const ok = store.resolveCorrection(id, action, user);
+    store.audit(user, "resolve_correction", { id, action, ok });
+    return ok
+      ? text(`Correction #${id} ${action}.`)
+      : errorText(`No pending correction #${id}.`);
+  },
+);
+
+server.registerTool(
+  "upsert_context",
+  {
+    title: "Create or update a knowledge doc (generate/curate workflows)",
+    description:
+      "Writes a context document into the knowledge store: entity, metric, query, overview, or gotcha. " +
+      "Used by the /setoku:generate and /setoku:curate workflows — do NOT use it mid-analysis to record " +
+      "unreviewed beliefs (use report_correction for that). Attribution and a revision history are kept automatically. " +
+      "For entities pass meta.table (e.g. public.orders), meta.summary, meta.keywords. For metrics include the " +
+      "canonical SQL in the body. For gotchas put the one-liner in body (name can be a short slug).",
+    inputSchema: {
+      type: z.enum(["entity", "metric", "query", "overview", "gotcha"]),
+      name: z
+        .string()
+        .describe("Doc name (entity/metric name, or a short slug for gotchas)"),
+      body: z.string().describe("Markdown body (the full doc content)"),
+      meta: z
+        .record(z.union([z.string(), z.array(z.string())]))
+        .optional()
+        .describe(
+          "Frontmatter-style fields: table, summary, keywords, question, sources",
+        ),
+    },
+  },
+  async ({ type, name, body, meta }) => {
+    store.upsertDoc({ type, name, meta: meta ?? {}, body }, user);
+    store.audit(user, "upsert_context", { type, name });
+    return text(
+      `Saved [${type}] ${name} to the knowledge store (attributed to ${user}; revision recorded).`,
     );
   },
 );
@@ -300,7 +396,7 @@ server.registerTool(
   {
     title: "Live database schema (permission-scoped)",
     description:
-      "Introspects the live Postgres schema, filtered to the tables this repo's Setoku config allows. " +
+      "Introspects the live Postgres schema, filtered to the tables this project's Setoku config allows. " +
       "With no arguments: compact list of all tables + column names. With `tables`: full detail " +
       "(types, primary keys, foreign keys) for those tables. Tables not listed here are off-limits — do not query them.",
     inputSchema: {
@@ -345,10 +441,10 @@ server.registerTool(
           );
         }
       }
-      // drift note: artifact entities vs live tables
-      const { docs } = loadArtifact(projectDir);
+      // drift note: knowledge entities vs live tables
       const documented = new Set(
-        docs
+        store
+          .listDocs()
           .filter((d) => d.type === "entity" && d.meta.table)
           .map((d) => String(d.meta.table).toLowerCase()),
       );
@@ -371,9 +467,7 @@ server.registerTool(
           );
         }
       }
-      auditLog(projectDir, {
-        user,
-        tool: "get_schema",
+      store.audit(user, "get_schema", {
         tables: tables ?? null,
         ok: true,
         ms: Date.now() - started,
@@ -381,9 +475,7 @@ server.registerTool(
       return text(lines.join("\n"));
     } catch (e) {
       const msg = (e as Error).message;
-      auditLog(projectDir, {
-        user,
-        tool: "get_schema",
+      store.audit(user, "get_schema", {
         tables: tables ?? null,
         ok: false,
         error: msg,
@@ -421,9 +513,7 @@ server.registerTool(
       const config = requireConfig();
       const url = requireDb(config);
       const result = await runReadOnlyQuery(url, sql, config);
-      auditLog(projectDir, {
-        user,
-        tool: "run_query",
+      store.audit(user, "run_query", {
         purpose: purpose ?? null,
         sql: sqlForAudit,
         ok: true,
@@ -457,9 +547,7 @@ server.registerTool(
       return text(lines.join("\n"));
     } catch (e) {
       const msg = (e as Error).message;
-      auditLog(projectDir, {
-        user,
-        tool: "run_query",
+      store.audit(user, "run_query", {
         purpose: purpose ?? null,
         sql: sqlForAudit,
         ok: false,

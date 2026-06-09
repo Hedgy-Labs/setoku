@@ -38,6 +38,7 @@ await client.connect(
     env: {
       ...(process.env as Record<string, string>),
       SETOKU_PROJECT_DIR: tmp,
+      SETOKU_DB_PATH: path.join(tmp, "knowledge.db"),
       SETOKU_E2E_DB_URL: DB_URL,
       SETOKU_USER: "smoke@test",
     },

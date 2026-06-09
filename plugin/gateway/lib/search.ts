@@ -1,4 +1,10 @@
-import type { ContextDoc } from "./artifact";
+/** Structural shape scoring needs — KnowledgeDoc satisfies this. */
+export interface ScorableDoc {
+  type: string;
+  name: string;
+  meta: Record<string, string | string[]>;
+  body: string;
+}
 
 /** Lowercase alphanumeric tokens, splitting camelCase and snake_case. */
 export function tokenize(text: string): string[] {
@@ -53,10 +59,10 @@ export function queryTokens(question: string): string[] {
  * Field-weighted term frequency — deliberately simple (spec D-decision: keyword
  * retrieval first, embeddings only if recall proves insufficient).
  */
-export function scoreDocs(
-  docs: ContextDoc[],
+export function scoreDocs<T extends ScorableDoc>(
+  docs: T[],
   question: string,
-): { doc: ContextDoc; score: number }[] {
+): { doc: T; score: number }[] {
   const qts = queryTokens(question);
   if (!qts.length) return [];
   const scored = docs.map((doc) => {

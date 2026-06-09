@@ -1,31 +1,31 @@
 ---
 name: curate
-description: Review pending Setoku knowledge candidates (corrections.jsonl) and promote, edit, or reject them — conversationally, no git or dev skills required. Use when the user asks to curate/review setoku knowledge, or periodically when pending corrections accumulate.
+description: Review pending Setoku knowledge candidates and promote, edit, or reject them — conversationally, no git or dev skills required. Use when the user asks to curate/review setoku knowledge, or when list_entities reports pending corrections.
 ---
 
 # Setoku curation
 
-You are helping a **curator** — typically a business user, not a developer — review the team's pending knowledge candidates and fold the good ones into the verified context artifact. This is the human-verification gate (D10): candidates are already _live_ as "unverified team knowledge", so there is no urgency pressure — the job is quality, not speed.
+You are helping a **curator** — typically a business user, not a developer — review the team's pending knowledge candidates and fold the good ones into the verified knowledge store. Candidates are already _live_ as "unverified team knowledge" (find_context surfaces them), so there is no urgency pressure — the job is quality, not speed.
 
 ## Process
 
-1. **Read the queue.** Load `.setoku/corrections.jsonl`. If empty, say so and stop. Otherwise summarize: how many pending, from whom, what kinds.
+1. **Read the queue:** `list_corrections` (status pending). If empty, say so and stop. Otherwise summarize: how many, from whom, what kinds.
 2. **Review in batches, conversationally.** For each candidate (group related ones):
    - Show it plainly: what it claims, who said it, when, what it relates to.
-   - Sanity-check it against existing context (`describe_entity` / `get_metric`) and, when cheap, against the data (`run_query`) — e.g. verify a claimed enum value actually exists.
-   - Flag conflicts with existing verified context explicitly — never silently overwrite verified knowledge with a contradicting candidate; ask the curator which is right.
+   - Sanity-check against existing knowledge (`describe_entity` / `get_metric`) and, when cheap, against the data (`run_query`) — e.g. verify a claimed enum value actually exists.
+   - Flag conflicts with existing verified knowledge explicitly — never silently overwrite verified content with a contradicting candidate; ask the curator which is right.
    - Ask: **accept / edit / reject**. Default to accept-with-light-editing; the curator's judgment wins.
-3. **Apply accepted candidates** to the right home in `.setoku/context/`:
-   - `gotcha` → a bullet in `gotchas.md`
-   - `metric` → new or updated `metrics/<slug>.md` (write canonical SQL; verify it runs via `run_query` first)
-   - `entity` → the relevant section of `entities/<Name>.md`
-   - `query` → `queries/<slug>.md`
-   - Preserve attribution in the doc when it matters ("per ops team, 2026-06").
-4. **Clear processed entries** from `corrections.jsonl` (remove both accepted and rejected lines; leave untouched ones).
-5. **Summarize:** accepted / edited / rejected, and what got better. If the folder is a git repo, suggest committing; if not, that's fine — the files are the store.
+3. **Apply accepted candidates** via `upsert_context`:
+   - `gotcha` → a new gotcha doc (short slug name, one-liner body)
+   - `metric` → new or updated metric doc (verify the canonical SQL runs via `run_query` first)
+   - `entity` → update the relevant entity doc (fetch current body with `describe_entity`, edit, re-save)
+   - `query` → new query doc
+   - Preserve attribution in the body when it matters ("per ops team, 2026-06").
+4. **Resolve each candidate:** `resolve_correction` with accepted or rejected. (Accept without the matching `upsert_context` loses the knowledge — always do both.)
+5. **Summarize:** accepted / edited / rejected, and what got better.
 
 ## Boundaries
 
 - Only the curator's say-so promotes knowledge — you propose, they decide.
-- Rejections are silent deletions unless the curator wants a note added to `gotchas.md` clarifying the misconception.
-- This is the ONE workflow allowed to edit `.setoku/context/` files directly (the analyst skill never does).
+- Rejections need no ceremony, but offer to add a clarifying gotcha when the misconception seems likely to recur.
+- Curation and generation are the ONLY workflows that call `upsert_context`; the analyst workflow records candidates via `report_correction` instead.

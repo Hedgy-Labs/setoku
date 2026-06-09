@@ -30,7 +30,7 @@ Goal: from zero to a verified working loop in minutes, conversationally. Everyth
 ```
 
 4. **Verify connectivity.** Call `get_schema` (no args). Show the user a short summary of what's visible (table count, notable tables). If it fails, debug the config with the user (wrong env var, env file path, db not running).
-5. **Generate context.** If `.setoku/context/` is missing or empty, tell the user the answers will be far better with a context artifact and offer to run `/setoku:generate` now (recommended). If they decline, continue — the gateway works schema-only.
+5. **Generate context.** If `list_entities` reports an empty knowledge store, tell the user the answers will be far better with business context and offer to run `/setoku:generate` now (recommended). If they decline, continue — the gateway works schema-only.
 6. **First question, end-to-end.** Ask the user for a real business question they care about (or propose one from the schema). Answer it using the **analyst** workflow (find_context → SQL → run_query → answer). This proves the loop.
 7. **Curation interview (2 questions max).** Ask: (a) what role they're in / what questions they ask most, (b) one business term that's notoriously ambiguous in their company. Record the answers via `report_correction` (kind: `entity`/`metric`/`gotcha` as appropriate) so the artifact starts compounding from day one.
-8. **Wrap up.** Remind the user to commit `.setoku/` (audit logs are auto-gitignored; config + context + corrections should be committed so the whole team shares them).
+8. **Wrap up.** Remind the user to commit `.setoku/config.json` (no secrets — env var name only). The knowledge itself lives in the gateway's store (SQLite, service-owned); `/setoku:curate` reviews pending knowledge.
