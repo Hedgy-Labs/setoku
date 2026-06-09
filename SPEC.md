@@ -117,6 +117,22 @@ Experience: install plugin → paste token → answer two questions → ask a re
 
 **Cowork (non-technical analysts):** verified 2026-06 — Cowork supports **plugins** (since 2026-01-30) bundling skills + MCP connectors + slash commands, with a marketplace and enterprise private marketplaces. So the same distribution model holds on both surfaces. Remaining verification (open question #7): packaging parity (one artifact for both, or two packagings), per-user token entry UX for an HTTP MCP connector in Cowork, and hooks (Cowork likely lacks them — fine, the freshness hook targets dev machines, which are Claude Code anyway).
 
+### Team topology (where data lives, two profiles, one design)
+
+Three kinds of data, three homes — **the gateway is stateless in v0 and a synced replica in v1; git is always the system of record for knowledge**:
+
+| Data                                                         | Home                      | Notes                                                                                                   |
+| ------------------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Business data (rows)                                         | Customer's database only  | Gateway never stores/caches results; audit logs record SQL, not rows                                    |
+| Knowledge (context artifact, config)                         | **Git repo (`.setoku/`)** | PR review = the verification gate; diff/blame = provenance; enables ambient freshness from dev machines |
+| Operational state (tokens, central audit, corrections inbox) | Deployed gateway (v1)     | The only data that genuinely lives in the gateway                                                       |
+
+**Local profile (v0, shipping now):** stdio gateway spawned by the plugin; `.setoku/` read from the checkout. Team sharing = git: one dev onboards + generates + commits; every other dev just installs the plugin and pulls. Config references the DB credential **by env var name**, so one committed config works across everyone's local env.
+
+**Deployed profile (v1):** one HTTP gateway container per company — _code lives in git, runs in prod; context lives in git, serves from the gateway._ CI syncs `.setoku/context/` to the gateway on merge; the gateway holds the DB credential + per-user tokens + centralized audit; repo-less users (Cowork analysts) connect with URL + token and nothing local. `report_correction` from any surface lands in the gateway, which **opens a PR against the repo** — same human review gate, then the accepted knowledge syncs back out to everyone on both surfaces.
+
+**Division of labor:** repo-side seats (devs) generate and curate; repo-less seats (analysts) consume and contribute via corrections. Tool contracts and artifact format are identical across profiles — moving from v0 to v1 is a deployment change, not a rework.
+
 ### The context model (layers, cheap → rich)
 
 1. **Schema facts** — tables, columns, types, FKs, enums. Deterministic (introspection + ORM schema). _Never inferred._
