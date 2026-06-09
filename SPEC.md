@@ -1,4 +1,4 @@
-# Setoku — Spec (v0.5)
+# Setoku — Spec (v0.6)
 
 > Status: **draft / starting point for iteration.** Names, scope, and decisions here are provisional and meant to be argued with.
 
@@ -117,21 +117,31 @@ Experience: install plugin → paste token → answer two questions → ask a re
 
 **Cowork (non-technical analysts):** verified 2026-06 — Cowork supports **plugins** (since 2026-01-30) bundling skills + MCP connectors + slash commands, with a marketplace and enterprise private marketplaces. So the same distribution model holds on both surfaces. Remaining verification (open question #7): packaging parity (one artifact for both, or two packagings), per-user token entry UX for an HTTP MCP connector in Cowork, and hooks (Cowork likely lacks them — fine, the freshness hook targets dev machines, which are Claude Code anyway).
 
-### Team topology (where data lives, two profiles, one design)
+### Team topology (where data lives — revised v0.6)
 
-Three kinds of data, three homes — **the gateway is stateless in v0 and a synced replica in v1; git is always the system of record for knowledge**:
+> v0.5 made git the system of record for knowledge with PR review as the gate. **Falsified by pilot profiles** (a 100-person Shopify company has no relevant codebase; a 2-dev/10-person company makes devs a bottleneck for business knowledge, contradicting D6). Revision: **the gateway owns the knowledge**; code is one source among several; review is non-blocking.
 
-| Data                                                         | Home                      | Notes                                                                                                   |
-| ------------------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------- |
-| Business data (rows)                                         | Customer's database only  | Gateway never stores/caches results; audit logs record SQL, not rows                                    |
-| Knowledge (context artifact, config)                         | **Git repo (`.setoku/`)** | PR review = the verification gate; diff/blame = provenance; enables ambient freshness from dev machines |
-| Operational state (tokens, central audit, corrections inbox) | Deployed gateway (v1)     | The only data that genuinely lives in the gateway                                                       |
+Three kinds of data, three homes:
 
-**Local profile (v0, shipping now):** stdio gateway spawned by the plugin; `.setoku/` read from the checkout. Team sharing = git: one dev onboards + generates + commits; every other dev just installs the plugin and pulls. Config references the DB credential **by env var name**, so one committed config works across everyone's local env.
+| Data                                                           | Home                              | Notes                                                                                                                                        |
+| -------------------------------------------------------------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Business data (rows)                                           | Customer's data sources only      | Gateway never stores/caches results; audit logs record SQL, not rows                                                                         |
+| **Knowledge (context artifact)**                               | **The gateway's versioned store** | Every change attributed + revertible (the properties git gave us, kept without git). v0 local profile: the `.setoku/` files _are_ that store |
+| Operational state (tokens, central audit, pending corrections) | Deployed gateway (v1)             |                                                                                                                                              |
 
-**Deployed profile (v1):** one HTTP gateway container per company — _code lives in git, runs in prod; context lives in git, serves from the gateway._ CI syncs `.setoku/context/` to the gateway on merge; the gateway holds the DB credential + per-user tokens + centralized audit; repo-less users (Cowork analysts) connect with URL + token and nothing local. `report_correction` from any surface lands in the gateway, which **opens a PR against the repo** — same human review gate, then the accepted knowledge syncs back out to everyone on both surfaces.
+**Knowledge sources (importers into the store, by company shape):**
 
-**Division of labor:** repo-side seats (devs) generate and curate; repo-less seats (analysts) consume and contribute via corrections. Tool contracts and artifact format are identical across profiles — moving from v0 to v1 is a deployment change, not a rework.
+1. **Codebase** — where one exists, `/setoku:generate` mines it, grounded in `file:line`. An importer, not the home.
+2. **Canonical SaaS packs** — Shopify/HubSpot/GA4 etc. have standardized schemas identical across customers: ship pre-built context packs (entities, metrics, gotchas), so Setoku arrives already knowing the platform. Per-company knowledge layers on top. (Key unlock for low-code companies.)
+3. **The curation interview + usage corrections** — everything tribal, captured conversationally.
+
+**Non-blocking review — trust tiers, not gates.** `report_correction` knowledge goes live **immediately as "unverified team knowledge"** (attributed, labeled as such by `find_context`). A **curator — a business user, not a dev** — reviews asynchronously via `/setoku:curate` (conversational), promoting to verified, editing, or rejecting. Nobody waits; review upgrades confidence rather than gating existence.
+
+**Profiles:** Local (v0, now): stdio gateway, `.setoku/` files in a folder (a repo if the team has one — then git sharing works as a bonus; config references DB credential by env var name). Deployed (v1): one HTTP gateway container per company; knowledge store on its volume; repo-less users connect with URL + token; code-derived and pack updates are _pushed into_ the store by `/setoku:generate` / the FDE.
+
+**Division of labor:** FDE (us) does one-time deployment + source sync; **the customer's business users own the knowledge day-to-day** (curator role); devs only matter when code-derived context refreshes.
+
+**Pilot mapping:** 100-person e-commerce (Shopify/HubSpot/GA, no real dev team) → deployed gateway + SaaS packs + DuckDB-lake sync (pulls D5 forward), ops lead curates. 10-person all-technical → local profile as-is. 10-person/2-devs → local or deployed; the 8 non-devs curate.
 
 ### The context model (layers, cheap → rich)
 
@@ -219,16 +229,18 @@ Out (for now): Mode B harnesses (Slack/UI), multi-source federation / Cube, RLS/
 
 ## Decisions
 
-| #   | Question             | Decision                                                                                                                                                                                   |
-| --- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| D1  | Identity/auth        | Per-user bearer token issued by the gateway; SSO/OIDC later.                                                                                                                               |
-| D2  | Access control depth | Defer enforcement; v0 = read-only + caps + audit + **table-level** allow-list. Architecture (tool contracts, token→identity) must support roles/RLS/masking without rework.                |
-| D3  | Context freshness    | **Ambient regeneration**: dev-machine Claude Code sessions detect stale context vs. code and propose updates as a side effect of dev work (repo skill/hook); manual full pass as backstop. |
-| D4  | Eval                 | Needed before tuning. Run **inline by the subscription agent via an eval skill** (golden questions in the artifact repo) — no programmatic harness.                                        |
-| D5  | Data sources         | Postgres v0; **BigQuery next** (GA exports). Leaning toward a **DuckDB datalake** as the single engine the gateway queries.                                                                |
-| D6  | Curation ownership   | **Users own it.** Conversational: agent asks clarifying questions during use, remembers answers as artifact candidates, human accepts diffs.                                               |
-| D7  | Business model       | **Product, not services-with-tooling.** All workflows self-serve / agent-driven.                                                                                                           |
-| D8  | Semantic layer       | Skip Wren; thin gateway; Cube only if scale demands.                                                                                                                                       |
+| #   | Question             | Decision                                                                                                                                                                                                                                                                                                                      |
+| --- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | Identity/auth        | Per-user bearer token issued by the gateway; SSO/OIDC later.                                                                                                                                                                                                                                                                  |
+| D2  | Access control depth | Defer enforcement; v0 = read-only + caps + audit + **table-level** allow-list. Architecture (tool contracts, token→identity) must support roles/RLS/masking without rework.                                                                                                                                                   |
+| D3  | Context freshness    | **Ambient regeneration**: dev-machine Claude Code sessions detect stale context vs. code and propose updates as a side effect of dev work (repo skill/hook); manual full pass as backstop.                                                                                                                                    |
+| D4  | Eval                 | Needed before tuning. Run **inline by the subscription agent via an eval skill** (golden questions in the artifact repo) — no programmatic harness.                                                                                                                                                                           |
+| D5  | Data sources         | Three engine roles (v0.6): **(a) direct Postgres adapter** when the customer's data already lives in Postgres (software-co pilots — today's gateway, no lake); **(b) DuckDB as the lake** for SaaS-stack customers — zero-ops file on the gateway volume, synced from Shopify/HubSpot/GA4 via **dlt** (first-class DuckDB destination + verified sources for all three), OLAP-fast, and `postgres_scanner` can attach any Postgres so the agent sees one dialect; **(c) the knowledge store is never the analytics DB** — files (v0) → SQLite on the deployed gateway.                                                                                                                                                                                                   |
+| D6  | Curation ownership   | **Business users own it** (curator role — not devs, not FDE). Conversational: agent asks clarifying questions during use, remembers answers as candidates, curator promotes via `/setoku:curate`.                                                                                                                             |
+| D7  | Business model       | **Product, not services-with-tooling.** All workflows self-serve / agent-driven. FDE does one-time deployment only.                                                                                                                                                                                                           |
+| D8  | Semantic layer       | Skip Wren; thin gateway; Cube only if scale demands.                                                                                                                                                                                                                                                                          |
+| D9  | Knowledge store      | **The gateway owns the knowledge** (versioned, attributed, revertible store; `.setoku/` files in v0). Git demoted from system-of-record to one importer among several: codebase generation, **canonical SaaS packs** (Shopify/HubSpot/GA4), curation interview. (Revised v0.6 — git-PR topology falsified by pilot profiles.) |
+| D10 | Review model         | **Non-blocking trust tiers.** Corrections go live immediately as _unverified team knowledge_ (labeled + attributed in `find_context`); curator promotes/rejects asynchronously. Review upgrades confidence, never gates existence.                                                                                            |
 
 ## Open questions (to answer as we iterate)
 
@@ -261,3 +273,4 @@ Custom UI that drives Claude · Slack/automation harnesses · multi-source feder
 - v0.3 — added _Installation & onboarding_: plugin as delivery vehicle (MCP can't install skills), bare-MCP fallback layer, company-setup vs end-user flows, onboarding-as-curation-interview. Cowork risk mostly retired: verified Cowork supports plugins (skills + MCP connectors + marketplace, incl. enterprise private marketplaces) since 2026-01-30; open question #7 narrowed to packaging parity / token-entry UX / hooks.
 - v0.4 — renamed **Strata → Loremir** (~150 names checked at that point). Rationale then: names the value, Palantir-register without trademark risk.
 - v0.5 — renamed **Loremir → Setoku** (set × oku 奥 "innermost"; ~420 names checked total; finalists in NAMES.md; setoku.com available 2026-06-09 — register it). v0 prototype build begins: monorepo = Claude Code plugin (marketplace + skills + stdio MCP gateway in plain Node ESM). Pragmatic deviation from D1: v0 gateway runs as a **local stdio MCP server** launched by the plugin (zero deploy, works in any repo); the HTTP + bearer-token deployment is the v1 hardening step — tool contracts identical.
+- v0.6 — **topology revision from pilot profiles** (100p Shopify co with no dev team; 10p co with 2 devs): git-PR knowledge flow falsified — devs can't be the gate for business knowledge and low-code companies have no repo. New: D9 (gateway owns the knowledge; code + **canonical SaaS packs** + interviews are importers), D10 (**non-blocking trust tiers** — corrections live immediately as labeled *unverified team knowledge*; business-user curator promotes via `/setoku:curate`), D5 finalized (direct Postgres adapter OR DuckDB lake synced via dlt for SaaS stacks; knowledge store never the analytics DB). v0 code: find_context now surfaces unverified corrections; new curate skill.

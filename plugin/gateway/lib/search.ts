@@ -95,3 +95,14 @@ export function matchGotchas(gotchas: string[], question: string): string[] {
   if (!qts.size) return [];
   return gotchas.filter((g) => tokenize(g).some((t) => qts.has(t)));
 }
+
+/** Same one-token-overlap matching for pending corrections (content + relatesTo). */
+export function matchByTokens<T>(
+  items: T[],
+  textOf: (item: T) => string,
+  question: string,
+): T[] {
+  const qts = new Set(queryTokens(question));
+  if (!qts.size) return [];
+  return items.filter((item) => tokenize(textOf(item)).some((t) => qts.has(t)));
+}

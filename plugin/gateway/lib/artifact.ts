@@ -123,3 +123,23 @@ export function appendCorrection(
   fs.appendFileSync(file, JSON.stringify(record) + "\n");
   return file;
 }
+
+/**
+ * Pending (not-yet-curated) corrections. Per D10 these are LIVE knowledge —
+ * find_context surfaces them immediately, labeled unverified, so nobody waits
+ * on a curator for an answer to improve.
+ */
+export function loadCorrections(projectDir: string): CorrectionRecord[] {
+  const file = path.join(setokuDir(projectDir), "corrections.jsonl");
+  if (!fs.existsSync(file)) return [];
+  const out: CorrectionRecord[] = [];
+  for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line));
+    } catch {
+      /* skip malformed lines rather than failing retrieval */
+    }
+  }
+  return out;
+}

@@ -21,8 +21,12 @@ import {
   type SetokuConfig,
 } from "./lib/config";
 import { closePools, introspectSchema, runReadOnlyQuery } from "./lib/db";
-import { appendCorrection, loadArtifact } from "./lib/artifact";
-import { matchGotchas, scoreDocs } from "./lib/search";
+import {
+  appendCorrection,
+  loadArtifact,
+  loadCorrections,
+} from "./lib/artifact";
+import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { auditLog } from "./lib/audit";
 
 const projectDir = resolveProjectDir();
@@ -79,6 +83,12 @@ server.registerTool(
   async ({ question, max_results }) => {
     const started = Date.now();
     const { docs, gotchas, exists } = loadArtifact(projectDir);
+    // D10: pending corrections are live, labeled knowledge — never blocked on curation
+    const matchedCorrections = matchByTokens(
+      loadCorrections(projectDir),
+      (c) => `${c.content} ${c.relatesTo ?? ""}`,
+      question,
+    ).slice(0, 5);
     if (!exists || docs.length === 0) {
       auditLog(projectDir, {
         user,
@@ -88,7 +98,13 @@ server.registerTool(
         results: 0,
         ms: Date.now() - started,
       });
-      return text(NO_ARTIFACT_HINT);
+      const extra = matchedCorrections.length
+        ? "\n\n## Unverified team knowledge (pending curation — treat as likely true; attribute it when used)\n" +
+          matchedCorrections
+            .map((c) => `- ${c.content} (${c.user}, ${c.ts.slice(0, 10)})`)
+            .join("\n")
+        : "";
+      return text(NO_ARTIFACT_HINT + extra);
     }
     const out: string[] = [];
     const top = scoreDocs(docs, question).slice(0, max_results ?? 5);
@@ -96,6 +112,17 @@ server.registerTool(
     if (matchedGotchas.length) {
       out.push("## Gotchas (read carefully — these prevent wrong answers)");
       for (const g of matchedGotchas) out.push(`- ${g}`);
+      out.push("");
+    }
+    if (matchedCorrections.length) {
+      out.push(
+        "## Unverified team knowledge (pending curation — treat as likely true; attribute it when used)",
+      );
+      for (const c of matchedCorrections) {
+        out.push(
+          `- ${c.content} (${c.user}, ${c.ts.slice(0, 10)}${c.relatesTo ? `, re: ${c.relatesTo}` : ""})`,
+        );
+      }
       out.push("");
     }
     if (top.length === 0) {

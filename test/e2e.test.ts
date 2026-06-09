@@ -254,6 +254,18 @@ describe("curation + audit", () => {
     expect(lines[0].relatesTo).toBe("Order");
   });
 
+  it("pending corrections are live immediately as labeled unverified knowledge (D10)", async () => {
+    const { text, isError } = await call("find_context", {
+      question: "what is our conversion rate?",
+    });
+    expect(isError).toBe(false);
+    expect(text).toContain("Unverified team knowledge");
+    expect(text).toContain(
+      "Pending orders are excluded from conversion-rate denominators",
+    );
+    expect(text).toContain("e2e@test"); // attributed
+  });
+
   it("every call (including rejected writes) is in the audit log", async () => {
     const auditDir = path.join(tmpRepo, ".setoku", "audit");
     const files = fs.readdirSync(auditDir).filter((f) => f.endsWith(".jsonl"));
