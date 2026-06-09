@@ -1,0 +1,16 @@
+{
+  "name": "setoku",
+  "owner": {
+    "name": "Hedgy Labs"
+  },
+  "plugins": [
+    {
+      "name": "setoku",
+      "source": "./plugin",
+      "description": "Governed agentic BI on your own Claude subscription: a code-derived business-context layer + read-only data gateway, served over MCP.",
+      "author": {
+        "name": "Hedgy Labs"
+      }
+    }
+  ]
+}

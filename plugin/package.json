@@ -1,0 +1,12 @@
+{
+  "name": "setoku-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Setoku MCP gateway (run with bun; deps installed by the plugin's SessionStart hook)",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "pg": "^8.16.0",
+    "zod": "^3.25.0"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "setoku": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/gateway/server.ts"],
+      "env": {
+        "SETOKU_PROJECT_DIR": "${CLAUDE_PROJECT_DIR}"
+      }
+    }
+  }
+}
