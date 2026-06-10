@@ -1,5 +1,8 @@
 # Name finalists
 
+> **Round 2 (2026-06-09):** 50 more verified-available candidates — agent-persona angle — in [NAMES2.md](./NAMES2.md).
+> **Round 3 (2026-06-10):** 50 more — pronounceable / droid-designation / plain-math edition — in [NAMES3.md](./NAMES3.md).
+
 > **Decision 2026-06-09: going with _Setoku_ (for now).** Register setoku.com (+ setminus.com as runner-up insurance) ASAP.
 
 _All .coms confirmed available 2026-06-09 (whois-verified). ~420 candidates checked across mythology, scholarly-apparatus words, Latin, math/logic/set theory, Japanese, and coined combos; everything below survived. Nothing is reserved by an availability check — register the winner immediately after deciding._

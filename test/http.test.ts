@@ -198,3 +198,18 @@ describe("tools over HTTP", () => {
     await bob.close();
   });
 });
+
+describe("installer", () => {
+  it("serves a personalized install script for a valid token, 404 otherwise", async () => {
+    const ok = await fetch(`${BASE}/i/tok-alice`);
+    expect(ok.status).toBe(200);
+    const script = await ok.text();
+    expect(script).toContain(
+      "claude mcp add --scope user --transport http setoku",
+    );
+    expect(script).toContain('TOKEN="tok-alice"');
+    expect(script).toContain("alice@co.test");
+    const bad = await fetch(`${BASE}/i/nope`);
+    expect(bad.status).toBe(404);
+  });
+});
