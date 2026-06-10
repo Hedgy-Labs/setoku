@@ -28,7 +28,24 @@ Retrieval behavior:
 
 **Supported, with a caveat.** The mechanism works end-to-end: keyword retrieval reliably surfaced the right metric + gotchas for paraphrased questions, and following retrieved context converted 4 would-be-wrong answers into 4 exact ones. The deltas are not subtle (4.9×–16×) — this is the difference between a usable analyst and a dangerous one.
 
-Caveat (honest limit of this test): the same agent wrote the context and answered the questions, hours apart. The harder test is **other people's phrasing** — the next step is golden questions written by the humans (you + cofounder) via `/setoku:eval`, and a second business' codebase where the author isn't steeped in the domain.
+Caveat (honest limit of this first run): the same agent wrote the context and answered the questions, hours apart — and that agent had hedgy gotchas in persistent memory. **Addressed by the clean-room A/B below.** Remaining harder test: golden questions written by humans (`/setoku:eval`) and a second business' codebase.
+
+## Clean-room A/B (de-loading the test)
+
+Objection: the answering agent already "knew" the gotchas (conversation + persistent memory). Fix: **fresh subagents with no access to this conversation or memory**, forbidden from reading hedgy source code, driving the same gateway via the shell driver. Condition A = `get_schema` + `run_query` only (schema-only analyst). Condition B = must call `find_context` first and follow it. Protocol compliance **verified from the gateway's own audit log** (per-condition `SETOKU_USER` tags): A-agents made zero context-tool calls; B-agents called `find_context` before querying.
+
+| Q (ground truth)          | A: schema-only                                                                                                                                    | B: setoku      | A effort                                      | B effort                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- | --------------------------------------------- | ---------------------------------------- |
+| Paying companies (66)     | **22** ✗ (3× low; invented a `feeActiveAt` qualifier, missed TRIALING + feeAcknowledged)                                                          | **66** ✓ exact | 7 calls, 57s, 20k tok, _medium_ confidence    | 2 calls, 18s, 14k tok, _high_ confidence |
+| Paid intros May 2026 (59) | **24** ✗ (2.5× low; missed COMPANY_INTRO_ACCEPTED, reverse-engineered a plausible-but-wrong "paid" predicate; its own alternative reading gave 8) | **59** ✓ exact | 23 calls, 8 min, 60k tok, _medium_ confidence | 2 calls, 24s, 14k tok, _high_ confidence |
+
+Notes:
+
+- The A-agents were _good_ — A2 spent 8 minutes genuinely reverse-engineering the paid predicate from data and produced confident-sounding, well-reasoned, **wrong** answers. That's the production failure mode Setoku exists to prevent: plausible analysis, wrong business semantics.
+- B-agents had no prior knowledge, only retrieval — and reproduced the exact canonical answers in 2 tool calls each, citing the gotchas in their reasoning.
+- Efficiency bonus: B was ~10–20× faster and ~1.5–4× cheaper per question.
+
+**Verdict: the assumption holds in clean-room conditions.** Context-following, not author-memory, produced the correct answers.
 
 ## Artifacts
 
