@@ -56,6 +56,7 @@ const NO_KNOWLEDGE_HINT =
 server.registerTool(
   "find_context",
   {
+    annotations: { readOnlyHint: true },
     title: "Find business context (verified + unverified)",
     description:
       "ALWAYS call this FIRST, before writing any SQL. Retrieves business context " +
@@ -146,6 +147,7 @@ server.registerTool(
 server.registerTool(
   "list_entities",
   {
+    annotations: { readOnlyHint: true },
     title: "List documented business entities",
     description:
       "Lists every documented entity, metric, and canonical query in the knowledge store " +
@@ -193,6 +195,7 @@ server.registerTool(
 server.registerTool(
   "describe_entity",
   {
+    annotations: { readOnlyHint: true },
     title: "Full context doc for one entity",
     description:
       "Returns the complete context document for one entity (or query/overview) by name or table.",
@@ -219,6 +222,7 @@ server.registerTool(
 server.registerTool(
   "get_metric",
   {
+    annotations: { readOnlyHint: true },
     title: "Canonical metric definition",
     description:
       "Returns the canonical, human-verified definition of a business metric, including the exact SQL. " +
@@ -246,6 +250,7 @@ server.registerTool(
 server.registerTool(
   "report_correction",
   {
+    annotations: { readOnlyHint: false, destructiveHint: false },
     title: "Record a context correction / clarification",
     description:
       "Records a candidate addition or correction to the knowledge store (a new gotcha, a metric " +
@@ -283,6 +288,7 @@ server.registerTool(
 server.registerTool(
   "list_corrections",
   {
+    annotations: { readOnlyHint: true },
     title: "List pending knowledge corrections",
     description:
       "Lists corrections awaiting curation (id, author, kind, content). Used by the /setoku:curate workflow.",
@@ -314,6 +320,7 @@ server.registerTool(
 server.registerTool(
   "resolve_correction",
   {
+    annotations: { readOnlyHint: false, destructiveHint: false },
     title: "Resolve a pending correction (curator)",
     description:
       "Marks a pending correction accepted or rejected. Curation workflow: on accept, ALSO fold the knowledge " +
@@ -336,6 +343,7 @@ server.registerTool(
 server.registerTool(
   "upsert_context",
   {
+    annotations: { readOnlyHint: false, destructiveHint: false },
     title: "Create or update a knowledge doc (generate/curate workflows)",
     description:
       "Writes a context document into the knowledge store: entity, metric, query, overview, or gotcha. " +
@@ -371,6 +379,7 @@ server.registerTool(
 server.registerTool(
   "get_schema",
   {
+    annotations: { readOnlyHint: true, openWorldHint: true },
     title: "Live database schema (permission-scoped)",
     description:
       "Introspects the live Postgres schema, filtered to the tables this project's Setoku config allows. " +
@@ -466,6 +475,7 @@ server.registerTool(
 server.registerTool(
   "run_query",
   {
+    annotations: { readOnlyHint: true, openWorldHint: true },
     title: "Run a read-only SQL query (capped + audited)",
     description:
       "Executes ONE read-only SQL statement against the business database inside a READ ONLY transaction, " +

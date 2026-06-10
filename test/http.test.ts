@@ -230,3 +230,18 @@ describe("installer", () => {
   });
 
 });
+
+describe("tool annotations", () => {
+  it("marks read tools readOnly and write tools non-destructive (drives client auto-approve)", async () => {
+    const alice = await connect("tok-alice");
+    const { tools } = await alice.listTools();
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t.annotations ?? {}]));
+    for (const n of ["find_context", "get_schema", "run_query", "list_entities", "get_metric"]) {
+      expect(byName[n].readOnlyHint).toBe(true);
+    }
+    expect(byName["run_query"].openWorldHint).toBe(true);
+    expect(byName["upsert_context"].readOnlyHint).toBe(false);
+    expect(byName["report_correction"].destructiveHint).toBe(false);
+    await alice.close();
+  });
+});
