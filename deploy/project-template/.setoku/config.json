@@ -1,0 +1,7 @@
+{
+  "dataSource": { "kind": "postgres", "urlEnv": "SETOKU_DATABASE_URL" },
+  "allowTables": ["public.*"],
+  "denyTables": ["public._prisma_migrations"],
+  "rowCap": 200,
+  "statementTimeoutMs": 15000
+}
