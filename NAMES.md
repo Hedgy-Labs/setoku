@@ -2,6 +2,7 @@
 
 > **Round 2 (2026-06-09):** 50 more verified-available candidates — agent-persona angle — in [NAMES2.md](./NAMES2.md).
 > **Round 3 (2026-06-10):** 50 more — pronounceable / droid-designation / plain-math edition — in [NAMES3.md](./NAMES3.md).
+> **Round 4 (2026-06-10):** leet droid edition (1nner, aud1t, rek0n…) — in [NAMES4.md](./NAMES4.md).
 
 > **Decision 2026-06-09: going with _Setoku_ (for now).** Register setoku.com (+ setminus.com as runner-up insurance) ASAP.
 
