@@ -212,4 +212,16 @@ describe("installer", () => {
     const bad = await fetch(`${BASE}/i/nope`);
     expect(bad.status).toBe(404);
   });
+
+  it("serves agent-readable Cowork setup instructions per token", async () => {
+    const ok = await fetch(`${BASE}/cowork/tok-bob`);
+    expect(ok.status).toBe(200);
+    const md = await ok.text();
+    expect(md).toContain("org-plugins/setoku");
+    expect(md).toContain("Bearer tok-bob");
+    expect(md).toContain("bob@co.test");
+    expect(md).toContain("find_context");
+    const bad = await fetch(`${BASE}/cowork/nope`);
+    expect(bad.status).toBe(404);
+  });
 });

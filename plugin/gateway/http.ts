@@ -92,7 +92,87 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
 const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
 
 /**
- * One-line installer: `curl -fsSL https://<host>/i/<token> | sh`
+ * Cowork self-setup: the "installer" is a prompt. The user pastes one sentence
+ * into Cowork; its Claude fetches this page and follows the instructions —
+ * writing the org-plugin config itself (with a native admin-password dialog
+ * via osascript, since Cowork's shell has no TTY for sudo).
+ */
+function coworkSetupInstructions(
+  token: string,
+  identity: string,
+  baseUrl: string,
+): string {
+  const mcpJson = JSON.stringify({
+    mcpServers: {
+      setoku: {
+        type: "http",
+        url: `${baseUrl}/mcp`,
+        headers: { Authorization: `Bearer ${token}` },
+      },
+    },
+  });
+  const pluginJson = JSON.stringify({
+    name: "setoku",
+    version: "0.4.0",
+    description: "Setoku — governed business answers over live company data",
+    mcpServers: "./.mcp.json",
+  });
+  return `# Setoku setup instructions (for the Claude agent reading this)
+
+You are setting up **Setoku** for ${identity}. Setoku is an MCP gateway giving this
+user governed, read-only access to their company's data and business knowledge.
+Follow these steps; explain to the user what you're doing as you go.
+
+## Step 1 — try the simple path first (no admin rights)
+
+If this Claude surface lets you add MCP servers via a user-level config or settings
+file, add an HTTP server named \`setoku\` with url \`${baseUrl}/mcp\` and header
+\`Authorization: Bearer ${token}\`. If you have the \`claude\` CLI available, this is:
+
+    claude mcp add --scope user --transport http setoku ${baseUrl}/mcp --header "Authorization: Bearer ${token}"
+
+If that worked, skip to Step 3.
+
+## Step 2 — org-plugin install (needs one admin-password prompt)
+
+Write these three files into \`/Library/Application Support/Claude/org-plugins/setoku/\`.
+That directory needs admin rights; from a GUI shell use osascript so the user gets the
+native macOS password dialog (tell them to expect it and why):
+
+    osascript -e 'do shell script "mkdir -p \\"/Library/Application Support/Claude/org-plugins/setoku/.claude-plugin\\"" with administrator privileges'
+
+Then write (same osascript pattern, or sudo tee if you have a TTY):
+
+1. \`.claude-plugin/plugin.json\`:
+
+\`\`\`json
+${pluginJson}
+\`\`\`
+
+2. \`.mcp.json\` (at the plugin root, next to .claude-plugin/):
+
+\`\`\`json
+${mcpJson}
+\`\`\`
+
+3. \`version.json\`: \`{"version":"1"}\`
+
+Verify all three files exist and are valid JSON, then ask the user to **restart Cowork**.
+
+## Step 3 — prove it works
+
+After setup (and restart if Step 2 was used), call the \`find_context\` tool with the
+question "how many companies are paying us right now?", follow what it returns, answer
+via \`run_query\`, and show the user the result. Tell them: it's read-only, every query
+is logged under their name (${identity}), and if they ever correct a business term,
+you'll record it so the whole team's answers improve.
+
+If nothing here works, tell the user to send Peter the exact error.
+`;
+}
+
+/**
+ * One-line installer: \`curl -fsSL https://<host>/i/<token> | sh\`
  * Personalized by token; configures Claude Code (user-scoped remote MCP +
  * plugin marketplace) and offers Cowork setup (org plugin with .mcp.json).
  * SETOKU_DRY_RUN=1 prints actions instead of executing.
@@ -172,6 +252,22 @@ const httpServer = http.createServer(async (req, res) => {
       store.audit(identity, "installer_served", {});
       res.writeHead(200, { "content-type": "text/x-shellscript" });
       res.end(installerScript(token, identity, baseUrl));
+      return;
+    }
+    if (req.url?.startsWith("/cowork/")) {
+      const token = decodeURIComponent(req.url.slice(8).split("?")[0]);
+      const identity = tokens.get(token);
+      if (!identity) {
+        store.audit("anonymous", "installer_rejected", { kind: "cowork" });
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("unknown setup link\n");
+        return;
+      }
+      const baseUrl =
+        process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
+      store.audit(identity, "cowork_setup_served", {});
+      res.writeHead(200, { "content-type": "text/markdown" });
+      res.end(coworkSetupInstructions(token, identity, baseUrl));
       return;
     }
     if (!req.url?.startsWith("/mcp")) {
