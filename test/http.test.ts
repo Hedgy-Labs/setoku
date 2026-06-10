@@ -135,6 +135,22 @@ describe("auth", () => {
   it("rejects a bogus token", async () => {
     expect(connect("tok-evil")).rejects.toThrow();
   });
+
+  it("authenticates via token in the URL path (/mcp/<token>) for the custom-connector dialog", async () => {
+    const client = new McpClient({ name: "http-e2e-path", version: "0.0.1" });
+    // NO Authorization header — token is in the path, as the Add-custom-connector URL would be
+    const transport = new StreamableHTTPClientTransport(new URL(`${BASE}/mcp/tok-alice`));
+    await client.connect(transport);
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name)).toContain("find_context");
+    await client.close();
+  });
+
+  it("rejects a bogus token in the URL path", async () => {
+    const client = new McpClient({ name: "http-e2e-path-bad", version: "0.0.1" });
+    const transport = new StreamableHTTPClientTransport(new URL(`${BASE}/mcp/nope`));
+    expect(client.connect(transport)).rejects.toThrow();
+  });
 });
 
 describe("tools over HTTP", () => {

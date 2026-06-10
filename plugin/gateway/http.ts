@@ -66,11 +66,22 @@ if (store.empty) {
   if (imported > 0) store.audit("system", "seed_from_files", { imported });
 }
 
+/**
+ * Resolve identity from either the Authorization header (Claude Code: it sends
+ * the configured header) or a token in the URL path: /mcp/<token>. The path
+ * form exists for the consumer "Add custom connector" dialog, whose only auth
+ * fields are URL + OAuth — no static-header field — so the token rides in the URL.
+ */
 function identityFor(req: http.IncomingMessage): string | null {
   const auth = req.headers.authorization ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
-  if (!m) return null;
-  return tokens.get(m[1].trim()) ?? null;
+  if (m) {
+    const id = tokens.get(m[1].trim());
+    if (id) return id;
+  }
+  const pathTok = (req.url ?? "").match(/^\/mcp\/([^/?]+)/);
+  if (pathTok) return tokens.get(decodeURIComponent(pathTok[1])) ?? null;
+  return null;
 }
 
 function readBody(req: http.IncomingMessage): Promise<unknown> {
