@@ -227,6 +227,21 @@ Out (for now): Mode B harnesses (Slack/UI), multi-source federation / Cube, RLS/
 - MCP server: HTTP transport, language TBD (likely TS or Python).
 - Retrieval: keyword/BM25 to start.
 
+
+## Onboarding surfaces (verified 2026-06-10 against a real Max account)
+
+How a user connects to a *deployed* gateway, by surface — learned empirically (the enterprise `3p/extensions` docs misled us twice; these are the real consumer behaviors):
+
+| Surface | Path | Auth | Notes |
+| --- | --- | --- | --- |
+| **Claude Code** | `claude mcp add --transport http setoku <url>/mcp --header "Authorization: Bearer <tok>"` (the `/i/<token>` installer does this) | header | works; user-scope config in ~/.claude.json |
+| **Cowork / Claude desktop (Max/Pro)** | Settings → Connectors → **Add custom connector (BETA)** → paste `<url>/mcp/<token>` as the URL, OAuth blank | **token in URL path** | ✅ the real path for non-technical teammates; no terminal, no marketplace |
+| Enterprise/MDM | `org-plugins/` or `managedMcpServers` | header | **personal plans IGNORE `org-plugins/`** (verified via app logs) — enterprise/Team only |
+
+- The custom-connector dialog offers only URL + optional OAuth (no static-header field) → gateway accepts `/mcp/<token>` so the credential rides in the URL. Token-in-URL is credential-grade (share via password manager).
+- **Tool annotations** (`readOnlyHint` on read tools) are required so clients auto-approve reads instead of prompting every call.
+- **Connector *directory* listing** (curated, Connect-button discovery) needs **OAuth user-consent** (static bearer / client-credentials rejected) + privacy policy + annotations + Streamable-HTTP. → roadmap item; OAuth is the unlock. Not needed for pilots (custom-connector URL covers Max users).
+
 ## Decisions
 
 | #   | Question             | Decision                                                                                                                                                                                                                                                                                                                      |
@@ -276,3 +291,4 @@ Custom UI that drives Claude · Slack/automation harnesses · multi-source feder
 - v0.6 — **topology revision from pilot profiles** (100p Shopify co with no dev team; 10p co with 2 devs): git-PR knowledge flow falsified — devs can't be the gate for business knowledge and low-code companies have no repo. New: D9 (gateway owns the knowledge; code + **canonical SaaS packs** + interviews are importers), D10 (**non-blocking trust tiers** — corrections live immediately as labeled *unverified team knowledge*; business-user curator promotes via `/setoku:curate`), D5 finalized (direct Postgres adapter OR DuckDB lake synced via dlt for SaaS stacks; knowledge store never the analytics DB). v0 code: find_context now surfaces unverified corrections; new curate skill.
 - v0.7 — knowledge moved **into the service**: gateway-owned SQLite store (docs + corrections lifecycle + revisions + audit), write-through tools `upsert_context`/`list_corrections`/`resolve_correction`; generate/curate skills write via tools, not files; markdown demoted to seed/interchange. 21-test e2e incl. restart-persistence. Next: pressure-test retrieval→answer quality on hedgy.
 - v0.8 — **deployed profile shipped**: gateway refactored into shared `app.ts` tool surface + two entries (stdio `server.ts`, HTTP `http.ts` with Streamable-HTTP transport, bearer-token→identity auth, stateless per-request servers over the shared SQLite store). Deploy artifacts: `deploy/` (Dockerfile + project template + read-only role SQL + Fly/Cowork connector instructions). Verified: 5-test HTTP e2e (auth, per-token audit attribution, cross-user shared knowledge) + real container build/run smoke (seed import, 401, retrieval + read-only SQL through Docker). Cowork verified to support both local stdio MCP (developer setting) and admin-managed remote connectors + same plugin model.
+- v0.9 — onboarding reality mapped across Claude Code / Cowork(Max) / enterprise; gateway accepts token-in-URL-path for the Cowork custom-connector dialog; tool annotations added (readOnly/non-destructive); one-line `/i/<token>` installer; connector-directory submission documented (needs OAuth → roadmap). Live pilot: hedgy prod, Peter + cofounder, both surfaces verified.
