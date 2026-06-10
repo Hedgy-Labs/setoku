@@ -124,29 +124,19 @@ if command -v claude >/dev/null 2>&1; then
   DONE="yes"
 fi
 
-if [ -d "/Applications/Claude.app" ] || [ -d "/Applications/Cowork.app" ]; then
-  printf "→ Cowork/Claude desktop detected. Configure it too (needs sudo)? [y/N] "
-  if [ -n "$SETOKU_DRY_RUN" ]; then ANSWER=n; echo "n (dry run)"; else read -r ANSWER < /dev/tty || ANSWER=n; fi
-  case "$ANSWER" in y|Y)
-    PLUG="/Library/Application Support/Claude/org-plugins/setoku"
-    run sudo mkdir -p "$PLUG/.claude-plugin"
-    if [ -z "$SETOKU_DRY_RUN" ]; then
-      printf '%s' '{"name":"setoku","version":"0.4.0","description":"Setoku — governed business answers","mcpServers":"./.mcp.json"}' | run sudo tee "$PLUG/.claude-plugin/plugin.json" >/dev/null
-      printf '%s' "{\\"mcpServers\\":{\\"setoku\\":{\\"type\\":\\"http\\",\\"url\\":\\"$URL\\",\\"headers\\":{\\"Authorization\\":\\"Bearer $TOKEN\\"}}}}" | run sudo tee "$PLUG/.mcp.json" >/dev/null
-      printf '%s' "{\\"version\\":\\"$(date +%s)\\"}" | run sudo tee "$PLUG/version.json" >/dev/null
-    fi
-    echo "  Cowork org plugin written (restart Cowork to pick it up)."
-    DONE="yes"
-  ;; esac
-fi
-
 if [ -z "$DONE" ]; then
-  echo "No Claude surface found. Install Claude Code (https://claude.com/code) and re-run this command."
+  echo ""
+  echo "Claude Code isn't installed — Setoku needs it for now."
+  echo "  1. install https://claude.com/code   2. re-run this command"
+  echo ""
+  echo "(The Cowork desktop app on a personal/Pro/Max plan can't add a custom"
+  echo " self-hosted connector yet; that needs Team/Enterprise managed MCP. Use"
+  echo " Claude Code for now, or ask Peter.)"
   exit 1
 fi
 
 echo ""
-echo "✓ Setoku is connected. Open Claude and ask:"
+echo "✓ Setoku is connected in Claude Code. Open it and ask:"
 echo "    how many companies are paying us right now?"
 `;
 }
