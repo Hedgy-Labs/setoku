@@ -1,0 +1,30 @@
+# Fly.io config for the Setoku gateway. From the repo root:
+#   fly launch --copy-config --config deploy/fly.toml --dockerfile deploy/Dockerfile --no-deploy
+#   fly volumes create setoku_data --size 1
+#   fly secrets set SETOKU_DATABASE_URL='postgresql://setoku_ro:...' SETOKU_TOKENS='tok=you@co.com,tok2=them@co.com'
+#   fly deploy --config deploy/fly.toml --dockerfile deploy/Dockerfile
+app = "setoku-gateway"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  SETOKU_HTTP_PORT = "8787"
+  SETOKU_DB_PATH = "/data/knowledge.db"
+  SETOKU_PROJECT_DIR = "/project"
+
+[[mounts]]
+  source = "setoku_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
