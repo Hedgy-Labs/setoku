@@ -236,6 +236,70 @@ describe("tools over HTTP", () => {
   });
 });
 
+describe("approval surface (the human accept path, Phase 5.5)", () => {
+  it("rejects an unknown admin token", async () => {
+    const r = await fetch(`${BASE}/admin/nope`, { redirect: "manual" });
+    expect(r.status).toBe(404);
+  });
+
+  it("a human approves a pending gotcha → it enters verified context; agents never could", async () => {
+    // 1. an agent proposes (propose-only — this is all the agent can do)
+    const alice = await connect("tok-alice");
+    await call(alice, "report_correction", {
+      kind: "gotcha",
+      content:
+        "Gift-card top-ups post to ledger_entries with type=GC and are excluded from net revenue",
+    });
+    await alice.close();
+
+    // 2. the page lists it (HTML, content escaped), with no curated doc yet
+    const page = await (await fetch(`${BASE}/admin/tok-alice`)).text();
+    expect(page).toContain("Gift-card top-ups");
+    expect(page).toContain("Approve");
+    const idMatch = page.match(/name="id" value="(\d+)"/);
+    expect(idMatch).toBeTruthy();
+    const id = idMatch![1];
+
+    // 3. a human POSTs Approve — the commit happens here, outside any agent
+    const post = await fetch(`${BASE}/admin/tok-alice/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ id, action: "accepted", reason: "confirmed with finance" }),
+      redirect: "manual",
+    });
+    expect(post.status).toBe(303);
+
+    // 4. it now surfaces as verified context to a fresh agent session
+    const bob = await connect("tok-bob");
+    const fc = await call(bob, "find_context", {
+      question: "does net revenue include gift card top-ups?",
+    });
+    expect(fc.text).toContain("Gift-card top-ups");
+    await bob.close();
+
+    // 5. and the approval is attributed in the audit log
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(path.join(tmpRepo, "knowledge.db"), { readonly: true });
+    const row = db
+      .query("SELECT user, tool FROM audit WHERE tool = 'approval_accepted' ORDER BY id DESC")
+      .get() as { user: string; tool: string } | null;
+    db.close();
+    expect(row?.user).toBe("alice@co.test");
+  });
+
+  it("escapes attacker-influenceable correction content (no stored XSS in the gate)", async () => {
+    const alice = await connect("tok-alice");
+    await call(alice, "report_correction", {
+      kind: "other",
+      content: "<script>alert('xss')</script> pwn",
+    });
+    await alice.close();
+    const page = await (await fetch(`${BASE}/admin/tok-alice`)).text();
+    expect(page).not.toContain("<script>alert('xss')</script>");
+    expect(page).toContain("&lt;script&gt;");
+  });
+});
+
 describe("installer", () => {
   it("serves a personalized install script for a valid token, 404 otherwise", async () => {
     const ok = await fetch(`${BASE}/i/tok-alice`);

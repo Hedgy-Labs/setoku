@@ -24,6 +24,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { buildServer } from "./app";
 import { loadConfig, resolveProjectDir } from "./lib/config";
 import { KnowledgeStore, defaultDbPath, seedFromFiles } from "./lib/store";
+import { renderApprovalPage, applyApprovalAction } from "./lib/approval";
 
 const projectDir = resolveProjectDir();
 
@@ -99,6 +100,24 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
     });
     req.on("error", reject);
   });
+}
+
+function readRawBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let data = "";
+    req.on("data", (c) => (data += c));
+    req.on("end", () => resolve(data));
+    req.on("error", reject);
+  });
+}
+
+/** Identity for the /admin/<token> approval surface (browser, no header). */
+function adminIdentity(url: string): { identity: string; token: string } | null {
+  const m = url.match(/^\/admin\/([^/?]+)/);
+  if (!m) return null;
+  const token = decodeURIComponent(m[1]);
+  const identity = tokens.get(token);
+  return identity ? { identity, token } : null;
 }
 
 const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
@@ -264,6 +283,45 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(installerScript(token, identity, baseUrl));
       return;
     }
+    // ---- web approval surface (Phase 5.5) — the human accept/reject path ----
+    if (req.url?.startsWith("/admin/")) {
+      const who = adminIdentity(req.url);
+      if (!who) {
+        store.audit("anonymous", "admin_rejected", { path: "/admin" });
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("unknown admin link\n");
+        return;
+      }
+      const base = `/admin/${encodeURIComponent(who.token)}`;
+      if (req.method === "POST" && req.url.includes("/resolve")) {
+        const form = new URLSearchParams(await readRawBody(req));
+        const id = Number(form.get("id"));
+        const action = form.get("action");
+        let flash = "Invalid action.";
+        if (Number.isInteger(id) && (action === "accepted" || action === "rejected")) {
+          flash = applyApprovalAction(store, who.identity, {
+            id,
+            action,
+            reason: form.get("reason") ?? undefined,
+          });
+        }
+        // POST→redirect→GET so a refresh doesn't re-submit
+        res.writeHead(303, {
+          location: `${base}?flash=${encodeURIComponent(flash)}`,
+        });
+        res.end();
+        return;
+      }
+      const flash = new URL(req.url, "http://x").searchParams.get("flash") ?? undefined;
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        // the token is in the URL — don't let it leak via referer to anywhere
+        "referrer-policy": "no-referrer",
+      });
+      res.end(renderApprovalPage(store, who.identity, base, flash));
+      return;
+    }
+
     if (!req.url?.startsWith("/mcp")) {
       res.writeHead(404).end();
       return;
