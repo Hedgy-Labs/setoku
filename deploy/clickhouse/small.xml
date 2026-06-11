@@ -1,0 +1,20 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Setoku ClickHouse preset: SMALL (4–8 GB boxes, e.g. Hetzner CX32).
+     The only clients are run_query and Vector inserts — tune for survival,
+     not throughput. AC (2.3): 24 h seed-scale soak with zero OOM kills. -->
+<clickhouse>
+    <max_server_memory_usage_to_ram_ratio>0.7</max_server_memory_usage_to_ram_ratio>
+    <background_pool_size>4</background_pool_size>
+    <!-- these defaults assume a 16-slot pool; scale them down with it,
+         or the startup sanity check refuses to boot -->
+    <merge_tree>
+        <number_of_free_entries_in_pool_to_execute_mutation>2</number_of_free_entries_in_pool_to_execute_mutation>
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>2</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+        <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>2</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+    </merge_tree>
+    <background_schedule_pool_size>2</background_schedule_pool_size>
+    <background_buffer_flush_schedule_pool_size>2</background_buffer_flush_schedule_pool_size>
+    <mark_cache_size>268435456</mark_cache_size><!-- 256 MiB -->
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <max_concurrent_queries>20</max_concurrent_queries>
+</clickhouse>

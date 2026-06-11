@@ -56,13 +56,15 @@ jobs:
           # newline-separated terms, sourced from the private overlay
           SETOKU_DENYLIST: ${{ secrets.SETOKU_DENYLIST }}
         run: bash scripts/check-denylist.sh
-      - name: Compose config validation (activates in Phase 2)
-        run: |
-          if [ -f docker-compose.yml ]; then
-            docker compose -f docker-compose.yml config -q
-          else
-            echo "no docker-compose.yml yet — skipping (Phase 2)"
-          fi
+      - name: Compose config validation
+        env:
+          # dummies for the :?-required vars; CI has no .env by design
+          SETOKU_TOKENS: ci=ci@ci.test
+          SETOKU_INGEST_TOKEN: ci
+          POSTGRES_PASSWORD: ci
+          CLICKHOUSE_PASSWORD: ci
+          COMPOSE_PROFILES: lake,ingest,backup
+        run: docker compose -f docker-compose.yml config -q
 
   dco:
     name: DCO sign-off (1.3)

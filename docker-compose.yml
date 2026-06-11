@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Setoku — the whole system on one box (README Figure 1).
+#
+# Core services (caddy, server, postgres) have no profile: they always run.
+# Optional profiles:
+#   lake    → clickhouse                 (the bundled lake)
+#   ingest  → vector (+ lake implied)    (log/event receiver; slack-listener lands in Phase 3)
+#   backup  → clickhouse-backup, rclone  (one-shots driven by deploy/backup/*.sh)
+# Enable in .env:  COMPOSE_PROFILES=lake,ingest
+#
+# Images are pinned by multi-arch manifest-list digest (arm64 prototype box,
+# x86 Hetzner path both covered). Refresh digests deliberately, per release.
+#
+# Invariant I1: only caddy publishes ports. Postgres/ClickHouse/Vector/server
+# listen on the compose network only.
+
+name: setoku
+
+services:
+  caddy:
+    image: caddy:2-alpine@sha256:77c07d5ebfa5be9fd6c820d2094ae662c9e7eeb9bf98346b7f639900263ee2a2
+    restart: unless-stopped
+    ports:
+      - "${SETOKU_EDGE_HTTP_PORT:-80}:80"
+      - "${SETOKU_EDGE_HTTPS_PORT:-443}:443"
+      - "${SETOKU_EDGE_HTTPS_PORT:-443}:443/udp" # HTTP/3
+    environment:
+      SETOKU_DOMAIN: ${SETOKU_DOMAIN:-localhost}
+      SETOKU_INGEST_TOKEN: "${SETOKU_INGEST_TOKEN:?generate one with openssl rand -hex 24}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:2019/config/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  server:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    environment:
+      SETOKU_TOKENS: "${SETOKU_TOKENS:?per-user MCP tokens, e.g. tok1=alice@co.com}"
+      SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
+      SETOKU_PUBLIC_URL: https://${SETOKU_DOMAIN:-localhost}
+      SETOKU_HEALTHZ_PING: ${SETOKU_HEALTHZ_PING:-}
+    volumes:
+      - setoku_data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - fetch("http://127.0.0.1:8787/health").then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # Context store + auth (target architecture). The v0.9 gateway still keeps
+  # knowledge in SQLite on the setoku_data volume; the store migrates here
+  # during the Phase 3/5 build-out. pgvector is installed but unused (I8).
+  postgres:
+    image: pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
+      POSTGRES_DB: setoku
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d setoku"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  clickhouse:
+    profiles: [lake, ingest]
+    image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+      CLICKHOUSE_DB: setoku
+    volumes:
+      - ch_data:/var/lib/clickhouse
+      # memory/concurrency preset: small (4–8 GB boxes) | roomy (24 GB prototype)
+      - ./deploy/clickhouse/${SETOKU_CH_PRESET:-small}.xml:/etc/clickhouse-server/config.d/zz-setoku-preset.xml:ro
+      - ./ingest/schemas:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - clickhouse-client --user "$${CLICKHOUSE_USER}" --password "$${CLICKHOUSE_PASSWORD}" --query "SELECT 1"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  vector:
+    profiles: [ingest]
+    image: timberio/vector:0.49.0-alpine@sha256:2a31648e67280953aaf6b219c1b04729ac5ed12820ec2bfb698630b2d989d135
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+    volumes:
+      - ./deploy/vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - vector_buffer:/var/lib/vector # disk buffer survives restarts (I4)
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8686/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---- backup one-shots (profile: backup) — driven by deploy/backup/*.sh ----
+
+  clickhouse-backup:
+    profiles: [backup]
+    image: altinity/clickhouse-backup:2.6.5@sha256:d970be663360e8c4cfa1bb4cac21898e434c7bec3e196599d2b39ff55a20f841
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_USERNAME: ${CLICKHOUSE_USER:-setoku}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+      REMOTE_STORAGE: s3
+      S3_ENDPOINT: ${SETOKU_BACKUP_S3_ENDPOINT:-}
+      S3_BUCKET: ${SETOKU_BACKUP_S3_BUCKET:-}
+      S3_ACCESS_KEY: ${SETOKU_BACKUP_S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${SETOKU_BACKUP_S3_SECRET_KEY:-}
+      S3_PATH: clickhouse
+      S3_FORCE_PATH_STYLE: "true"
+      BACKUPS_TO_KEEP_REMOTE: "14"
+    volumes:
+      - ch_data:/var/lib/clickhouse
+
+  rclone:
+    profiles: [backup]
+    image: rclone/rclone:1.69@sha256:1f497a86a6466395e62a5886613a14b7b18809543566ef9fa35fa1371a7ecc0f
+    environment:
+      RCLONE_CONFIG_REMOTE_TYPE: s3
+      RCLONE_CONFIG_REMOTE_PROVIDER: ${SETOKU_BACKUP_S3_PROVIDER:-Other}
+      RCLONE_CONFIG_REMOTE_ENDPOINT: ${SETOKU_BACKUP_S3_ENDPOINT:-}
+      RCLONE_CONFIG_REMOTE_ACCESS_KEY_ID: ${SETOKU_BACKUP_S3_ACCESS_KEY:-}
+      RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY: ${SETOKU_BACKUP_S3_SECRET_KEY:-}
+    volumes:
+      - ./backups:/backups
+
+volumes:
+  caddy_data:
+  caddy_config:
+  setoku_data:
+  pg_data:
+  ch_data:
+  vector_buffer:

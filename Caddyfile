@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# Setoku edge — the only public-facing container (I1).
+# Auto-HTTPS for SETOKU_DOMAIN; `localhost` uses Caddy's internal CA (dev).
+
+{$SETOKU_DOMAIN:localhost} {
+	encode gzip
+
+	# Ingest: bearer token checked at the edge; Vector never sees
+	# unauthenticated traffic. Vercel log drains and Render log streams can
+	# both send a custom Authorization header (re-verify per I7 when wiring
+	# each provider in Phase 3/4).
+	handle /ingest/* {
+		@authed header Authorization "Bearer {$SETOKU_INGEST_TOKEN}"
+		handle @authed {
+			reverse_proxy vector:8080
+		}
+		handle {
+			respond "unauthorized" 401
+		}
+	}
+
+	# MCP gateway (header bearer auth, or token-in-URL-path for the consumer
+	# custom-connector dialog), the one-line installer, and health.
+	handle /mcp* {
+		reverse_proxy server:8787
+	}
+	handle /i/* {
+		reverse_proxy server:8787
+	}
+	handle /health* {
+		reverse_proxy server:8787
+	}
+
+	handle {
+		respond "setoku" 404
+	}
+}

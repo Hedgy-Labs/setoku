@@ -1,0 +1,7 @@
+# Setoku host crontab — adjust /opt/setoku to your checkout. `crontab -e` as the deploy user.
+# Nightly backups (context stores + lake), 03:17 UTC
+17 3 * * *  cd /opt/setoku && deploy/backup/backup.sh >> /var/log/setoku/backup.log 2>&1
+# Weekly Parquet export (portability), Sundays 04:47 UTC
+47 4 * * 0  cd /opt/setoku && deploy/backup/parquet-export.sh >> /var/log/setoku/backup.log 2>&1
+# Health + disk alerting, every 5 minutes
+*/5 * * * * cd /opt/setoku && deploy/monitor/alert.sh >> /var/log/setoku/alert.log 2>&1

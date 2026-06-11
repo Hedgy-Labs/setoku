@@ -1,4 +1,9 @@
-# Deploying the Setoku gateway (HTTP profile)
+# Deploying the Setoku gateway (HTTP profile, single container)
+
+> **The reference deployment is now the single-box compose stack** — see the
+> repo-root `docker-compose.yml`, [oracle-free.md](./oracle-free.md) (prototype)
+> and [hetzner.md](./hetzner.md) (recommended). This doc remains for the
+> gateway-only profile (no lake/ingest) used by the original pilot.
 
 One small container per company. Knowledge store on a persistent volume; database reached with a read-only role; users connect from Claude Code or Cowork with a bearer token.
 

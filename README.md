@@ -376,6 +376,20 @@ capacity problem regardless). The recommended *user* path stays a Hetzner-class
 VPS (~€8/mo CX32) — reference infra must not depend on a free tier's goodwill —
 so the runbook ships in both flavors (2.1/2.1b).
 
+*Status 2026-06-11: the full Phase 2 artifact set is built and verified on a
+local arm64 box (same arch as the A1 target): `docker-compose.yml` (profiles
+core/lake/ingest/backup, manifest-list-digest-pinned images, healthchecks,
+named volumes), `Caddyfile` (only public container; edge bearer auth on
+`/ingest/*`), ClickHouse `small`/`roomy` presets, Vector receiver with disk
+buffer, `/healthz` aggregate endpoint + transition-based `alert.sh`, nightly
+backup + weekly Parquet export + restore-drill scripts, and both runbooks.
+Verified locally: all services healthy; tokenless ingest → 401, valid token →
+row in `setoku.ingest_raw`; `down/up` loses no data; ClickHouse outage → 200s
+at the edge, Vector disk-buffers, `/healthz` 503 (alert fires), zero loss after
+restart; only Caddy publishes ports. **Remaining (needs the real box/bucket):**
+Oracle tenancy + DNS (⛔ human), outside port scan, 24 h `small`-preset soak,
+a real restore drill, Hetzner doc-parity run.*
+
 - [ ] **2.1 Provisioning runbook + script — Oracle Always Free**
   (`deploy/oracle-free.md`, the prototype path): ⛔ *human first*: tenancy signup,
   home-region choice, **PAYG conversion**, ~$1 budget alert. Then: A1.Flex

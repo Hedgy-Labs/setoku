@@ -104,6 +104,64 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
 const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
 
 /**
+ * Aggregate health for uptime pings (/healthz): knowledge store, data-volume
+ * disk usage, and optional dependency pings from SETOKU_HEALTHZ_PING
+ * ("name=url,name=url" — e.g. clickhouse=http://clickhouse:8123/ping).
+ * 503 when any dependency fails or the data disk is ≥90% full; external
+ * alerting (deploy/monitor/) pages at 75% before this trips.
+ */
+async function healthz(): Promise<{
+  status: number;
+  body: Record<string, unknown>;
+}> {
+  const deps: Record<string, { ok: boolean; ms?: number; error?: string }> =
+    {};
+  await Promise.all(
+    (process.env.SETOKU_HEALTHZ_PING ?? "")
+      .split(",")
+      .filter((p) => p.includes("="))
+      .map(async (pair) => {
+        const i = pair.indexOf("=");
+        const name = pair.slice(0, i).trim();
+        const url = pair.slice(i + 1).trim();
+        const t0 = Date.now();
+        try {
+          const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+          deps[name] = r.ok
+            ? { ok: true, ms: Date.now() - t0 }
+            : { ok: false, error: `HTTP ${r.status}` };
+        } catch (e) {
+          deps[name] = { ok: false, error: String(e) };
+        }
+      }),
+  );
+  let disk: { dir: string; used_pct: number } | undefined;
+  const dataDir = path.dirname(process.env.SETOKU_DB_PATH ?? storePath());
+  try {
+    const statfs = (
+      fs as unknown as {
+        statfsSync?: (p: string) => { blocks: number; bavail: number };
+      }
+    ).statfsSync;
+    const s = statfs?.(dataDir);
+    if (s && s.blocks > 0)
+      disk = {
+        dir: dataDir,
+        used_pct: Math.round((1 - s.bavail / s.blocks) * 100),
+      };
+  } catch {
+    /* statfs unavailable on this platform — omit disk */
+  }
+  const ok =
+    Object.values(deps).every((d) => d.ok) &&
+    (disk ? disk.used_pct < 90 : true);
+  return {
+    status: ok ? 200 : 503,
+    body: { ok, docs: store.listDocs().length, disk, deps },
+  };
+}
+
+/**
  * One-line installer: \`curl -fsSL https://<host>/i/<token> | sh\`
  * Personalized by token; configures Claude Code (user-scoped remote MCP +
  * plugin marketplace) and offers Cowork setup (org plugin with .mcp.json).
@@ -158,6 +216,12 @@ const httpServer = http.createServer(async (req, res) => {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ ok: true, docs: store.listDocs().length }));
+      return;
+    }
+    if (req.url === "/healthz" || req.url?.startsWith("/healthz?")) {
+      const { status, body } = await healthz();
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
       return;
     }
     if (req.url?.startsWith("/i/")) {

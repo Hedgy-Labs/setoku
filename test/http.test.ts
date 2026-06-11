@@ -98,6 +98,8 @@ beforeAll(async () => {
       SETOKU_E2E_DB_URL: DB_URL,
       SETOKU_HTTP_PORT: String(PORT),
       SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test",
+      // exercise dependency pings: the gateway pings its own /health
+      SETOKU_HEALTHZ_PING: `self=http://127.0.0.1:${PORT}/health,down=http://127.0.0.1:1/nope`,
     },
     stdout: "ignore",
     stderr: "pipe",
@@ -230,6 +232,27 @@ describe("installer", () => {
     expect(bad.status).toBe(404);
   });
 
+});
+
+describe("healthz", () => {
+  it("aggregates store, disk, and dependency pings (503 when a dep is down)", async () => {
+    const r = await fetch(`${BASE}/healthz`);
+    expect(r.status).toBe(503); // the planted "down" dep fails
+    const body = (await r.json()) as {
+      ok: boolean;
+      docs: number;
+      disk?: { used_pct: number };
+      deps: Record<string, { ok: boolean }>;
+    };
+    expect(body.ok).toBe(false);
+    expect(body.deps.self.ok).toBe(true);
+    expect(body.deps.down.ok).toBe(false);
+    expect(typeof body.docs).toBe("number");
+    if (body.disk) {
+      expect(body.disk.used_pct).toBeGreaterThanOrEqual(0);
+      expect(body.disk.used_pct).toBeLessThanOrEqual(100);
+    }
+  });
 });
 
 describe("tool annotations", () => {

@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+# Setoku Vector receiver — Phase 2 plumbing.
+#
+# One authenticated HTTP source (Caddy enforces the bearer token at the edge)
+# feeding a raw catch-all ClickHouse table. Phase 3 (task 3.1) replaces the
+# raw sink with per-source transforms (Vercel NDJSON, Render JSON, first-party
+# events) and typed tables; this config proves the pipe and the disk buffer.
+
+api:
+  enabled: true # /health used by the compose healthcheck
+  address: 0.0.0.0:8686
+
+sources:
+  ingest_http:
+    type: http_server
+    address: 0.0.0.0:8080
+    strict_path: false # accept /ingest/vercel, /ingest/render, /ingest/events, …
+    path_key: _path
+    framing:
+      method: newline_delimited # Vercel drains POST NDJSON; single JSON lines work too
+    decoding:
+      codec: json
+
+transforms:
+  to_raw:
+    type: remap
+    inputs: [ingest_http]
+    source: |
+      p = del(._path)
+      if !is_string(p) { p = "/ingest" }
+      raw = encode_json(.)
+      . = {}
+      .ingested_at = format_timestamp!(now(), "%F %T")
+      .source_path = p
+      .raw = raw
+
+sinks:
+  lake_raw:
+    type: clickhouse
+    inputs: [to_raw]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: ingest_raw
+    auth:
+      strategy: basic
+      user: "${CLICKHOUSE_USER}"
+      password: "${CLICKHOUSE_PASSWORD}"
+    compression: gzip
+    batch:
+      timeout_secs: 1
+    buffer:
+      # I4: survive a ClickHouse restart/outage with zero loss.
+      type: disk
+      max_size: 1073741824 # 1 GiB on the vector_buffer volume
+      when_full: block

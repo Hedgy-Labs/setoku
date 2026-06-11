@@ -1,0 +1,7 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Setoku ClickHouse preset: ROOMY (the 24 GB Oracle A1 prototype).
+     Defaults are sane at this size; just cap total memory so ClickHouse
+     coexists with Postgres, Vector, Caddy, and the gateway on one box. -->
+<clickhouse>
+    <max_server_memory_usage_to_ram_ratio>0.7</max_server_memory_usage_to_ram_ratio>
+</clickhouse>
