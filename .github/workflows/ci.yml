@@ -1,0 +1,86 @@
+# SPDX-License-Identifier: Apache-2.0
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: typecheck + e2e
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      SETOKU_E2E_PG_HOST: localhost
+      SETOKU_E2E_DB_URL: postgresql://postgres:postgres@localhost:5432/setoku_e2e
+      SETOKU_E2E_PG_MAINTENANCE_DB: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun test test/
+
+  checks:
+    name: spdx + licenses + denylist + compose
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: SPDX headers (1.2)
+        run: bash scripts/check-spdx.sh
+      - name: Dependency license audit (1.4)
+        run: bun scripts/check-licenses.ts
+      - name: Upload license report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-report
+          path: license-report.tsv
+      - name: Pilot-tenant denylist grep (I3)
+        env:
+          # newline-separated terms, sourced from the private overlay
+          SETOKU_DENYLIST: ${{ secrets.SETOKU_DENYLIST }}
+        run: bash scripts/check-denylist.sh
+      - name: Compose config validation (activates in Phase 2)
+        run: |
+          if [ -f docker-compose.yml ]; then
+            docker compose -f docker-compose.yml config -q
+          else
+            echo "no docker-compose.yml yet — skipping (Phase 2)"
+          fi
+
+  dco:
+    name: DCO sign-off (1.3)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Every commit in the PR carries Signed-off-by
+        run: |
+          set -euo pipefail
+          range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          fail=0
+          for sha in $(git rev-list --no-merges "$range"); do
+            if ! git log -1 --format=%B "$sha" | grep -qi '^Signed-off-by: .\+<.\+@.\+>'; then
+              echo "missing Signed-off-by: $(git log -1 --oneline "$sha")"
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ] && echo "DCO: all commits signed off." || { echo "DCO check failed — see CONTRIBUTING.md"; exit 1; }
