@@ -39,6 +39,24 @@ export interface Correction {
   status: "pending" | "accepted" | "rejected";
 }
 
+/** Which self-provisioning source a log row came from (task 4.1). */
+export type ProvisioningSource = "vercel" | "render" | "slack" | "events";
+
+/** Lifecycle status of a single provisioning step (task 4.1). */
+export type ProvisioningStatus = "planned" | "applied" | "skipped" | "failed";
+
+export interface ProvisioningLogEntry {
+  id: number;
+  ts: string;
+  source: ProvisioningSource;
+  stepKind: string;
+  idempotencyKey: string;
+  status: ProvisioningStatus;
+  /** Parsed JSON detail (secret-redacted before it was written — task 4.7). */
+  detail: Record<string, unknown>;
+  actor: string;
+}
+
 export function defaultDbPath(projectDir: string): string {
   if (process.env.SETOKU_DB_PATH) return process.env.SETOKU_DB_PATH;
   const slug = path
@@ -105,6 +123,22 @@ export class KnowledgeStore {
       user TEXT,
       tool TEXT NOT NULL,
       payload TEXT
+    )`);
+    // Provisioning audit trail (Phase 4, task 4.1) — append-only. Every planned,
+    // applied, skipped, or failed provisioning step lands here so a `setoku init`
+    // run is fully reconstructable, and so re-runs can skip already-applied steps
+    // (idempotency keys, task 4.1). NOTE (task 4.7): callers MUST redact token-
+    // shaped material from `detail` before logging — see redactSecrets() in
+    // provisioner/framework.ts. No secret ever belongs in this table.
+    this.db.run(`CREATE TABLE IF NOT EXISTS provisioning_log (
+      id INTEGER PRIMARY KEY,
+      ts TEXT NOT NULL,
+      source TEXT NOT NULL,
+      step_kind TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL,
+      status TEXT NOT NULL,
+      detail TEXT,
+      actor TEXT NOT NULL
     )`);
   }
 
@@ -235,6 +269,69 @@ export class KnowledgeStore {
     }
   }
 
+  /* --------------------------- provisioning ---------------------------- */
+
+  /**
+   * Append one provisioning action to the audit trail (task 4.1).
+   *
+   * `detail` is stored as-is — the caller is responsible for redacting any
+   * token-shaped material first (task 4.7; the provisioner pipes everything
+   * through redactSecrets() before it reaches here). Returns the new row id.
+   */
+  logProvisioning(entry: {
+    source: ProvisioningSource;
+    stepKind: string;
+    idempotencyKey: string;
+    status: ProvisioningStatus;
+    detail?: Record<string, unknown>;
+    actor: string;
+  }): number {
+    this.db.run(
+      `INSERT INTO provisioning_log (ts, source, step_kind, idempotency_key, status, detail, actor)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        new Date().toISOString(),
+        entry.source,
+        entry.stepKind,
+        entry.idempotencyKey,
+        entry.status,
+        JSON.stringify(entry.detail ?? {}),
+        entry.actor,
+      ],
+    );
+    return Number(
+      this.db.query("SELECT last_insert_rowid() AS id").get()!["id" as never],
+    );
+  }
+
+  /** Provisioning history, newest first; optionally filtered to one source. */
+  listProvisioning(source?: ProvisioningSource): ProvisioningLogEntry[] {
+    const rows = (
+      source
+        ? this.db
+            .query(
+              "SELECT * FROM provisioning_log WHERE source = ? ORDER BY id DESC",
+            )
+            .all(source)
+        : this.db.query("SELECT * FROM provisioning_log ORDER BY id DESC").all()
+    ) as Record<string, unknown>[];
+    return rows.map(rowToProvisioning);
+  }
+
+  /**
+   * Has a step with this idempotency key ever reached the `applied` state?
+   * The provisioner consults this before each step so re-runs are safe (4.1):
+   * an already-applied step is skipped, never re-created.
+   */
+  wasApplied(idempotencyKey: string): boolean {
+    const row = this.db
+      .query(
+        "SELECT count(*) AS n FROM provisioning_log WHERE idempotency_key = ? AND status = 'applied'",
+      )
+      .get(idempotencyKey) as { n: number };
+    return row.n > 0;
+  }
+
   get empty(): boolean {
     const row = this.db.query("SELECT count(*) AS n FROM docs").get() as {
       n: number;
@@ -319,6 +416,27 @@ export function seedFromFiles(
     }
   }
   return imported;
+}
+
+function rowToProvisioning(
+  row: Record<string, unknown>,
+): ProvisioningLogEntry {
+  let detail: Record<string, unknown> = {};
+  try {
+    detail = JSON.parse(String(row.detail ?? "{}"));
+  } catch {
+    /* tolerate */
+  }
+  return {
+    id: Number(row.id),
+    ts: String(row.ts),
+    source: row.source as ProvisioningSource,
+    stepKind: String(row.step_kind),
+    idempotencyKey: String(row.idempotency_key),
+    status: row.status as ProvisioningStatus,
+    detail,
+    actor: String(row.actor),
+  };
 }
 
 function rowToDoc(row: Record<string, unknown>): KnowledgeDoc {

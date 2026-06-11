@@ -12,5 +12,9 @@
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": false
   },
-  "include": ["plugin/gateway/**/*.ts", "test/**/*.ts"]
+  "include": [
+    "plugin/gateway/**/*.ts",
+    "provisioner/**/*.ts",
+    "test/**/*.ts"
+  ]
 }
