@@ -2,6 +2,7 @@
   "name": "setoku-dev",
   "private": true,
   "description": "Dev/test harness for the Setoku plugin (the installable plugin lives in ./plugin)",
+  "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "test": "bun test test/",

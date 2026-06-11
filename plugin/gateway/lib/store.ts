@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Gateway-owned knowledge store (SQLite via bun:sqlite — D9).
  *

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Push a local `.setoku/context/` seed to a DEPLOYED gateway over HTTP.
  * The FDE seeding flow: knowledge authored/generated locally, pushed to the

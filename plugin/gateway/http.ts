@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Setoku MCP gateway — HTTP entry (deployed profile, v1).
  *

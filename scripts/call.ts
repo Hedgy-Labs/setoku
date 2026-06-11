@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Call one Setoku gateway tool against a project, from the shell. Used for the
  * answer-quality pressure test: the human/Claude driving this IS the inference

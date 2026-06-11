@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Setoku gateway tool surface, shared by both transports:
  *   - stdio (server.ts): local profile, spawned by the plugin per repo

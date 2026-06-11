@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "description": "Setoku MCP gateway (run with bun; deps installed by the plugin's SessionStart hook)",
+  "license": "Apache-2.0",
   "type": "module",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

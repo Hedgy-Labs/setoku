@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Markdown interchange format helpers. The live knowledge store is SQLite
  * (see store.ts); `.setoku/context/` markdown files are a seed/interchange

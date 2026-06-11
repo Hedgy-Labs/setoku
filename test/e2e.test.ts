@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * End-to-end test of the Setoku gateway:
  *   real Postgres (synthetic shop schema) ⇄ real MCP client over stdio ⇄ the

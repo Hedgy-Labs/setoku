@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Smoke-test an INSTALLED copy of the Setoku plugin (the artifact in Claude
  * Code's plugin cache), exactly as Claude Code launches it.

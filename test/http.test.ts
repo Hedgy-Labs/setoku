@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * e2e for the deployed (HTTP) profile: spawn the actual http.ts entry, connect
  * with the SDK's Streamable-HTTP client using bearer tokens, verify auth →

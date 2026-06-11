@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /** Structural shape scoring needs — KnowledgeDoc satisfies this. */
 export interface ScorableDoc {
   type: string;

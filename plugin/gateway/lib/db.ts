@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import pgPkg from "pg";
 import { isTableAllowed, type SetokuConfig } from "./config";
 
