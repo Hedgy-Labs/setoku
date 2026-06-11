@@ -451,13 +451,29 @@ a real restore drill, Hetzner doc-parity run.*
 Build the pipes by hand before teaching Setoku to build them (Phase 4 automates
 exactly these steps — write each as a reusable function, not a one-off).
 
-- [ ] **3.1 Vector receiver config:** one `http_server` source behind Caddy;
+*Status 2026-06-11: 3.1/3.2/3.6 done and verified end-to-end on the local stack
+(per-source Vector transforms with 7 golden-file tests run in CI via the pinned
+vector image; typed tables `logs_vercel`/`logs_render`/`app_events`/`slack_messages`
+with per-column COMMENTs, idempotent DDL + `scripts/apply-lake-schemas.sh`;
+replayed Vercel-docs fixtures land typed, retry-duplicate events dedupe to one
+row via ReplacingMergeTree; `run_query` routes `clickhouse` dialect to the lake
+with engine-enforced readonly — 6-test e2e suite, ClickHouse service added to
+CI). 3.3/3.4 are built and unit-tested (Socket Mode by hand, zero deps,
+spool-first durability proven through fake-CH outage + restart in 7 tests;
+backfill resumable with 429/tier handling) — their live ACs (real workspace,
+posted-message latency, pilot backfill) await Slack app install on the box.
+3.5 contract + snippet shipped (`docs/events.md`); its seed-app AC lands with
+task 0.2. ⚠ I7 note: Render's HTTPS-JSON schema is not publicly documented —
+`logs_render` columns are defensive; tighten in 4.3 against a live stream.
+Vercel schema verified against current docs.*
+
+- [x] **3.1 Vector receiver config:** one `http_server` source behind Caddy;
   transforms parsing (a) Vercel drain NDJSON, (b) Render HTTPS-JSON log streams,
   (c) first-party structured events; disk buffers (`when_full: block` for events,
   `drop_newest` acceptable for request logs); ClickHouse sinks with batching.
   **AC:** golden-file tests for each transform; replayed fixtures appear correctly
   typed in ClickHouse.
-- [ ] **3.2 ClickHouse schemas** (`ingest/schemas/`): `logs_vercel`, `logs_render`,
+- [x] **3.2 ClickHouse schemas** (`ingest/schemas/`): `logs_vercel`, `logs_render`,
   `app_events`, `slack_messages` — MergeTree, `ORDER BY` (source/channel, timestamp),
   `PARTITION BY toYYYYMM(timestamp)`, TTL configurable per table. Document every
   column (these comments become provisioner-generated context docs in Phase 4).
@@ -479,7 +495,7 @@ exactly these steps — write each as a reusable function, not a one-off).
 - [ ] **3.5 First-party events endpoint:** document a tiny JSON contract
   (`event_name`, `ts`, `actor`, `properties{}`); provide a 20-line client snippet.
   **AC:** seed app posts events end-to-end into `app_events`.
-- [ ] **3.6 `run_query` dialect routing (I5):** context-store SQL marked
+- [x] **3.6 `run_query` dialect routing (I5):** context-store SQL marked
   `clickhouse` executes against the lake; `postgres` against a configured business
   DB (the existing Hedgy mode). Read-only enforced both paths (CH: readonly user;
   PG: read-only transaction + statement timeout, as today).

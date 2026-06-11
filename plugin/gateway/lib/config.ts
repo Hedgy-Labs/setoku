@@ -10,8 +10,16 @@ export interface DataSourceConfig {
   url?: string;
 }
 
+export interface LakeConfig {
+  /** Env var holding the lake URL (default SETOKU_LAKE_URL), e.g. http://user:pass@clickhouse:8123/setoku */
+  urlEnv?: string;
+  url?: string;
+}
+
 export interface SetokuConfig {
   dataSource: DataSourceConfig;
+  /** The bundled ClickHouse lake, target of run_query's `clickhouse` dialect (I5). */
+  lake?: LakeConfig;
   allowTables: string[];
   denyTables: string[];
   rowCap: number;
@@ -132,6 +140,30 @@ export function resolveDatabaseUrl(
   return {
     ok: false,
     error: `Env var ${varName} not found in process env or ${envFile}. Set it or fix .setoku/config.json.`,
+  };
+}
+
+/**
+ * Resolve the ClickHouse lake URL (run_query dialect "clickhouse").
+ * Precedence mirrors resolveDatabaseUrl: lake.url → env[lake.urlEnv|SETOKU_LAKE_URL] → project envFile.
+ */
+export function resolveLakeUrl(
+  projectDir: string,
+  config: SetokuConfig,
+): UrlResult {
+  const lake = config.lake ?? {};
+  if (lake.url) return { ok: true, url: lake.url };
+  const varName = lake.urlEnv ?? "SETOKU_LAKE_URL";
+  if (process.env[varName]) return { ok: true, url: process.env[varName]! };
+  const parsed = parseEnvFile(
+    path.join(projectDir, config.dataSource?.envFile ?? ".env"),
+  );
+  if (parsed[varName]) return { ok: true, url: parsed[varName] };
+  return {
+    ok: false,
+    error:
+      `No lake configured: set ${varName} (e.g. http://user:pass@clickhouse:8123/setoku) ` +
+      "or .setoku/config.json lake.urlEnv. The clickhouse dialect targets the bundled lake.",
   };
 }
 

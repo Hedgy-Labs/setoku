@@ -21,12 +21,25 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      clickhouse:
+        image: clickhouse/clickhouse-server:25.3
+        env:
+          CLICKHOUSE_USER: ci
+          CLICKHOUSE_PASSWORD: ci
+          CLICKHOUSE_DB: ci
+        ports: ["8123:8123"]
+        options: >-
+          --health-cmd "clickhouse-client --user ci --password ci --query 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       PGUSER: postgres
       PGPASSWORD: postgres
       SETOKU_E2E_PG_HOST: localhost
       SETOKU_E2E_DB_URL: postgresql://postgres:postgres@localhost:5432/setoku_e2e
       SETOKU_E2E_PG_MAINTENANCE_DB: postgres
+      SETOKU_E2E_CH_URL: http://ci:ci@127.0.0.1:8123/ci
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -56,6 +69,12 @@ jobs:
           # newline-separated terms, sourced from the private overlay
           SETOKU_DENYLIST: ${{ secrets.SETOKU_DENYLIST }}
         run: bash scripts/check-denylist.sh
+      - name: Vector transform golden tests (3.1)
+        run: >-
+          docker run --rm -v "$PWD/deploy/vector:/etc/vector:ro"
+          -e CLICKHOUSE_USER=x -e CLICKHOUSE_PASSWORD=x
+          timberio/vector:0.49.0-alpine
+          test /etc/vector/vector.yaml /etc/vector/tests.yaml
       - name: Compose config validation
         env:
           # dummies for the :?-required vars; CI has no .env by design

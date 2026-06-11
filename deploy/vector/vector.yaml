@@ -1,10 +1,16 @@
 # SPDX-License-Identifier: Apache-2.0
-# Setoku Vector receiver — Phase 2 plumbing.
+# Setoku Vector receiver (task 3.1).
 #
 # One authenticated HTTP source (Caddy enforces the bearer token at the edge)
-# feeding a raw catch-all ClickHouse table. Phase 3 (task 3.1) replaces the
-# raw sink with per-source transforms (Vercel NDJSON, Render JSON, first-party
-# events) and typed tables; this config proves the pipe and the disk buffer.
+# routed by ingest path into typed per-source pipelines:
+#   /ingest/vercel  → logs_vercel   (NDJSON drain; schema per Vercel docs)
+#   /ingest/render  → logs_render   (HTTPS JSON; schema undocumented — defensive, see 011_logs_render.sql)
+#   /ingest/events  → app_events    (first-party contract: docs/events.md)
+#   anything else   → ingest_raw    (catch-all; nothing is silently dropped)
+#
+# Buffer policy (I4): app events block when the disk buffer fills (never shed
+# the high-grade ore); platform request logs may drop_newest under backpressure.
+# Unit tests: deploy/vector/tests.yaml (run via `vector test`, wired into CI).
 
 api:
   enabled: true # /health used by the compose healthcheck
@@ -14,17 +20,102 @@ sources:
   ingest_http:
     type: http_server
     address: 0.0.0.0:8080
-    strict_path: false # accept /ingest/vercel, /ingest/render, /ingest/events, …
+    strict_path: false
     path_key: _path
     framing:
-      method: newline_delimited # Vercel drains POST NDJSON; single JSON lines work too
+      method: newline_delimited # Vercel posts NDJSON; single JSON lines work too
     decoding:
       codec: json
 
 transforms:
+  router:
+    type: route
+    inputs: [ingest_http]
+    route:
+      vercel: '._path == "/ingest/vercel"'
+      render: '._path == "/ingest/render"'
+      events: '._path == "/ingest/events"'
+
+  vercel_parse:
+    type: remap
+    inputs: [router.vercel]
+    source: |
+      del(.source_type)
+      del(._path)
+      raw = encode_json(.)
+      ms = int(.timestamp) ?? 0
+      t = now()
+      if ms > 0 { t = from_unix_timestamp!(ms, unit: "milliseconds") }
+      ua = ""
+      ua_arr = array(.proxy.userAgent) ?? []
+      if length(ua_arr) > 0 { ua = to_string(ua_arr[0]) ?? "" }
+      . = {
+        "ts": format_timestamp!(t, "%F %T%.3f"),
+        "id": to_string(.id) ?? "",
+        "source": to_string(.source) ?? "",
+        "level": to_string(.level) ?? "",
+        "project_id": to_string(.projectId) ?? "",
+        "deployment_id": to_string(.deploymentId) ?? "",
+        "environment": to_string(.environment) ?? "",
+        "host": to_string(.host) ?? "",
+        "request_path": to_string(.path) ?? (to_string(.proxy.path) ?? ""),
+        "method": to_string(.proxy.method) ?? "",
+        "status_code": to_int(.statusCode) ?? (to_int(.proxy.statusCode) ?? 0),
+        "user_agent": ua,
+        "message": to_string(.message) ?? "",
+        "raw": raw
+      }
+
+  render_parse:
+    type: remap
+    inputs: [router.render]
+    source: |
+      # ⚠ I7: Render's JSON schema is undocumented; extract common fields
+      # defensively, keep everything in raw. Tighten in task 4.3.
+      del(.source_type)
+      del(._path)
+      raw = encode_json(.) # keeps the client's own timestamp field when present
+      tstr = to_string(.timestamp) ?? (to_string(.ts) ?? "")
+      del(.timestamp)
+      t, terr = parse_timestamp(tstr, "%+")
+      if terr != null { t = now() }
+      . = {
+        "ts": format_timestamp!(t, "%F %T%.3f"),
+        "service": to_string(.service) ?? (to_string(.serviceName) ?? (to_string(.app) ?? "")),
+        "instance": to_string(.instance) ?? (to_string(.instanceId) ?? ""),
+        "level": downcase(to_string(.level) ?? "info"),
+        "type": to_string(.type) ?? "",
+        "message": to_string(.message) ?? (to_string(.log) ?? (to_string(.line) ?? "")),
+        "raw": raw
+      }
+
+  events_parse:
+    type: remap
+    inputs: [router.events]
+    source: |
+      # First-party contract (docs/events.md): {event_name, ts, actor, properties{}, event_id?}
+      del(.source_type)
+      del(._path)
+      del(.timestamp) # Vector receive time — exclude so retry payloads hash identically
+      raw = encode_json(.)
+      t, terr = parse_timestamp(to_string(.ts) ?? "", "%+")
+      if terr != null { t = now() }
+      name = to_string(.event_name) ?? "_invalid"
+      if name == "" { name = "_invalid" }
+      id = to_string(.event_id) ?? ""
+      if id == "" { id = md5(raw) } # content hash: identical retries collapse, distinct events survive
+      . = {
+        "ts": format_timestamp!(t, "%F %T%.3f"),
+        "event_id": id,
+        "event_name": name,
+        "actor": to_string(.actor) ?? "",
+        "properties": encode_json(object(.properties) ?? {}),
+        "raw": raw
+      }
+
   to_raw:
     type: remap
-    inputs: [ingest_http]
+    inputs: [router._unmatched]
     source: |
       p = del(._path)
       if !is_string(p) { p = "/ingest" }
@@ -35,21 +126,46 @@ transforms:
       .raw = raw
 
 sinks:
+  lake_vercel:
+    type: clickhouse
+    inputs: [vercel_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: logs_vercel
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 1 }
+    buffer: { type: disk, max_size: 1073741824, when_full: drop_newest }
+
+  lake_render:
+    type: clickhouse
+    inputs: [render_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: logs_render
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 1 }
+    buffer: { type: disk, max_size: 1073741824, when_full: drop_newest }
+
+  lake_events:
+    type: clickhouse
+    inputs: [events_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: app_events
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 1 }
+    buffer: { type: disk, max_size: 2147483648, when_full: block } # never shed events (I4)
+
   lake_raw:
     type: clickhouse
     inputs: [to_raw]
     endpoint: http://clickhouse:8123
     database: setoku
     table: ingest_raw
-    auth:
-      strategy: basic
-      user: "${CLICKHOUSE_USER}"
-      password: "${CLICKHOUSE_PASSWORD}"
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
     compression: gzip
-    batch:
-      timeout_secs: 1
-    buffer:
-      # I4: survive a ClickHouse restart/outage with zero loss.
-      type: disk
-      max_size: 1073741824 # 1 GiB on the vector_buffer volume
-      when_full: block
+    batch: { timeout_secs: 1 }
+    buffer: { type: disk, max_size: 1073741824, when_full: drop_newest }

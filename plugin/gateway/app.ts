@@ -14,9 +14,11 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import {
   loadConfig,
   resolveDatabaseUrl,
+  resolveLakeUrl,
   type SetokuConfig,
 } from "./lib/config";
 import { introspectSchema, runReadOnlyQuery } from "./lib/db";
+import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type DocType } from "./lib/store";
 
@@ -479,12 +481,21 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
     title: "Run a read-only SQL query (capped + audited)",
     description:
-      "Executes ONE read-only SQL statement against the business database inside a READ ONLY transaction, " +
-      "with a statement timeout and a row cap. Every call is audited with your identity. " +
+      "Executes ONE read-only SQL statement, with a statement timeout and a row cap. Every call is audited " +
+      "with your identity. Routes by dialect (metric docs declare theirs): `postgres` (default) runs against " +
+      "the business database in a READ ONLY transaction; `clickhouse` runs against the bundled lake " +
+      "(logs/events/Slack archive) with engine-enforced readonly. " +
       "Workflow: call find_context first, prefer canonical metric SQL via get_metric, include an explicit LIMIT, " +
-      "and never SELECT * on wide tables. Writes/DDL are rejected.",
+      "and never SELECT * on wide tables. Writes/DDL are rejected. " +
+      "Lake tables are discoverable with SHOW TABLES / DESCRIBE <table> on the clickhouse dialect.",
     inputSchema: {
       sql: z.string().describe("A single SELECT/WITH/EXPLAIN statement"),
+      dialect: z
+        .enum(["postgres", "clickhouse"])
+        .optional()
+        .describe(
+          "Where to run it (default postgres = the business DB; clickhouse = the lake). Use the dialect the metric doc declares.",
+        ),
       purpose: z
         .string()
         .optional()
@@ -493,16 +504,24 @@ server.registerTool(
         ),
     },
   },
-  async ({ sql, purpose }) => {
+  async ({ sql, dialect, purpose }) => {
     const started = Date.now();
     const sqlForAudit =
       sql && sql.length > 2000 ? sql.slice(0, 2000) + "…" : sql;
     try {
       const config = requireConfig();
-      const url = requireDb(config);
-      const result = await runReadOnlyQuery(url, sql, config);
+      let result;
+      if ((dialect ?? "postgres") === "clickhouse") {
+        const lake = resolveLakeUrl(projectDir, config);
+        if (!lake.ok) throw new Error(lake.error);
+        result = await runLakeQuery(lake.url, sql, config);
+      } else {
+        const url = requireDb(config);
+        result = await runReadOnlyQuery(url, sql, config);
+      }
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
+        dialect: dialect ?? "postgres",
         sql: sqlForAudit,
         ok: true,
         rows: result.rowCount,
@@ -537,6 +556,7 @@ server.registerTool(
       const msg = (e as Error).message;
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
+        dialect: dialect ?? "postgres",
         sql: sqlForAudit,
         ok: false,
         error: msg,

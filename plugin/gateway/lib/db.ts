@@ -34,6 +34,10 @@ const READ_KEYWORDS = new Set([
   "VALUES",
   "TABLE",
   "SHOW",
+  // ClickHouse-dialect reads (harmless for Postgres — the engine rejects them)
+  "DESCRIBE",
+  "DESC",
+  "EXISTS",
 ]);
 
 /**

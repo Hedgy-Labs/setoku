@@ -14,5 +14,5 @@ while IFS= read -r name; do
   else
     echo "ERROR    $domain"
   fi
-  sleep 0.6
+  sleep 0.35
 done < "$1"

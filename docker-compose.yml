@@ -51,6 +51,9 @@ services:
       SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
       SETOKU_PUBLIC_URL: https://${SETOKU_DOMAIN:-localhost}
       SETOKU_HEALTHZ_PING: ${SETOKU_HEALTHZ_PING:-}
+      # run_query dialect "clickhouse" (I5). NB: secrets here should be
+      # URL-safe (openssl rand -hex is) — they ride in a URL.
+      SETOKU_LAKE_URL: "http://${CLICKHOUSE_USER:-setoku}:${CLICKHOUSE_PASSWORD}@clickhouse:8123/setoku"
     volumes:
       - setoku_data:/data
     depends_on:
@@ -85,7 +88,7 @@ services:
       retries: 5
 
   clickhouse:
-    profiles: [lake, ingest]
+    profiles: [lake, ingest, slack]
     image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
     restart: unless-stopped
     environment:
@@ -127,6 +130,42 @@ services:
       timeout: 5s
       retries: 5
 
+  # Slack workspace archiver (tasks 3.3/3.4) — Socket Mode listener, spool-first
+  # durability. One-shot backfill: docker compose run --rm slack-listener bun backfill.ts
+  # Start it as soon as the app exists: the free-plan ~90-day window is burning.
+  slack-listener:
+    profiles: [slack]
+    build:
+      context: .
+      dockerfile: ingest/slack-listener/Dockerfile
+    restart: unless-stopped
+    environment:
+      # listener refuses to start without the app token (see its README) — kept
+      # optional here so non-slack deploys don't have to define it
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+      CLICKHOUSE_DB: setoku
+      SETOKU_SPOOL_DIR: /spool
+      SLACK_BACKFILL_CHANNELS: ${SLACK_BACKFILL_CHANNELS:-}
+    volumes:
+      - slack_spool:/spool # spooled events survive container replacement (I4)
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - fetch("http://127.0.0.1:8686/health").then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
   # ---- backup one-shots (profile: backup) — driven by deploy/backup/*.sh ----
 
   clickhouse-backup:
@@ -166,3 +205,4 @@ volumes:
   pg_data:
   ch_data:
   vector_buffer:
+  slack_spool:

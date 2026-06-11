@@ -1,0 +1,154 @@
+# SPDX-License-Identifier: Apache-2.0
+# Golden-file unit tests for the ingest transforms (task 3.1 AC).
+# Run:  vector test /etc/vector/vector.yaml /etc/vector/tests.yaml
+# (CI runs this in the official vector image; see .github/workflows/ci.yml)
+
+tests:
+  - name: route sends each ingest path to its pipeline
+    inputs:
+      - insert_at: router
+        type: log
+        log_fields:
+          _path: /ingest/vercel
+          id: route-check
+          timestamp: 1573817250283
+    outputs:
+      - extract_from: vercel_parse
+        conditions:
+          - type: vrl
+            source: assert!(.id == "route-check")
+
+  - name: vercel lambda request log maps to a typed row
+    inputs:
+      - insert_at: vercel_parse
+        type: log
+        log_fields:
+          _path: /ingest/vercel
+          id: "1573817250283254651097202070"
+          deploymentId: dpl_233NRGRjVZX1caZrXWtz5g1TAksD
+          source: lambda
+          host: my-app-abc123.vercel.app
+          timestamp: 1573817250283
+          projectId: gdufoJxB6b9b1fEqr1jUtFkyavUU
+          level: info
+          message: API request processed
+          statusCode: 200
+          path: /api/users
+          environment: production
+          proxy.method: GET
+          proxy.path: /api/users?page=1
+          proxy.userAgent[0]: Mozilla/5.0 test
+    outputs:
+      - extract_from: vercel_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.source == "lambda", "source")
+              assert!(.level == "info", "level")
+              assert!(.project_id == "gdufoJxB6b9b1fEqr1jUtFkyavUU", "project_id")
+              assert!(.deployment_id == "dpl_233NRGRjVZX1caZrXWtz5g1TAksD", "deployment_id")
+              assert!(.environment == "production", "environment")
+              assert!(.host == "my-app-abc123.vercel.app", "host")
+              assert!(.request_path == "/api/users", "request_path prefers top-level path")
+              assert!(.method == "GET", "method from proxy")
+              assert!(.status_code == 200, "status_code")
+              assert!(.user_agent == "Mozilla/5.0 test", "user_agent flattened from array")
+              assert!(starts_with!(.ts, "2019-11-15"), "ms epoch parsed: " + string!(.ts))
+              assert!(contains!(.raw, "dpl_233NRGRjVZX1caZrXWtz5g1TAksD"), "raw preserved")
+
+  - name: vercel build log without proxy/status still lands
+    inputs:
+      - insert_at: vercel_parse
+        type: log
+        log_fields:
+          _path: /ingest/vercel
+          id: "1573817187330377061717300000"
+          source: build
+          timestamp: 1573817187330
+          message: Build completed successfully
+    outputs:
+      - extract_from: vercel_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.source == "build", "source")
+              assert!(.status_code == 0, "status_code defaults to 0")
+              assert!(.method == "", "no method")
+              assert!(.message == "Build completed successfully", "message")
+
+  - name: render log extracts common fields defensively
+    inputs:
+      - insert_at: render_parse
+        type: log
+        log_fields:
+          _path: /ingest/render
+          timestamp: "2026-06-10T12:34:56.789Z"
+          service: api-worker
+          instance: srv-abc123-xyz
+          level: ERROR
+          message: queue depth exceeded
+    outputs:
+      - extract_from: render_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.service == "api-worker", "service")
+              assert!(.instance == "srv-abc123-xyz", "instance")
+              assert!(.level == "error", "level lowercased")
+              assert!(.message == "queue depth exceeded", "message")
+              assert!(starts_with!(.ts, "2026-06-10 12:34:56"), "RFC3339 parsed: " + string!(.ts))
+              assert!(contains!(.raw, "api-worker"), "raw preserved")
+
+  - name: first-party event gets a content-hash event_id when none supplied
+    inputs:
+      - insert_at: events_parse
+        type: log
+        log_fields:
+          _path: /ingest/events
+          event_name: order_placed
+          ts: "2026-06-11T17:45:00Z"
+          actor: user_42
+          properties.order_id: 42
+          properties.total_cents: 12999
+    outputs:
+      - extract_from: events_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event_name == "order_placed", "event_name")
+              assert!(.actor == "user_42", "actor")
+              assert!(length(string!(.event_id)) == 32, "md5 content hash assigned")
+              props = parse_json!(string!(.properties))
+              assert!(props.order_id == 42, "properties round-trip")
+              assert!(starts_with!(.ts, "2026-06-11 17:45:00"), "ts parsed")
+
+  - name: event without an event_name is kept, flagged _invalid
+    inputs:
+      - insert_at: events_parse
+        type: log
+        log_fields:
+          _path: /ingest/events
+          ts: "2026-06-11T17:45:00Z"
+          something: else
+    outputs:
+      - extract_from: events_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event_name == "_invalid", "flagged")
+              assert!(contains!(.raw, "something"), "raw preserved")
+
+  - name: unknown path falls through to the raw catch-all
+    inputs:
+      - insert_at: router
+        type: log
+        log_fields:
+          _path: /ingest/mystery
+          hello: world
+    outputs:
+      - extract_from: to_raw
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.source_path == "/ingest/mystery", "path attributed")
+              assert!(contains!(.raw, "world"), "payload preserved")
