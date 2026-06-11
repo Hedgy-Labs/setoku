@@ -45,7 +45,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test test/
+      - run: bun test test/ ingest/
 
   checks:
     name: spdx + licenses + denylist + compose
@@ -82,7 +82,8 @@ jobs:
           SETOKU_INGEST_TOKEN: ci
           POSTGRES_PASSWORD: ci
           CLICKHOUSE_PASSWORD: ci
-          COMPOSE_PROFILES: lake,ingest,backup
+          CLICKHOUSE_RO_PASSWORD: ci
+          COMPOSE_PROFILES: lake,ingest,backup,slack
         run: docker compose -f docker-compose.yml config -q
 
   dco:

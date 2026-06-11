@@ -4,9 +4,13 @@
  *
  * Read-only is enforced by the engine, not by SQL parsing (I9): every request
  * carries readonly=2 (queries may not write or DDL; ClickHouse rejects them
- * server-side), with the shared first-keyword gate as defense in depth. Row
- * cap via a LIMIT wrap (raw retry on the rare wrap-breaking statement),
- * timeout via max_execution_time.
+ * server-side), with the shared first-keyword gate as defense in depth. The
+ * reference deploy goes further: SETOKU_LAKE_URL connects as `setoku_ro`
+ * (deploy/clickhouse/lake-users.xml), whose grants exclude table functions
+ * (url/remote — no SSRF surface) and whose profile pins readonly and
+ * CONSTRAINS max_execution_time so a query-level SETTINGS clause cannot lift
+ * it. Row cap via LIMIT wrap + server-side max_result_rows; timeout via
+ * max_execution_time; mid-stream errors surface via wait_end_of_query.
  */
 import { validateSql, type QueryOutcome } from "./db";
 import type { SetokuConfig } from "./config";
@@ -30,6 +34,7 @@ export function parseLakeUrl(raw: string): LakeTarget {
 interface ChJson {
   meta?: { name: string }[];
   data?: Record<string, unknown>[];
+  exception?: string;
 }
 
 export async function runLakeQuery(
@@ -51,6 +56,12 @@ export async function runLakeQuery(
       max_execution_time: String(
         Math.max(1, Math.ceil(statementTimeoutMs / 1000)),
       ),
+      // server-side cap too — covers statements the LIMIT wrap can't reach
+      max_result_rows: String(rowCap + 1),
+      result_overflow_mode: "break",
+      // buffer the whole result so a mid-stream error can never arrive as a
+      // 200 with partial data (it would be silently wrong answers)
+      wait_end_of_query: "1",
       default_format: "JSON",
     });
     if (target.database) params.set("database", target.database);
@@ -65,7 +76,24 @@ export async function runLakeQuery(
     });
     const body = await res.text();
     if (!res.ok) throw new Error(`ClickHouse: ${body.slice(0, 500)}`);
-    return body ? (JSON.parse(body) as ChJson) : {};
+    if (!body) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(body);
+    } catch {
+      throw new Error(
+        "ClickHouse returned non-JSON output — remove any FORMAT clause from the SQL (results are always returned as JSON).",
+      );
+    }
+    if (typeof parsed !== "object" || parsed === null || !("meta" in parsed)) {
+      throw new Error(
+        "ClickHouse returned an unexpected response shape — remove any FORMAT clause from the SQL (results are always returned as JSON).",
+      );
+    }
+    const out = parsed as ChJson;
+    // an error can still surface inside a 200 body — never return it as data
+    if (out.exception) throw new Error(`ClickHouse: ${out.exception.slice(0, 500)}`);
+    return out;
   };
 
   let out: ChJson;

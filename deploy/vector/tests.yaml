@@ -152,3 +152,43 @@ tests:
             source: |
               assert!(.source_path == "/ingest/mystery", "path attributed")
               assert!(contains!(.raw, "world"), "payload preserved")
+
+  - name: vercel proxy-only log takes status and path from the proxy object
+    inputs:
+      - insert_at: vercel_parse
+        type: log
+        log_fields:
+          _path: /ingest/vercel
+          id: p1
+          source: edge
+          timestamp: 1749999999000
+          proxy.method: GET
+          proxy.path: /shop?q=fern
+          proxy.statusCode: 404
+          proxy.userAgent[0]: FernBot-HealthCheck/1.0
+    outputs:
+      - extract_from: vercel_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.status_code == 404, "status_code falls back to proxy.statusCode")
+              assert!(.request_path == "/shop?q=fern", "request_path falls back to proxy.path")
+              assert!(.user_agent == "FernBot-HealthCheck/1.0", "user_agent")
+
+  - name: render alternate field names (.app/.log) are honored
+    inputs:
+      - insert_at: render_parse
+        type: log
+        log_fields:
+          _path: /ingest/render
+          timestamp: "2026-06-10T01:02:03Z"
+          app: worker-2
+          log: queue depth exceeded again
+    outputs:
+      - extract_from: render_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.service == "worker-2", "service falls back to .app")
+              assert!(.message == "queue depth exceeded again", "message falls back to .log")
+              assert!(.level == "info", "level defaults")

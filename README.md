@@ -74,6 +74,9 @@ bun install
 bun run typecheck
 bun test          # needs a local Postgres; uses unix socket at /tmp by default
                   # override: SETOKU_E2E_PG_HOST, SETOKU_E2E_DB_URL, SETOKU_E2E_PG_MAINTENANCE_DB
+# the lake-dialect suite SKIPS unless a ClickHouse is reachable (CI provides one):
+#   docker run --rm -d -p 18123:8123 -e CLICKHOUSE_PASSWORD=pw clickhouse/clickhouse-server:25.3
+#   SETOKU_E2E_CH_URL=http://default:pw@127.0.0.1:18123/default bun test
 ```
 
 The e2e suite creates a `setoku_e2e` database with a synthetic shop schema
@@ -465,7 +468,14 @@ posted-message latency, pilot backfill) await Slack app install on the box.
 3.5 contract + snippet shipped (`docs/events.md`); its seed-app AC lands with
 task 0.2. ⚠ I7 note: Render's HTTPS-JSON schema is not publicly documented —
 `logs_render` columns are defensive; tighten in 4.3 against a live stream.
-Vercel schema verified against current docs.*
+Vercel schema verified against current docs. Post-review hardening (same day):
+run_query's lake path now connects as a dedicated `setoku_ro` ClickHouse user
+(grants exclude url()/remote() — no SSRF; settings constraints pin
+max_execution_time), surfaces mid-stream errors via wait_end_of_query +
+exception checks, and caps results server-side; the Slack listener acks only
+after the spool write and bounds its memory; Vector fallback parsing fixed
+(VRL's `??` never fired on missing fields); ops scripts work on
+compose-v2-only boxes; the raw catch-all buffer blocks instead of shedding.*
 
 - [x] **3.1 Vector receiver config:** one `http_server` source behind Caddy;
   transforms parsing (a) Vercel drain NDJSON, (b) Render HTTPS-JSON log streams,

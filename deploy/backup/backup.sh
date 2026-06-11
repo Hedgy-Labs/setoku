@@ -14,34 +14,35 @@
 # and warns loudly — local-only backups do not satisfy I4.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source deploy/dc.sh
 set -a; source .env; set +a
 
 STAMP="$(date -u +%F)"
 mkdir -p backups/context
 
 echo "[backup] knowledge store snapshot…"
-docker-compose exec -T server rm -f /data/knowledge-snapshot.db
-docker-compose exec -T server bun -e "
+dc exec -T server rm -f /data/knowledge-snapshot.db
+dc exec -T server bun -e "
   const { Database } = require('bun:sqlite');
   new Database('/data/knowledge.db').exec(\"VACUUM INTO '/data/knowledge-snapshot.db'\");"
-docker cp "$(docker-compose ps -q server)":/data/knowledge-snapshot.db "backups/context/knowledge-${STAMP}.db"
-docker-compose exec -T server rm -f /data/knowledge-snapshot.db
+docker cp "$(dc ps -q server)":/data/knowledge-snapshot.db "backups/context/knowledge-${STAMP}.db"
+dc exec -T server rm -f /data/knowledge-snapshot.db
 
 echo "[backup] pg_dump context store…"
-docker-compose exec -T postgres pg_dump -U postgres setoku | gzip > "backups/context/pg-setoku-${STAMP}.sql.gz"
+dc exec -T postgres pg_dump -U postgres setoku | gzip > "backups/context/pg-setoku-${STAMP}.sql.gz"
 
 if [[ -n "${SETOKU_BACKUP_S3_BUCKET:-}" ]]; then
   echo "[backup] upload to bucket + prune (14 d)…"
-  docker-compose run --rm rclone copy /backups/context "remote:${SETOKU_BACKUP_S3_BUCKET}/context"
-  docker-compose run --rm rclone delete --min-age 14d "remote:${SETOKU_BACKUP_S3_BUCKET}/context"
+  dc run --rm rclone copy /backups/context "remote:${SETOKU_BACKUP_S3_BUCKET}/context"
+  dc run --rm rclone delete --min-age 14d "remote:${SETOKU_BACKUP_S3_BUCKET}/context"
 else
   echo "[backup] WARNING: no SETOKU_BACKUP_S3_BUCKET — snapshots are LOCAL ONLY (violates I4)" >&2
 fi
 
-if docker-compose ps --status running clickhouse 2>/dev/null | grep -q clickhouse; then
+if dc ps --status running clickhouse 2>/dev/null | grep -q clickhouse; then
   if [[ -n "${SETOKU_BACKUP_S3_BUCKET:-}" ]]; then
     echo "[backup] clickhouse-backup create_remote…"
-    docker-compose run --rm clickhouse-backup create_remote "nightly-${STAMP}"
+    dc run --rm clickhouse-backup create_remote "nightly-${STAMP}"
   else
     echo "[backup] WARNING: lake running but no bucket — skipping clickhouse backup" >&2
   fi

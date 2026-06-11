@@ -4,7 +4,7 @@
 -- platform request logs are the low-grade ore.
 CREATE TABLE IF NOT EXISTS setoku.app_events
 (
-    ts          DateTime64(3)           COMMENT 'event time as stated by the producer (`ts`, RFC3339; receive time if absent)',
+    ts          DateTime64(3)           COMMENT 'event time as stated by the producer (`ts`, RFC3339). Falls back to receive time when absent — NB: ts is part of the dedupe key, so retried ts-less events do NOT collapse (docs/events.md)',
     event_id    String                  COMMENT 'producer-supplied idempotency key; when absent, a content hash — client retries dedupe on it',
     event_name  LowCardinality(String)  COMMENT 'snake_case event name (e.g. order_placed); "_invalid" = arrived without one',
     actor       String                  COMMENT 'who/what caused the event (user id, system name)',

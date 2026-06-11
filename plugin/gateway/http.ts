@@ -105,35 +105,57 @@ const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
 
 /**
  * Aggregate health for uptime pings (/healthz): knowledge store, data-volume
- * disk usage, and optional dependency pings from SETOKU_HEALTHZ_PING
- * ("name=url,name=url" — e.g. clickhouse=http://clickhouse:8123/ping).
- * 503 when any dependency fails or the data disk is ≥90% full; external
- * alerting (deploy/monitor/) pages at 75% before this trips.
+ * disk usage, and dependency pings. The lake ping is DERIVED from
+ * SETOKU_LAKE_URL (so it cannot drift from what run_query actually uses);
+ * extra deps come from SETOKU_HEALTHZ_PING ("name=url,name=url") — only list
+ * services you actually run. 503 when any dependency fails or the data disk
+ * is ≥90% full; external alerting (deploy/monitor/) pages at 75% first.
+ * Results are cached ~5 s: the endpoint is publicly reachable, and each probe
+ * fans out real requests — the cache makes a curl loop amplify nothing.
  */
+function healthzTargets(): [name: string, url: string][] {
+  const targets: [string, string][] = [];
+  for (const pair of (process.env.SETOKU_HEALTHZ_PING ?? "").split(",")) {
+    const i = pair.indexOf("=");
+    if (i > 0) targets.push([pair.slice(0, i).trim(), pair.slice(i + 1).trim()]);
+  }
+  const lake = process.env.SETOKU_LAKE_URL;
+  if (lake && !targets.some(([n]) => n === "clickhouse")) {
+    try {
+      targets.push(["clickhouse", `${new URL(lake).origin}/ping`]);
+    } catch {
+      /* malformed lake URL — run_query will surface it */
+    }
+  }
+  return targets;
+}
+
+let healthzCache: {
+  at: number;
+  value: { status: number; body: Record<string, unknown> };
+} | null = null;
+
 async function healthz(): Promise<{
   status: number;
   body: Record<string, unknown>;
 }> {
+  if (healthzCache && Date.now() - healthzCache.at < 5_000) {
+    return healthzCache.value;
+  }
   const deps: Record<string, { ok: boolean; ms?: number; error?: string }> =
     {};
   await Promise.all(
-    (process.env.SETOKU_HEALTHZ_PING ?? "")
-      .split(",")
-      .filter((p) => p.includes("="))
-      .map(async (pair) => {
-        const i = pair.indexOf("=");
-        const name = pair.slice(0, i).trim();
-        const url = pair.slice(i + 1).trim();
-        const t0 = Date.now();
-        try {
-          const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
-          deps[name] = r.ok
-            ? { ok: true, ms: Date.now() - t0 }
-            : { ok: false, error: `HTTP ${r.status}` };
-        } catch (e) {
-          deps[name] = { ok: false, error: String(e) };
-        }
-      }),
+    healthzTargets().map(async ([name, url]) => {
+      const t0 = Date.now();
+      try {
+        const r = await fetch(url, { signal: AbortSignal.timeout(3000) });
+        deps[name] = r.ok
+          ? { ok: true, ms: Date.now() - t0 }
+          : { ok: false, error: `HTTP ${r.status}` };
+      } catch (e) {
+        deps[name] = { ok: false, error: String(e) };
+      }
+    }),
   );
   let disk: { dir: string; used_pct: number } | undefined;
   const dataDir = path.dirname(process.env.SETOKU_DB_PATH ?? storePath());
@@ -155,10 +177,12 @@ async function healthz(): Promise<{
   const ok =
     Object.values(deps).every((d) => d.ok) &&
     (disk ? disk.used_pct < 90 : true);
-  return {
+  const value = {
     status: ok ? 200 : 503,
-    body: { ok, docs: store.listDocs().length, disk, deps },
+    body: { ok, docs: store.docCount, disk, deps },
   };
+  healthzCache = { at: Date.now(), value };
+  return value;
 }
 
 /**
@@ -215,7 +239,7 @@ const httpServer = http.createServer(async (req, res) => {
   try {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, docs: store.listDocs().length }));
+      res.end(JSON.stringify({ ok: true, docs: store.docCount }));
       return;
     }
     if (req.url === "/healthz" || req.url?.startsWith("/healthz?")) {

@@ -1,0 +1,34 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- The gateway's lake user (run_query, clickhouse dialect) — engine-enforced
+     read-only, per I9. Unlike the full-privilege ingest user, setoku_ro:
+       - holds ONLY `GRANT SELECT ON setoku.*` — no INSERT/DDL, and no
+         URL/REMOTE/FILE source grants, so table functions like url() cannot
+         be used for SSRF from a prompt-injected agent;
+       - runs under a profile with readonly=2 baked in and max_execution_time
+         CONSTRAINED to [1, 300] s — a query-level `SETTINGS
+         max_execution_time=0` is rejected by the engine, not by our code.
+     Password comes from CLICKHOUSE_RO_PASSWORD (compose env). -->
+<clickhouse>
+    <profiles>
+        <setoku_readonly>
+            <readonly>2</readonly>
+            <max_execution_time>60</max_execution_time>
+            <constraints>
+                <max_execution_time>
+                    <min>1</min>
+                    <max>300</max>
+                </max_execution_time>
+            </constraints>
+        </setoku_readonly>
+    </profiles>
+    <users>
+        <setoku_ro>
+            <password from_env="CLICKHOUSE_RO_PASSWORD"/>
+            <profile>setoku_readonly</profile>
+            <networks><ip>::/0</ip></networks>
+            <grants>
+                <query>GRANT SELECT ON setoku.*</query>
+            </grants>
+        </setoku_ro>
+    </users>
+</clickhouse>

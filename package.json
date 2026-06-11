@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "test": "bun test test/",
+    "test": "bun test test/ ingest/",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

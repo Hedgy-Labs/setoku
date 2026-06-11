@@ -51,9 +51,11 @@ services:
       SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
       SETOKU_PUBLIC_URL: https://${SETOKU_DOMAIN:-localhost}
       SETOKU_HEALTHZ_PING: ${SETOKU_HEALTHZ_PING:-}
-      # run_query dialect "clickhouse" (I5). NB: secrets here should be
-      # URL-safe (openssl rand -hex is) — they ride in a URL.
-      SETOKU_LAKE_URL: "http://${CLICKHOUSE_USER:-setoku}:${CLICKHOUSE_PASSWORD}@clickhouse:8123/setoku"
+      # run_query dialect "clickhouse" (I5) — connects as the read-only
+      # engine-constrained user (deploy/clickhouse/lake-users.xml), NOT the
+      # full-privilege ingest user. NB: secrets here should be URL-safe
+      # (openssl rand -hex is) — they ride in a URL.
+      SETOKU_LAKE_URL: "http://setoku_ro:${CLICKHOUSE_RO_PASSWORD}@clickhouse:8123/setoku"
     volumes:
       - setoku_data:/data
     depends_on:
@@ -94,11 +96,14 @@ services:
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+      CLICKHOUSE_RO_PASSWORD: ${CLICKHOUSE_RO_PASSWORD:?set in .env}
       CLICKHOUSE_DB: setoku
     volumes:
       - ch_data:/var/lib/clickhouse
       # memory/concurrency preset: small (4–8 GB boxes) | roomy (24 GB prototype)
       - ./deploy/clickhouse/${SETOKU_CH_PRESET:-small}.xml:/etc/clickhouse-server/config.d/zz-setoku-preset.xml:ro
+      # the gateway's read-only lake user (grants + settings constraints)
+      - ./deploy/clickhouse/lake-users.xml:/etc/clickhouse-server/users.d/zz-setoku-lake.xml:ro
       - ./ingest/schemas:/docker-entrypoint-initdb.d:ro
     ulimits:
       nofile: { soft: 262144, hard: 262144 }

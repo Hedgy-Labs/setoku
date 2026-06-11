@@ -427,3 +427,39 @@ test("spool persists progress across instances and compacts when drained", () =>
   const c = new Spool(dir);
   expect(c.depth).toBe(0);
 });
+
+// ---------------------------------------------------------------------------
+// Queue cap: memory stays bounded; overflow reloads from disk as it drains.
+// ---------------------------------------------------------------------------
+
+test("spool caps the in-memory queue and reloads overflow from disk", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "spool-cap-"));
+  cleanups.push(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const row = (n: number): SlackMessageRow => ({
+    channel: "C1",
+    ts: `1718000000.00000${n}`,
+    event_ts: slackTsToDateTime(`1718000000.00000${n}`),
+    thread_ts: "",
+    user: "U1",
+    text: `m${n}`,
+    subtype: "",
+    raw: "{}",
+  });
+  const spool = new Spool(dir, 2);
+  for (let i = 0; i < 5; i++) spool.append(row(i));
+  expect(spool.depth).toBe(2); // capped — the rest lives on disk only
+  expect(spool.backlogBytes).toBeGreaterThan(0);
+
+  const delivered: string[] = [];
+  while (spool.depth > 0) {
+    const batch = spool.peek(10);
+    delivered.push(...batch);
+    spool.ack(batch.length);
+  }
+  // every appended row delivered despite the cap, in order, then compacted
+  expect(delivered.map((l) => (JSON.parse(l) as SlackMessageRow).text)).toEqual(
+    ["m0", "m1", "m2", "m3", "m4"],
+  );
+  expect(spool.backlogBytes).toBe(0);
+  expect(fs.readFileSync(path.join(dir, "slack-events.ndjson"), "utf8")).toBe("");
+});

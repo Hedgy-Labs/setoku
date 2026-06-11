@@ -49,6 +49,12 @@ transforms:
       ua = ""
       ua_arr = array(.proxy.userAgent) ?? []
       if length(ua_arr) > 0 { ua = to_string(ua_arr[0]) ?? "" }
+      # NB: fallbacks must branch on null — to_string/to_int coerce a MISSING
+      # field infallibly (""/0), so `to_x(.a) ?? to_x(.b)` never reaches .b
+      rp = .path
+      if rp == null || rp == "" { rp = .proxy.path }
+      status = .statusCode
+      if status == null { status = .proxy.statusCode }
       . = {
         "ts": format_timestamp!(t, "%F %T%.3f"),
         "id": to_string(.id) ?? "",
@@ -58,9 +64,9 @@ transforms:
         "deployment_id": to_string(.deploymentId) ?? "",
         "environment": to_string(.environment) ?? "",
         "host": to_string(.host) ?? "",
-        "request_path": to_string(.path) ?? (to_string(.proxy.path) ?? ""),
+        "request_path": to_string(rp) ?? "",
         "method": to_string(.proxy.method) ?? "",
-        "status_code": to_int(.statusCode) ?? (to_int(.proxy.statusCode) ?? 0),
+        "status_code": to_int(status) ?? 0,
         "user_agent": ua,
         "message": to_string(.message) ?? "",
         "raw": raw
@@ -75,17 +81,31 @@ transforms:
       del(.source_type)
       del(._path)
       raw = encode_json(.) # keeps the client's own timestamp field when present
-      tstr = to_string(.timestamp) ?? (to_string(.ts) ?? "")
+      # null-branching fallbacks — see the note in vercel_parse
+      tsrc = .timestamp
+      if tsrc == null { tsrc = .ts }
       del(.timestamp)
-      t, terr = parse_timestamp(tstr, "%+")
+      # empty string counts as missing too — the http_server harness (and some
+      # producers) emit message: ""
+      svc = .service
+      if svc == null || svc == "" { svc = .serviceName }
+      if svc == null || svc == "" { svc = .app }
+      inst = .instance
+      if inst == null || inst == "" { inst = .instanceId }
+      msg = .message
+      if msg == null || msg == "" { msg = .log }
+      if msg == null || msg == "" { msg = .line }
+      lvl = .level
+      if lvl == null || lvl == "" { lvl = "info" }
+      t, terr = parse_timestamp(to_string(tsrc) ?? "", "%+")
       if terr != null { t = now() }
       . = {
         "ts": format_timestamp!(t, "%F %T%.3f"),
-        "service": to_string(.service) ?? (to_string(.serviceName) ?? (to_string(.app) ?? "")),
-        "instance": to_string(.instance) ?? (to_string(.instanceId) ?? ""),
-        "level": downcase(to_string(.level) ?? "info"),
+        "service": to_string(svc) ?? "",
+        "instance": to_string(inst) ?? "",
+        "level": downcase(to_string(lvl) ?? "info"),
         "type": to_string(.type) ?? "",
-        "message": to_string(.message) ?? (to_string(.log) ?? (to_string(.line) ?? "")),
+        "message": to_string(msg) ?? "",
         "raw": raw
       }
 
@@ -134,7 +154,7 @@ sinks:
     table: logs_vercel
     auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
     compression: gzip
-    batch: { timeout_secs: 1 }
+    batch: { timeout_secs: 10, max_events: 10000 } # archival latency is cheap; tiny per-second inserts breed MergeTree parts
     buffer: { type: disk, max_size: 1073741824, when_full: drop_newest }
 
   lake_render:
@@ -145,7 +165,7 @@ sinks:
     table: logs_render
     auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
     compression: gzip
-    batch: { timeout_secs: 1 }
+    batch: { timeout_secs: 10, max_events: 10000 }
     buffer: { type: disk, max_size: 1073741824, when_full: drop_newest }
 
   lake_events:
@@ -156,7 +176,7 @@ sinks:
     table: app_events
     auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
     compression: gzip
-    batch: { timeout_secs: 1 }
+    batch: { timeout_secs: 10, max_events: 10000 }
     buffer: { type: disk, max_size: 2147483648, when_full: block } # never shed events (I4)
 
   lake_raw:
@@ -167,5 +187,7 @@ sinks:
     table: ingest_raw
     auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
     compression: gzip
-    batch: { timeout_secs: 1 }
-    buffer: { type: disk, max_size: 1073741824, when_full: drop_newest }
+    batch: { timeout_secs: 10, max_events: 10000 }
+    # block, not drop_newest: the catch-all also receives first-party events
+    # on mistyped paths — "nothing is silently dropped" must hold here (I4)
+    buffer: { type: disk, max_size: 1073741824, when_full: block }

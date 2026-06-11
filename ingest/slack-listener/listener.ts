@@ -8,13 +8,17 @@
  * immediately → archive `message` events (all subtypes) into
  * `setoku.slack_messages` over ClickHouse's HTTP interface.
  *
- * Durability (I4) — spool-first: every event is appended to a local NDJSON
- * spool file BEFORE any insert is attempted. Batches flush every ~2 s or 100
- * events; a byte-offset file marks delivered progress; on ClickHouse failure
- * we keep spooling and retry with jittered backoff; on startup any un-acked
- * remainder drains first. Survives ClickHouse restarts AND its own restarts
- * with zero loss — the table is ReplacingMergeTree(ingested_at) ORDER BY
- * (channel, ts), so at-least-once redelivery dedupes.
+ * Durability (I4) — spool-first: every event is appended to the local NDJSON
+ * spool file BEFORE its envelope is acked to Slack — if the spool write fails
+ * (disk full), the envelope is left unacked and Slack redelivers. Batches
+ * flush every ~2 s or 100 events; a byte-offset file marks delivered
+ * progress; on ClickHouse failure we keep spooling and retry with jittered
+ * backoff; on startup any un-acked remainder drains first. The in-memory
+ * delivery queue is capped — during a long outage the backlog lives on disk
+ * and is reloaded from the offset as the queue drains. Survives ClickHouse
+ * restarts AND its own restarts with zero loss — the table is
+ * ReplacingMergeTree(ingested_at) ORDER BY (channel, ts), so at-least-once
+ * redelivery dedupes.
  *
  * Env:
  *   SLACK_APP_TOKEN      — xapp-… app-level token (scope connections:write); required
@@ -137,28 +141,30 @@ export async function insertSlackRows(
 // ---------------------------------------------------------------------------
 
 /**
- * Spool-first durability. `append` fsync-appends one NDJSON line BEFORE any
- * insert is attempted; `peek`/`ack` deliver in order; `ack` advances a
- * persisted byte offset so a restart resumes exactly where delivery stopped.
- * When fully drained the file is truncated (compaction). Lines that fail to
- * parse (torn write from a crash) are dropped at flush time but still acked,
- * so the offset never wedges.
+ * Spool-first durability. `append` writes one NDJSON line to disk before the
+ * caller acks Slack (append throws → no ack → Slack redelivers);
+ * `peek`/`ack` deliver in order; `ack` advances a persisted byte offset so a
+ * restart resumes exactly where delivery stopped. When fully drained the
+ * file is truncated (compaction). The in-memory queue is capped at
+ * `maxQueueLines` — beyond it, backlog stays on disk only and is reloaded
+ * from the offset as the queue drains, so a multi-day outage cannot OOM the
+ * process. Lines that fail to parse (torn write from a crash) are dropped at
+ * flush time but still acked, so the offset never wedges.
  */
 export class Spool {
   private readonly filePath: string;
   private readonly offsetPath: string;
+  private readonly maxQueueLines: number;
   private queue: { line: string; bytes: number }[] = [];
   private offset = 0;
   private fileBytes = 0;
+  private overflowed = false;
 
-  constructor(dir: string) {
+  constructor(dir: string, maxQueueLines = 50_000) {
     fs.mkdirSync(dir, { recursive: true });
     this.filePath = path.join(dir, "slack-events.ndjson");
     this.offsetPath = path.join(dir, "slack-events.offset");
-    this.recover();
-  }
-
-  private recover(): void {
+    this.maxQueueLines = maxQueueLines;
     if (fs.existsSync(this.offsetPath)) {
       this.offset = Number(fs.readFileSync(this.offsetPath, "utf8").trim()) || 0;
     }
@@ -166,29 +172,50 @@ export class Spool {
       this.offset = 0;
       return;
     }
+    this.fileBytes = fs.statSync(this.filePath).size;
+    if (this.offset < 0 || this.offset > this.fileBytes) this.offset = 0;
+    this.loadFromOffset();
+  }
+
+  /** (Re)fill the in-memory queue from the on-disk backlog past the offset. */
+  private loadFromOffset(): void {
+    this.overflowed = false;
     const buf = fs.readFileSync(this.filePath);
     this.fileBytes = buf.byteLength;
-    if (this.offset < 0 || this.offset > this.fileBytes) this.offset = 0;
-    // Everything past the offset was spooled but never acked — re-enqueue it.
-    const rest = buf.subarray(this.offset).toString("utf8");
+    let at = this.offset + this.queue.reduce((n, e) => n + e.bytes, 0);
+    const rest = buf.subarray(at).toString("utf8");
     for (const text of rest.split("\n")) {
       if (text.length === 0) continue;
-      const line = text + "\n";
-      this.queue.push({ line, bytes: Buffer.byteLength(line) });
+      if (!this.enqueue(text + "\n")) break;
     }
   }
 
-  /** Number of spooled-but-undelivered events. */
+  /** Push onto the bounded queue; false (and overflow flagged) when full. */
+  private enqueue(line: string): boolean {
+    if (this.queue.length >= this.maxQueueLines) {
+      this.overflowed = true;
+      return false;
+    }
+    this.queue.push({ line, bytes: Buffer.byteLength(line) });
+    return true;
+  }
+
+  /** Number of in-memory undelivered events (disk backlog may exceed this). */
   get depth(): number {
     return this.queue.length;
   }
 
-  /** Persist one row to disk, then enqueue it for delivery. */
+  /** Undelivered bytes on disk — the true backlog, including overflow. */
+  get backlogBytes(): number {
+    return this.fileBytes - this.offset;
+  }
+
+  /** Persist one row to disk (throws on failure — caller must NOT ack), then enqueue. */
   append(row: SlackMessageRow): void {
     const line = JSON.stringify(row) + "\n";
     fs.appendFileSync(this.filePath, line);
     this.fileBytes += Buffer.byteLength(line);
-    this.queue.push({ line, bytes: Buffer.byteLength(line) });
+    this.enqueue(line);
   }
 
   /** Next up-to-`max` undelivered lines (each ends in "\n"), oldest first. */
@@ -200,6 +227,10 @@ export class Spool {
   ack(count: number): void {
     const acked = this.queue.splice(0, count);
     this.offset += acked.reduce((n, e) => n + e.bytes, 0);
+    if (this.queue.length === 0 && this.overflowed) {
+      // Backlog beyond the queue cap lives on disk only — pull the next chunk.
+      this.loadFromOffset();
+    }
     if (this.queue.length === 0 && this.offset >= this.fileBytes) {
       // Fully drained — rotate spooled→done by truncating.
       fs.writeFileSync(this.filePath, "");
@@ -278,6 +309,7 @@ export class SlackListener {
           return Response.json({
             connected: this.connected,
             spool_depth: this.spool.depth,
+            spool_backlog_bytes: this.spool.backlogBytes,
             inserted_total: this.insertedTotal,
           });
         },
@@ -368,31 +400,45 @@ export class SlackListener {
     } catch {
       return; // not JSON — nothing to ack or store
     }
-    // Ack EVERY envelope immediately, before any processing (Slack redelivers
-    // unacked envelopes; our durability is the spool, not the ack delay).
-    if (typeof msg.envelope_id === "string") {
-      ws.send(JSON.stringify({ envelope_id: msg.envelope_id }));
-    }
+    // Ack AFTER the event is durably spooled (ingest below is synchronous).
+    // If the spool write throws (disk full), we skip the ack and Slack
+    // redelivers — the ReplacingMergeTree key makes redelivery harmless.
+    const ack = () => {
+      if (typeof msg.envelope_id === "string") {
+        ws.send(JSON.stringify({ envelope_id: msg.envelope_id }));
+      }
+    };
     switch (msg.type) {
       case "hello":
         this.connected = true;
         this.reconnectFailures = 0;
         console.error("slack-listener: connected (hello)");
+        ack();
         return;
       case "disconnect":
         // Warning that Slack is about to close this socket — close now and
         // let connectLoop reconnect with a fresh apps.connections.open.
         console.error(`slack-listener: disconnect requested (${String(msg.reason)})`);
+        ack();
         ws.close();
         return;
       case "events_api": {
         const payload = msg.payload as Record<string, unknown> | undefined;
         const event = payload?.event as Record<string, unknown> | undefined;
-        if (event?.type === "message") this.ingest(event);
+        if (event?.type === "message") {
+          try {
+            this.ingest(event);
+          } catch (e) {
+            console.error(`slack-listener: spool write failed — NOT acking (${e})`);
+            return; // unacked → Slack redelivers
+          }
+        }
+        ack();
         return;
       }
       default:
-        return; // already acked; other envelope types are not ours to handle
+        ack(); // other envelope types are not ours to handle
+        return;
     }
   }
 

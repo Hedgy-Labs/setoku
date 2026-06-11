@@ -14,14 +14,15 @@ lines. POST deliberate business events to the lake; they land in
 | field | type | required | meaning |
 |---|---|---|---|
 | `event_name` | string | yes | snake_case verb-phrase, e.g. `order_placed`. Events without it are kept but flagged `_invalid`. |
-| `ts` | string | recommended | RFC3339 event time. Defaults to receive time. |
+| `ts` | string | yes, for retry dedupe | RFC3339 event time. Without it the lake stamps *receive* time — which differs per retry attempt, so **retried ts-less events become duplicates**. The snippet below always sends it. |
 | `actor` | string | recommended | who/what caused it: user id, job name, system. |
 | `properties` | object | optional | the payload; queried with `JSONExtract*()`. |
-| `event_id` | string | optional | idempotency key. If absent, a content hash is derived — **identical retries dedupe either way**; supply your own if two genuinely distinct events could share name+ts+payload. |
+| `event_id` | string | optional | idempotency key. If absent, a content hash is derived. Supply your own if two genuinely distinct events could share name+ts+payload. |
 
-Delivery is at-least-once friendly: the table is a `ReplacingMergeTree` keyed
-on `(event_name, ts, event_id)`, so send-with-retry is the *correct* client
-behavior, not a hazard.
+Delivery is at-least-once friendly **when the payload carries `ts`**: the
+table is a `ReplacingMergeTree` keyed on `(event_name, ts, event_id)`, so
+send-with-retry is the *correct* client behavior, not a hazard — the retry
+collapses into the original row.
 
 ## Client snippet (~20 lines, no SDK)
 

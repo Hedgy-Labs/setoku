@@ -117,6 +117,14 @@ export class KnowledgeStore {
     return rows.map(rowToDoc);
   }
 
+  /** Doc count without materializing bodies (health endpoints poll this). */
+  get docCount(): number {
+    const row = this.db.query("SELECT count(*) AS n FROM docs").get() as {
+      n: number;
+    };
+    return row.n;
+  }
+
   getDoc(type: DocType | null, name: string): KnowledgeDoc | null {
     const needle = name.toLowerCase();
     const all = this.listDocs().filter((d) => (type ? d.type === type : true));
