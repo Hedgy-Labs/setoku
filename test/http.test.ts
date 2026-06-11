@@ -237,9 +237,38 @@ describe("tools over HTTP", () => {
 });
 
 describe("approval surface (the human accept path, Phase 5.5)", () => {
-  it("rejects an unknown admin token", async () => {
-    const r = await fetch(`${BASE}/admin/nope`, { redirect: "manual" });
-    expect(r.status).toBe(404);
+  /** Log in with a token and return the session cookie (no token in any URL). */
+  async function login(token: string): Promise<string> {
+    const r = await fetch(`${BASE}/admin/login`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(303);
+    const setCookie = r.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Strict");
+    return setCookie.split(";")[0]; // setoku_session=<id>
+  }
+
+  it("the bare /admin link is safe to share — no session shows a login form, no secret in any URL", async () => {
+    const r = await fetch(`${BASE}/admin`);
+    expect(r.status).toBe(200);
+    const page = await r.text();
+    expect(page).toContain("sign in");
+    expect(page).not.toContain("Pending");
+  });
+
+  it("rejects login with an invalid token", async () => {
+    const r = await fetch(`${BASE}/admin/login`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token: "not-a-token" }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(401);
+    expect(r.headers.get("set-cookie")).toBeNull();
   });
 
   it("a human approves a pending gotcha → it enters verified context; agents never could", async () => {
@@ -252,19 +281,19 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
     });
     await alice.close();
 
-    // 2. the page lists it (HTML, content escaped), with no curated doc yet
-    const page = await (await fetch(`${BASE}/admin/tok-alice`)).text();
+    // 2. a human signs in (token in the POST body, never a URL) and sees it
+    const cookie = await login("tok-alice");
+    const page = await (await fetch(`${BASE}/admin`, { headers: { cookie } })).text();
     expect(page).toContain("Gift-card top-ups");
     expect(page).toContain("Approve");
-    const idMatch = page.match(/name="id" value="(\d+)"/);
-    expect(idMatch).toBeTruthy();
-    const id = idMatch![1];
+    const id = page.match(/name="id" value="(\d+)"/)![1];
+    const csrf = page.match(/name="csrf" value="([^"]+)"/)![1];
 
     // 3. a human POSTs Approve — the commit happens here, outside any agent
-    const post = await fetch(`${BASE}/admin/tok-alice/resolve`, {
+    const post = await fetch(`${BASE}/admin/resolve`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ id, action: "accepted", reason: "confirmed with finance" }),
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ id, csrf, action: "accepted", reason: "confirmed with finance" }),
       redirect: "manual",
     });
     expect(post.status).toBe(303);
@@ -287,6 +316,27 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
     expect(row?.user).toBe("alice@co.test");
   });
 
+  it("rejects a resolve POST with a bad CSRF token", async () => {
+    const cookie = await login("tok-bob");
+    const r = await fetch(`${BASE}/admin/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ id: "1", csrf: "wrong", action: "accepted" }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(403);
+  });
+
+  it("a resolve POST without a session is refused (no cookie → login form, not an action)", async () => {
+    const r = await fetch(`${BASE}/admin/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ id: "1", csrf: "x", action: "accepted" }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(401);
+  });
+
   it("escapes attacker-influenceable correction content (no stored XSS in the gate)", async () => {
     const alice = await connect("tok-alice");
     await call(alice, "report_correction", {
@@ -294,7 +344,8 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
       content: "<script>alert('xss')</script> pwn",
     });
     await alice.close();
-    const page = await (await fetch(`${BASE}/admin/tok-alice`)).text();
+    const cookie = await login("tok-alice");
+    const page = await (await fetch(`${BASE}/admin`, { headers: { cookie } })).text();
     expect(page).not.toContain("<script>alert('xss')</script>");
     expect(page).toContain("&lt;script&gt;");
   });

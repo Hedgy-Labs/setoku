@@ -28,7 +28,7 @@
 		reverse_proxy server:8787
 	}
 	# web approval surface — the human accept/reject path (Phase 5.5)
-	handle /admin/* {
+	handle /admin* {
 		reverse_proxy server:8787
 	}
 	handle /health* {

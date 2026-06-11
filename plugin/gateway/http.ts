@@ -24,7 +24,15 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { buildServer } from "./app";
 import { loadConfig, resolveProjectDir } from "./lib/config";
 import { KnowledgeStore, defaultDbPath, seedFromFiles } from "./lib/store";
-import { renderApprovalPage, applyApprovalAction } from "./lib/approval";
+import {
+  renderApprovalPage,
+  renderLoginPage,
+  applyApprovalAction,
+  SessionStore,
+  sessionIdFromCookie,
+  sessionSetCookie,
+  sessionClearCookie,
+} from "./lib/approval";
 
 const projectDir = resolveProjectDir();
 
@@ -111,14 +119,10 @@ function readRawBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-/** Identity for the /admin/<token> approval surface (browser, no header). */
-function adminIdentity(url: string): { identity: string; token: string } | null {
-  const m = url.match(/^\/admin\/([^/?]+)/);
-  if (!m) return null;
-  const token = decodeURIComponent(m[1]);
-  const identity = tokens.get(token);
-  return identity ? { identity, token } : null;
-}
+// Approval-surface sessions — the human authenticates once with their token
+// and gets an opaque cookie; the token never rides in a URL (no Slack/referer/
+// history leakage). One process, so in-memory is fine.
+const sessions = new SessionStore();
 
 const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
 
@@ -284,41 +288,77 @@ const httpServer = http.createServer(async (req, res) => {
       return;
     }
     // ---- web approval surface (Phase 5.5) — the human accept/reject path ----
-    if (req.url?.startsWith("/admin/")) {
-      const who = adminIdentity(req.url);
-      if (!who) {
-        store.audit("anonymous", "admin_rejected", { path: "/admin" });
-        res.writeHead(404, { "content-type": "text/plain" });
-        res.end("unknown admin link\n");
+    // Auth is a session COOKIE, not a token in the URL: the link (/admin) is
+    // safe to share; the token only ever travels in the POST /admin/login body.
+    if (req.url === "/admin" || req.url?.startsWith("/admin/") || req.url?.startsWith("/admin?")) {
+      const htmlHead = {
+        "content-type": "text/html; charset=utf-8",
+        "referrer-policy": "no-referrer",
+      } as const;
+      const path = req.url.split("?")[0];
+
+      // login: exchange a bearer token for a session cookie
+      if (path === "/admin/login" && req.method === "POST") {
+        const form = new URLSearchParams(await readRawBody(req));
+        const identity = tokens.get((form.get("token") ?? "").trim());
+        if (!identity) {
+          store.audit("anonymous", "admin_login_rejected", {});
+          res.writeHead(401, htmlHead);
+          res.end(renderLoginPage("Invalid token."));
+          return;
+        }
+        const { sid } = sessions.create(identity);
+        store.audit(identity, "admin_login", {});
+        res.writeHead(303, { location: "/admin", "set-cookie": sessionSetCookie(sid) });
+        res.end();
         return;
       }
-      const base = `/admin/${encodeURIComponent(who.token)}`;
-      if (req.method === "POST" && req.url.includes("/resolve")) {
+
+      const sid = sessionIdFromCookie(req.headers.cookie);
+      const session = sessions.get(sid);
+
+      // logout
+      if (path === "/admin/logout" && req.method === "POST") {
+        sessions.destroy(sid);
+        res.writeHead(303, { location: "/admin", "set-cookie": sessionClearCookie() });
+        res.end();
+        return;
+      }
+
+      // everything else requires a session
+      if (!session) {
+        res.writeHead(path === "/admin" ? 200 : 401, htmlHead);
+        res.end(renderLoginPage());
+        return;
+      }
+
+      // approve/reject — CSRF-checked (belt-and-suspenders with SameSite=Strict)
+      if (path === "/admin/resolve" && req.method === "POST") {
         const form = new URLSearchParams(await readRawBody(req));
+        if (form.get("csrf") !== session.csrf) {
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("bad csrf token\n");
+          return;
+        }
         const id = Number(form.get("id"));
         const action = form.get("action");
         let flash = "Invalid action.";
         if (Number.isInteger(id) && (action === "accepted" || action === "rejected")) {
-          flash = applyApprovalAction(store, who.identity, {
+          flash = applyApprovalAction(store, session.identity, {
             id,
             action,
             reason: form.get("reason") ?? undefined,
           });
         }
-        // POST→redirect→GET so a refresh doesn't re-submit
-        res.writeHead(303, {
-          location: `${base}?flash=${encodeURIComponent(flash)}`,
-        });
+        res.writeHead(303, { location: `/admin?flash=${encodeURIComponent(flash)}` });
         res.end();
         return;
       }
+
+      // the page
       const flash = new URL(req.url, "http://x").searchParams.get("flash") ?? undefined;
-      res.writeHead(200, {
-        "content-type": "text/html; charset=utf-8",
-        // the token is in the URL — don't let it leak via referer to anywhere
-        "referrer-policy": "no-referrer",
-      });
-      res.end(renderApprovalPage(store, who.identity, base, flash));
+      res.writeHead(200, htmlHead);
+      res.end(renderApprovalPage(store, session, flash));
       return;
     }
 

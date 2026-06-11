@@ -8,12 +8,16 @@
  * never reach it, whatever its credential. Agents only ever *propose*
  * (report_correction → pending); knowledge enters curated context only here.
  *
- * Interim scope (until Phase 5.1 OAuth lands): auth reuses the per-user bearer
- * token via the URL path (/admin/<token>), the same mechanism as /mcp/<token>.
- * That carries the known token-in-URL tradeoff (referer/history leakage) and
- * does not yet role-gate *who* may approve — any valid token can. Both are
- * Phase 5 refinements; the security property that matters now — no agent/MCP
- * tool can commit — holds regardless.
+ * AUTH (interim, until Phase 5.1 OAuth): the page lives at a fixed,
+ * secret-free URL (/admin) that is safe to share — an unauthenticated visitor
+ * gets a login form. The human authenticates ONCE with their bearer token
+ * (POST /admin/login), which mints a server-side session bound to an
+ * HttpOnly+Secure+SameSite=Strict cookie. The token never appears in a URL, so
+ * sharing the link or leaking referer/history/proxy logs leaks nothing. State
+ * lives in one process (the gateway), so sessions are in-memory; a restart
+ * just means re-login. CSRF: SameSite=Strict already blocks cross-site form
+ * posts, and every mutating form also carries a per-session CSRF token.
+ * Not yet role-gated (any valid token can approve) — a Phase 5.1/5.3 refinement.
  *
  * SECURITY: correction content is attacker-influenceable (it can be distilled
  * from Slack/logs), so every dynamic value is HTML-escaped before rendering.
@@ -41,6 +45,70 @@ function slug(s: string): string {
   );
 }
 
+/* ------------------------------ sessions ------------------------------ */
+
+export interface Session {
+  identity: string;
+  csrf: string;
+  expires: number;
+}
+
+/**
+ * In-memory session store for the approval surface. The gateway is a single
+ * process, so this is sufficient; sessions don't survive a restart (re-login).
+ * The cookie carries an opaque random id — never the bearer token.
+ */
+export class SessionStore {
+  private sessions = new Map<string, Session>();
+  constructor(private readonly ttlMs = 12 * 60 * 60 * 1000) {}
+
+  create(identity: string): { sid: string; csrf: string } {
+    const sid = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, "");
+    const csrf = crypto.randomUUID();
+    this.sessions.set(sid, { identity, csrf, expires: Date.now() + this.ttlMs });
+    return { sid, csrf };
+  }
+
+  get(sid: string | undefined): Session | null {
+    if (!sid) return null;
+    const s = this.sessions.get(sid);
+    if (!s) return null;
+    if (s.expires < Date.now()) {
+      this.sessions.delete(sid);
+      return null;
+    }
+    return s;
+  }
+
+  destroy(sid: string | undefined): void {
+    if (sid) this.sessions.delete(sid);
+  }
+}
+
+const COOKIE = "setoku_session";
+
+/** Read the session id from a Cookie header. */
+export function sessionIdFromCookie(cookieHeader: string | undefined): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(";")) {
+    const [k, ...v] = part.trim().split("=");
+    if (k === COOKIE) return decodeURIComponent(v.join("="));
+  }
+  return undefined;
+}
+
+/** Set-Cookie value for a new session (HttpOnly, Secure, SameSite=Strict). */
+export function sessionSetCookie(sid: string): string {
+  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=43200`;
+}
+
+/** Set-Cookie value that clears the session cookie. */
+export function sessionClearCookie(): string {
+  return `${COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=0`;
+}
+
+/* ------------------------------ rendering ------------------------------ */
+
 const PAGE_CSS = `
   :root { color-scheme: light dark; }
   body { font: 15px/1.5 system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
@@ -53,22 +121,41 @@ const PAGE_CSS = `
   button { font: inherit; padding: 0.35rem 0.9rem; border-radius: 6px; border: 1px solid #8886; cursor: pointer; }
   button.approve { background: #2e7d32; color: #fff; border-color: #2e7d32; }
   button.reject { background: transparent; }
-  textarea { width: 100%; box-sizing: border-box; margin: 0.4rem 0; font: inherit; }
+  textarea, input[type=password] { width: 100%; box-sizing: border-box; margin: 0.4rem 0; font: inherit; padding: 0.4rem; }
   .empty { color: #888; }
   .note { color: #888; font-size: 0.85rem; border-left: 3px solid #8884; padding-left: 0.8rem; }
+  .topbar { display: flex; justify-content: space-between; align-items: baseline; }
 `;
 
-/**
- * Render the pending-corrections approval page. `basePath` is /admin/<token>
- * (forms post back to it) — never logged, never shown except in the action URL.
- */
+function shell(title: string, inner: string): string {
+  return `<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title><style>${PAGE_CSS}</style></head><body>${inner}</body></html>`;
+}
+
+/** The login form shown to anyone without a valid session (no secret in URL). */
+export function renderLoginPage(flash?: string): string {
+  return shell(
+    "Setoku — sign in",
+    `<h1>Setoku — sign in</h1>
+<p class="meta">Paste your Setoku access token to review pending knowledge. The
+token is exchanged for a session cookie and never appears in the URL.</p>
+${flash ? `<p class="note">${esc(flash)}</p>` : ""}
+<form method="POST" action="/admin/login">
+  <input type="password" name="token" placeholder="access token" autocomplete="off" autofocus>
+  <button class="approve" type="submit">Sign in</button>
+</form>`,
+  );
+}
+
+/** The pending-corrections approval page (requires a session). */
 export function renderApprovalPage(
   store: KnowledgeStore,
-  identity: string,
-  basePath: string,
+  session: Session,
   flash?: string,
 ): string {
   const pending = store.listCorrections("pending");
+  const csrf = esc(session.csrf);
   const items = pending
     .map(
       (c) => `
@@ -80,7 +167,8 @@ export function renderApprovalPage(
         }
       </div>
       <div class="content">${esc(c.content)}</div>
-      <form method="POST" action="${esc(basePath)}/resolve">
+      <form method="POST" action="/admin/resolve">
+        <input type="hidden" name="csrf" value="${csrf}">
         <input type="hidden" name="id" value="${esc(c.id)}">
         <textarea name="reason" rows="1" placeholder="reason (optional for approve, recommended for reject)"></textarea>
         <button class="approve" name="action" value="accepted">Approve</button>
@@ -90,20 +178,27 @@ export function renderApprovalPage(
     )
     .join("");
 
-  return `<!doctype html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Setoku — pending knowledge</title><style>${PAGE_CSS}</style></head><body>
-<h1>Setoku — pending knowledge</h1>
-<p class="meta">Signed in as ${esc(identity)}. These are proposals from agents and teammates;
-nothing here is curated until you approve it. Approving a gotcha folds it into
-verified context immediately; other kinds are recorded for a curator session.</p>
+  return shell(
+    "Setoku — pending knowledge",
+    `<div class="topbar">
+  <h1>Setoku — pending knowledge</h1>
+  <form method="POST" action="/admin/logout">
+    <input type="hidden" name="csrf" value="${csrf}">
+    <button type="submit">Sign out (${esc(session.identity)})</button>
+  </form>
+</div>
+<p class="meta">These are proposals from agents and teammates; nothing here is
+curated until you approve it. Approving a gotcha folds it into verified context
+immediately; other kinds are recorded for a curator session.</p>
 ${flash ? `<p class="note">${esc(flash)}</p>` : ""}
 <h2>Pending (${pending.length})</h2>
 ${pending.length ? items : '<p class="empty">Nothing pending. 🎉</p>'}
 <p class="note">This is the only path knowledge enters curated context (I2/I9):
-a human clicks here, outside any agent. Agents can only propose.</p>
-</body></html>`;
+a human clicks here, outside any agent. Agents can only propose.</p>`,
+  );
 }
+
+/* ------------------------------ action ------------------------------ */
 
 /**
  * Apply a human approve/reject decision. Returns a flash message for the
