@@ -28,6 +28,8 @@ services:
     environment:
       SETOKU_DOMAIN: ${SETOKU_DOMAIN:-localhost}
       SETOKU_INGEST_TOKEN: "${SETOKU_INGEST_TOKEN:?generate one with openssl rand -hex 24}"
+      # Vercel drain endpoint-verification value (echoed on /ingest/* — see Caddyfile)
+      SETOKU_VERCEL_VERIFY: ${SETOKU_VERCEL_VERIFY:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

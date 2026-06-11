@@ -5,10 +5,34 @@
 {$SETOKU_DOMAIN:localhost} {
 	encode gzip
 
+	# Vercel log-drain endpoint verification (I7): when you create a drain,
+	# Vercel probes this URL and requires the response to echo an
+	# `x-vercel-verify` header with the team's value. Set SETOKU_VERCEL_VERIFY
+	# in .env to that value (Vercel returns it in the create-drain error/UI).
+	# Harmless when empty for non-Vercel deploys. Applies to all ingest
+	# responses, including the 401, so verification passes before auth is set.
+	header /ingest/* x-vercel-verify "{$SETOKU_VERCEL_VERIFY}"
+
+	# Render log streams (HTTPS): Render's "Token" field delivery mechanism is
+	# undocumented, so we authenticate via the token in the URL PATH instead of
+	# a header. Set the Render Log Endpoint to:
+	#   https://<domain>/ingest/render/<SETOKU_INGEST_TOKEN>
+	# The token segment is verified, then stripped so Vector routes it as
+	# /ingest/render. (Must precede the generic /ingest/* handle below.)
+	handle /ingest/render/* {
+		@ok path /ingest/render/{$SETOKU_INGEST_TOKEN} /ingest/render/{$SETOKU_INGEST_TOKEN}/*
+		handle @ok {
+			rewrite * /ingest/render
+			reverse_proxy vector:8080
+		}
+		handle {
+			respond "unauthorized" 401
+		}
+	}
+
 	# Ingest: bearer token checked at the edge; Vector never sees
-	# unauthenticated traffic. Vercel log drains and Render log streams can
-	# both send a custom Authorization header (re-verify per I7 when wiring
-	# each provider in Phase 3/4).
+	# unauthenticated traffic. Vercel drains send Authorization: Bearer; app
+	# events POST it too. (Render uses the path-token route above.)
 	handle /ingest/* {
 		@authed header Authorization "Bearer {$SETOKU_INGEST_TOKEN}"
 		handle @authed {
