@@ -29,8 +29,10 @@ intelligence layer underneath your AI._ (Naming saga: [NAMES.md](./NAMES.md).)
 
 The current prototype is a **Claude Code plugin + MCP gateway** (TypeScript, Bun) —
 the embryo of `server/` in the target layout below. See [SPEC.md](./SPEC.md) for its
-full design and changelog, and [PRESSURE_TEST.md](./PRESSURE_TEST.md) for
-answer-quality evidence (clean-room A/B on the pilot).
+full design and changelog. Answer quality was pressure-tested on the pilot with a
+clean-room A/B (schema-only agents vs context-following agents, protocol compliance
+verified from the gateway's own audit log); the write-up lives in the private
+overlay — it quotes pilot schema vocabulary, which I3 keeps out of this repo.
 
 ```
 You ⇄ Claude Code  ──skills──▶  setoku MCP gateway  ──▶  knowledge store    (verified business context; corrections lifecycle, revisions)
