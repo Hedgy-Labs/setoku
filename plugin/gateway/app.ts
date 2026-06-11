@@ -26,9 +26,28 @@ export interface GatewayDeps {
   projectDir: string;
   store: KnowledgeStore;
   user: string;
+  /**
+   * Whether to expose the curated-write tools (upsert_context,
+   * resolve_correction). FALSE = propose-only: the agent surface is read
+   * tools + report_correction, whose proposals are inert (pending) until a
+   * human accepts them. This is the membrane (I2/I9): an agent reading
+   * untrusted lake/Slack content is prompt-injectable, so it must not hold a
+   * tool that COMMITS curated knowledge — injection attacks the agent's
+   * decision, not its credential, so a per-token "curator" flag would not
+   * help. The deployed HTTP gateway is always propose-only; curator mode is a
+   * deliberate, local, human-initiated stdio invocation (SETOKU_CURATOR_MODE)
+   * for /setoku:generate and /setoku:curate. The real outside-the-loop
+   * acceptance UI is the Phase 5 web approval surface.
+   */
+  canWrite: boolean;
 }
 
-export function buildServer({ projectDir, store, user }: GatewayDeps): McpServer {
+export function buildServer({
+  projectDir,
+  store,
+  user,
+  canWrite,
+}: GatewayDeps): McpServer {
 const server = new McpServer({ name: "setoku", version: "0.4.0" });
 
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
@@ -320,6 +339,10 @@ server.registerTool(
   },
 );
 
+// Curated-write tools — the membrane (I2/I9). Registered ONLY in curator
+// mode; the propose-only analyst surface (report_correction) is the single
+// write path for any agent that reads untrusted data. See GatewayDeps.canWrite.
+if (canWrite) {
 server.registerTool(
   "resolve_correction",
   {
@@ -376,6 +399,7 @@ server.registerTool(
     );
   },
 );
+} // end canWrite
 
 /* -------------------------------- data tools ------------------------------- */
 

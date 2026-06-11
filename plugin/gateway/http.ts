@@ -277,7 +277,10 @@ const httpServer = http.createServer(async (req, res) => {
     }
     // Stateless: a fresh McpServer per request, identity bound from the token.
     // Shared state lives in the SQLite store (WAL), not the server instance.
-    const server = buildServer({ projectDir, store, user });
+    // The deployed gateway is ALWAYS propose-only (canWrite: false): this is
+    // where lake analysts connect, so no token may hold a curated-write tool
+    // (I2/I9). Acceptance happens on the Phase 5 web approval surface.
+    const server = buildServer({ projectDir, store, user, canWrite: false });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });

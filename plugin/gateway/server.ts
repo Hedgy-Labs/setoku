@@ -35,9 +35,21 @@ if (store.empty) {
   if (imported > 0) store.audit(user, "seed_from_files", { imported });
 }
 
+// Curator mode is a deliberate, local, human-initiated opt-in for the
+// generate/curate workflows — NOT the default. A plain analyst session
+// (which reads untrusted lake/Slack content via run_query) is propose-only,
+// so prompt injection can't drive a curated write. See app.ts GatewayDeps.
+const canWrite = process.env.SETOKU_CURATOR_MODE === "1";
+
 async function main() {
-  const server = buildServer({ projectDir, store, user });
+  const server = buildServer({ projectDir, store, user, canWrite });
   await server.connect(new StdioServerTransport());
+  if (canWrite) {
+    console.error(
+      "setoku gateway: CURATOR MODE — upsert_context/resolve_correction enabled. " +
+        "Only run this in a deliberate curation/generation session, never one analyzing untrusted data.",
+    );
+  }
   process.on("SIGTERM", async () => {
     await closePools();
     process.exit(0);

@@ -201,12 +201,13 @@ describe("tools over HTTP", () => {
     expect(bobCorrection?.user).toBe("bob@co.test");
   });
 
-  it("bob sees alice-era knowledge instantly (one shared store)", async () => {
+  it("bob sees alice-era pending knowledge instantly (one shared store)", async () => {
     const alice = await connect("tok-alice");
-    await call(alice, "upsert_context", {
-      type: "gotcha",
-      name: "http-shared",
-      body: "Wholesale orders are tagged via order_items.sku prefix WS- and excluded from retail metrics",
+    // propose-only over HTTP: report_correction (pending), not upsert_context
+    await call(alice, "report_correction", {
+      kind: "gotcha",
+      content:
+        "Wholesale orders are tagged via order_items.sku prefix WS- and excluded from retail metrics",
     });
     await alice.close();
     const bob = await connect("tok-bob");
@@ -215,6 +216,23 @@ describe("tools over HTTP", () => {
     });
     expect(fc.text).toContain("WS-");
     await bob.close();
+  });
+
+  it("the deployed gateway is propose-only: no curated-write tools (I2/I9)", async () => {
+    const alice = await connect("tok-alice");
+    const names = (await alice.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("report_correction"); // propose path stays
+    expect(names).not.toContain("upsert_context");
+    expect(names).not.toContain("resolve_correction");
+    // and a forged call is rejected, not silently executed
+    const blocked = await call(alice, "upsert_context", {
+      type: "gotcha",
+      name: "x",
+      body: "y",
+    });
+    expect(blocked.isError).toBe(true);
+    expect(blocked.text).toMatch(/not found/i);
+    await alice.close();
   });
 });
 
@@ -264,7 +282,9 @@ describe("tool annotations", () => {
       expect(byName[n].readOnlyHint).toBe(true);
     }
     expect(byName["run_query"].openWorldHint).toBe(true);
-    expect(byName["upsert_context"].readOnlyHint).toBe(false);
+    // propose path is a non-readonly, non-destructive write; the curated-write
+    // tools are absent over HTTP (propose-only), so they're not asserted here
+    expect(byName["report_correction"].readOnlyHint).toBe(false);
     expect(byName["report_correction"].destructiveHint).toBe(false);
     await alice.close();
   });

@@ -62,6 +62,13 @@ Skills reach Cowork/Claude Code via the org plugin (`Hedgy-Labs/setoku`); withou
 
 ## Notes
 
+- **The deployed gateway is propose-only (I2/I9).** Tokens get the read tools +
+  `report_correction` (proposals land pending); the curated-write tools
+  (`upsert_context`, `resolve_correction`) are never exposed here — a deployed
+  agent reads untrusted lake/Slack data and is prompt-injectable, so it must not
+  be able to commit knowledge. Curation/generation runs in a separate local
+  `SETOKU_CURATOR_MODE=1` session (and, once it exists, the Phase 5 web approval
+  surface).
 - Every call is audited with the token's identity (SQLite `audit` table on the volume).
 - Same tool surface as the local stdio profile; `.setoku/` in the repo remains the seed/interchange format.
 - Rotate a user: change `SETOKU_TOKENS`, restart (fast). Token loss = read access to allowed tables — scope the DB role accordingly.

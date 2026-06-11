@@ -7,6 +7,8 @@ description: Generate or refresh Setoku's business-context knowledge by reading 
 
 You are deriving the business's **verified context** from its codebase and saving it into the gateway's knowledge store via the `upsert_context` tool. The code is the source of truth for business semantics; your job is to compress it into compact, retrievable docs **grounded in `file:line` references** so a human can verify every claim. Accuracy beats coverage: a wrong annotation is worse than a missing one.
 
+> **Requires curator mode.** `upsert_context` is a curated-write tool, exposed only when the gateway runs with `SETOKU_CURATOR_MODE=1`. Generation is a deliberate, human-initiated session that reads the **repo's own code** (a different, trusted source than runtime lake/Slack data) — that's why it may write. If `upsert_context` isn't available, tell the user to restart Claude Code with `SETOKU_CURATOR_MODE=1`. Never run generation in a session that is also analyzing untrusted data.
+
 ## What to read (adapt to the stack — nothing here is framework-specific)
 
 1. **Schema source:** Prisma (`*.prisma`), ActiveRecord (`db/schema.rb`), Django models, SQLAlchemy, dbt (`models/*.yml`), raw migrations — whatever defines tables. No codebase? Use `get_schema` + the platform's standard semantics (e.g. Shopify/HubSpot schemas) + an interview with the user.

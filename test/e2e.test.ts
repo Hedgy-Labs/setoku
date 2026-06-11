@@ -86,6 +86,7 @@ beforeAll(async () => {
       SETOKU_DB_PATH: dbPath,
       SETOKU_E2E_DB_URL: DB_URL,
       SETOKU_USER: "e2e@test",
+      SETOKU_CURATOR_MODE: "1", // this suite drives the curate/generate workflow
     },
   });
   await mcp.connect(transport);
@@ -97,7 +98,7 @@ afterAll(async () => {
 });
 
 describe("tool surface", () => {
-  it("exposes the v0 tools", async () => {
+  it("exposes the v0 tools (curator mode: write tools present)", async () => {
     const { tools } = await mcp.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(
@@ -114,6 +115,42 @@ describe("tool surface", () => {
         "upsert_context",
       ].sort(),
     );
+  });
+
+  it("default (non-curator) surface is propose-only: no curated-write tools (I2/I9)", async () => {
+    // a fresh server WITHOUT SETOKU_CURATOR_MODE — the analyst surface
+    const proposeOnly = new McpClient({ name: "propose-only", version: "0.0.1" });
+    const env = { ...(process.env as Record<string, string>) };
+    delete env.SETOKU_CURATOR_MODE;
+    await proposeOnly.connect(
+      new StdioClientTransport({
+        command: "bun",
+        args: [SERVER],
+        cwd: tmpRepo,
+        env: {
+          ...env,
+          SETOKU_PROJECT_DIR: tmpRepo,
+          SETOKU_DB_PATH: dbPath,
+          SETOKU_E2E_DB_URL: DB_URL,
+          SETOKU_USER: "analyst@test",
+        },
+      }),
+    );
+    const names = (await proposeOnly.listTools()).tools.map((t) => t.name);
+    // can propose and read the queue …
+    expect(names).toContain("report_correction");
+    expect(names).toContain("list_corrections");
+    // … but cannot commit curated knowledge
+    expect(names).not.toContain("upsert_context");
+    expect(names).not.toContain("resolve_correction");
+    // and a forged call is rejected, not silently executed
+    const res = (await proposeOnly.callTool({
+      name: "upsert_context",
+      arguments: { type: "gotcha", name: "x", body: "y" },
+    })) as unknown as { isError?: boolean; content: { text: string }[] };
+    expect(res.isError).toBe(true);
+    expect(res.content.map((c) => c.text).join("")).toMatch(/not found/i);
+    await proposeOnly.close();
   });
 });
 

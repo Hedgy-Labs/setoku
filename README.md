@@ -259,8 +259,21 @@ above as part of the Phase 2/5 build-out.*
 
 - **I1 — Databases are never public.** Only Caddy binds a public port (443; SSH on the
   host). Postgres and ClickHouse listen on the compose network only.
-- **I2 — The corrections queue is the only write path into curated context.**
+- **I2 — The corrections queue is the only write path into curated context, and
+  no agent that reads untrusted data may hold a tool that commits a write.**
   Provisioner and extractors *propose* (status: pending); humans *accept*.
+  The accept/commit decision must happen **outside the agent loop** — an agent
+  reading lake/Slack content is prompt-injectable, and injection attacks the
+  agent's *decision*, not its credential, so a per-token "curator" permission
+  would not help: the same injected agent would just use it. Therefore the
+  agent-facing MCP surface is **propose-only** (`report_correction` → pending);
+  the curated-write tools (`upsert_context`, `resolve_correction`) are never
+  exposed on the deployed gateway. Acceptance lives on the Phase 5 web approval
+  surface (a human clicks, outside any agent). *Interim, until that surface
+  exists:* curated writes are available only in a deliberate, local,
+  human-initiated `SETOKU_CURATOR_MODE=1` stdio session for `/setoku:generate`
+  (reads the repo's own code — a trusted source) and `/setoku:curate` (a human
+  eyeballing proposals) — never a session analyzing untrusted data.
   Exception: provisioner-generated initial entity docs may be auto-accepted but must
   be attributed `author: setoku-provisioner` and carry a revision history like any doc.
 - **I3 — No pilot-tenant data in the repo.** Nothing from Hedgy — no real metric
@@ -286,10 +299,16 @@ above as part of the Phase 2/5 build-out.*
 - **I9 — Authority changes pass through a human, outside the agent loop.** The lake
   is full of untrusted text (logs, Slack, customer events); an agent reading it is
   prompt-injectable. Therefore no MCP tool may directly create users, change roles,
-  or grant data access. Agents *propose* (pending grant requests — same membrane
-  pattern as I2); a human *approves* on the web approval surface. Table/source
-  access is enforced by the database engines themselves (per-role DB users +
-  GRANTs), never by SQL parsing in our code. `find_context` results are filtered by
+  or grant data access — *and the same applies to committing curated knowledge
+  (I2)*: both are authority, and "outside the agent loop" is the load-bearing
+  phrase. Injection attacks the agent's judgment, so the defense can't be a
+  permission the agent holds; it must be a human action the agent cannot perform
+  (a click on the web approval surface). Agents *propose* (pending grant requests
+  / pending corrections — one membrane, two applications); a human *approves*.
+  Table/source access is enforced by the database engines themselves (per-role DB
+  users + GRANTs), never by SQL parsing in our code — the gateway's lake user is
+  already a SELECT-only, settings-constrained ClickHouse role
+  (`deploy/clickhouse/lake-users.xml`). `find_context` results are filtered by
   the same grants as the tables the docs describe.
 
 ## Requires a human (the agent should stop and ask)
