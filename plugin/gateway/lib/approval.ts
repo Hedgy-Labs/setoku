@@ -8,21 +8,24 @@
  * never reach it, whatever its credential. Agents only ever *propose*
  * (report_correction → pending); knowledge enters curated context only here.
  *
- * AUTH (interim, until Phase 5.1 OAuth): the page lives at a fixed,
- * secret-free URL (/admin) that is safe to share — an unauthenticated visitor
- * gets a login form. The human authenticates ONCE with their bearer token
- * (POST /admin/login), which mints a server-side session bound to an
- * HttpOnly+Secure+SameSite=Strict cookie. The token never appears in a URL, so
- * sharing the link or leaking referer/history/proxy logs leaks nothing. State
- * lives in one process (the gateway), so sessions are in-memory; a restart
- * just means re-login. CSRF: SameSite=Strict already blocks cross-site form
- * posts, and every mutating form also carries a per-session CSRF token.
- * Not yet role-gated (any valid token can approve) — a Phase 5.1/5.3 refinement.
+ * AUTH (Phase 5.1 — local accounts, user/pass only): the page lives at a
+ * fixed, secret-free URL (/admin) that is safe to share — an unauthenticated
+ * visitor gets a login form. The human authenticates with a USERNAME +
+ * PASSWORD (a local account, lib/accounts) — NOT their MCP bearer token. This
+ * is the load-bearing separation: an agent holds a propose-only token and can
+ * read it from its own config, but it never holds a human's password, so even
+ * a shell-capable injected agent cannot authenticate here and self-approve
+ * (I9). Login mints a server-side session bound to an
+ * HttpOnly+Secure+SameSite=Strict cookie; the password never appears in a URL.
+ * State lives in one process, so sessions are in-memory (restart → re-login).
+ * CSRF: SameSite=Strict blocks cross-site posts, and every mutating form also
+ * carries a per-session CSRF token. Accepting is role-gated to admins.
  *
  * SECURITY: correction content is attacker-influenceable (it can be distilled
  * from Slack/logs), so every dynamic value is HTML-escaped before rendering.
  */
 import type { KnowledgeStore } from "./store";
+import { canApprove } from "./accounts";
 
 /** Escape for HTML text/attribute context. */
 export function esc(s: unknown): string {
@@ -49,6 +52,7 @@ function slug(s: string): string {
 
 export interface Session {
   identity: string;
+  role: string;
   csrf: string;
   expires: number;
 }
@@ -62,10 +66,15 @@ export class SessionStore {
   private sessions = new Map<string, Session>();
   constructor(private readonly ttlMs = 12 * 60 * 60 * 1000) {}
 
-  create(identity: string): { sid: string; csrf: string } {
+  create(identity: string, role: string): { sid: string; csrf: string } {
     const sid = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, "");
     const csrf = crypto.randomUUID();
-    this.sessions.set(sid, { identity, csrf, expires: Date.now() + this.ttlMs });
+    this.sessions.set(sid, {
+      identity,
+      role,
+      csrf,
+      expires: Date.now() + this.ttlMs,
+    });
     return { sid, csrf };
   }
 
@@ -138,13 +147,45 @@ export function renderLoginPage(flash?: string): string {
   return shell(
     "Setoku — sign in",
     `<h1>Setoku — sign in</h1>
-<p class="meta">Paste your Setoku access token to review pending knowledge. The
-token is exchanged for a session cookie and never appears in the URL.</p>
+<p class="meta">Sign in with your Setoku admin account to review pending
+knowledge. This is a separate credential from the access token you give
+Claude — agents never have it.</p>
 ${flash ? `<p class="note">${esc(flash)}</p>` : ""}
 <form method="POST" action="/admin/login">
-  <input type="password" name="token" placeholder="access token" autocomplete="off" autofocus>
+  <input type="text" name="username" placeholder="username" autocomplete="username" autofocus>
+  <input type="password" name="password" placeholder="password" autocomplete="current-password">
   <button class="approve" type="submit">Sign in</button>
 </form>`,
+  );
+}
+
+/** The audit-log page (Phase 5.6) — who did what, newest first. */
+export function renderAuditPage(store: KnowledgeStore, session: Session): string {
+  const rows = store
+    .listAudit(200)
+    .map((r) => {
+      let summary = r.payload;
+      try {
+        const p = JSON.parse(r.payload) as Record<string, unknown>;
+        summary = Object.entries(p)
+          .filter(([, v]) => v !== null && v !== "")
+          .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
+          .join(" · ");
+      } catch {
+        /* leave raw */
+      }
+      return `<tr><td>${esc(String(r.ts).slice(0, 19))}</td><td>${esc(r.user)}</td><td><code>${esc(r.tool)}</code></td><td>${esc(summary)}</td></tr>`;
+    })
+    .join("");
+  return shell(
+    "Setoku — audit log",
+    `<div class="topbar"><h1>Setoku — audit log</h1>
+  <a href="/admin">← pending</a></div>
+<p class="meta">Signed in as ${esc(session.identity)} (${esc(session.role)}). Append-only; newest first.</p>
+<table style="width:100%;border-collapse:collapse;font-size:0.85rem">
+<thead><tr style="text-align:left;color:#888"><th>when (UTC)</th><th>who</th><th>action</th><th>detail</th></tr></thead>
+<tbody>${rows || '<tr><td colspan="4" class="empty">No activity yet.</td></tr>'}</tbody>
+</table>`,
   );
 }
 
@@ -156,6 +197,17 @@ export function renderApprovalPage(
 ): string {
   const pending = store.listCorrections("pending");
   const csrf = esc(session.csrf);
+  const mayApprove = canApprove(session.role);
+  const actions = mayApprove
+    ? `
+      <form method="POST" action="/admin/resolve">
+        <input type="hidden" name="csrf" value="${csrf}">
+        <input type="hidden" name="id" value="ID">
+        <textarea name="reason" rows="1" placeholder="reason (optional for approve, recommended for reject)"></textarea>
+        <button class="approve" name="action" value="accepted">Approve</button>
+        <button class="reject" name="action" value="rejected">Reject</button>
+      </form>`
+    : "";
   const items = pending
     .map(
       (c) => `
@@ -166,14 +218,7 @@ export function renderApprovalPage(
           c.relatesTo ? ` · re: ${esc(c.relatesTo)}` : ""
         }
       </div>
-      <div class="content">${esc(c.content)}</div>
-      <form method="POST" action="/admin/resolve">
-        <input type="hidden" name="csrf" value="${csrf}">
-        <input type="hidden" name="id" value="${esc(c.id)}">
-        <textarea name="reason" rows="1" placeholder="reason (optional for approve, recommended for reject)"></textarea>
-        <button class="approve" name="action" value="accepted">Approve</button>
-        <button class="reject" name="action" value="rejected">Reject</button>
-      </form>
+      <div class="content">${esc(c.content)}</div>${actions.replace('value="ID"', `value="${esc(c.id)}"`)}
     </div>`,
     )
     .join("");
@@ -184,13 +229,15 @@ export function renderApprovalPage(
   <h1>Setoku — pending knowledge</h1>
   <form method="POST" action="/admin/logout">
     <input type="hidden" name="csrf" value="${csrf}">
-    <button type="submit">Sign out (${esc(session.identity)})</button>
+    <button type="submit">Sign out (${esc(session.identity)} · ${esc(session.role)})</button>
   </form>
 </div>
 <p class="meta">These are proposals from agents and teammates; nothing here is
-curated until you approve it. Approving a gotcha folds it into verified context
-immediately; other kinds are recorded for a curator session.</p>
+curated until an admin approves it. Approving a gotcha folds it into verified
+context immediately; other kinds are recorded for a curator session.
+· <a href="/admin/audit">audit log</a></p>
 ${flash ? `<p class="note">${esc(flash)}</p>` : ""}
+${mayApprove ? "" : '<p class="note">You are signed in as a <b>member</b> — viewing only. Ask an admin to approve.</p>'}
 <h2>Pending (${pending.length})</h2>
 ${pending.length ? items : '<p class="empty">Nothing pending. 🎉</p>'}
 <p class="note">This is the only path knowledge enters curated context (I2/I9):

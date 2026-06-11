@@ -39,6 +39,24 @@ export interface Correction {
   status: "pending" | "accepted" | "rejected";
 }
 
+/** A local account for the web admin surface (Phase 5.1). */
+export interface Account {
+  username: string;
+  /** argon2id hash (Bun.password) — never the plaintext. */
+  pwhash: string;
+  role: string;
+  createdAt: string;
+  createdBy: string | null;
+}
+
+/** One row of the append-only audit log (the 5.6 page). */
+export interface AuditRow {
+  ts: string;
+  user: string | null;
+  tool: string;
+  payload: string;
+}
+
 /** Which self-provisioning source a log row came from (task 4.1). */
 export type ProvisioningSource = "vercel" | "render" | "slack" | "events";
 
@@ -139,6 +157,18 @@ export class KnowledgeStore {
       status TEXT NOT NULL,
       detail TEXT,
       actor TEXT NOT NULL
+    )`);
+    // Local accounts for the web admin/approval surface (Phase 5.1). These are
+    // HUMAN credentials, deliberately SEPARATE from the MCP bearer tokens: an
+    // agent holds a (propose-only) token but never a password, so it cannot
+    // authenticate to the approval surface even with shell access (I9). pwhash
+    // is argon2id (Bun.password); the plaintext never touches disk or logs.
+    this.db.run(`CREATE TABLE IF NOT EXISTS accounts (
+      username TEXT PRIMARY KEY,
+      pwhash TEXT NOT NULL,
+      role TEXT NOT NULL DEFAULT 'admin',
+      created_at TEXT NOT NULL,
+      created_by TEXT
     )`);
   }
 
@@ -267,6 +297,65 @@ export class KnowledgeStore {
     } catch {
       // auditing must never take the gateway down
     }
+  }
+
+  /** Most-recent audit rows, newest first (the 5.6 audit-log page). */
+  listAudit(limit = 100): AuditRow[] {
+    return this.db
+      .query(
+        "SELECT ts, user, tool, payload FROM audit ORDER BY id DESC LIMIT ?",
+      )
+      .all(limit) as unknown as AuditRow[];
+  }
+
+  /* -------------------------------- accounts ---------------------------- */
+
+  /** Create a local account (Phase 5.1). pwhash must already be argon2id. */
+  createAccount(rec: {
+    username: string;
+    pwhash: string;
+    role: string;
+    createdBy?: string;
+  }): void {
+    this.db.run(
+      "INSERT INTO accounts (username, pwhash, role, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
+      [
+        rec.username,
+        rec.pwhash,
+        rec.role,
+        new Date().toISOString(),
+        rec.createdBy ?? null,
+      ],
+    );
+  }
+
+  getAccount(username: string): Account | null {
+    return (this.db
+      .query(
+        "SELECT username, pwhash, role, created_at AS createdAt, created_by AS createdBy FROM accounts WHERE username = ?",
+      )
+      .get(username) as unknown as Account) ?? null;
+  }
+
+  listAccounts(): Omit<Account, "pwhash">[] {
+    return this.db
+      .query(
+        "SELECT username, role, created_at AS createdAt, created_by AS createdBy FROM accounts ORDER BY username",
+      )
+      .all() as unknown as Omit<Account, "pwhash">[];
+  }
+
+  get accountCount(): number {
+    return (this.db.query("SELECT count(*) AS n FROM accounts").get() as { n: number }).n;
+  }
+
+  setPassword(username: string, pwhash: string): boolean {
+    return (
+      this.db.run("UPDATE accounts SET pwhash = ? WHERE username = ?", [
+        pwhash,
+        username,
+      ]).changes > 0
+    );
   }
 
   /* --------------------------- provisioning ---------------------------- */

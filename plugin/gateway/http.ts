@@ -27,12 +27,14 @@ import { KnowledgeStore, defaultDbPath, seedFromFiles } from "./lib/store";
 import {
   renderApprovalPage,
   renderLoginPage,
+  renderAuditPage,
   applyApprovalAction,
   SessionStore,
   sessionIdFromCookie,
   sessionSetCookie,
   sessionClearCookie,
 } from "./lib/approval";
+import { authenticate, canApprove } from "./lib/accounts";
 
 const projectDir = resolveProjectDir();
 
@@ -74,6 +76,12 @@ const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
 if (store.empty) {
   const imported = seedFromFiles(store, projectDir);
   if (imported > 0) store.audit("system", "seed_from_files", { imported });
+}
+if (store.accountCount === 0) {
+  console.error(
+    "setoku gateway: no admin accounts yet — the approval surface (/admin) has no one who can sign in.\n" +
+      "  Bootstrap one:  bun gateway/admin-cli.ts create-user <name> --role admin",
+  );
 }
 
 /**
@@ -297,18 +305,20 @@ const httpServer = http.createServer(async (req, res) => {
       } as const;
       const path = req.url.split("?")[0];
 
-      // login: exchange a bearer token for a session cookie
+      // login: username + password (a LOCAL ACCOUNT, never the MCP token) →
+      // session cookie. The agent has the token but not the password (I9).
       if (path === "/admin/login" && req.method === "POST") {
         const form = new URLSearchParams(await readRawBody(req));
-        const identity = tokens.get((form.get("token") ?? "").trim());
-        if (!identity) {
-          store.audit("anonymous", "admin_login_rejected", {});
+        const username = (form.get("username") ?? "").trim();
+        const auth = await authenticate(store, username, form.get("password") ?? "");
+        if (!auth.ok) {
+          store.audit(username || "anonymous", "admin_login_rejected", {});
           res.writeHead(401, htmlHead);
-          res.end(renderLoginPage("Invalid token."));
+          res.end(renderLoginPage("Invalid username or password."));
           return;
         }
-        const { sid } = sessions.create(identity);
-        store.audit(identity, "admin_login", {});
+        const { sid } = sessions.create(username, auth.role);
+        store.audit(username, "admin_login", { role: auth.role });
         res.writeHead(303, { location: "/admin", "set-cookie": sessionSetCookie(sid) });
         res.end();
         return;
@@ -333,11 +343,18 @@ const httpServer = http.createServer(async (req, res) => {
       }
 
       // approve/reject — CSRF-checked (belt-and-suspenders with SameSite=Strict)
+      // and ROLE-gated: only admins may accept (I9 — the membrane's human side).
       if (path === "/admin/resolve" && req.method === "POST") {
         const form = new URLSearchParams(await readRawBody(req));
         if (form.get("csrf") !== session.csrf) {
           res.writeHead(403, { "content-type": "text/plain" });
           res.end("bad csrf token\n");
+          return;
+        }
+        if (!canApprove(session.role)) {
+          store.audit(session.identity, "admin_resolve_denied", { role: session.role });
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("not authorized to approve\n");
           return;
         }
         const id = Number(form.get("id"));
@@ -352,6 +369,13 @@ const httpServer = http.createServer(async (req, res) => {
         }
         res.writeHead(303, { location: `/admin?flash=${encodeURIComponent(flash)}` });
         res.end();
+        return;
+      }
+
+      // audit log (Phase 5.6)
+      if (path === "/admin/audit") {
+        res.writeHead(200, htmlHead);
+        res.end(renderAuditPage(store, session));
         return;
       }
 

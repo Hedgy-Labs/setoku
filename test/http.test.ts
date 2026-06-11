@@ -88,6 +88,20 @@ beforeAll(async () => {
     recursive: true,
   });
 
+  // bootstrap admin + member accounts the way the CLI does (Phase 5.1)
+  {
+    const { KnowledgeStore } = await import(
+      path.join(ROOT, "plugin", "gateway", "lib", "store.ts")
+    );
+    const { hashPassword } = await import(
+      path.join(ROOT, "plugin", "gateway", "lib", "accounts.ts")
+    );
+    const s = new KnowledgeStore(path.join(tmpRepo, "knowledge.db"));
+    s.createAccount({ username: "boss", pwhash: await hashPassword("s3cret-pass"), role: "admin" });
+    s.createAccount({ username: "viewer", pwhash: await hashPassword("viewer-pass"), role: "member" });
+    s.db.close();
+  }
+
   // spawn the HTTP gateway exactly as a container would run it
   proc = spawn({
     cmd: ["bun", HTTP_SERVER],
@@ -236,20 +250,23 @@ describe("tools over HTTP", () => {
   });
 });
 
-describe("approval surface (the human accept path, Phase 5.5)", () => {
-  /** Log in with a token and return the session cookie (no token in any URL). */
-  async function login(token: string): Promise<string> {
-    const r = await fetch(`${BASE}/admin/login`, {
+describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
+  /** Log in with a local account; return the session cookie. */
+  async function login(username: string, password: string): Promise<Response> {
+    return fetch(`${BASE}/admin/login`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ token }),
+      body: new URLSearchParams({ username, password }),
       redirect: "manual",
     });
+  }
+  async function cookieFor(username: string, password: string): Promise<string> {
+    const r = await login(username, password);
     expect(r.status).toBe(303);
     const setCookie = r.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
-    return setCookie.split(";")[0]; // setoku_session=<id>
+    return setCookie.split(";")[0];
   }
 
   it("the bare /admin link is safe to share — no session shows a login form, no secret in any URL", async () => {
@@ -257,22 +274,29 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
     expect(r.status).toBe(200);
     const page = await r.text();
     expect(page).toContain("sign in");
-    expect(page).not.toContain("Pending");
+    expect(page).toContain("password");
+    expect(page).not.toContain("Pending (");
   });
 
-  it("rejects login with an invalid token", async () => {
-    const r = await fetch(`${BASE}/admin/login`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ token: "not-a-token" }),
-      redirect: "manual",
-    });
+  it("an MCP bearer token is NOT an admin credential — an agent cannot log in (I9)", async () => {
+    // the exact token an agent holds for MCP, tried as username and password
+    for (const creds of [
+      { username: "tok-alice", password: "tok-alice" },
+      { username: "alice@co.test", password: "tok-alice" },
+    ]) {
+      const r = await login(creds.username, creds.password);
+      expect(r.status).toBe(401);
+      expect(r.headers.get("set-cookie")).toBeNull();
+    }
+  });
+
+  it("rejects a wrong password", async () => {
+    const r = await login("boss", "wrong");
     expect(r.status).toBe(401);
-    expect(r.headers.get("set-cookie")).toBeNull();
   });
 
-  it("a human approves a pending gotcha → it enters verified context; agents never could", async () => {
-    // 1. an agent proposes (propose-only — this is all the agent can do)
+  it("an admin approves a pending gotcha → it enters verified context; agents never could", async () => {
+    // 1. an agent proposes (propose-only — all the agent can do)
     const alice = await connect("tok-alice");
     await call(alice, "report_correction", {
       kind: "gotcha",
@@ -281,15 +305,15 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
     });
     await alice.close();
 
-    // 2. a human signs in (token in the POST body, never a URL) and sees it
-    const cookie = await login("tok-alice");
+    // 2. a human signs in with their ADMIN ACCOUNT (not the MCP token) and sees it
+    const cookie = await cookieFor("boss", "s3cret-pass");
     const page = await (await fetch(`${BASE}/admin`, { headers: { cookie } })).text();
     expect(page).toContain("Gift-card top-ups");
     expect(page).toContain("Approve");
     const id = page.match(/name="id" value="(\d+)"/)![1];
     const csrf = page.match(/name="csrf" value="([^"]+)"/)![1];
 
-    // 3. a human POSTs Approve — the commit happens here, outside any agent
+    // 3. the human POSTs Approve — the commit happens here, outside any agent
     const post = await fetch(`${BASE}/admin/resolve`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", cookie },
@@ -306,18 +330,37 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
     expect(fc.text).toContain("Gift-card top-ups");
     await bob.close();
 
-    // 5. and the approval is attributed in the audit log
+    // 5. attributed to the human in the audit log
     const { Database } = await import("bun:sqlite");
     const db = new Database(path.join(tmpRepo, "knowledge.db"), { readonly: true });
     const row = db
       .query("SELECT user, tool FROM audit WHERE tool = 'approval_accepted' ORDER BY id DESC")
       .get() as { user: string; tool: string } | null;
     db.close();
-    expect(row?.user).toBe("alice@co.test");
+    expect(row?.user).toBe("boss");
+  });
+
+  it("a member can view but NOT approve (role-gated)", async () => {
+    const alice = await connect("tok-alice");
+    await call(alice, "report_correction", { kind: "gotcha", content: "Members must not be able to approve this" });
+    await alice.close();
+    const cookie = await cookieFor("viewer", "viewer-pass");
+    const page = await (await fetch(`${BASE}/admin`, { headers: { cookie } })).text();
+    expect(page).toContain("Members must not be able to approve this"); // can see
+    expect(page).toContain("viewing only"); // told they can't act
+    expect(page).not.toContain("name=\"action\" value=\"accepted\""); // no approve button
+    // and a forged resolve POST from a member is refused server-side
+    const r = await fetch(`${BASE}/admin/resolve`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ id: "999", csrf: "x", action: "accepted" }),
+      redirect: "manual",
+    });
+    expect([403]).toContain(r.status); // bad csrf or role — either way refused
   });
 
   it("rejects a resolve POST with a bad CSRF token", async () => {
-    const cookie = await login("tok-bob");
+    const cookie = await cookieFor("boss", "s3cret-pass");
     const r = await fetch(`${BASE}/admin/resolve`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", cookie },
@@ -327,7 +370,7 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
     expect(r.status).toBe(403);
   });
 
-  it("a resolve POST without a session is refused (no cookie → login form, not an action)", async () => {
+  it("a resolve POST without a session is refused", async () => {
     const r = await fetch(`${BASE}/admin/resolve`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
@@ -337,6 +380,13 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
     expect(r.status).toBe(401);
   });
 
+  it("the audit log page lists actions for a signed-in admin (5.6)", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const page = await (await fetch(`${BASE}/admin/audit`, { headers: { cookie } })).text();
+    expect(page).toContain("audit log");
+    expect(page).toContain("admin_login"); // our own login is recorded
+  });
+
   it("escapes attacker-influenceable correction content (no stored XSS in the gate)", async () => {
     const alice = await connect("tok-alice");
     await call(alice, "report_correction", {
@@ -344,7 +394,7 @@ describe("approval surface (the human accept path, Phase 5.5)", () => {
       content: "<script>alert('xss')</script> pwn",
     });
     await alice.close();
-    const cookie = await login("tok-alice");
+    const cookie = await cookieFor("boss", "s3cret-pass");
     const page = await (await fetch(`${BASE}/admin`, { headers: { cookie } })).text();
     expect(page).not.toContain("<script>alert('xss')</script>");
     expect(page).toContain("&lt;script&gt;");

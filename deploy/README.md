@@ -35,6 +35,20 @@ curl localhost:8787/health
 
 On Fly.io: `fly launch --no-deploy` (port 8787, add a volume mounted at `/data`), `fly secrets set SETOKU_DATABASE_URL=... SETOKU_TOKENS=...`, `fly deploy`.
 
+## 3b. Create an admin account (for the approval surface)
+
+The web approval surface (`/admin`) authenticates with **local accounts**, not
+the MCP tokens — a human signs in with a username + password an agent never
+holds, so it can't self-approve (I9). Bootstrap the first admin on the box:
+
+```bash
+docker compose exec server bun gateway/admin-cli.ts create-user <name> --role admin
+# prompts for a password (or pass SETOKU_NEW_PASSWORD=… for unattended setup)
+```
+
+Then visit `https://<your-host>/admin` and sign in. (`--role member` makes a
+view-only account that can read the queue but not approve.)
+
 ## 4. Connect users
 
 **Claude Code:**

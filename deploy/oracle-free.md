@@ -69,6 +69,7 @@ cp .env.example .env && nano .env   # domain, secrets (openssl rand -hex 24), bu
 echo 'SETOKU_CH_PRESET=roomy' >> .env   # this is the 24 GB box
 docker compose up -d --wait
 curl -s https://setoku.<domain>/healthz   # expect {"ok":true,...}
+docker compose exec server bun gateway/admin-cli.ts create-user you --role admin  # approval-surface login
 crontab deploy/backup/cron.example        # edit paths first if not /opt/setoku
 ```
 

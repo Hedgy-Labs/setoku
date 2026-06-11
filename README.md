@@ -578,16 +578,28 @@ can drive it conversationally.
 
 ## Phase 5 — Multi-user auth & the approval surface
 
-Design (decided): **AuthN** follows the MCP spec — OAuth 2.1 for remote MCP clients.
-Setoku is its own authorization server by default (local accounts in the context-store
-Postgres, argon2id password hashing, login/consent pages served by `server/`); an
-optional upstream **OIDC** mode delegates identity to Google Workspace/Okta while
-authorization stays local. The prototype's secret-URL token remains the supported
-*single-user mode*. **AuthZ** maps Setoku roles to real database roles —
-engine-enforced GRANTs, per I9. **Admin** is a deliberately tiny web surface (the
-OAuth pages force a web surface to exist anyway): pending approvals (grants +
-corrections — one inbox), users/roles, token management, audit log. Agents propose
-via MCP tools; humans click approve. No dashboard ambitions.
+Design (decided): **AuthN** is split by principal. *Humans* sign in to the web
+admin surface with **local accounts — username + password (argon2id), user/pass
+only; upstream OIDC was descoped.** *Agents* (MCP clients) keep per-user bearer
+tokens, which authorize **connect + propose only**. The separation is the point:
+an agent holds a token it can even read from its own config, but never a human's
+password, so it cannot authenticate to the approval surface and self-approve
+(I9). **AuthZ** maps Setoku roles to real database roles — engine-enforced GRANTs,
+per I9. **Admin** is a deliberately tiny web surface: pending approvals,
+users/roles, audit log. Agents propose via MCP tools; humans click approve. No
+dashboard ambitions.
+
+*Status 2026-06-11: the human-auth core is built and verified. Local accounts
+(`accounts` table, argon2id via Bun.password) with an `admin-cli.ts create-user`
+bootstrap (first admin can't arrive through an authed channel); cookie sessions
+(HttpOnly/Secure/SameSite=Strict, CSRF tokens); the `/admin` approval surface
+(5.5) and audit-log page (5.6); role-gating so only admins may accept. The
+membrane now holds end-to-end: a test proves an MCP bearer token is rejected at
+`/admin/login`. **Deferred:** full OAuth 2.1 token issuance for MCP clients
+(today's bearer tokens are propose-only, which is sufficient), and the deep
+roles→engine-GRANT materialization + grant-request membrane (5.3 beyond the
+SELECT-only lake user, 5.4, 5.5 grants) — those need the live box and real DB
+roles. OIDC (5.2) is intentionally not built.*
 
 **Figure 3 — why table access can't be bypassed.** Enforcement lives in the database
 engines, not in our code (I9): `run_query` binds each session to the caller's real
@@ -613,12 +625,12 @@ sequenceDiagram
     Note over M,E: no SQL parsing for security — the engine is the wall
 ```
 
-- [ ] **5.1 OAuth 2.1 AS + local accounts:** authorization-code + PKCE, dynamic
+- [x] **5.1 Local accounts (user/pass) + sessions:** ~~OAuth 2.1 AS~~ — authorization-code + PKCE, dynamic
   client registration, token issuance/refresh/revocation; login + consent pages;
   `setoku admin create-user` CLI bootstrap (first admin cannot arrive via a channel
   that requires auth). **AC:** Claude.ai / Claude Code connect as a remote MCP
   connector through the full OAuth flow; revoked token fails immediately.
-- [ ] **5.2 Optional upstream OIDC:** configure issuer + client creds → login page
+- [ ] **5.2 Optional upstream OIDC:** *(descoped — user/pass only)* configure issuer + client creds → login page
   becomes "Sign in with <IdP>"; map IdP identity → local user record; local
   passwords disabled in this mode. **AC:** end-to-end against a test Google
   Workspace tenant.
@@ -638,7 +650,7 @@ sequenceDiagram
   request → human approval → engine grant exists; agent cannot find any tool
   sequence that changes authority without the approval step (write a test that
   tries).
-- [ ] **5.6 Audit log page:** who/what/when for logins, token events, grant
+- [x] **5.6 Audit log page:** who/what/when for logins, token events, grant
   changes, provisioning actions, accepted corrections. Append-only table.
   **AC:** every mutation in 5.1–5.5 produces exactly one audit row.
 
