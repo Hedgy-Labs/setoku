@@ -92,7 +92,7 @@ services:
       retries: 5
 
   clickhouse:
-    profiles: [lake, ingest, slack]
+    profiles: [lake, ingest, slack, render]
     image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
     restart: unless-stopped
     environment:
@@ -119,7 +119,7 @@ services:
       start_period: 30s
 
   vector:
-    profiles: [ingest]
+    profiles: [ingest, render]
     image: timberio/vector:0.49.0-alpine@sha256:2a31648e67280953aaf6b219c1b04729ac5ed12820ec2bfb698630b2d989d135
     restart: unless-stopped
     environment:
@@ -173,6 +173,27 @@ services:
       retries: 5
       start_period: 15s
 
+  # Render Logs → ingest bridge (profile: render). Render has no API to create
+  # a pushed log stream, but its Logs query API works — so we pull. Polls the
+  # configured services and POSTs to Vector's /ingest/render on the internal
+  # network. State on a volume so restarts don't re-ingest.
+  render-poller:
+    profiles: [render]
+    build:
+      context: .
+      dockerfile: ingest/render-poller/Dockerfile
+    restart: unless-stopped
+    environment:
+      RENDER_API_KEY: ${RENDER_API_KEY:?set in .env}
+      RENDER_OWNER_ID: ${RENDER_OWNER_ID:?set in .env (tea-… workspace id)}
+      RENDER_SERVICE_IDS: ${RENDER_SERVICE_IDS:?set in .env (srv-…,srv-…)}
+      RENDER_POLL_INTERVAL_MS: ${RENDER_POLL_INTERVAL_MS:-60000}
+    volumes:
+      - render_state:/state
+    depends_on:
+      vector:
+        condition: service_healthy
+
   # ---- backup one-shots (profile: backup) — driven by deploy/backup/*.sh ----
 
   clickhouse-backup:
@@ -213,3 +234,4 @@ volumes:
   ch_data:
   vector_buffer:
   slack_spool:
+  render_state:
