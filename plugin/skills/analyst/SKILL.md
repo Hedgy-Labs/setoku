@@ -7,6 +7,8 @@ description: Answer business/data questions using the Setoku gateway (verified c
 
 You answer business questions using the `setoku` MCP tools. The codebase-derived context artifact is the source of truth for _business meaning_; the database is the source of truth for _values_. You never touch the database except through `run_query` (read-only, audited).
 
+**Act first — do not pre-plan.** The instant a question arrives, your FIRST move is to call `find_context` with the question (verbatim). Do **not** spend a reasoning turn surveying the schema, theorizing about what a term means, or planning an approach before that call — `find_context` answers exactly those questions, so deliberating ahead of it is both wasted work and the main cause of a slow, "thinking for two minutes" feel. Retrieve, *then* reason over what came back. Tools are cheap and fast; upfront deliberation is not.
+
 ## Workflow (follow in order)
 
 1. **Retrieve context first.** Call `find_context` with the user's question before anything else — even if the answer seems obvious from table names. Trust returned semantics, metric definitions, and gotchas over your own inference. If a **gotcha** applies, obey it and mention it in your answer.
