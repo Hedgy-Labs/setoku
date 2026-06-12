@@ -125,7 +125,7 @@ function shell(title: string, inner: string): string {
 <title>${esc(title)}</title>
 <link rel="stylesheet" href="${stylesheetHref}">
 </head>
-<body class="min-h-screen bg-stone-950 font-sans text-stone-100 antialiased">${inner}</body></html>`;
+<body class="min-h-screen overflow-x-clip bg-stone-950 font-sans text-stone-100 antialiased">${inner}</body></html>`;
 }
 
 type Tab = "pending" | "knowledge" | "sources" | "audit";
@@ -135,31 +135,62 @@ function brand(size = "h-7 w-7 text-xs"): string {
   return `<div class="grid ${size} place-items-center rounded-lg bg-white font-bold text-stone-900">S</div>`;
 }
 
-/** Tab nav shared by every signed-in page; the active tab is highlighted. */
-function nav(active: Tab): string {
-  const tab = (href: string, label: string, key: Tab) =>
-    `<a href="${href}" class="tab${key === active ? " tab-active" : ""}">${esc(label)}</a>`;
-  return `<nav class="flex items-center gap-1">${tab("/admin", "Pending", "pending")}${tab(
-    "/admin/knowledge",
-    "Knowledge",
-    "knowledge",
-  )}${tab("/admin/sources", "Sources", "sources")}${tab("/admin/audit", "Audit", "audit")}</nav>`;
+const TABS: ReadonlyArray<readonly [string, string, Tab]> = [
+  ["/admin", "Pending", "pending"],
+  ["/admin/knowledge", "Knowledge", "knowledge"],
+  ["/admin/sources", "Sources", "sources"],
+  ["/admin/audit", "Audit", "audit"],
+];
+
+/** Tab links; `extra` stacks them full-width for the mobile menu. */
+function navTabs(active: Tab, extra = ""): string {
+  return TABS.map(
+    ([href, label, key]) =>
+      `<a href="${href}" class="tab${extra}${key === active ? " tab-active" : ""}">${esc(label)}</a>`,
+  ).join("");
 }
 
-/** Sticky top bar: brand, nav, identity, and the sign-out form (carries CSRF). */
+/** The sign-out form (carries the session CSRF token). */
+function signoutForm(session: Session, full = false): string {
+  return `<form method="POST" action="/admin/logout"${full ? ' class="block"' : ""}>
+      <input type="hidden" name="csrf" value="${esc(session.csrf)}">
+      <button type="submit" class="btn btn-ghost${full ? " w-full" : ""}">Sign out</button>
+    </form>`;
+}
+
+/**
+ * Sticky top bar. Above `sm` it's an inline bar; below it (phones) it collapses
+ * into a hamburger — a CSS-only <details> whose menu flows *in-flow* below the
+ * bar (full-width, not absolutely positioned), so it can't overflow sideways.
+ * The menu closes naturally on navigation.
+ */
 function topbar(session: Session, active: Tab): string {
+  const hamburger = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>`;
+  const identity = `${esc(session.identity)} · ${esc(session.role)}`;
+  const mark = `<span class="flex items-center gap-2">${brand()}<span class="font-semibold">Setoku</span></span>`;
   return `<header class="sticky top-0 z-10 border-b border-stone-800 bg-stone-950/80 backdrop-blur">
-  <div class="mx-auto flex max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
+  <!-- desktop bar (sm and up) -->
+  <div class="mx-auto hidden max-w-4xl items-center justify-between gap-4 px-5 py-3 sm:flex">
     <a href="/admin" class="flex items-center gap-2">${brand()}<span class="font-semibold">Setoku</span></a>
-    ${nav(active)}
-    <div class="ml-auto flex items-center gap-3">
-      <span class="hidden text-xs text-stone-500 sm:inline">${esc(session.identity)} · ${esc(session.role)}</span>
-      <form method="POST" action="/admin/logout">
-        <input type="hidden" name="csrf" value="${esc(session.csrf)}">
-        <button type="submit" class="btn btn-ghost">Sign out</button>
-      </form>
+    <div class="flex items-center gap-3">
+      <nav class="flex items-center gap-1">${navTabs(active)}</nav>
+      <span class="text-xs text-stone-500">${identity}</span>
+      ${signoutForm(session)}
     </div>
   </div>
+  <!-- mobile bar with hamburger menu (phones) -->
+  <details class="mx-auto max-w-4xl sm:hidden">
+    <summary class="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-3 [&::-webkit-details-marker]:hidden">
+      <a href="/admin">${mark}</a>
+      <span class="btn btn-ghost" aria-label="Menu">${hamburger}</span>
+    </summary>
+    <div class="border-t border-stone-800 px-3 py-3">
+      <nav class="flex flex-col gap-1">${navTabs(active, " block w-full")}</nav>
+      <div class="my-2 border-t border-stone-800"></div>
+      <div class="px-3 pb-2 text-xs text-stone-500">${identity}</div>
+      ${signoutForm(session, true)}
+    </div>
+  </details>
 </header>`;
 }
 
@@ -321,12 +352,12 @@ export function renderKnowledgePage(store: KnowledgeStore, session: Session): st
           )
           .join(" · ");
         const badge = d.verified
-          ? '<span class="badge badge-ok">verified</span>'
-          : '<span class="badge badge-idle">unverified</span>';
+          ? '<span class="badge badge-ok shrink-0">verified</span>'
+          : '<span class="badge badge-idle shrink-0">unverified</span>';
         return `<details class="card group">
-      <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 font-medium text-stone-200 [&::-webkit-details-marker]:hidden">
-        <span class="text-stone-500 transition group-open:rotate-90">›</span>
-        <span class="flex-1">${esc(d.name)}</span>${badge}
+      <summary class="flex min-w-0 cursor-pointer list-none items-center gap-2 px-4 py-3 font-medium text-stone-200 [&::-webkit-details-marker]:hidden">
+        <span class="shrink-0 text-stone-500 transition group-open:rotate-90">›</span>
+        <span class="min-w-0 flex-1 truncate">${esc(d.name)}</span>${badge}
       </summary>
       <div class="border-t border-stone-800 px-4 py-3">
         <div class="whitespace-pre-wrap text-sm leading-relaxed text-stone-300">${esc(d.body)}</div>
