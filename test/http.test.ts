@@ -397,8 +397,10 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const page = await r.text();
     expect(page).toContain("Setoku — sources");
     expect(page).toContain("Business database");
-    expect(page).toContain("Data lake");
     expect(page).toContain("Knowledge store");
+    // flat source rows with colored status (lime/amber/red) + legend
+    expect(page).toContain("status-");
+    expect(page).toContain("flowing");
   });
 
   it("a resolve POST without a session is refused", async () => {

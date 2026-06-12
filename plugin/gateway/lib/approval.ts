@@ -185,11 +185,6 @@ function flashBanner(flash?: string): string {
     : "";
 }
 
-/** Small uppercase section label. */
-function sectionLabel(text: string): string {
-  return `<h2 class="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-stone-500">${esc(text)}</h2>`;
-}
-
 /** The login card shown to anyone without a valid session (no secret in URL). */
 export function renderLoginPage(flash?: string): string {
   return shell(
@@ -379,67 +374,121 @@ export interface SourcesData {
   knowledge: { docs: number; byType: Record<string, number> };
 }
 
+type SourceStatus = { color: "green" | "yellow" | "red"; label: string };
+
+/** Parse a lake timestamp ("2026-06-12 19:25:52.036", UTC) to epoch ms. */
+function lakeTsToMs(s: string | null | undefined): number | null {
+  if (!s) return null;
+  let t = s.includes("T") ? s : s.replace(" ", "T");
+  if (!/(Z|[+-]\d\d:?\d\d)$/.test(t)) t += "Z";
+  const ms = Date.parse(t);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** Compact "3m ago" / "2h ago" / "5d ago" from a lake timestamp. */
+function relTime(s: string | null | undefined): string {
+  const ms = lakeTsToMs(s);
+  if (ms == null) return "";
+  const sec = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (sec < 60) return `${sec}s ago`;
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 48) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
+/** Freshness → status: green if data within 24h, yellow if stale/empty. */
+function freshnessStatus(rows: number | null, last: string | null): SourceStatus {
+  if (!rows || !last) return { color: "yellow", label: "no data" };
+  const ms = lakeTsToMs(last);
+  if (ms != null && Date.now() - ms < 24 * 60 * 60 * 1000)
+    return { color: "green", label: "flowing" };
+  return { color: "yellow", label: "stale" };
+}
+
 /** Read-only view of what's connected + whether data is flowing (gathered live). */
 export function renderSourcesPage(session: Session, s: SourcesData): string {
-  const badge = (ok: boolean, label?: string): string =>
-    ok
-      ? `<span class="badge badge-ok">${esc(label ?? "connected")}</span>`
-      : `<span class="badge badge-down">${esc(label ?? "down")}</span>`;
-  const row = (k: string, v: string): string =>
-    `<div class="flex items-center justify-between gap-4 border-b border-stone-800/60 px-4 py-2.5 last:border-0"><span class="text-sm text-stone-500">${esc(
+  // one detail key/value line
+  const kv = (k: string, v: string): string =>
+    `<div class="flex items-start justify-between gap-4 py-1.5"><span class="text-stone-500">${esc(
       k,
-    )}</span><span class="text-sm text-stone-200">${v}</span></div>`;
+    )}</span><span class="text-right text-stone-200">${v}</span></div>`;
+  // one expandable source row: name + relative time + colored status dot
+  const sourceRow = (
+    name: string,
+    status: SourceStatus,
+    last: string | null,
+    detail: string,
+  ): string => {
+    const rel = relTime(last);
+    return `<details class="card group">
+    <summary class="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+      <span class="shrink-0 text-stone-500 transition group-open:rotate-90">›</span>
+      <span class="min-w-0 flex-1 truncate font-medium text-stone-100">${esc(name)}</span>
+      ${rel ? `<span class="shrink-0 text-xs text-stone-500">${esc(rel)}</span>` : ""}
+      <span class="status status-${status.color} shrink-0"><span class="dot dot-${status.color}"></span>${esc(status.label)}</span>
+    </summary>
+    <div class="border-t border-stone-800 px-4 py-2.5 text-sm">${detail}</div>
+  </details>`;
+  };
 
+  const rows: string[] = [];
+
+  // Business database (Postgres)
   const pg = s.postgres;
-  const pgBody = !pg.configured
-    ? '<div class="card p-6 text-stone-500">No business database configured.</div>'
-    : `<div class="card">
-      ${row("status", `${pg.ok ? badge(true) : badge(false, "unreachable")}${pg.error ? ` <span class="text-xs text-stone-500">${esc(pg.error)}</span>` : ""}`)}
-      ${row("env var", `<code class="kbd">${esc(pg.envVar ?? "—")}</code>`)}
-      ${pg.tableCount != null ? row("tables in scope", String(pg.tableCount)) : ""}
-      ${pg.allow?.length ? row("allow", pg.allow.map((a) => `<code class="kbd">${esc(a)}</code>`).join(" ")) : ""}
-    </div>`;
+  if (!pg.configured) {
+    rows.push(
+      sourceRow("Business database (Postgres)", { color: "yellow", label: "not configured" }, null, kv("note", "no SETOKU_DATABASE_URL")),
+    );
+  } else {
+    const status: SourceStatus = pg.ok
+      ? { color: "green", label: "healthy" }
+      : { color: "red", label: "unreachable" };
+    const detail =
+      (pg.error ? kv("error", `<span class="text-red-400">${esc(pg.error)}</span>`) : kv("status", "reachable")) +
+      kv("env var", `<code class="kbd">${esc(pg.envVar ?? "—")}</code>`) +
+      (pg.tableCount != null ? kv("tables in scope", String(pg.tableCount)) : "") +
+      (pg.allow?.length ? kv("allow", pg.allow.map((a) => `<code class="kbd">${esc(a)}</code>`).join(" ")) : "");
+    rows.push(sourceRow("Business database (Postgres)", status, null, detail));
+  }
 
+  // Data lake connectors
   const lake = s.lake;
-  const lakeRows = lake.tables
-    .map(
-      (t) => `<tr class="border-b border-stone-800/60 last:border-0">
-      <td class="px-4 py-2.5 text-stone-200">${esc(t.source)}</td>
-      <td class="px-4 py-2.5 text-right tabular-nums text-stone-300">${
-        t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US")
-      }</td>
-      <td class="px-4 py-2.5 text-stone-400">${
-        t.last ? esc(String(t.last).slice(0, 19)) + " UTC" : '<span class="badge badge-idle">no data</span>'
-      }</td>
-    </tr>`,
-    )
-    .join("");
-  const lakeBody = !lake.configured
-    ? '<div class="card p-6 text-stone-500">No data lake configured (SETOKU_LAKE_URL).</div>'
-    : !lake.ok
-      ? `<div class="card p-4">${badge(false, "unreachable")} <span class="text-xs text-stone-500">${esc(lake.error ?? "")}</span></div>`
-      : `<div class="mb-2">${badge(true)}</div>
-<div class="card overflow-x-auto"><table class="w-full text-left text-sm">
-  <thead><tr class="border-b border-stone-800 text-xs uppercase tracking-wide text-stone-500"><th class="px-4 py-2.5 font-medium">connector</th><th class="px-4 py-2.5 text-right font-medium">rows</th><th class="px-4 py-2.5 font-medium">last ingest</th></tr></thead>
-  <tbody>${lakeRows || '<tr><td colspan="3" class="px-4 py-4 text-stone-500">no source tables</td></tr>'}</tbody>
-</table></div>`;
+  if (lake.configured && !lake.ok) {
+    rows.push(
+      sourceRow("Data lake (ClickHouse)", { color: "red", label: "unreachable" }, null, kv("error", `<span class="text-red-400">${esc(lake.error ?? "unreachable")}</span>`)),
+    );
+  } else if (lake.configured) {
+    for (const t of lake.tables) {
+      const detail =
+        kv("rows", t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US")) +
+        kv("last ingest", t.last ? `${esc(String(t.last).slice(0, 19))} UTC` : "—");
+      rows.push(sourceRow(t.source, freshnessStatus(t.rows, t.last), t.last, detail));
+    }
+  }
 
+  // Knowledge store
   const k = s.knowledge;
-  const kPairs =
+  const kStatus: SourceStatus = k.docs > 0 ? { color: "green", label: "healthy" } : { color: "yellow", label: "empty" };
+  const kDetail =
+    kv("documents", String(k.docs)) +
     Object.entries(k.byType)
-      .map(([t, n]) => `${esc(t)} ${n}`)
-      .join(" · ") || "empty";
+      .map(([t, n]) => kv(t, String(n)))
+      .join("");
+  rows.push(sourceRow("Knowledge store", kStatus, null, kDetail));
 
   return page(
     session,
     "sources",
     "Setoku — sources",
-    `${heading("Sources", "What's wired up and whether data is actually flowing. Read-only.")}
-${sectionLabel("Business database (Postgres)")}${pgBody}
-${sectionLabel("Data lake (ClickHouse)")}${lakeBody}
-${sectionLabel("Knowledge store")}<div class="card p-4 text-sm text-stone-300">${esc(String(k.docs))} curated doc(s) · ${kPairs}</div>
-<p class="mt-6 text-xs leading-relaxed text-stone-500">"Connected" means configured + reachable; per-connector rows and
-last-ingest are read live from the lake on each load.</p>`,
+    `${heading("Sources", "What's connected and whether data is flowing — click a source to expand. Read-only, refreshed live on each load.")}
+<div class="space-y-2">${rows.join("")}</div>
+<div class="mt-5 flex items-center gap-4 text-xs text-stone-500">
+  <span class="status status-green"><span class="dot dot-green"></span>flowing</span>
+  <span class="status status-yellow"><span class="dot dot-yellow"></span>stale / empty</span>
+  <span class="status status-red"><span class="dot dot-red"></span>down</span>
+</div>`,
   );
 }
 

@@ -49,4 +49,29 @@
   .kbd {
     @apply rounded bg-stone-800 px-1.5 py-0.5 font-mono text-xs text-stone-300;
   }
+  /* status indicators (semantic, not brand accent): lime / amber / red */
+  .status {
+    @apply inline-flex items-center gap-1.5 text-xs font-medium;
+  }
+  .status-green {
+    @apply text-lime-400;
+  }
+  .status-yellow {
+    @apply text-amber-400;
+  }
+  .status-red {
+    @apply text-red-400;
+  }
+  .dot {
+    @apply inline-block h-2 w-2 shrink-0 rounded-full;
+  }
+  .dot-green {
+    @apply bg-lime-400;
+  }
+  .dot-yellow {
+    @apply bg-amber-400;
+  }
+  .dot-red {
+    @apply bg-red-400;
+  }
 }
