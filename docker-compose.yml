@@ -27,6 +27,9 @@ services:
       - "${SETOKU_EDGE_HTTPS_PORT:-443}:443/udp" # HTTP/3
     environment:
       SETOKU_DOMAIN: ${SETOKU_DOMAIN:-localhost}
+      # optional second hostname served by the same site (cert issued too) —
+      # e.g. an old sslip.io domain kept alive while migrating to a real domain
+      SETOKU_ALT_DOMAIN: ${SETOKU_ALT_DOMAIN:-}
       SETOKU_INGEST_TOKEN: "${SETOKU_INGEST_TOKEN:?generate one with openssl rand -hex 24}"
       # Vercel drain endpoint-verification value (echoed on /ingest/* — see Caddyfile)
       SETOKU_VERCEL_VERIFY: ${SETOKU_VERCEL_VERIFY:-}

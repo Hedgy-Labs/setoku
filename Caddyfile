@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # Setoku edge — the only public-facing container (I1).
 # Auto-HTTPS for SETOKU_DOMAIN; `localhost` uses Caddy's internal CA (dev).
+# SETOKU_ALT_DOMAIN is an optional second hostname served by the same site
+# (each gets its own Let's Encrypt cert) — used to keep an old domain alive
+# while migrating to a new one. Empty by default (single-domain deploys).
 
-{$SETOKU_DOMAIN:localhost} {
+{$SETOKU_DOMAIN:localhost} {$SETOKU_ALT_DOMAIN} {
 	encode gzip
 
 	# Vercel log-drain endpoint verification (I7): when you create a drain,
