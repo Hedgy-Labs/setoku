@@ -1,49 +1,52 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Tailwind v4 source for the /admin surface. Compiled to app.css (committed,
  * served by the gateway at /admin/app.css). Rebuild:  bun run build:admin-css
- * Tailwind scans approval.ts (the render functions) for the classes in use. */
+ * Tailwind scans approval.ts (the render functions) for the classes in use.
+ *
+ * Palette: dark "stone + white" — neutral stone greys with white as the only
+ * emphasis. No chromatic accent (muted red kept only for error/down states). */
 @import "tailwindcss";
 @source "../lib/approval.ts";
 
 @layer components {
   .card {
-    @apply rounded-xl border border-zinc-800 bg-zinc-900/50;
+    @apply rounded-xl border border-stone-800 bg-stone-900/50;
   }
   .input {
-    @apply block w-full rounded-lg border border-zinc-700 bg-zinc-950/50 px-3 py-2 text-sm
-      text-zinc-100 outline-none placeholder:text-zinc-500
-      focus:border-emerald-500/60 focus:ring-2 focus:ring-emerald-500/20;
+    @apply block w-full rounded-lg border border-stone-700 bg-stone-950/50 px-3 py-2 text-sm
+      text-stone-100 outline-none placeholder:text-stone-500
+      focus:border-stone-400 focus:ring-2 focus:ring-stone-400/20;
   }
   .btn {
     @apply inline-flex cursor-pointer select-none items-center justify-center gap-1.5
       rounded-lg px-3.5 py-2 text-sm font-medium transition;
   }
   .btn-primary {
-    @apply bg-emerald-600 text-white hover:bg-emerald-500;
+    @apply bg-white text-stone-900 hover:bg-stone-200;
   }
   .btn-ghost {
-    @apply border border-zinc-700 text-zinc-300 hover:bg-zinc-800;
+    @apply border border-stone-700 text-stone-300 hover:bg-stone-800;
   }
   .badge {
     @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium;
   }
   .badge-ok {
-    @apply border-emerald-500/30 bg-emerald-500/10 text-emerald-400;
+    @apply border-stone-600 bg-stone-100/10 text-stone-100;
   }
   .badge-down {
     @apply border-red-500/30 bg-red-500/10 text-red-400;
   }
   .badge-idle {
-    @apply border-zinc-700 text-zinc-500;
+    @apply border-stone-700 text-stone-500;
   }
   .tab {
-    @apply rounded-lg px-3 py-1.5 text-sm font-medium text-zinc-400 transition
-      hover:bg-zinc-800 hover:text-zinc-200;
+    @apply rounded-lg px-3 py-1.5 text-sm font-medium text-stone-400 transition
+      hover:bg-stone-800 hover:text-stone-200;
   }
   .tab-active {
-    @apply bg-zinc-800 text-zinc-100 hover:bg-zinc-800 hover:text-zinc-100;
+    @apply bg-stone-800 text-stone-100 hover:bg-stone-800 hover:text-stone-100;
   }
   .kbd {
-    @apply rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-xs text-zinc-300;
+    @apply rounded bg-stone-800 px-1.5 py-0.5 font-mono text-xs text-stone-300;
   }
 }

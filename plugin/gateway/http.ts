@@ -148,7 +148,7 @@ function readRawBody(req: http.IncomingMessage): Promise<string> {
 // Approval-surface sessions — the human authenticates once with their token
 // and gets an opaque cookie; the token never rides in a URL (no Slack/referer/
 // history leakage). One process, so in-memory is fine.
-const sessions = new SessionStore();
+const sessions = new SessionStore(store);
 
 const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
 

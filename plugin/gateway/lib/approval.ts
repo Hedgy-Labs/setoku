@@ -58,39 +58,31 @@ export interface Session {
 }
 
 /**
- * In-memory session store for the approval surface. The gateway is a single
- * process, so this is sufficient; sessions don't survive a restart (re-login).
- * The cookie carries an opaque random id — never the bearer token.
+ * Session store for the approval surface, backed by the KnowledgeStore (SQLite
+ * on the durable volume) — NOT process memory — so a server restart/redeploy
+ * does not sign everyone out. The cookie carries an opaque random id; the bearer
+ * token never appears here.
  */
 export class SessionStore {
-  private sessions = new Map<string, Session>();
-  constructor(private readonly ttlMs = 12 * 60 * 60 * 1000) {}
+  constructor(
+    private readonly store: KnowledgeStore,
+    private readonly ttlMs = 12 * 60 * 60 * 1000,
+  ) {}
 
   create(identity: string, role: string): { sid: string; csrf: string } {
     const sid = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, "");
     const csrf = crypto.randomUUID();
-    this.sessions.set(sid, {
-      identity,
-      role,
-      csrf,
-      expires: Date.now() + this.ttlMs,
-    });
+    this.store.createSession({ sid, identity, role, csrf, expires: Date.now() + this.ttlMs });
     return { sid, csrf };
   }
 
   get(sid: string | undefined): Session | null {
     if (!sid) return null;
-    const s = this.sessions.get(sid);
-    if (!s) return null;
-    if (s.expires < Date.now()) {
-      this.sessions.delete(sid);
-      return null;
-    }
-    return s;
+    return this.store.getSession(sid);
   }
 
   destroy(sid: string | undefined): void {
-    if (sid) this.sessions.delete(sid);
+    if (sid) this.store.destroySession(sid);
   }
 }
 
@@ -124,14 +116,14 @@ function shell(title: string, inner: string): string {
 <title>${esc(title)}</title>
 <link rel="stylesheet" href="/admin/app.css">
 </head>
-<body class="min-h-screen bg-zinc-950 font-sans text-zinc-100 antialiased">${inner}</body></html>`;
+<body class="min-h-screen bg-stone-950 font-sans text-stone-100 antialiased">${inner}</body></html>`;
 }
 
 type Tab = "pending" | "knowledge" | "sources" | "audit";
 
-/** The brand mark (emerald square). */
+/** The brand mark (white square). */
 function brand(size = "h-7 w-7 text-xs"): string {
-  return `<div class="grid ${size} place-items-center rounded-lg bg-emerald-600 font-bold text-white">S</div>`;
+  return `<div class="grid ${size} place-items-center rounded-lg bg-white font-bold text-stone-900">S</div>`;
 }
 
 /** Tab nav shared by every signed-in page; the active tab is highlighted. */
@@ -147,12 +139,12 @@ function nav(active: Tab): string {
 
 /** Sticky top bar: brand, nav, identity, and the sign-out form (carries CSRF). */
 function topbar(session: Session, active: Tab): string {
-  return `<header class="sticky top-0 z-10 border-b border-zinc-800 bg-zinc-950/80 backdrop-blur">
+  return `<header class="sticky top-0 z-10 border-b border-stone-800 bg-stone-950/80 backdrop-blur">
   <div class="mx-auto flex max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
     <a href="/admin" class="flex items-center gap-2">${brand()}<span class="font-semibold">Setoku</span></a>
     ${nav(active)}
     <div class="ml-auto flex items-center gap-3">
-      <span class="hidden text-xs text-zinc-500 sm:inline">${esc(session.identity)} · ${esc(session.role)}</span>
+      <span class="hidden text-xs text-stone-500 sm:inline">${esc(session.identity)} · ${esc(session.role)}</span>
       <form method="POST" action="/admin/logout">
         <input type="hidden" name="csrf" value="${esc(session.csrf)}">
         <button type="submit" class="btn btn-ghost">Sign out</button>
@@ -173,20 +165,20 @@ function page(session: Session, active: Tab, title: string, body: string): strin
 /** A page heading with an optional sub line (sub may contain trusted HTML). */
 function heading(title: string, sub?: string): string {
   return `<div class="mb-5"><h1 class="text-xl font-semibold tracking-tight">${esc(title)}</h1>${
-    sub ? `<p class="mt-1 text-sm leading-relaxed text-zinc-400">${sub}</p>` : ""
+    sub ? `<p class="mt-1 text-sm leading-relaxed text-stone-400">${sub}</p>` : ""
   }</div>`;
 }
 
-/** An amber flash banner (escaped). */
+/** A neutral flash banner (escaped). */
 function flashBanner(flash?: string): string {
   return flash
-    ? `<div class="mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-300">${esc(flash)}</div>`
+    ? `<div class="mb-4 rounded-lg border border-stone-700 bg-stone-800/50 px-3 py-2 text-sm text-stone-300">${esc(flash)}</div>`
     : "";
 }
 
 /** Small uppercase section label. */
 function sectionLabel(text: string): string {
-  return `<h2 class="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-zinc-500">${esc(text)}</h2>`;
+  return `<h2 class="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-stone-500">${esc(text)}</h2>`;
 }
 
 /** The login card shown to anyone without a valid session (no secret in URL). */
@@ -196,7 +188,7 @@ export function renderLoginPage(flash?: string): string {
     `<main class="flex min-h-screen items-center justify-center p-6">
   <div class="card w-full max-w-sm p-7">
     <div class="mb-5 flex items-center gap-2">${brand("h-8 w-8 text-sm")}<h1 class="text-lg font-semibold">Setoku</h1></div>
-    <p class="mb-5 text-sm leading-relaxed text-zinc-400">Sign in to review pending
+    <p class="mb-5 text-sm leading-relaxed text-stone-400">Sign in to review pending
     knowledge. This is a separate credential from the access token you give
     Claude — agents never have it.</p>
     ${flashBanner(flash)}
@@ -225,11 +217,11 @@ export function renderAuditPage(store: KnowledgeStore, session: Session): string
       } catch {
         /* leave raw */
       }
-      return `<tr class="border-b border-zinc-800/60 last:border-0">
-      <td class="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-zinc-500">${esc(String(r.ts).slice(0, 19))}</td>
-      <td class="px-4 py-2.5 text-zinc-300">${esc(r.user)}</td>
+      return `<tr class="border-b border-stone-800/60 last:border-0">
+      <td class="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-stone-500">${esc(String(r.ts).slice(0, 19))}</td>
+      <td class="px-4 py-2.5 text-stone-300">${esc(r.user)}</td>
       <td class="px-4 py-2.5"><code class="kbd">${esc(r.tool)}</code></td>
-      <td class="px-4 py-2.5 text-zinc-400">${esc(summary)}</td>
+      <td class="px-4 py-2.5 text-stone-400">${esc(summary)}</td>
     </tr>`;
     })
     .join("");
@@ -240,10 +232,10 @@ export function renderAuditPage(store: KnowledgeStore, session: Session): string
     `${heading("Audit log", "Append-only; newest first.")}
 <div class="card overflow-x-auto">
   <table class="w-full text-left text-sm">
-    <thead><tr class="border-b border-zinc-800 text-xs uppercase tracking-wide text-zinc-500">
+    <thead><tr class="border-b border-stone-800 text-xs uppercase tracking-wide text-stone-500">
       <th class="px-4 py-2.5 font-medium">when (UTC)</th><th class="px-4 py-2.5 font-medium">who</th><th class="px-4 py-2.5 font-medium">action</th><th class="px-4 py-2.5 font-medium">detail</th>
     </tr></thead>
-    <tbody>${rows || '<tr><td colspan="4" class="px-4 py-4 text-zinc-500">No activity yet.</td></tr>'}</tbody>
+    <tbody>${rows || '<tr><td colspan="4" class="px-4 py-4 text-stone-500">No activity yet.</td></tr>'}</tbody>
   </table>
 </div>`,
   );
@@ -271,14 +263,14 @@ export function renderApprovalPage(
   const items = pending
     .map(
       (c) => `<div class="card p-4">
-      <div class="mb-2 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+      <div class="mb-2 flex flex-wrap items-center gap-2 text-xs text-stone-500">
         <span class="badge badge-idle">${esc(c.kind)}</span>
-        <span class="font-mono text-zinc-400">#${esc(c.id)}</span>
+        <span class="font-mono text-stone-400">#${esc(c.id)}</span>
         <span>proposed by ${esc(c.user)} · ${esc(String(c.ts).slice(0, 16))}${
           c.relatesTo ? ` · re: ${esc(c.relatesTo)}` : ""
         }</span>
       </div>
-      <div class="whitespace-pre-wrap text-sm leading-relaxed text-zinc-200">${esc(c.content)}</div>
+      <div class="whitespace-pre-wrap text-sm leading-relaxed text-stone-200">${esc(c.content)}</div>
       ${actionForm(c.id)}
     </div>`,
     )
@@ -296,10 +288,10 @@ ${flashBanner(flash)}
 ${
   mayApprove
     ? ""
-    : '<div class="mb-4 rounded-lg border border-zinc-700 bg-zinc-800/40 px-3 py-2 text-sm text-zinc-400">You are signed in as a <b class="text-zinc-200">member</b> — viewing only. Ask an admin to approve.</div>'
+    : '<div class="mb-4 rounded-lg border border-stone-700 bg-stone-800/40 px-3 py-2 text-sm text-stone-400">You are signed in as a <b class="text-stone-200">member</b> — viewing only. Ask an admin to approve.</div>'
 }
-<div class="mb-3 text-xs font-medium uppercase tracking-wide text-zinc-500">Pending (${pending.length})</div>
-<div class="space-y-3">${pending.length ? items : '<div class="card p-8 text-center text-zinc-500">Nothing pending. 🎉</div>'}</div>`,
+<div class="mb-3 text-xs font-medium uppercase tracking-wide text-stone-500">Pending (${pending.length})</div>
+<div class="space-y-3">${pending.length ? items : '<div class="card p-8 text-center text-stone-500">Nothing pending. 🎉</div>'}</div>`,
   );
 }
 
@@ -328,20 +320,20 @@ export function renderKnowledgePage(store: KnowledgeStore, session: Session): st
           ? '<span class="badge badge-ok">verified</span>'
           : '<span class="badge badge-idle">unverified</span>';
         return `<details class="card group">
-      <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 font-medium text-zinc-200 [&::-webkit-details-marker]:hidden">
-        <span class="text-zinc-500 transition group-open:rotate-90">›</span>
+      <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 font-medium text-stone-200 [&::-webkit-details-marker]:hidden">
+        <span class="text-stone-500 transition group-open:rotate-90">›</span>
         <span class="flex-1">${esc(d.name)}</span>${badge}
       </summary>
-      <div class="border-t border-zinc-800 px-4 py-3">
-        <div class="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300">${esc(d.body)}</div>
-        <div class="mt-3 text-xs text-zinc-500">${metaPairs ? metaPairs + " · " : ""}updated by ${esc(
+      <div class="border-t border-stone-800 px-4 py-3">
+        <div class="whitespace-pre-wrap text-sm leading-relaxed text-stone-300">${esc(d.body)}</div>
+        <div class="mt-3 text-xs text-stone-500">${metaPairs ? metaPairs + " · " : ""}updated by ${esc(
           d.updatedBy ?? "—",
         )}${d.updatedAt ? " · " + esc(String(d.updatedAt).slice(0, 16)) : ""}</div>
       </div>
     </details>`;
       })
       .join("");
-    return `<section class="mb-6"><h2 class="mb-2 text-xs font-medium uppercase tracking-wide text-zinc-500">${esc(
+    return `<section class="mb-6"><h2 class="mb-2 text-xs font-medium uppercase tracking-wide text-stone-500">${esc(
       type,
     )} (${list.length})</h2><div class="space-y-2">${items}</div></section>`;
   };
@@ -352,9 +344,9 @@ export function renderKnowledgePage(store: KnowledgeStore, session: Session): st
     "Setoku — knowledge",
     `${heading(
       "Knowledge",
-      `Curated business context the analyst reads as ground truth — ${docs.length} doc(s). Read-only here: curated edits come from a curator session, and corrections land in <a class="text-emerald-400 hover:underline" href="/admin">Pending</a> for review.`,
+      `Curated business context the analyst reads as ground truth — ${docs.length} doc(s). Read-only here: curated edits come from a curator session, and corrections land in <a class="font-medium text-stone-100 underline decoration-stone-600 underline-offset-2 hover:decoration-stone-300" href="/admin">Pending</a> for review.`,
     )}
-${docs.length ? sections : '<div class="card p-8 text-center text-zinc-500">No curated knowledge yet. Run <code class="kbd">/setoku:generate</code>.</div>'}`,
+${docs.length ? sections : '<div class="card p-8 text-center text-stone-500">No curated knowledge yet. Run <code class="kbd">/setoku:generate</code>.</div>'}`,
   );
 }
 
@@ -385,15 +377,15 @@ export function renderSourcesPage(session: Session, s: SourcesData): string {
       ? `<span class="badge badge-ok">${esc(label ?? "connected")}</span>`
       : `<span class="badge badge-down">${esc(label ?? "down")}</span>`;
   const row = (k: string, v: string): string =>
-    `<div class="flex items-center justify-between gap-4 border-b border-zinc-800/60 px-4 py-2.5 last:border-0"><span class="text-sm text-zinc-500">${esc(
+    `<div class="flex items-center justify-between gap-4 border-b border-stone-800/60 px-4 py-2.5 last:border-0"><span class="text-sm text-stone-500">${esc(
       k,
-    )}</span><span class="text-sm text-zinc-200">${v}</span></div>`;
+    )}</span><span class="text-sm text-stone-200">${v}</span></div>`;
 
   const pg = s.postgres;
   const pgBody = !pg.configured
-    ? '<div class="card p-6 text-zinc-500">No business database configured.</div>'
+    ? '<div class="card p-6 text-stone-500">No business database configured.</div>'
     : `<div class="card">
-      ${row("status", `${pg.ok ? badge(true) : badge(false, "unreachable")}${pg.error ? ` <span class="text-xs text-zinc-500">${esc(pg.error)}</span>` : ""}`)}
+      ${row("status", `${pg.ok ? badge(true) : badge(false, "unreachable")}${pg.error ? ` <span class="text-xs text-stone-500">${esc(pg.error)}</span>` : ""}`)}
       ${row("env var", `<code class="kbd">${esc(pg.envVar ?? "—")}</code>`)}
       ${pg.tableCount != null ? row("tables in scope", String(pg.tableCount)) : ""}
       ${pg.allow?.length ? row("allow", pg.allow.map((a) => `<code class="kbd">${esc(a)}</code>`).join(" ")) : ""}
@@ -402,25 +394,25 @@ export function renderSourcesPage(session: Session, s: SourcesData): string {
   const lake = s.lake;
   const lakeRows = lake.tables
     .map(
-      (t) => `<tr class="border-b border-zinc-800/60 last:border-0">
-      <td class="px-4 py-2.5 text-zinc-200">${esc(t.source)}</td>
-      <td class="px-4 py-2.5 text-right tabular-nums text-zinc-300">${
+      (t) => `<tr class="border-b border-stone-800/60 last:border-0">
+      <td class="px-4 py-2.5 text-stone-200">${esc(t.source)}</td>
+      <td class="px-4 py-2.5 text-right tabular-nums text-stone-300">${
         t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US")
       }</td>
-      <td class="px-4 py-2.5 text-zinc-400">${
+      <td class="px-4 py-2.5 text-stone-400">${
         t.last ? esc(String(t.last).slice(0, 19)) + " UTC" : '<span class="badge badge-idle">no data</span>'
       }</td>
     </tr>`,
     )
     .join("");
   const lakeBody = !lake.configured
-    ? '<div class="card p-6 text-zinc-500">No data lake configured (SETOKU_LAKE_URL).</div>'
+    ? '<div class="card p-6 text-stone-500">No data lake configured (SETOKU_LAKE_URL).</div>'
     : !lake.ok
-      ? `<div class="card p-4">${badge(false, "unreachable")} <span class="text-xs text-zinc-500">${esc(lake.error ?? "")}</span></div>`
+      ? `<div class="card p-4">${badge(false, "unreachable")} <span class="text-xs text-stone-500">${esc(lake.error ?? "")}</span></div>`
       : `<div class="mb-2">${badge(true)}</div>
 <div class="card overflow-x-auto"><table class="w-full text-left text-sm">
-  <thead><tr class="border-b border-zinc-800 text-xs uppercase tracking-wide text-zinc-500"><th class="px-4 py-2.5 font-medium">connector</th><th class="px-4 py-2.5 text-right font-medium">rows</th><th class="px-4 py-2.5 font-medium">last ingest</th></tr></thead>
-  <tbody>${lakeRows || '<tr><td colspan="3" class="px-4 py-4 text-zinc-500">no source tables</td></tr>'}</tbody>
+  <thead><tr class="border-b border-stone-800 text-xs uppercase tracking-wide text-stone-500"><th class="px-4 py-2.5 font-medium">connector</th><th class="px-4 py-2.5 text-right font-medium">rows</th><th class="px-4 py-2.5 font-medium">last ingest</th></tr></thead>
+  <tbody>${lakeRows || '<tr><td colspan="3" class="px-4 py-4 text-stone-500">no source tables</td></tr>'}</tbody>
 </table></div>`;
 
   const k = s.knowledge;
@@ -436,8 +428,8 @@ export function renderSourcesPage(session: Session, s: SourcesData): string {
     `${heading("Sources", "What's wired up and whether data is actually flowing. Read-only.")}
 ${sectionLabel("Business database (Postgres)")}${pgBody}
 ${sectionLabel("Data lake (ClickHouse)")}${lakeBody}
-${sectionLabel("Knowledge store")}<div class="card p-4 text-sm text-zinc-300">${esc(String(k.docs))} curated doc(s) · ${kPairs}</div>
-<p class="mt-6 text-xs leading-relaxed text-zinc-500">"Connected" means configured + reachable; per-connector rows and
+${sectionLabel("Knowledge store")}<div class="card p-4 text-sm text-stone-300">${esc(String(k.docs))} curated doc(s) · ${kPairs}</div>
+<p class="mt-6 text-xs leading-relaxed text-stone-500">"Connected" means configured + reachable; per-connector rows and
 last-ingest are read live from the lake on each load.</p>`,
   );
 }

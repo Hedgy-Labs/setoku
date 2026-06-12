@@ -170,6 +170,17 @@ export class KnowledgeStore {
       created_at TEXT NOT NULL,
       created_by TEXT
     )`);
+    // Web admin sessions (Phase 5.1). Persisted here — NOT in process memory — so
+    // a server restart/redeploy doesn't sign everyone out. Lives on the same
+    // durable volume as the store. The cookie carries only the opaque `sid`; the
+    // row holds identity/role/csrf and an absolute `expires` (epoch ms).
+    this.db.run(`CREATE TABLE IF NOT EXISTS sessions (
+      sid TEXT PRIMARY KEY,
+      identity TEXT NOT NULL,
+      role TEXT NOT NULL,
+      csrf TEXT NOT NULL,
+      expires INTEGER NOT NULL
+    )`);
   }
 
   /* ------------------------------- docs ------------------------------- */
@@ -356,6 +367,49 @@ export class KnowledgeStore {
         username,
       ]).changes > 0
     );
+  }
+
+  /* -------------------------------- sessions ---------------------------- */
+
+  /** Persist a web-admin session (Phase 5.1). Persisted so a restart/redeploy
+   *  doesn't sign everyone out. Opportunistically prunes expired rows. */
+  createSession(rec: {
+    sid: string;
+    identity: string;
+    role: string;
+    csrf: string;
+    expires: number;
+  }): void {
+    this.pruneSessions();
+    this.db.run(
+      "INSERT OR REPLACE INTO sessions (sid, identity, role, csrf, expires) VALUES (?, ?, ?, ?, ?)",
+      [rec.sid, rec.identity, rec.role, rec.csrf, rec.expires],
+    );
+  }
+
+  /** Fetch a live session by id; an expired row is deleted and returns null. */
+  getSession(
+    sid: string,
+  ): { identity: string; role: string; csrf: string; expires: number } | null {
+    const row = this.db
+      .query("SELECT identity, role, csrf, expires FROM sessions WHERE sid = ?")
+      .get(sid) as
+      | { identity: string; role: string; csrf: string; expires: number }
+      | null;
+    if (!row) return null;
+    if (row.expires < Date.now()) {
+      this.destroySession(sid);
+      return null;
+    }
+    return row;
+  }
+
+  destroySession(sid: string): void {
+    this.db.run("DELETE FROM sessions WHERE sid = ?", [sid]);
+  }
+
+  pruneSessions(): void {
+    this.db.run("DELETE FROM sessions WHERE expires < ?", [Date.now()]);
   }
 
   /* --------------------------- provisioning ---------------------------- */
