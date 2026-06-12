@@ -6,7 +6,7 @@
   "author": {
     "name": "Hedgy Labs"
   },
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "keywords": [
     "bi",
     "analytics",
@@ -15,6 +15,5 @@
     "business-intelligence",
     "semantic-layer"
   ],
-  "mcpServers": "./.mcp.json",
-  "hooks": "./hooks/hooks.json"
+  "mcpServers": "./.mcp.json"
 }
