@@ -184,9 +184,12 @@ services:
       dockerfile: ingest/render-poller/Dockerfile
     restart: unless-stopped
     environment:
-      RENDER_API_KEY: ${RENDER_API_KEY:?set in .env}
-      RENDER_OWNER_ID: ${RENDER_OWNER_ID:?set in .env (tea-… workspace id)}
-      RENDER_SERVICE_IDS: ${RENDER_SERVICE_IDS:?set in .env (srv-…,srv-…)}
+      # poll.ts validates these at runtime; keep :- defaults so `docker compose
+      # config` validates without them (they're only needed when the render
+      # profile actually runs), matching the slack-listener pattern.
+      RENDER_API_KEY: ${RENDER_API_KEY:-}
+      RENDER_OWNER_ID: ${RENDER_OWNER_ID:-}
+      RENDER_SERVICE_IDS: ${RENDER_SERVICE_IDS:-}
       RENDER_POLL_INTERVAL_MS: ${RENDER_POLL_INTERVAL_MS:-60000}
     volumes:
       - render_state:/state
