@@ -28,13 +28,20 @@ import {
   renderApprovalPage,
   renderLoginPage,
   renderAuditPage,
+  renderKnowledgePage,
+  renderSourcesPage,
   applyApprovalAction,
   SessionStore,
   sessionIdFromCookie,
   sessionSetCookie,
   sessionClearCookie,
+  type SourcesData,
+  type SourceTable,
 } from "./lib/approval";
 import { authenticate, canApprove } from "./lib/accounts";
+import { resolveDatabaseUrl, resolveLakeUrl } from "./lib/config";
+import { introspectSchema } from "./lib/db";
+import { runLakeQuery } from "./lib/lake";
 
 const projectDir = resolveProjectDir();
 
@@ -266,6 +273,93 @@ echo "    how many companies are paying us right now?"
 `;
 }
 
+/**
+ * Lake source tables we know how to surface on the /admin Sources page, mapped
+ * to a friendly connector name and the column to read freshness from. We only
+ * query the ones that actually exist (so a deploy without a given connector
+ * just omits its row) — see gatherSources().
+ */
+const LAKE_SOURCES: { table: string; source: string; ts: string }[] = [
+  { table: "logs_vercel", source: "Vercel logs", ts: "ts" },
+  { table: "logs_render", source: "Render logs", ts: "ts" },
+  { table: "slack_messages", source: "Slack", ts: "event_ts" },
+  { table: "app_events", source: "First-party events", ts: "ts" },
+  { table: "mercury_accounts", source: "Mercury · accounts", ts: "snapshot_ts" },
+  { table: "mercury_transactions", source: "Mercury · transactions", ts: "created_at" },
+  { table: "mercury_events", source: "Mercury · webhooks", ts: "received_at" },
+  { table: "ingest_raw", source: "Unrouted (raw)", ts: "ingested_at" },
+];
+
+/**
+ * Gather the /admin Sources view live: is Postgres configured + reachable (+
+ * table count), is the lake reachable, and per-connector row counts/freshness.
+ * All read-only; every probe is independently try/caught so one failure
+ * degrades to "—" rather than blanking the page.
+ */
+async function gatherSources(): Promise<SourcesData> {
+  const cfg = loadConfig(projectDir);
+  const config = cfg.ok ? cfg.config : null;
+
+  const postgres: SourcesData["postgres"] = { configured: false, ok: false };
+  const lake: SourcesData["lake"] = { configured: false, ok: false, tables: [] };
+
+  if (config) {
+    const pgUrl = resolveDatabaseUrl(projectDir, config);
+    if (pgUrl.ok) {
+      postgres.configured = true;
+      postgres.envVar = config.dataSource?.urlEnv;
+      postgres.allow = config.allowTables;
+      try {
+        const tables = await introspectSchema(pgUrl.url, config);
+        postgres.ok = true;
+        postgres.tableCount = tables.length;
+      } catch (e) {
+        postgres.error = String(e).slice(0, 200);
+      }
+    }
+
+    const lakeUrl = resolveLakeUrl(projectDir, config);
+    if (lakeUrl.ok) {
+      lake.configured = true;
+      const qopts = { rowCap: 10, statementTimeoutMs: 8_000 };
+      // Connectivity first — distinguishes "lake down" from "table absent". We
+      // probe each table independently (rather than reading system.tables, which
+      // setoku_ro may not be granted): a missing or unreadable table is simply
+      // omitted, while a dead lake surfaces as unreachable.
+      try {
+        await runLakeQuery(lakeUrl.url, "SELECT 1", qopts);
+        lake.ok = true;
+      } catch (e) {
+        lake.error = String(e).slice(0, 200);
+      }
+      if (lake.ok) {
+        const probes = await Promise.all(
+          LAKE_SOURCES.map(async (s): Promise<SourceTable | null> => {
+            try {
+              const res = await runLakeQuery(
+                lakeUrl.url,
+                `SELECT count() AS rows, toString(max(${s.ts})) AS last FROM setoku.${s.table}`,
+                qopts,
+              );
+              const row = (res.rows[0] ?? {}) as Record<string, unknown>;
+              const rows = Number(row.rows ?? 0);
+              return { source: s.source, rows, last: rows > 0 ? String(row.last) : null };
+            } catch {
+              return null; // table absent or not granted — omit this connector
+            }
+          }),
+        );
+        lake.tables = probes.filter((p): p is SourceTable => p !== null);
+      }
+    }
+  }
+
+  const byType: Record<string, number> = {};
+  for (const d of store.listDocs()) byType[d.type] = (byType[d.type] ?? 0) + 1;
+
+  return { postgres, lake, knowledge: { docs: store.docCount, byType } };
+}
+
 const httpServer = http.createServer(async (req, res) => {
   try {
     if (req.url === "/health") {
@@ -376,6 +470,20 @@ const httpServer = http.createServer(async (req, res) => {
       if (path === "/admin/audit") {
         res.writeHead(200, htmlHead);
         res.end(renderAuditPage(store, session));
+        return;
+      }
+
+      // knowledge browser — read the curated memories
+      if (path === "/admin/knowledge") {
+        res.writeHead(200, htmlHead);
+        res.end(renderKnowledgePage(store, session));
+        return;
+      }
+
+      // connected sources — what's wired up + live freshness from the lake
+      if (path === "/admin/sources") {
+        res.writeHead(200, htmlHead);
+        res.end(renderSourcesPage(session, await gatherSources()));
         return;
       }
 

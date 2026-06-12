@@ -24,7 +24,7 @@
  * SECURITY: correction content is attacker-influenceable (it can be distilled
  * from Slack/logs), so every dynamic value is HTML-escaped before rendering.
  */
-import type { KnowledgeStore } from "./store";
+import type { KnowledgeStore, KnowledgeDoc, DocType } from "./store";
 import { canApprove } from "./accounts";
 
 /** Escape for HTML text/attribute context. */
@@ -134,12 +134,45 @@ const PAGE_CSS = `
   .empty { color: #888; }
   .note { color: #888; font-size: 0.85rem; border-left: 3px solid #8884; padding-left: 0.8rem; }
   .topbar { display: flex; justify-content: space-between; align-items: baseline; }
+  nav.tabs { margin: 0.25rem 0 1.25rem; font-size: 0.9rem; }
+  nav.tabs a, nav.tabs b { margin-right: 0.6rem; }
+  nav.tabs b { color: inherit; }
+  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; border: 1px solid #8886; }
+  .badge.ok { background: #2e7d3222; color: #2e7d32; border-color: #2e7d3266; }
+  .badge.down { background: #c6282822; color: #c62828; border-color: #c6282866; }
+  .badge.idle { color: #888; }
+  table.grid { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+  table.grid th { text-align: left; color: #888; font-weight: 500; border-bottom: 1px solid #8884; padding: 0.3rem 0.5rem; }
+  table.grid td { padding: 0.35rem 0.5rem; border-bottom: 1px solid #8882; }
+  details.doc { border: 1px solid #8884; border-radius: 8px; padding: 0.6rem 1rem; margin: 0.6rem 0; }
+  details.doc summary { cursor: pointer; font-weight: 600; }
+  details.doc .meta { margin: 0.5rem 0 0; }
+  code.k { font-size: 0.8rem; background: #8882; padding: 0.05rem 0.3rem; border-radius: 4px; }
 `;
 
 function shell(title: string, inner: string): string {
   return `<!doctype html><html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title><style>${PAGE_CSS}</style></head><body>${inner}</body></html>`;
+}
+
+/** Tab nav shared by every signed-in page; the active tab is bold, not a link. */
+function nav(active: "pending" | "knowledge" | "sources" | "audit"): string {
+  const tab = (href: string, label: string, key: string) =>
+    key === active ? `<b>${esc(label)}</b>` : `<a href="${href}">${esc(label)}</a>`;
+  return `<nav class="tabs">${tab("/admin", "Pending", "pending")}${tab(
+    "/admin/knowledge",
+    "Knowledge",
+    "knowledge",
+  )}${tab("/admin/sources", "Sources", "sources")}${tab("/admin/audit", "Audit", "audit")}</nav>`;
+}
+
+/** The sign-out form (carries the session CSRF token). */
+function signoutForm(session: Session): string {
+  return `<form method="POST" action="/admin/logout">
+    <input type="hidden" name="csrf" value="${esc(session.csrf)}">
+    <button type="submit">Sign out (${esc(session.identity)} · ${esc(session.role)})</button>
+  </form>`;
 }
 
 /** The login form shown to anyone without a valid session (no secret in URL). */
@@ -179,9 +212,9 @@ export function renderAuditPage(store: KnowledgeStore, session: Session): string
     .join("");
   return shell(
     "Setoku — audit log",
-    `<div class="topbar"><h1>Setoku — audit log</h1>
-  <a href="/admin">← pending</a></div>
-<p class="meta">Signed in as ${esc(session.identity)} (${esc(session.role)}). Append-only; newest first.</p>
+    `<div class="topbar"><h1>Setoku — audit log</h1>${signoutForm(session)}</div>
+${nav("audit")}
+<p class="meta">Append-only; newest first.</p>
 <table style="width:100%;border-collapse:collapse;font-size:0.85rem">
 <thead><tr style="text-align:left;color:#888"><th>when (UTC)</th><th>who</th><th>action</th><th>detail</th></tr></thead>
 <tbody>${rows || '<tr><td colspan="4" class="empty">No activity yet.</td></tr>'}</tbody>
@@ -227,21 +260,149 @@ export function renderApprovalPage(
     "Setoku — pending knowledge",
     `<div class="topbar">
   <h1>Setoku — pending knowledge</h1>
-  <form method="POST" action="/admin/logout">
-    <input type="hidden" name="csrf" value="${csrf}">
-    <button type="submit">Sign out (${esc(session.identity)} · ${esc(session.role)})</button>
-  </form>
+  ${signoutForm(session)}
 </div>
+${nav("pending")}
 <p class="meta">These are proposals from agents and teammates; nothing here is
 curated until an admin approves it. Approving a gotcha folds it into verified
-context immediately; other kinds are recorded for a curator session.
-· <a href="/admin/audit">audit log</a></p>
+context immediately; other kinds are recorded for a curator session.</p>
 ${flash ? `<p class="note">${esc(flash)}</p>` : ""}
 ${mayApprove ? "" : '<p class="note">You are signed in as a <b>member</b> — viewing only. Ask an admin to approve.</p>'}
 <h2>Pending (${pending.length})</h2>
 ${pending.length ? items : '<p class="empty">Nothing pending. 🎉</p>'}
 <p class="note">This is the only path knowledge enters curated context (I2/I9):
 a human clicks here, outside any agent. Agents can only propose.</p>`,
+  );
+}
+
+/** Read-only browser for curated knowledge — "the memories". */
+export function renderKnowledgePage(store: KnowledgeStore, session: Session): string {
+  const docs = store.listDocs();
+  const order: DocType[] = ["overview", "entity", "metric", "query", "gotcha"];
+  const byType = new Map<string, KnowledgeDoc[]>();
+  for (const d of docs) {
+    const arr = byType.get(d.type) ?? [];
+    arr.push(d);
+    byType.set(d.type, arr);
+  }
+  const section = (type: string): string => {
+    const list = (byType.get(type) ?? []).sort((a, b) => a.name.localeCompare(b.name));
+    if (!list.length) return "";
+    const items = list
+      .map((d) => {
+        const metaPairs = Object.entries(d.meta ?? {})
+          .map(
+            ([k, v]) =>
+              `<code class="k">${esc(k)}</code> ${esc(Array.isArray(v) ? v.join(", ") : v)}`,
+          )
+          .join(" · ");
+        const badge = d.verified
+          ? '<span class="badge ok">verified</span>'
+          : '<span class="badge idle">unverified</span>';
+        return `<details class="doc">
+      <summary>${esc(d.name)} ${badge}</summary>
+      <div class="content">${esc(d.body)}</div>
+      <div class="meta">${metaPairs ? metaPairs + " · " : ""}updated by ${esc(
+        d.updatedBy ?? "—",
+      )}${d.updatedAt ? " · " + esc(String(d.updatedAt).slice(0, 16)) : ""}</div>
+    </details>`;
+      })
+      .join("");
+    return `<h2>${esc(type)} (${list.length})</h2>${items}`;
+  };
+  const sections = order.map(section).join("");
+  return shell(
+    "Setoku — knowledge",
+    `<div class="topbar"><h1>Setoku — knowledge</h1>${signoutForm(session)}</div>
+${nav("knowledge")}
+<p class="meta">Curated business context the analyst reads as ground truth — ${docs.length} doc(s).
+Read-only here: curated edits come from a curator session, and corrections from anyone land in
+<a href="/admin">Pending</a> for review.</p>
+${docs.length ? sections : '<p class="empty">No curated knowledge yet. Run <code class="k">/setoku:generate</code>.</p>'}`,
+  );
+}
+
+/* ------------------------------ sources ------------------------------ */
+
+export interface SourceTable {
+  source: string;
+  rows: number | null;
+  last: string | null;
+}
+export interface SourcesData {
+  postgres: {
+    configured: boolean;
+    envVar?: string;
+    ok: boolean;
+    tableCount?: number;
+    error?: string;
+    allow?: string[];
+  };
+  lake: { configured: boolean; ok: boolean; error?: string; tables: SourceTable[] };
+  knowledge: { docs: number; byType: Record<string, number> };
+}
+
+/** Read-only view of what's connected + whether data is flowing (gathered live). */
+export function renderSourcesPage(session: Session, s: SourcesData): string {
+  const badge = (ok: boolean, label?: string): string =>
+    ok
+      ? `<span class="badge ok">${esc(label ?? "connected")}</span>`
+      : `<span class="badge down">${esc(label ?? "down")}</span>`;
+
+  const pg = s.postgres;
+  const pgBody = !pg.configured
+    ? '<p class="empty">No business database configured.</p>'
+    : `<table class="grid"><tbody>
+      <tr><td>status</td><td>${
+        pg.ok ? badge(true) : badge(false, "unreachable")
+      }${pg.error ? ` <span class="meta">${esc(pg.error)}</span>` : ""}</td></tr>
+      <tr><td>env var</td><td><code class="k">${esc(pg.envVar ?? "—")}</code></td></tr>
+      ${pg.tableCount != null ? `<tr><td>tables in scope</td><td>${pg.tableCount}</td></tr>` : ""}
+      ${
+        pg.allow?.length
+          ? `<tr><td>allow</td><td>${pg.allow
+              .map((a) => `<code class="k">${esc(a)}</code>`)
+              .join(" ")}</td></tr>`
+          : ""
+      }
+    </tbody></table>`;
+
+  const lake = s.lake;
+  const lakeRows = lake.tables
+    .map(
+      (t) => `<tr>
+      <td>${esc(t.source)}</td>
+      <td>${t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US")}</td>
+      <td>${
+        t.last ? esc(String(t.last).slice(0, 19)) + " UTC" : '<span class="badge idle">no data</span>'
+      }</td>
+    </tr>`,
+    )
+    .join("");
+  const lakeBody = !lake.configured
+    ? '<p class="empty">No data lake configured (SETOKU_LAKE_URL).</p>'
+    : !lake.ok
+      ? `<p>${badge(false, "unreachable")} <span class="meta">${esc(lake.error ?? "")}</span></p>`
+      : `<p>${badge(true)}</p>
+<table class="grid"><thead><tr><th>connector</th><th>rows</th><th>last ingest</th></tr></thead>
+<tbody>${lakeRows || '<tr><td colspan="3" class="empty">no source tables</td></tr>'}</tbody></table>`;
+
+  const k = s.knowledge;
+  const kPairs =
+    Object.entries(k.byType)
+      .map(([t, n]) => `${esc(t)} ${n}`)
+      .join(" · ") || "empty";
+
+  return shell(
+    "Setoku — sources",
+    `<div class="topbar"><h1>Setoku — sources</h1>${signoutForm(session)}</div>
+${nav("sources")}
+<p class="meta">What's wired up and whether data is actually flowing. Read-only.</p>
+<h2>Business database (Postgres)</h2>${pgBody}
+<h2>Data lake (ClickHouse)</h2>${lakeBody}
+<h2>Knowledge store</h2><p>${esc(String(k.docs))} curated doc(s) · ${kPairs}</p>
+<p class="note">"Connected" means configured + reachable; per-connector rows and
+last-ingest are read live from the lake on each load.</p>`,
   );
 }
 
