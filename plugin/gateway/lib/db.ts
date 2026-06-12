@@ -6,10 +6,60 @@ const { Pool } = pgPkg;
 
 const pools = new Map<string, InstanceType<typeof Pool>>();
 
+/**
+ * TLS for the business DB. Local/unix-socket connections need none; managed
+ * Postgres (Supabase, RDS, Neon, …) requires TLS but commonly presents a CA
+ * chain Node doesn't bundle, so we encrypt without strict chain verification
+ * by default. Set SETOKU_PG_SSL_STRICT=1 to require a trusted CA.
+ */
+function sslConfig(url: string): false | { rejectUnauthorized: boolean } {
+  let host = "";
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return false;
+  }
+  if (
+    !host ||
+    host.startsWith("/") ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "::1" ||
+    host.endsWith(".internal") ||
+    host.endsWith(".local")
+  ) {
+    return false;
+  }
+  return { rejectUnauthorized: process.env.SETOKU_PG_SSL_STRICT === "1" };
+}
+
+/**
+ * Drop sslmode/ssl from the connection string so a stray `?sslmode=require`
+ * can't force strict verify-full (pg's newer behavior) and override our ssl
+ * config. Left untouched when no such param is present (keeps unix-socket URLs
+ * byte-identical for the test suite).
+ */
+function stripSslParams(url: string): string {
+  if (!/[?&](sslmode|ssl)=/.test(url)) return url;
+  try {
+    const u = new URL(url);
+    u.searchParams.delete("sslmode");
+    u.searchParams.delete("ssl");
+    return u.toString();
+  } catch {
+    return url;
+  }
+}
+
 function poolFor(url: string) {
   let pool = pools.get(url);
   if (!pool) {
-    pool = new Pool({ connectionString: url, max: 2, allowExitOnIdle: true });
+    pool = new Pool({
+      connectionString: stripSslParams(url),
+      ssl: sslConfig(url),
+      max: 2,
+      allowExitOnIdle: true,
+    });
     pools.set(url, pool);
   }
   return pool;
