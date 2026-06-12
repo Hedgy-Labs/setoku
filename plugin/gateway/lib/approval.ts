@@ -130,9 +130,9 @@ function shell(title: string, inner: string): string {
 
 type Tab = "pending" | "knowledge" | "sources" | "audit";
 
-/** The brand mark (white square). */
-function brand(size = "h-7 w-7 text-xs"): string {
-  return `<div class="grid ${size} place-items-center rounded-lg bg-white font-bold text-stone-900">S</div>`;
+/** The Setoku wordmark, in the Bagel Fat One display font. */
+function brand(size = "text-2xl"): string {
+  return `<span class="font-brand ${size} leading-none text-white">Setoku</span>`;
 }
 
 const TABS: ReadonlyArray<readonly [string, string, Tab]> = [
@@ -167,11 +167,10 @@ function signoutForm(session: Session, full = false): string {
 function topbar(session: Session, active: Tab): string {
   const hamburger = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>`;
   const identity = `${esc(session.identity)} · ${esc(session.role)}`;
-  const mark = `<span class="flex items-center gap-2">${brand()}<span class="font-semibold">Setoku</span></span>`;
   return `<header class="sticky top-0 z-10 border-b border-stone-800 bg-stone-950/80 backdrop-blur">
   <!-- desktop bar (sm and up) -->
   <div class="mx-auto hidden max-w-4xl items-center justify-between gap-4 px-5 py-3 sm:flex">
-    <a href="/admin" class="flex items-center gap-2">${brand()}<span class="font-semibold">Setoku</span></a>
+    <a href="/admin">${brand()}</a>
     <div class="flex items-center gap-3">
       <nav class="flex items-center gap-1">${navTabs(active)}</nav>
       <span class="text-xs text-stone-500">${identity}</span>
@@ -181,7 +180,7 @@ function topbar(session: Session, active: Tab): string {
   <!-- mobile bar with hamburger menu (phones) -->
   <details class="mx-auto max-w-4xl sm:hidden">
     <summary class="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-3 [&::-webkit-details-marker]:hidden">
-      <a href="/admin">${mark}</a>
+      <a href="/admin">${brand()}</a>
       <span class="btn btn-ghost" aria-label="Menu">${hamburger}</span>
     </summary>
     <div class="border-t border-stone-800 px-3 py-3">
@@ -222,7 +221,7 @@ export function renderLoginPage(flash?: string): string {
     "Setoku — sign in",
     `<main class="flex min-h-screen items-center justify-center p-6">
   <div class="card w-full max-w-sm p-7">
-    <div class="mb-5 flex items-center gap-2">${brand("h-8 w-8 text-sm")}<h1 class="text-lg font-semibold">Setoku</h1></div>
+    <h1 class="mb-5">${brand("text-3xl")}</h1>
     <p class="mb-5 text-sm leading-relaxed text-stone-400">Sign in to review pending
     knowledge. This is a separate credential from the access token you give
     Claude — agents never have it.</p>
