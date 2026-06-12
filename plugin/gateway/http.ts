@@ -45,6 +45,17 @@ import { runLakeQuery } from "./lib/lake";
 
 const projectDir = resolveProjectDir();
 
+// Vendored Tailwind stylesheet for /admin (built from web/input.css → web/app.css,
+// committed; rebuild with `bun run build:admin-css`). Read once at startup; served
+// at /admin/app.css so the surface has no runtime external dependency.
+const ADMIN_CSS = ((): string => {
+  try {
+    return fs.readFileSync(path.join(import.meta.dir, "web", "app.css"), "utf8");
+  } catch {
+    return "";
+  }
+})();
+
 function storePath(): string {
   const res = loadConfig(projectDir);
   if (res.ok && typeof res.config.knowledgeDb === "string") {
@@ -398,6 +409,16 @@ const httpServer = http.createServer(async (req, res) => {
         "referrer-policy": "no-referrer",
       } as const;
       const path = req.url.split("?")[0];
+
+      // the admin stylesheet — public (not secret), served before the auth gate
+      if (path === "/admin/app.css") {
+        res.writeHead(200, {
+          "content-type": "text/css; charset=utf-8",
+          "cache-control": "public, max-age=3600",
+        });
+        res.end(ADMIN_CSS);
+        return;
+      }
 
       // login: username + password (a LOCAL ACCOUNT, never the MCP token) →
       // session cookie. The agent has the token but not the password (I9).
