@@ -30,6 +30,26 @@
 		}
 	}
 
+	# Mercury webhooks (OPTIONAL): Mercury POSTs transaction-change events to a URL
+	# you register in its dashboard. Like Render, we authenticate via a token in
+	# the URL PATH. Register the webhook URL as:
+	#   https://<domain>/ingest/mercury/<SETOKU_INGEST_TOKEN>
+	# The token segment is verified, then stripped so Vector routes it as
+	# /ingest/mercury → mercury_events. (Must precede the generic /ingest/* handle.)
+	# Note: the poller talks to Vector directly on the internal network, so its
+	# /ingest/mercury/accounts and /transactions paths never traverse Caddy.
+	# TODO hardening: also verify Mercury's HMAC signature on the raw body.
+	handle /ingest/mercury/* {
+		@ok path /ingest/mercury/{$SETOKU_INGEST_TOKEN} /ingest/mercury/{$SETOKU_INGEST_TOKEN}/*
+		handle @ok {
+			rewrite * /ingest/mercury
+			reverse_proxy vector:8080
+		}
+		handle {
+			respond "unauthorized" 401
+		}
+	}
+
 	# Ingest: bearer token checked at the edge; Vector never sees
 	# unauthenticated traffic. Vercel drains send Authorization: Bearer; app
 	# events POST it too. (Render uses the path-token route above.)
