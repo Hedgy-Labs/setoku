@@ -81,10 +81,14 @@ server.registerTool(
     annotations: { readOnlyHint: true },
     title: "Find business context (verified + unverified)",
     description:
-      "ALWAYS call this FIRST, before writing any SQL. Retrieves business context " +
-      "(entity semantics, canonical metric definitions, known-good queries, gotchas, and pending " +
-      "unverified team knowledge) relevant to a natural-language question. Trust this context over " +
-      "your own inference from table/column names — it encodes how this business actually computes things.",
+      "ALWAYS call this FIRST — the instant a data/business question arrives, before any planning, " +
+      "schema exploration, or reasoning about what a term means. Those are exactly what this returns, " +
+      "so deliberating before calling it is wasted effort and the main cause of a slow, 'thinking for " +
+      "a long time' feel; call it immediately with the question, THEN reason over what comes back. " +
+      "Retrieves verified business context (entity semantics, canonical metric definitions, known-good " +
+      "queries, gotchas, and pending unverified team knowledge) for a natural-language question. Trust " +
+      "this context over your own inference from table/column names — it encodes how this business " +
+      "actually computes things.",
     inputSchema: {
       question: z
         .string()
