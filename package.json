@@ -7,7 +7,8 @@
   "scripts": {
     "test": "bun test test/ ingest/",
     "typecheck": "tsc --noEmit",
-    "build:admin-css": "tailwindcss -i plugin/gateway/web/input.css -o plugin/gateway/web/app.css --minify"
+    "build:admin-css": "tailwindcss -i plugin/gateway/web/input.css -o plugin/gateway/web/app.css --minify",
+    "preview:admin": "bun run build:admin-css && bun plugin/gateway/web/preview.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
