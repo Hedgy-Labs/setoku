@@ -117,49 +117,39 @@ durability.
 
 ## Architecture (decided — do not relitigate without a written reason)
 
-**Figure 1 — the whole system.** Everything inside the box is one `docker compose
-up` on one small VPS (reference: a Hetzner-class CX/CCX, ~$8–20/mo). Only Caddy
-faces the internet; all intelligence lives in the connecting agents (I8).
+**Figure 1 — the two pieces.** Everything inside the box is one `docker compose
+up` on one small VPS (reference: a Hetzner-class CX/CCX, ~$8–20/mo). The
+connectors are abstracted on purpose: **① an agentic provisioner hooks each
+source up on demand**, and **② the gateway grants agents governed, context-aware
+access** to whatever it landed or can reach live. Only Caddy faces the internet;
+all model reasoning lives in the connecting agents (I8).
 
 ```mermaid
 flowchart LR
-    subgraph sources["Data sources"]
-        V["Vercel<br/>log drain"]
-        R["Render<br/>logs (pull bridge)"]
-        S["Slack"]
-        A["Your app<br/>structured events"]
-        PGsrc[("Your operational<br/>Postgres / warehouse")]
+    SRC["Your sources<br/>operational DBs · logs and telemetry<br/>SaaS APIs · code repos"]
+
+    subgraph box["One VPS — docker compose (only Caddy is public)"]
+        FDE["①  Agentic provisioning<br/>discover → plan → apply → document"]
+        STORE[("Store<br/>context layer + optional lake")]
+        GW["②  MCP gateway<br/>context + governed run_query"]
+        MEM["Approval surface<br/>(the membrane)"]
     end
 
-    subgraph box["One VPS — docker compose"]
-        C["Caddy :443<br/>(only public port)"]
-        VE["Vector<br/>parse + disk buffer"]
-        SL["slack-listener<br/>Socket Mode + spool"]
-        CH[("ClickHouse<br/>the lake — optional")]
-        PG[("Postgres<br/>context store + accounts")]
-        M["MCP server<br/>find_context / run_query /<br/>corrections"]
-        W["Approval surface<br/>login / approvals / audit"]
-    end
+    AG["Agents — Claude / Claude Code"]
+    S3[("Off-box bucket<br/>backups + Parquet")]
 
-    AG["Agents<br/>(Claude, Claude Code,<br/>any MCP client)"]
-    S3[("S3-compatible bucket<br/>backups + Parquet exports")]
-
-    V -- "HTTPS JSON" --> C
-    R -- "HTTPS JSON" --> C
-    A -- "HTTPS JSON" --> C
-    S -- "outbound websocket" --> SL
-    C -- "/ingest/* (token)" --> VE
-    VE --> CH
-    SL --> CH
-    AG -- "MCP (bearer)" --> C
-    C -- "/mcp" --> M
-    C --> W
-    M --> PG
-    M -- "run_query (read-only)" --> CH
-    M -. "run_query (read-only)" .-> PGsrc
-    CH -. "nightly" .-> S3
-    PG -. "nightly" .-> S3
+    SRC -- "hooked up by …" --> FDE
+    FDE -- "ingest, or wire read-only" --> STORE
+    GW --> STORE
+    GW -. "read-only, live" .-> SRC
+    AG -- "MCP" --> GW
+    AG -. "propose" .-> MEM
+    MEM --> STORE
+    STORE -. "nightly" .-> S3
 ```
+
+Inside the store, ① and ② are the usual containers — Caddy, the MCP server,
+Postgres (context + accounts), and (opt-in) ClickHouse + Vector for the lake.
 
 | Layer | Choice | Why |
 |---|---|---|
@@ -170,36 +160,35 @@ flowchart LR
 | Edge / TLS | **Caddy** | Auto-HTTPS (incl. sslip.io for no-domain deploys); the only public-facing container. |
 | Deployment | **Single VPS, docker-compose** (Hetzner-class, ~$8–20/mo) | One box, one bill. Everything on localhost; databases never exposed. The compose file *is* the product's body and reference deployment. Multi-arch images. |
 
-**Explicitly rejected:** SurrealDB (BSL, wrong engine for event volume); Fly.io /
-Render / Railway *as the hosting target* (per-service RAM pricing is 3–10× a raw
-VPS for an always-on stateful stack, and they fight the compose model — see the
-cost table in the design notes); DuckDB as the serving lake (single-writer).
+### Sources — and why this isn't a connector company
 
-### Data sources (resist the connector matrix)
+Getting at a business's data is the hard, unglamorous half. Even a tiny company's
+data is scattered — the pilot's lives across a Postgres, Vercel request logs,
+Render workers, Slack, and its codebase. The trap is becoming Fivetran: a static
+matrix of hand-built, hand-SLA'd SaaS connectors, forever.
 
-The supported pushed/pulled sources are deliberately few — **Vercel, Render,
-Slack, and a first-party events endpoint** — plus querying the customer's own
-Postgres/warehouse live. Setoku is *not* a Fivetran: it does not own a matrix of
-SaaS connectors. For a business whose data is scattered across many SaaS tools
-(NetSuite, Shopify, GA4, …), the answer is "land it in a warehouse with managed
-ELT, then Setoku is the brain on top," not "Setoku integrates your stack."
+Setoku's answer is **piece ①, the agentic provisioner (FDE)**: an agent — armed
+with the self-provisioning framework (discover → plan → apply → document,
+idempotent, audited) plus skills — hooks each source up *on demand*. What gets
+reused is the **framework and the durable patterns**, not a frozen connector. You
+maintain a handful of proven patterns, not N integrations:
 
-- **Vercel** → Log Drains POST NDJSON over HTTPS. ⚠ Requires Vercel **Pro**;
-  the drain endpoint must echo an `x-vercel-verify` header (handled by Caddy,
-  `SETOKU_VERCEL_VERIFY`).
-- **Render** → no public API to *create* a pushed log stream, but its Logs query
-  API works, so Setoku **pulls** (`ingest/render-poller`). Dashboard-created
-  HTTPS streams are also supported via the path-token `/ingest/render/<token>`
-  route.
-- **Slack** → Socket Mode listener (live) + `conversations.history` backfill.
-  ⚠ Free-plan workspaces retain ~90 days — start the listener early; the archive
-  only accrues forward. Each org runs its own *internal* app (generous rate
-  tier); a hosted SaaS would need Marketplace approval.
-- **First-party events** → apps POST deliberate events (`event_name`, `ts`,
-  `actor`, `properties{}`) to the same Vector pipe. The high-grade ore; see
-  [`docs/events.md`](./docs/events.md).
+- **Operational DB / warehouse** → a read-only role; queried live, never copied.
+- **Logs & telemetry** — Vercel drains (Pro plan; the endpoint echoes
+  `x-vercel-verify`), Render (no push API → Setoku *pulls* its Logs API,
+  `ingest/render-poller`), first-party events ([`docs/events.md`](./docs/events.md))
+  — land in the lake through Vector.
+- **Slack** (Socket Mode; free plans retain ~90 days, so start early) and **code
+  repos** → archived and read for context.
 
-**Two-layer rule:** every source's raw rows go to the lake. *Knowledge* extracted
+For genuinely commodity, high-volume ELT (e.g. Shopify → a warehouse at $100M
+scale), the agent configures *managed* ELT rather than reimplementing it. The line
+that keeps this from being a connector zoo: **the agent builds what a customer
+needs; you harden what recurs.** And the framework is the moat — idempotency,
+audit, disk-buffered durability (I4) are what make an agent-built integration
+production-grade instead of a one-off script.
+
+**Two-layer rule:** every source's raw rows land as data. *Knowledge* extracted
 from any source flows into curated context **only** through the corrections queue.
 
 ### The membrane
