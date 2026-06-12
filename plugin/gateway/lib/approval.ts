@@ -390,6 +390,7 @@ export interface SourceTable {
   source: string;
   rows: number | null;
   last: string | null;
+  ms?: number;
 }
 export interface SourcesData {
   postgres: {
@@ -399,6 +400,7 @@ export interface SourcesData {
     tableCount?: number;
     error?: string;
     allow?: string[];
+    pingMs?: number;
   };
   lake: { configured: boolean; ok: boolean; error?: string; tables: SourceTable[] };
   knowledge: { docs: number; byType: Record<string, number> };
@@ -477,6 +479,7 @@ export function renderSourcesPage(session: Session, s: SourcesData): string {
       : { color: "red", label: "unreachable" };
     const detail =
       (pg.error ? kv("error", `<span class="text-red-400">${esc(pg.error)}</span>`) : kv("status", "reachable")) +
+      (pg.pingMs != null ? kv("ping", `${pg.pingMs} ms`) : "") +
       kv("env var", `<code class="kbd">${esc(pg.envVar ?? "—")}</code>`) +
       (pg.tableCount != null ? kv("tables in scope", String(pg.tableCount)) : "") +
       (pg.allow?.length ? kv("allow", pg.allow.map((a) => `<code class="kbd">${esc(a)}</code>`).join(" ")) : "");
@@ -493,7 +496,8 @@ export function renderSourcesPage(session: Session, s: SourcesData): string {
     for (const t of lake.tables) {
       const detail =
         kv("rows", t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US")) +
-        kv("last ingest", t.last ? `${esc(String(t.last).slice(0, 19))} UTC` : "—");
+        kv("last ingest", t.last ? `${esc(String(t.last).slice(0, 19))} UTC` : "—") +
+        (t.ms != null ? kv("query latency", `${t.ms} ms`) : "");
       rows.push(sourceRow(t.source, freshnessStatus(t.rows, t.last), t.last, detail));
     }
   }

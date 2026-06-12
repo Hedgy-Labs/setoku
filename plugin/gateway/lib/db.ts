@@ -51,7 +51,7 @@ function stripSslParams(url: string): string {
   }
 }
 
-function poolFor(url: string) {
+export function poolFor(url: string) {
   let pool = pools.get(url);
   if (!pool) {
     pool = new Pool({
