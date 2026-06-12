@@ -6,7 +6,9 @@
   "type": "module",
   "scripts": {
     "test": "bun test test/ ingest/",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:admin-css": "tailwindcss -i plugin/gateway/web/input.css -o plugin/gateway/web/app.css --minify",
+    "preview:admin": "bun run build:admin-css && bun plugin/gateway/web/preview.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
@@ -14,8 +16,10 @@
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@tailwindcss/cli": "^4.3.1",
     "@types/bun": "^1.2.0",
     "@types/pg": "^8.15.0",
+    "tailwindcss": "^4.3.1",
     "typescript": "^5.8.0"
   }
 }

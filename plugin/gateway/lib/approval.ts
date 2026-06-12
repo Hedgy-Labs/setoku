@@ -24,7 +24,7 @@
  * SECURITY: correction content is attacker-influenceable (it can be distilled
  * from Slack/logs), so every dynamic value is HTML-escaped before rendering.
  */
-import type { KnowledgeStore } from "./store";
+import type { KnowledgeStore, KnowledgeDoc, DocType } from "./store";
 import { canApprove } from "./accounts";
 
 /** Escape for HTML text/attribute context. */
@@ -58,39 +58,31 @@ export interface Session {
 }
 
 /**
- * In-memory session store for the approval surface. The gateway is a single
- * process, so this is sufficient; sessions don't survive a restart (re-login).
- * The cookie carries an opaque random id — never the bearer token.
+ * Session store for the approval surface, backed by the KnowledgeStore (SQLite
+ * on the durable volume) — NOT process memory — so a server restart/redeploy
+ * does not sign everyone out. The cookie carries an opaque random id; the bearer
+ * token never appears here.
  */
 export class SessionStore {
-  private sessions = new Map<string, Session>();
-  constructor(private readonly ttlMs = 12 * 60 * 60 * 1000) {}
+  constructor(
+    private readonly store: KnowledgeStore,
+    private readonly ttlMs = 12 * 60 * 60 * 1000,
+  ) {}
 
   create(identity: string, role: string): { sid: string; csrf: string } {
     const sid = crypto.randomUUID() + crypto.randomUUID().replace(/-/g, "");
     const csrf = crypto.randomUUID();
-    this.sessions.set(sid, {
-      identity,
-      role,
-      csrf,
-      expires: Date.now() + this.ttlMs,
-    });
+    this.store.createSession({ sid, identity, role, csrf, expires: Date.now() + this.ttlMs });
     return { sid, csrf };
   }
 
   get(sid: string | undefined): Session | null {
     if (!sid) return null;
-    const s = this.sessions.get(sid);
-    if (!s) return null;
-    if (s.expires < Date.now()) {
-      this.sessions.delete(sid);
-      return null;
-    }
-    return s;
+    return this.store.getSession(sid);
   }
 
   destroy(sid: string | undefined): void {
-    if (sid) this.sessions.delete(sid);
+    if (sid) this.store.destroySession(sid);
   }
 }
 
@@ -118,44 +110,95 @@ export function sessionClearCookie(): string {
 
 /* ------------------------------ rendering ------------------------------ */
 
-const PAGE_CSS = `
-  :root { color-scheme: light dark; }
-  body { font: 15px/1.5 system-ui, sans-serif; max-width: 820px; margin: 2rem auto; padding: 0 1rem; }
-  h1 { font-size: 1.3rem; } h2 { font-size: 1rem; margin-top: 2rem; color: #888; }
-  .item { border: 1px solid #8884; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
-  .meta { color: #888; font-size: 0.85rem; margin-bottom: 0.5rem; }
-  .kind { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 4px; background: #8883; font-size: 0.8rem; }
-  .content { white-space: pre-wrap; margin: 0.5rem 0; }
-  form { display: inline; }
-  button { font: inherit; padding: 0.35rem 0.9rem; border-radius: 6px; border: 1px solid #8886; cursor: pointer; }
-  button.approve { background: #2e7d32; color: #fff; border-color: #2e7d32; }
-  button.reject { background: transparent; }
-  textarea, input[type=password] { width: 100%; box-sizing: border-box; margin: 0.4rem 0; font: inherit; padding: 0.4rem; }
-  .empty { color: #888; }
-  .note { color: #888; font-size: 0.85rem; border-left: 3px solid #8884; padding-left: 0.8rem; }
-  .topbar { display: flex; justify-content: space-between; align-items: baseline; }
-`;
-
 function shell(title: string, inner: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8">
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)}</title><style>${PAGE_CSS}</style></head><body>${inner}</body></html>`;
+<title>${esc(title)}</title>
+<link rel="stylesheet" href="/admin/app.css">
+</head>
+<body class="min-h-screen bg-stone-950 font-sans text-stone-100 antialiased">${inner}</body></html>`;
 }
 
-/** The login form shown to anyone without a valid session (no secret in URL). */
+type Tab = "pending" | "knowledge" | "sources" | "audit";
+
+/** The brand mark (white square). */
+function brand(size = "h-7 w-7 text-xs"): string {
+  return `<div class="grid ${size} place-items-center rounded-lg bg-white font-bold text-stone-900">S</div>`;
+}
+
+/** Tab nav shared by every signed-in page; the active tab is highlighted. */
+function nav(active: Tab): string {
+  const tab = (href: string, label: string, key: Tab) =>
+    `<a href="${href}" class="tab${key === active ? " tab-active" : ""}">${esc(label)}</a>`;
+  return `<nav class="flex items-center gap-1">${tab("/admin", "Pending", "pending")}${tab(
+    "/admin/knowledge",
+    "Knowledge",
+    "knowledge",
+  )}${tab("/admin/sources", "Sources", "sources")}${tab("/admin/audit", "Audit", "audit")}</nav>`;
+}
+
+/** Sticky top bar: brand, nav, identity, and the sign-out form (carries CSRF). */
+function topbar(session: Session, active: Tab): string {
+  return `<header class="sticky top-0 z-10 border-b border-stone-800 bg-stone-950/80 backdrop-blur">
+  <div class="mx-auto flex max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
+    <a href="/admin" class="flex items-center gap-2">${brand()}<span class="font-semibold">Setoku</span></a>
+    ${nav(active)}
+    <div class="ml-auto flex items-center gap-3">
+      <span class="hidden text-xs text-stone-500 sm:inline">${esc(session.identity)} · ${esc(session.role)}</span>
+      <form method="POST" action="/admin/logout">
+        <input type="hidden" name="csrf" value="${esc(session.csrf)}">
+        <button type="submit" class="btn btn-ghost">Sign out</button>
+      </form>
+    </div>
+  </div>
+</header>`;
+}
+
+/** Signed-in page chrome: top bar + centered content column. */
+function page(session: Session, active: Tab, title: string, body: string): string {
+  return shell(
+    title,
+    `${topbar(session, active)}<main class="mx-auto max-w-4xl px-5 py-8">${body}</main>`,
+  );
+}
+
+/** A page heading with an optional sub line (sub may contain trusted HTML). */
+function heading(title: string, sub?: string): string {
+  return `<div class="mb-5"><h1 class="text-xl font-semibold tracking-tight">${esc(title)}</h1>${
+    sub ? `<p class="mt-1 text-sm leading-relaxed text-stone-400">${sub}</p>` : ""
+  }</div>`;
+}
+
+/** A neutral flash banner (escaped). */
+function flashBanner(flash?: string): string {
+  return flash
+    ? `<div class="mb-4 rounded-lg border border-stone-700 bg-stone-800/50 px-3 py-2 text-sm text-stone-300">${esc(flash)}</div>`
+    : "";
+}
+
+/** Small uppercase section label. */
+function sectionLabel(text: string): string {
+  return `<h2 class="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-stone-500">${esc(text)}</h2>`;
+}
+
+/** The login card shown to anyone without a valid session (no secret in URL). */
 export function renderLoginPage(flash?: string): string {
   return shell(
     "Setoku — sign in",
-    `<h1>Setoku — sign in</h1>
-<p class="meta">Sign in with your Setoku admin account to review pending
-knowledge. This is a separate credential from the access token you give
-Claude — agents never have it.</p>
-${flash ? `<p class="note">${esc(flash)}</p>` : ""}
-<form method="POST" action="/admin/login">
-  <input type="text" name="username" placeholder="username" autocomplete="username" autofocus>
-  <input type="password" name="password" placeholder="password" autocomplete="current-password">
-  <button class="approve" type="submit">Sign in</button>
-</form>`,
+    `<main class="flex min-h-screen items-center justify-center p-6">
+  <div class="card w-full max-w-sm p-7">
+    <div class="mb-5 flex items-center gap-2">${brand("h-8 w-8 text-sm")}<h1 class="text-lg font-semibold">Setoku</h1></div>
+    <p class="mb-5 text-sm leading-relaxed text-stone-400">Sign in to review pending
+    knowledge. This is a separate credential from the access token you give
+    Claude — agents never have it.</p>
+    ${flashBanner(flash)}
+    <form method="POST" action="/admin/login" class="space-y-3">
+      <input class="input" type="text" name="username" placeholder="username" autocomplete="username" autofocus>
+      <input class="input" type="password" name="password" placeholder="password" autocomplete="current-password">
+      <button class="btn btn-primary w-full" type="submit">Sign in</button>
+    </form>
+  </div>
+</main>`,
   );
 }
 
@@ -174,18 +217,27 @@ export function renderAuditPage(store: KnowledgeStore, session: Session): string
       } catch {
         /* leave raw */
       }
-      return `<tr><td>${esc(String(r.ts).slice(0, 19))}</td><td>${esc(r.user)}</td><td><code>${esc(r.tool)}</code></td><td>${esc(summary)}</td></tr>`;
+      return `<tr class="border-b border-stone-800/60 last:border-0">
+      <td class="whitespace-nowrap px-4 py-2.5 font-mono text-xs text-stone-500">${esc(String(r.ts).slice(0, 19))}</td>
+      <td class="px-4 py-2.5 text-stone-300">${esc(r.user)}</td>
+      <td class="px-4 py-2.5"><code class="kbd">${esc(r.tool)}</code></td>
+      <td class="px-4 py-2.5 text-stone-400">${esc(summary)}</td>
+    </tr>`;
     })
     .join("");
-  return shell(
+  return page(
+    session,
+    "audit",
     "Setoku — audit log",
-    `<div class="topbar"><h1>Setoku — audit log</h1>
-  <a href="/admin">← pending</a></div>
-<p class="meta">Signed in as ${esc(session.identity)} (${esc(session.role)}). Append-only; newest first.</p>
-<table style="width:100%;border-collapse:collapse;font-size:0.85rem">
-<thead><tr style="text-align:left;color:#888"><th>when (UTC)</th><th>who</th><th>action</th><th>detail</th></tr></thead>
-<tbody>${rows || '<tr><td colspan="4" class="empty">No activity yet.</td></tr>'}</tbody>
-</table>`,
+    `${heading("Audit log", "Append-only; newest first.")}
+<div class="card overflow-x-auto">
+  <table class="w-full text-left text-sm">
+    <thead><tr class="border-b border-stone-800 text-xs uppercase tracking-wide text-stone-500">
+      <th class="px-4 py-2.5 font-medium">when (UTC)</th><th class="px-4 py-2.5 font-medium">who</th><th class="px-4 py-2.5 font-medium">action</th><th class="px-4 py-2.5 font-medium">detail</th>
+    </tr></thead>
+    <tbody>${rows || '<tr><td colspan="4" class="px-4 py-4 text-stone-500">No activity yet.</td></tr>'}</tbody>
+  </table>
+</div>`,
   );
 }
 
@@ -198,50 +250,187 @@ export function renderApprovalPage(
   const pending = store.listCorrections("pending");
   const csrf = esc(session.csrf);
   const mayApprove = canApprove(session.role);
-  const actions = mayApprove
-    ? `
-      <form method="POST" action="/admin/resolve">
+  const actionForm = (id: number): string =>
+    mayApprove
+      ? `<form method="POST" action="/admin/resolve" class="mt-3 flex flex-wrap items-center gap-2">
         <input type="hidden" name="csrf" value="${csrf}">
-        <input type="hidden" name="id" value="ID">
-        <textarea name="reason" rows="1" placeholder="reason (optional for approve, recommended for reject)"></textarea>
-        <button class="approve" name="action" value="accepted">Approve</button>
-        <button class="reject" name="action" value="rejected">Reject</button>
+        <input type="hidden" name="id" value="${esc(id)}">
+        <input class="input min-w-[12rem] flex-1" name="reason" placeholder="reason (optional for approve, recommended for reject)">
+        <button class="btn btn-primary" name="action" value="accepted">Approve</button>
+        <button class="btn btn-ghost" name="action" value="rejected">Reject</button>
       </form>`
-    : "";
+      : "";
   const items = pending
     .map(
-      (c) => `
-    <div class="item">
-      <div class="meta">
-        <span class="kind">${esc(c.kind)}</span>
-        #${esc(c.id)} · proposed by ${esc(c.user)} · ${esc(String(c.ts).slice(0, 16))}${
+      (c) => `<div class="card p-4">
+      <div class="mb-2 flex flex-wrap items-center gap-2 text-xs text-stone-500">
+        <span class="badge badge-idle">${esc(c.kind)}</span>
+        <span class="font-mono text-stone-400">#${esc(c.id)}</span>
+        <span>proposed by ${esc(c.user)} · ${esc(String(c.ts).slice(0, 16))}${
           c.relatesTo ? ` · re: ${esc(c.relatesTo)}` : ""
-        }
+        }</span>
       </div>
-      <div class="content">${esc(c.content)}</div>${actions.replace('value="ID"', `value="${esc(c.id)}"`)}
+      <div class="whitespace-pre-wrap text-sm leading-relaxed text-stone-200">${esc(c.content)}</div>
+      ${actionForm(c.id)}
     </div>`,
     )
     .join("");
 
-  return shell(
+  return page(
+    session,
+    "pending",
     "Setoku — pending knowledge",
-    `<div class="topbar">
-  <h1>Setoku — pending knowledge</h1>
-  <form method="POST" action="/admin/logout">
-    <input type="hidden" name="csrf" value="${csrf}">
-    <button type="submit">Sign out (${esc(session.identity)} · ${esc(session.role)})</button>
-  </form>
-</div>
-<p class="meta">These are proposals from agents and teammates; nothing here is
-curated until an admin approves it. Approving a gotcha folds it into verified
-context immediately; other kinds are recorded for a curator session.
-· <a href="/admin/audit">audit log</a></p>
-${flash ? `<p class="note">${esc(flash)}</p>` : ""}
-${mayApprove ? "" : '<p class="note">You are signed in as a <b>member</b> — viewing only. Ask an admin to approve.</p>'}
-<h2>Pending (${pending.length})</h2>
-${pending.length ? items : '<p class="empty">Nothing pending. 🎉</p>'}
-<p class="note">This is the only path knowledge enters curated context (I2/I9):
-a human clicks here, outside any agent. Agents can only propose.</p>`,
+    `${heading(
+      "Pending knowledge",
+      "Proposals from agents and teammates. Nothing is curated until an admin approves it — this is the only path into verified context, and agents can only propose.",
+    )}
+${flashBanner(flash)}
+${
+  mayApprove
+    ? ""
+    : '<div class="mb-4 rounded-lg border border-stone-700 bg-stone-800/40 px-3 py-2 text-sm text-stone-400">You are signed in as a <b class="text-stone-200">member</b> — viewing only. Ask an admin to approve.</div>'
+}
+<div class="mb-3 text-xs font-medium uppercase tracking-wide text-stone-500">Pending (${pending.length})</div>
+<div class="space-y-3">${pending.length ? items : '<div class="card p-8 text-center text-stone-500">Nothing pending. 🎉</div>'}</div>`,
+  );
+}
+
+/** Read-only browser for curated knowledge — "the memories". */
+export function renderKnowledgePage(store: KnowledgeStore, session: Session): string {
+  const docs = store.listDocs();
+  const order: DocType[] = ["overview", "entity", "metric", "query", "gotcha"];
+  const byType = new Map<string, KnowledgeDoc[]>();
+  for (const d of docs) {
+    const arr = byType.get(d.type) ?? [];
+    arr.push(d);
+    byType.set(d.type, arr);
+  }
+  const section = (type: string): string => {
+    const list = (byType.get(type) ?? []).sort((a, b) => a.name.localeCompare(b.name));
+    if (!list.length) return "";
+    const items = list
+      .map((d) => {
+        const metaPairs = Object.entries(d.meta ?? {})
+          .map(
+            ([k, v]) =>
+              `<code class="kbd">${esc(k)}</code> ${esc(Array.isArray(v) ? v.join(", ") : v)}`,
+          )
+          .join(" · ");
+        const badge = d.verified
+          ? '<span class="badge badge-ok">verified</span>'
+          : '<span class="badge badge-idle">unverified</span>';
+        return `<details class="card group">
+      <summary class="flex cursor-pointer list-none items-center gap-2 px-4 py-3 font-medium text-stone-200 [&::-webkit-details-marker]:hidden">
+        <span class="text-stone-500 transition group-open:rotate-90">›</span>
+        <span class="flex-1">${esc(d.name)}</span>${badge}
+      </summary>
+      <div class="border-t border-stone-800 px-4 py-3">
+        <div class="whitespace-pre-wrap text-sm leading-relaxed text-stone-300">${esc(d.body)}</div>
+        <div class="mt-3 text-xs text-stone-500">${metaPairs ? metaPairs + " · " : ""}updated by ${esc(
+          d.updatedBy ?? "—",
+        )}${d.updatedAt ? " · " + esc(String(d.updatedAt).slice(0, 16)) : ""}</div>
+      </div>
+    </details>`;
+      })
+      .join("");
+    return `<section class="mb-6"><h2 class="mb-2 text-xs font-medium uppercase tracking-wide text-stone-500">${esc(
+      type,
+    )} (${list.length})</h2><div class="space-y-2">${items}</div></section>`;
+  };
+  const sections = order.map(section).join("");
+  return page(
+    session,
+    "knowledge",
+    "Setoku — knowledge",
+    `${heading(
+      "Knowledge",
+      `Curated business context the analyst reads as ground truth — ${docs.length} doc(s). Read-only here: curated edits come from a curator session, and corrections land in <a class="font-medium text-stone-100 underline decoration-stone-600 underline-offset-2 hover:decoration-stone-300" href="/admin">Pending</a> for review.`,
+    )}
+${docs.length ? sections : '<div class="card p-8 text-center text-stone-500">No curated knowledge yet. Run <code class="kbd">/setoku:generate</code>.</div>'}`,
+  );
+}
+
+/* ------------------------------ sources ------------------------------ */
+
+export interface SourceTable {
+  source: string;
+  rows: number | null;
+  last: string | null;
+}
+export interface SourcesData {
+  postgres: {
+    configured: boolean;
+    envVar?: string;
+    ok: boolean;
+    tableCount?: number;
+    error?: string;
+    allow?: string[];
+  };
+  lake: { configured: boolean; ok: boolean; error?: string; tables: SourceTable[] };
+  knowledge: { docs: number; byType: Record<string, number> };
+}
+
+/** Read-only view of what's connected + whether data is flowing (gathered live). */
+export function renderSourcesPage(session: Session, s: SourcesData): string {
+  const badge = (ok: boolean, label?: string): string =>
+    ok
+      ? `<span class="badge badge-ok">${esc(label ?? "connected")}</span>`
+      : `<span class="badge badge-down">${esc(label ?? "down")}</span>`;
+  const row = (k: string, v: string): string =>
+    `<div class="flex items-center justify-between gap-4 border-b border-stone-800/60 px-4 py-2.5 last:border-0"><span class="text-sm text-stone-500">${esc(
+      k,
+    )}</span><span class="text-sm text-stone-200">${v}</span></div>`;
+
+  const pg = s.postgres;
+  const pgBody = !pg.configured
+    ? '<div class="card p-6 text-stone-500">No business database configured.</div>'
+    : `<div class="card">
+      ${row("status", `${pg.ok ? badge(true) : badge(false, "unreachable")}${pg.error ? ` <span class="text-xs text-stone-500">${esc(pg.error)}</span>` : ""}`)}
+      ${row("env var", `<code class="kbd">${esc(pg.envVar ?? "—")}</code>`)}
+      ${pg.tableCount != null ? row("tables in scope", String(pg.tableCount)) : ""}
+      ${pg.allow?.length ? row("allow", pg.allow.map((a) => `<code class="kbd">${esc(a)}</code>`).join(" ")) : ""}
+    </div>`;
+
+  const lake = s.lake;
+  const lakeRows = lake.tables
+    .map(
+      (t) => `<tr class="border-b border-stone-800/60 last:border-0">
+      <td class="px-4 py-2.5 text-stone-200">${esc(t.source)}</td>
+      <td class="px-4 py-2.5 text-right tabular-nums text-stone-300">${
+        t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US")
+      }</td>
+      <td class="px-4 py-2.5 text-stone-400">${
+        t.last ? esc(String(t.last).slice(0, 19)) + " UTC" : '<span class="badge badge-idle">no data</span>'
+      }</td>
+    </tr>`,
+    )
+    .join("");
+  const lakeBody = !lake.configured
+    ? '<div class="card p-6 text-stone-500">No data lake configured (SETOKU_LAKE_URL).</div>'
+    : !lake.ok
+      ? `<div class="card p-4">${badge(false, "unreachable")} <span class="text-xs text-stone-500">${esc(lake.error ?? "")}</span></div>`
+      : `<div class="mb-2">${badge(true)}</div>
+<div class="card overflow-x-auto"><table class="w-full text-left text-sm">
+  <thead><tr class="border-b border-stone-800 text-xs uppercase tracking-wide text-stone-500"><th class="px-4 py-2.5 font-medium">connector</th><th class="px-4 py-2.5 text-right font-medium">rows</th><th class="px-4 py-2.5 font-medium">last ingest</th></tr></thead>
+  <tbody>${lakeRows || '<tr><td colspan="3" class="px-4 py-4 text-stone-500">no source tables</td></tr>'}</tbody>
+</table></div>`;
+
+  const k = s.knowledge;
+  const kPairs =
+    Object.entries(k.byType)
+      .map(([t, n]) => `${esc(t)} ${n}`)
+      .join(" · ") || "empty";
+
+  return page(
+    session,
+    "sources",
+    "Setoku — sources",
+    `${heading("Sources", "What's wired up and whether data is actually flowing. Read-only.")}
+${sectionLabel("Business database (Postgres)")}${pgBody}
+${sectionLabel("Data lake (ClickHouse)")}${lakeBody}
+${sectionLabel("Knowledge store")}<div class="card p-4 text-sm text-stone-300">${esc(String(k.docs))} curated doc(s) · ${kPairs}</div>
+<p class="mt-6 text-xs leading-relaxed text-stone-500">"Connected" means configured + reachable; per-connector rows and
+last-ingest are read live from the lake on each load.</p>`,
   );
 }
 

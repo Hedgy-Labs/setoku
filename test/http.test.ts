@@ -370,6 +370,37 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(r.status).toBe(403);
   });
 
+  it("the knowledge browser lists curated docs and requires a session", async () => {
+    // unauthenticated → login form, never the knowledge itself
+    const anon = await fetch(`${BASE}/admin/knowledge`, { redirect: "manual" });
+    const anonPage = await anon.text();
+    expect(anonPage).toContain("sign in");
+    expect(anonPage).not.toContain("Setoku — knowledge");
+
+    // signed in → the page renders with the shared tab nav
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const r = await fetch(`${BASE}/admin/knowledge`, { headers: { cookie } });
+    expect(r.status).toBe(200);
+    const page = await r.text();
+    expect(page).toContain("Setoku — knowledge");
+    expect(page).toContain('href="/admin/sources"'); // nav present
+    expect(page).toContain("Curated business context");
+  });
+
+  it("the sources page shows what's connected and requires a session", async () => {
+    const anon = await fetch(`${BASE}/admin/sources`, { redirect: "manual" });
+    expect(await anon.text()).toContain("sign in");
+
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const r = await fetch(`${BASE}/admin/sources`, { headers: { cookie } });
+    expect(r.status).toBe(200);
+    const page = await r.text();
+    expect(page).toContain("Setoku — sources");
+    expect(page).toContain("Business database");
+    expect(page).toContain("Data lake");
+    expect(page).toContain("Knowledge store");
+  });
+
   it("a resolve POST without a session is refused", async () => {
     const r = await fetch(`${BASE}/admin/resolve`, {
       method: "POST",
