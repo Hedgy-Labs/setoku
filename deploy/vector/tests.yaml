@@ -192,3 +192,116 @@ tests:
               assert!(.service == "worker-2", "service falls back to .app")
               assert!(.message == "queue depth exceeded again", "message falls back to .log")
               assert!(.level == "info", "level defaults")
+
+  - name: mercury route splits accounts / transactions / events by path
+    inputs:
+      - insert_at: router
+        type: log
+        log_fields:
+          _path: /ingest/mercury/accounts
+          id: acct-route
+          snapshot_ts: "2026-06-12T18:00:00Z"
+          created_at: "2024-01-02T03:04:05Z"
+    outputs:
+      - extract_from: mercury_accounts_parse
+        conditions:
+          - type: vrl
+            source: assert!(.id == "acct-route")
+
+  - name: mercury account snapshot normalizes timestamps, keeps redacted fields
+    inputs:
+      - insert_at: mercury_accounts_parse
+        type: log
+        log_fields:
+          _path: /ingest/mercury/accounts
+          snapshot_ts: "2026-06-12T18:00:00.123Z"
+          id: acc_abc
+          name: Operating
+          account_number_last4: "4321"
+          routing_number: "021000021"
+          available_balance: 105000.55
+          current_balance: 110000.0
+          created_at: "2024-01-02T03:04:05Z"
+          raw: '{"accountNumber":"4321"}'
+    outputs:
+      - extract_from: mercury_accounts_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.id == "acc_abc", "id")
+              assert!(.account_number_last4 == "4321", "last4 only")
+              assert!(.available_balance == 105000.55, "available balance")
+              assert!(starts_with!(.snapshot_ts, "2026-06-12 18:00:00"), "snapshot_ts: " + string!(.snapshot_ts))
+              assert!(starts_with!(.created_at, "2024-01-02 03:04:05"), "created_at: " + string!(.created_at))
+
+  - name: mercury pending transaction keeps null posted_at; estimated date-only parsed
+    inputs:
+      - insert_at: mercury_transactions_parse
+        type: log
+        log_fields:
+          _path: /ingest/mercury/transactions
+          id: txn_pending
+          account_id: acc_abc
+          amount: -2500.0
+          status: pending
+          kind: externalTransfer
+          counterparty_name: AWS
+          created_at: "2026-06-11T09:00:00.500Z"
+          posted_at: ""
+          estimated_delivery: "2026-06-20"
+          ingested_at: "2026-06-12T18:00:00Z"
+    outputs:
+      - extract_from: mercury_transactions_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.amount == -2500.0, "signed amount preserved")
+              assert!(.status == "pending", "status")
+              assert!(.posted_at == null, "posted_at null while pending")
+              assert!(starts_with!(string!(.estimated_delivery), "2026-06-20 00:00:00"), "date-only fallback: " + string!(.estimated_delivery))
+              assert!(starts_with!(.created_at, "2026-06-11 09:00:00"), "created_at parsed")
+              assert!(starts_with!(.ingested_at, "2026-06-12 18:00:00"), "ingested_at parsed")
+
+  - name: mercury posted transaction fills posted_at
+    inputs:
+      - insert_at: mercury_transactions_parse
+        type: log
+        log_fields:
+          _path: /ingest/mercury/transactions
+          id: txn_sent
+          account_id: acc_abc
+          amount: 9000.0
+          status: sent
+          created_at: "2026-06-10T08:00:00Z"
+          posted_at: "2026-06-11T12:00:00Z"
+          ingested_at: "2026-06-12T18:00:00Z"
+    outputs:
+      - extract_from: mercury_transactions_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.status == "sent", "status")
+              assert!(starts_with!(string!(.posted_at), "2026-06-11 12:00:00"), "posted_at: " + string!(.posted_at))
+
+  - name: mercury webhook event extracts nested ids defensively, keeps raw
+    inputs:
+      - insert_at: mercury_events_parse
+        type: log
+        log_fields:
+          _path: /ingest/mercury
+          type: transaction.posted
+          createdAt: "2026-06-12T18:05:00Z"
+          transaction.id: txn_sent
+          transaction.status: sent
+          account.id: acc_abc
+    outputs:
+      - extract_from: mercury_events_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.event_type == "transaction.posted", "event_type")
+              assert!(.transaction_id == "txn_sent", "transaction id from nested .transaction.id")
+              assert!(.account_id == "acc_abc", "account id from nested .account.id")
+              assert!(.status == "sent", "status from nested .transaction.status")
+              assert!(starts_with!(.event_ts, "2026-06-12 18:05:00"), "event_ts: " + string!(.event_ts))
+              assert!(contains!(.raw, "txn_sent"), "raw preserved")

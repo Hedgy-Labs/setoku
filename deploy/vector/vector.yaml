@@ -3,10 +3,13 @@
 #
 # One authenticated HTTP source (Caddy enforces the bearer token at the edge)
 # routed by ingest path into typed per-source pipelines:
-#   /ingest/vercel  → logs_vercel   (NDJSON drain; schema per Vercel docs)
-#   /ingest/render  → logs_render   (HTTPS JSON; schema undocumented — defensive, see 011_logs_render.sql)
-#   /ingest/events  → app_events    (first-party contract: docs/events.md)
-#   anything else   → ingest_raw    (catch-all; nothing is silently dropped)
+#   /ingest/vercel               → logs_vercel   (NDJSON drain; schema per Vercel docs)
+#   /ingest/render               → logs_render   (HTTPS JSON; schema undocumented — defensive, see 011_logs_render.sql)
+#   /ingest/events               → app_events    (first-party contract: docs/events.md)
+#   /ingest/mercury/accounts     → mercury_accounts      (poller balance snapshots)
+#   /ingest/mercury/transactions → mercury_transactions  (poller, ReplacingMergeTree)
+#   /ingest/mercury              → mercury_events         (optional webhook stream)
+#   anything else                → ingest_raw    (catch-all; nothing is silently dropped)
 #
 # Buffer policy (I4): app events block when the disk buffer fills (never shed
 # the high-grade ore); platform request logs may drop_newest under backpressure.
@@ -35,6 +38,9 @@ transforms:
       vercel: '._path == "/ingest/vercel"'
       render: '._path == "/ingest/render"'
       events: '._path == "/ingest/events"'
+      mercury_acct: '._path == "/ingest/mercury/accounts"'
+      mercury_txn: '._path == "/ingest/mercury/transactions"'
+      mercury_event: '._path == "/ingest/mercury"'
 
   vercel_parse:
     type: remap
@@ -133,6 +139,85 @@ transforms:
         "raw": raw
       }
 
+  mercury_accounts_parse:
+    type: remap
+    inputs: [router.mercury_acct]
+    source: |
+      # Poller sends pre-normalized fields; we only normalize timestamps to the
+      # ClickHouse-friendly format (account number is already redacted upstream).
+      del(.source_type)
+      del(._path)
+      ts_snap, e1 = parse_timestamp(to_string(.snapshot_ts) ?? "", "%+")
+      if e1 != null { ts_snap = now() }
+      .snapshot_ts = format_timestamp!(ts_snap, "%F %T%.3f")
+      ts_cr, e2 = parse_timestamp(to_string(.created_at) ?? "", "%+")
+      if e2 != null { ts_cr = ts_snap }
+      .created_at = format_timestamp!(ts_cr, "%F %T%.3f")
+
+  mercury_transactions_parse:
+    type: remap
+    inputs: [router.mercury_txn]
+    source: |
+      del(.source_type)
+      del(._path)
+      ts_cr, e1 = parse_timestamp(to_string(.created_at) ?? "", "%+")
+      if e1 != null { ts_cr = now() }
+      .created_at = format_timestamp!(ts_cr, "%F %T%.3f")
+      ts_in, e2 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e2 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+      # nullable settle-time columns: keep null while unknown/unparseable
+      pa = .posted_at
+      if pa == null || pa == "" {
+        .posted_at = null
+      } else {
+        tp, ep = parse_timestamp(to_string(pa) ?? "", "%+")
+        if ep != null { .posted_at = null } else { .posted_at = format_timestamp!(tp, "%F %T%.3f") }
+      }
+      ed = .estimated_delivery
+      if ed == null || ed == "" {
+        .estimated_delivery = null
+      } else {
+        eds = to_string(ed) ?? ""
+        # Mercury sometimes sends a bare date; pad to a full instant so chrono parses it
+        if match(eds, r'^\d{4}-\d{2}-\d{2}$') { eds = eds + "T00:00:00Z" }
+        te, ee = parse_timestamp(eds, "%+")
+        if ee != null { .estimated_delivery = null } else { .estimated_delivery = format_timestamp!(te, "%F %T%.3f") }
+      }
+
+  mercury_events_parse:
+    type: remap
+    inputs: [router.mercury_event]
+    source: |
+      # Webhook payload shape is provider-specific (Events API / JSON Merge Patch);
+      # extract common identifiers defensively and keep the whole thing in raw.
+      del(.source_type)
+      del(._path)
+      raw = encode_json(.)
+      et = .createdAt
+      if et == null { et = .timestamp }
+      if et == null { et = .eventCreatedAt }
+      t, terr = parse_timestamp(to_string(et) ?? "", "%+")
+      if terr != null { t = now() }
+      etype = .type
+      if etype == null { etype = .eventType }
+      txid = .transactionId
+      if txid == null { txid = .transaction.id }
+      if txid == null { txid = .id }
+      acct = .accountId
+      if acct == null { acct = .account.id }
+      stat = .status
+      if stat == null { stat = .transaction.status }
+      . = {
+        "received_at": format_timestamp!(now(), "%F %T%.3f"),
+        "event_ts": format_timestamp!(t, "%F %T%.3f"),
+        "event_type": to_string(etype) ?? "",
+        "transaction_id": to_string(txid) ?? "",
+        "account_id": to_string(acct) ?? "",
+        "status": to_string(stat) ?? "",
+        "raw": raw
+      }
+
   to_raw:
     type: remap
     inputs: [router._unmatched]
@@ -178,6 +263,39 @@ sinks:
     compression: gzip
     batch: { timeout_secs: 10, max_events: 10000 }
     buffer: { type: disk, max_size: 2147483648, when_full: block } # never shed events (I4)
+
+  lake_mercury_accounts:
+    type: clickhouse
+    inputs: [mercury_accounts_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: mercury_accounts
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: block } # financial data: never shed
+
+  lake_mercury_transactions:
+    type: clickhouse
+    inputs: [mercury_transactions_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: mercury_transactions
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 1073741824, when_full: block }
+
+  lake_mercury_events:
+    type: clickhouse
+    inputs: [mercury_events_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: mercury_events
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: block }
 
   lake_raw:
     type: clickhouse
