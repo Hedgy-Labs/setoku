@@ -31,7 +31,7 @@ event subscription `message.channels`).
 3. **Bot token** (`SLACK_BOT_TOKEN`, `xoxb-…`): **Install App → Install to
    Workspace** → approve → copy the *Bot User OAuth Token*. This token is used
    for the web API (channel listing, history backfill).
-4. Invite the bot to the channels you want archived: `/invite @Setoku Archiver`
+4. Invite the bot to the channels you want archived: `/invite @Setoku`
    in each channel. It only ever sees channels it has been invited to.
 
 Put both tokens in the box's `.env`. They are credentials — never in git.

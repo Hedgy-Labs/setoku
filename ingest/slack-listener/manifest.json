@@ -1,18 +1,18 @@
 {
   "display_information": {
-    "name": "Setoku Archiver",
-    "description": "Archives messages from public channels it is invited to into your self-hosted Setoku data lake.",
+    "name": "Setoku",
+    "description": "Archives messages from public channels it is invited to into your self-hosted Setoku data lake, and posts notifications.",
     "background_color": "#1a1a2e"
   },
   "features": {
     "bot_user": {
-      "display_name": "Setoku Archiver",
+      "display_name": "Setoku",
       "always_online": true
     }
   },
   "oauth_config": {
     "scopes": {
-      "bot": ["channels:history", "channels:read", "users:read"]
+      "bot": ["channels:history", "channels:read", "users:read", "chat:write"]
     }
   },
   "settings": {
