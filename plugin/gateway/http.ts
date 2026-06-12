@@ -35,6 +35,7 @@ import {
   sessionIdFromCookie,
   sessionSetCookie,
   sessionClearCookie,
+  setStylesheetHref,
   type SourcesData,
   type SourceTable,
 } from "./lib/approval";
@@ -55,6 +56,11 @@ const ADMIN_CSS = ((): string => {
     return "";
   }
 })();
+// Content-version the stylesheet URL so a CSS change busts the browser cache.
+// The link becomes /admin/app.css?v=<hash>; since the URL changes with content,
+// the response can be cached immutably (no stale CSS against new HTML).
+const ADMIN_CSS_VER = Bun.hash(ADMIN_CSS).toString(36);
+setStylesheetHref(`/admin/app.css?v=${ADMIN_CSS_VER}`);
 
 function storePath(): string {
   const res = loadConfig(projectDir);
@@ -410,11 +416,12 @@ const httpServer = http.createServer(async (req, res) => {
       } as const;
       const path = req.url.split("?")[0];
 
-      // the admin stylesheet — public (not secret), served before the auth gate
+      // the admin stylesheet — public (not secret), served before the auth gate.
+      // URL is content-versioned (?v=hash), so it's safe to cache immutably.
       if (path === "/admin/app.css") {
         res.writeHead(200, {
           "content-type": "text/css; charset=utf-8",
-          "cache-control": "public, max-age=3600",
+          "cache-control": "public, max-age=31536000, immutable",
         });
         res.end(ADMIN_CSS);
         return;

@@ -110,11 +110,20 @@ export function sessionClearCookie(): string {
 
 /* ------------------------------ rendering ------------------------------ */
 
+// Stylesheet URL, content-versioned by the server at startup (?v=<hash>) so a
+// CSS change busts the browser cache — without it, clients serve stale CSS
+// against new HTML for up to the cache lifetime. Default (unversioned) is used
+// by the local preview, which inlines the CSS anyway.
+let stylesheetHref = "/admin/app.css";
+export function setStylesheetHref(href: string): void {
+  stylesheetHref = href;
+}
+
 function shell(title: string, inner: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)}</title>
-<link rel="stylesheet" href="/admin/app.css">
+<link rel="stylesheet" href="${stylesheetHref}">
 </head>
 <body class="min-h-screen bg-stone-950 font-sans text-stone-100 antialiased">${inner}</body></html>`;
 }
