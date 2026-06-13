@@ -28,9 +28,11 @@ It ships **tools, not models**. No AI runs on the server; all the reasoning happ
 
 ## Why we built it
 
-- **Agents are good at SQL but don't know *your* business.** They guess what a column means and get it subtly, confidently wrong. Setoku stores those rules once, verified by a human, and feeds them to every query.
-- **Your data is scattered.** Even a tiny company's data lives across a database, request logs, Slack, a bank, a codebase. Setoku hooks each source up and gives the agent one place to reach them.
-- **Pointing an agent at production data is risky.** Prompt injection is real — an agent reading a Slack message could be talked into doing something. Setoku makes it safe: queries are read-only and enforced by the database engine itself, and the agent can never change what it *knows*. Every change to the knowledge is approved by a human, outside the agent's loop.
+We built Setoku for ourselves. We're two people, we run the company on Claude, and we kept hitting the same wall: Claude is great at SQL but it doesn't know *our* business. It would write a clean query against the wrong definition — what "paying customer" really means, which metric is the real one, the gotchas that make an obvious query quietly wrong — and hand us a confident, wrong number. That knowledge lived in our heads, where no agent could reach it.
+
+We also refused to pay for a second AI. We already pay for Claude; a separate inference bill for an analytics tool makes no sense. So Setoku runs no model of its own — it hands context and a safe way to query to the Claude we already have. The whole thing is one $12 box. Being cheap here is the right instinct: the model is the expensive part, and you're already paying for it.
+
+And we didn't trust an agent loose on production data. Prompt injection is real; a poisoned Slack message shouldn't be able to make the agent act. So the agent can only read — the database enforces it — and it can never change what Setoku knows. A human approves that, every time, outside the loop.
 
 ## How to deploy it
 
