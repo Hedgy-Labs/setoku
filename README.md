@@ -45,11 +45,6 @@ It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<you
 
 Then point Claude at the box and run `/setoku:onboard` in a business repo — it wires up your database (the credential stays in your env; only the env-var *name* goes in config), checks the connection, and generates the first knowledge from your code.
 
-> Prefer not to run a server? Install the Claude Code plugin and run `/setoku:onboard` against an existing Postgres — fully local, no box needed.
-> ```bash
-> claude plugin marketplace add Hedgy-Labs/setoku && claude plugin install setoku@setoku
-> ```
-
 ## High level architecture
 
 Everything is one `docker compose` on one VPS. Only the web proxy faces the internet; the databases are never exposed.
