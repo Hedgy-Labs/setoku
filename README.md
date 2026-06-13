@@ -1,13 +1,15 @@
 # Setoku
 
-**Setoku is institutional memory for AI agents — captured once, used by every agent and teammate, on your own server and your own Claude subscription.**
+**Setoku gives Claude the context to answer questions about your data — and a safe, read-only way to query it — on your own server and your own Claude subscription.**
 
-- **The problem.** What your data *means* lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. People leave and it walks out the door — and AI agents never had it, so they guess and are confidently wrong.
-- **What Setoku does.** It remembers — definitions, the canonical query for each metric, the gotchas — and hands that to your AI *right before it answers*, so it computes things the way your business actually does.
-- **It's safe to point at production.** The agent only runs read-only, audited queries, and it can't change what the company "knows" — a human approves every addition to the memory, outside the agent's loop. Prompt injection can't poison it.
-- **It runs on your box.** Ships tools, not models — no AI runs on the server, so there are no AI keys and no per-query cost. Just one small VPS plus the Claude seats you already have.
+It's basically institutional memory: the stuff about your data that usually lives in people's heads, written down where an agent can use it. We built it for our own two-person company; it turned out useful, so maybe it's useful to you.
 
-Today Setoku is deep on **data** (what your tables and metrics mean). The same memory naturally holds more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
+- **The problem.** What your data *means* lives in people's heads — which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. Agents never had that, so they guess and get it confidently wrong.
+- **What it does.** It remembers those definitions and gotchas and hands them to Claude right before it answers, so it computes things the way you actually do.
+- **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows — a human approves that, outside the agent's loop.
+- **It's cheap.** No AI runs in Setoku itself; the thinking happens in the Claude you already pay for. A whole deployment is one small VPS.
+
+Today it's mostly about **data** (what your tables and metrics mean). The same idea could hold more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
 
 _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI. (Naming: [NAMES.md](./NAMES.md). Full design history: [SPEC.md](./SPEC.md).)_
 
@@ -28,11 +30,13 @@ It ships **tools, not models**. No AI runs on the server; all the reasoning happ
 
 ## Why we built it
 
-We built Setoku for ourselves. We're two people, we run the company on Claude, and we kept hitting the same wall: Claude is great at SQL but it doesn't know *our* business. It would write a clean query against the wrong definition — what "paying customer" really means, which metric is the real one, the gotchas that make an obvious query quietly wrong — and hand us a confident, wrong number. That knowledge lived in our heads, where no agent could reach it.
+We're a two-person company and we run on Claude. The problem was simple: Claude is good at SQL but doesn't know our business. It would write a clean query against the wrong definition — what "paying customer" means, which metric counts, the small gotchas that make an obvious query wrong — and give us a confident, wrong number. The knowledge to get it right was in our heads, not anywhere an agent could read.
 
-We also refused to pay for a second AI. We already pay for Claude; a separate inference bill for an analytics tool makes no sense. So Setoku runs no model of its own — it hands context and a safe way to query to the Claude we already have. The whole thing is one $12 box. Being cheap here is the right instinct: the model is the expensive part, and you're already paying for it.
+We didn't want to pay for a second AI to fix that; we already pay for Claude. So Setoku doesn't run a model of its own — it just hands context and a safe way to query to the Claude we already have. A whole deployment is one small box.
 
-And we didn't trust an agent loose on production data. Prompt injection is real; a poisoned Slack message shouldn't be able to make the agent act. So the agent can only read — the database enforces it — and it can never change what Setoku knows. A human approves that, every time, outside the loop.
+We also didn't want an agent able to do damage with our data, so queries are read-only (the database enforces it) and the agent can't change what Setoku knows — a human signs off on that, outside the loop.
+
+It's a small thing, but it's been useful for us. Maybe it's useful for you.
 
 ## How to deploy it
 
