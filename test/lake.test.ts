@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
  * e2e for run_query dialect routing (task 3.6, I5): real ClickHouse ⇄ the
- * exact stdio server the plugin ships ⇄ real MCP client.
+ * box's http.ts ⇄ real MCP client. An **analyst** token reads the lake; a
+ * **curator** token is refused (the I2/I9 mutual exclusion).
  *
  * Gated on SETOKU_E2E_CH_URL (e.g. http://default:pass@127.0.0.1:18123/default)
  * — skipped when no ClickHouse is reachable. CI provides a service container;
@@ -9,21 +10,25 @@
  *            clickhouse/clickhouse-server:25.3
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import { spawn, type Subprocess } from "bun";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
 const CH_URL = process.env.SETOKU_E2E_CH_URL;
 
 const ROOT = path.resolve(import.meta.dir, "..");
-const SERVER = path.join(ROOT, "plugin", "gateway", "server.ts");
+const HTTP_SERVER = path.join(ROOT, "plugin", "gateway", "http.ts");
 const FIXTURES = path.join(ROOT, "test", "fixtures");
 const TABLE = "setoku_lake_e2e";
+const PORT = 38741;
+const BASE = `http://127.0.0.1:${PORT}`;
 
 let tmpRepo: string;
-let mcp: McpClient;
+let proc: Subprocess;
+let mcp: McpClient; // analyst token — may read the lake
 
 /** Direct admin call to ClickHouse (test setup/teardown only). */
 async function chAdmin(query: string, readonly = false): Promise<Response> {
@@ -37,6 +42,16 @@ async function chAdmin(query: string, readonly = false): Promise<Response> {
     },
     body: query,
   });
+}
+
+async function connect(token: string): Promise<McpClient> {
+  const client = new McpClient({ name: "lake-e2e", version: "0.0.1" });
+  await client.connect(
+    new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
+    }),
+  );
+  return client;
 }
 
 async function call(name: string, args: Record<string, unknown> = {}) {
@@ -65,23 +80,34 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
     fs.cpSync(path.join(FIXTURES, "setoku"), path.join(tmpRepo, ".setoku"), {
       recursive: true,
     });
-    mcp = new McpClient({ name: "lake-e2e", version: "0.0.1" });
-    await mcp.connect(
-      new StdioClientTransport({
-        command: "bun",
-        args: [SERVER],
-        env: {
-          ...(process.env as Record<string, string>),
-          SETOKU_PROJECT_DIR: tmpRepo,
-          SETOKU_USER: "lake-e2e@test",
-          SETOKU_LAKE_URL: CH_URL!,
-        },
-      }),
-    );
+    proc = spawn({
+      cmd: ["bun", HTTP_SERVER],
+      env: {
+        ...(process.env as Record<string, string>),
+        SETOKU_PROJECT_DIR: tmpRepo,
+        SETOKU_DB_PATH: path.join(tmpRepo, "knowledge.db"),
+        SETOKU_HTTP_PORT: String(PORT),
+        SETOKU_TOKENS: "tok-analyst=lake-e2e@test",
+        SETOKU_CURATOR_TOKENS: "tok-curator=lake-e2e@test",
+        SETOKU_LAKE_URL: CH_URL!,
+      },
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+    for (let i = 0; i < 50; i++) {
+      try {
+        if ((await fetch(`${BASE}/health`)).ok) break;
+      } catch {
+        /* not up */
+      }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    mcp = await connect("tok-analyst");
   }, 30_000);
 
   afterAll(async () => {
     await mcp?.close();
+    proc?.kill();
     await chAdmin(`DROP TABLE IF EXISTS ${TABLE}`);
     if (tmpRepo) fs.rmSync(tmpRepo, { recursive: true, force: true });
   });
@@ -136,5 +162,18 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
     // default dialect targets the business Postgres — this table doesn't exist there
     expect(r.isError).toBe(true);
     expect(r.text).not.toContain("order_placed");
+  });
+
+  it("a curator token is refused on the lake (mutual exclusion, I2/I9)", async () => {
+    const curator = await connect("tok-curator");
+    const res = (await curator.callTool({
+      name: "run_query",
+      arguments: { sql: `SELECT * FROM ${TABLE}`, dialect: "clickhouse" },
+    })) as unknown as { isError?: boolean; content: { text: string }[] };
+    expect(res.isError).toBe(true);
+    expect(res.content.map((c) => c.text).join("").toLowerCase()).toContain(
+      "curator session",
+    );
+    await curator.close();
   });
 });

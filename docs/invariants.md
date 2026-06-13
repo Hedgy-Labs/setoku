@@ -9,12 +9,15 @@ README) so the references resolve without bloating the front page.
 - **I2 — The corrections queue is the only write path into curated context, and no
   agent that reads untrusted data may hold a tool that commits a write.** The
   accept/commit decision happens **outside the agent loop**: injection attacks the
-  agent's *decision*, not its credential, so a per-token "curator" permission would
-  not help. The deployed gateway is **propose-only** (`report_correction` →
-  pending); the curated-write tools (`upsert_context`, `resolve_correction`) are
-  never exposed there. Acceptance is the web approval surface, or — for
-  `/setoku:generate` / `/setoku:curate` — a deliberate local
-  `SETOKU_CURATOR_MODE=1` stdio session that is never analyzing untrusted data.
+  agent's *decision*, not its credential. Analyst tokens are **propose-only**
+  (`report_correction` → pending); the curated-write tools (`upsert_context`,
+  `resolve_correction`) are exposed only to a separate **curator token**, which is
+  in turn **blocked from reading the lake** (`denyLakeRead`) — so a session that can
+  commit knowledge structurally cannot ingest the untrusted bulk text that would
+  weaponize the write tool. The two capabilities never coexist. Acceptance of
+  team-proposed knowledge is the web approval surface; `/setoku:generate` /
+  `/setoku:curate` use the curator token (they read the customer's own code and the
+  business Postgres, never the lake).
 - **I3 — No pilot-tenant data in the repo.** No real metric definitions, gotchas,
   channel names, or log samples. CI greps a denylist (terms in the private overlay,
   fed via the `SETOKU_DENYLIST` secret).

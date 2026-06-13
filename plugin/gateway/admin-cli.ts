@@ -46,6 +46,7 @@ function usage(): never {
       "  admin-cli create-user <username> [--role admin|member]\n" +
       "  admin-cli set-password <username>\n" +
       "  admin-cli list-users\n" +
+      "  admin-cli create-curator-token <identity>\n" +
       "(password via SETOKU_NEW_PASSWORD env, else interactive prompt)",
   );
   process.exit(2);
@@ -90,6 +91,28 @@ async function main() {
       createdBy: "admin-cli",
     });
     console.log(`created ${role} "${username}"`);
+    return;
+  }
+
+  if (cmd === "create-curator-token") {
+    // Mint a curator token (commit curated knowledge; cannot read the lake).
+    // Not stored in the DB — it lives in SETOKU_CURATOR_TOKENS on the box. We
+    // print it once and record the issuance in the audit log.
+    const identity = username;
+    if (!identity) usage();
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(24)))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    store.audit("admin-cli", "curator_token_created", { identity });
+    const dom = process.env.SETOKU_DOMAIN ?? "<your-domain>";
+    console.log(`curator token for ${identity} (shown once):\n`);
+    console.log(`  ${token}=${identity}\n`);
+    console.log("1. Append it to SETOKU_CURATOR_TOKENS in /opt/setoku/.env (comma-separated), then restart the server.");
+    console.log("2. On the operator's machine ONLY (never analyst machines), add the curator connector:");
+    console.log(
+      `   claude mcp add --scope user --transport http setoku-curator https://${dom}/mcp --header "Authorization: Bearer ${token}"`,
+    );
+    console.log("\nThis token can commit curated knowledge (upsert_context/resolve_correction) but cannot read the lake.");
     return;
   }
 
