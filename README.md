@@ -1,37 +1,39 @@
 # Setoku
 
-**Setoku is institutional memory for AI agents — captured once, used by every agent and teammate, on your own server and your own Claude subscription.**
+**AI is good at writing queries. It just doesn't know what your data means — so it guesses, and it's confidently wrong.**
 
-- **The problem.** What your data *means* lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. People leave and it walks out the door — and AI agents never had it, so they guess and are confidently wrong.
-- **What Setoku does.** It remembers — definitions, the canonical query for each metric, the gotchas — and hands that to your AI *right before it answers*, so it computes things the way your business actually does.
-- **It's safe to point at production.** The agent only runs read-only, audited queries, and it can't change what the company "knows" — a human approves every addition to the memory, outside the agent's loop. Prompt injection can't poison it.
-- **It runs entirely on the Claude subscription you already pay for.** Every bit of inference happens inside *your* Claude — Setoku ships tools and context, never models. Nothing runs on the server but the tools, so there are no AI API keys and no per-token bill. The whole deployment is one small VPS plus the Claude seats your team already has.
+Setoku fixes that. It remembers what your data means and hands that to your AI right before it answers — so the AI counts things the way your business actually counts them.
 
-Today Setoku is deep on **data** (what your tables and metrics mean). The same memory naturally holds more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
+- **The problem.** What your data *means* lives in people's heads. Which number is the real "revenue." Why "paying customer" is trickier than it sounds. The small gotchas that turn an obvious query into a wrong answer. When people leave, that knowledge walks out the door — and the AI never had it in the first place.
+- **What Setoku does.** It writes that knowledge down once — the definitions, the right query for each number, the gotchas — and feeds it to your AI the moment it's needed. So the AI answers the way your business works, not the way it guesses from column names.
+- **It's safe to point at your real data.** The AI can only read, never change. Every query it runs is logged. And it can't edit what the company "knows" — a person approves every new fact by hand. So a poisoned Slack message can't trick it into corrupting your knowledge.
+- **It runs on the Claude subscription you already pay for.** All the thinking happens inside your own Claude. Setoku ships the tools and the knowledge, never the AI itself. No API keys, no bill per question — just one cheap server plus the Claude seats your team already has.
+
+Right now Setoku is deepest on **data** — what your tables and numbers mean. The same memory can hold more over time (team conventions, how you like things done): see [docs/memory.md](./docs/memory.md).
 
 _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI. (Naming: [NAMES.md](./NAMES.md). Full design history: [SPEC.md](./SPEC.md).)_
 
-> **Status:** working prototype. One box serves a live pilot today — querying its Postgres read-only, ingesting its logs, Slack, and bank data, and answering questions through Claude.
+> **Status:** working prototype. One box is live today — reading a real Postgres, pulling in its logs, Slack, and bank data, and answering questions through Claude.
 
 ---
 
 ## What it is
 
-Setoku is a small self-hosted server that sits between your AI (Claude) and your data. It does two things:
+Setoku is a small server you run yourself. It sits between your AI and your data and does two things:
 
-1. **Holds curated knowledge about your data** — what your tables and metrics actually mean, the canonical SQL for each metric, and the gotchas that make naive queries wrong (e.g. "active user" excludes internal test accounts; refunds must be subtracted from revenue; a status column is current-state only, so you count events from the log table instead).
-2. **Gives the agent a governed way to query** — read-only, with a row cap, a statement timeout, a table allow-list, and an append-only audit log of who ran what.
+1. **It remembers what your data means** — what each table and number actually is, the right query for each one, and the gotchas that make the obvious query wrong. (For example: "active user" leaves out your own test accounts. Revenue has to subtract refunds. A "status" column only tells you today's state, so to count what happened you read the log instead.)
+2. **It gives the AI a safe way to look at the data** — read-only, capped in size, cut off if a query runs too long, limited to approved tables, with a log of every query run.
 
-The agent looks up the context first, then runs the query — so it answers the way your business actually computes things instead of guessing from column names.
+The AI looks up the meaning first, then runs the query. So it answers the way your business actually works, instead of guessing from names.
 
-It ships **tools, not models**. No AI runs on the server; all the reasoning happens in your Claude. That means no AI API keys and no per-query AI cost — a whole deployment is one small VPS plus the Claude seats your team already has.
+Setoku ships tools, not AI. No AI runs on the server — all the thinking happens in your Claude. That means no API keys and no cost per question. A whole setup is one cheap server plus the Claude seats you already pay for.
 
 ## Why we built it
 
-- **Agents are good at SQL but don't know *your* business.** They guess what a column means and get it subtly, confidently wrong. Setoku stores those rules once, verified by a human, and feeds them to every query.
-- **Your data is scattered.** Even a tiny company's data lives across a database, request logs, Slack, a bank, a codebase. Setoku hooks each source up and gives the agent one place to reach them.
-- **Pointing an agent at production data is risky.** Prompt injection is real — an agent reading a Slack message could be talked into doing something. Setoku makes it safe: queries are read-only and enforced by the database engine itself, and the agent can never change what it *knows*. Every change to the knowledge is approved by a human, outside the agent's loop.
-- **We're too small for per-token SaaS — and so are you.** The hosted context-layer products meter you by the token, on top of a model bill. We didn't want to run that gauntlet ourselves, so we didn't build it that way: all of Setoku's reasoning runs through the Claude subscription you already have. One cheap VPS, your existing seats, zero per-query AI cost — that's the whole bill.
+- **AI is great at SQL but doesn't know your business.** It guesses what a column means and gets it subtly, confidently wrong. Setoku writes the rules down once, checked by a person, and feeds them to every query.
+- **Your data is scattered.** Even a tiny company keeps data in a database, its logs, Slack, a bank, its code. Setoku connects each one and gives the AI a single place to reach them all.
+- **Pointing AI at real data is scary.** A message hidden in your data could try to trick the AI. Setoku makes it safe: the AI can only read, and it can never change what the company knows. A person approves every new fact by hand.
+- **We're too small to pay per token — and so are you.** The hosted versions of this charge you by the token, on top of your AI bill. We didn't want that bill ourselves, so we didn't build it that way. Setoku runs on the Claude subscription you already have. One cheap server, your existing seats, nothing extra per question.
 
 ## How to deploy it
 
@@ -44,7 +46,7 @@ git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku
 
 It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect Claude and the token for log drains.
 
-Then point Claude at the box and run `/setoku:onboard` in a business repo — it wires up your database (the credential stays in your env; only the env-var *name* goes in config), checks the connection, and generates the first knowledge from your code.
+Then point Claude at the box and run `/setoku:onboard` in a business repo — it wires up your database (the credential stays in your env; only the env-var *name* goes in config), checks the connection, and writes the first knowledge from your code.
 
 > Prefer not to run a server? Install the Claude Code plugin and run `/setoku:onboard` against an existing Postgres — fully local, no box needed.
 > ```bash
@@ -78,10 +80,10 @@ flowchart LR
 
 **Two pieces:**
 
-1. **A provisioner** that hooks each data source up on demand — query a Postgres live (read-only), ingest logs and events, pull an API on a schedule, archive Slack. You maintain a handful of proven patterns, not one connector per vendor.
-2. **A gateway** that gives agents two kinds of tools over MCP: *context* tools (look up what the data means) and *data* tools (`get_schema`, `run_query` — read-only, audited, routed to whichever store the data lives in).
+1. **A provisioner** that hooks each data source up on demand — query a Postgres live (read-only), pull in logs and events, fetch an API on a schedule, archive Slack. You keep a few proven patterns instead of one connector per vendor.
+2. **A gateway** that hands the AI two kinds of tools over MCP: *context* tools (look up what the data means) and *data* tools (`get_schema`, `run_query` — read-only, logged, pointed at wherever the data lives).
 
-**The membrane — what makes it injection-safe.** Agents can only *propose* knowledge; a human accepts it on the approval page, outside the agent loop. The deployed gateway holds no tool that commits curated knowledge. So an agent tricked by a malicious log line can propose nonsense, but nothing takes effect without a human click.
+**Why a poisoned message can't hurt you.** The AI can only *suggest* new knowledge. A person approves it on a web page, outside the AI's reach. The running server has no tool that can save knowledge on its own. So if a malicious log line tricks the AI, the worst it can do is suggest nonsense — and nothing sticks until a human clicks approve.
 
 **What runs in the box:**
 
@@ -92,7 +94,7 @@ flowchart LR
 | **Postgres** | the knowledge store and admin accounts |
 | **ClickHouse + Vector** *(optional)* | a lake for logs/events/telemetry — only when there's more than Postgres should hold |
 
-Your operational data stays where it is — Setoku queries Postgres **live and read-only**; it doesn't copy your database. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
+Your data stays where it is — Setoku reads your Postgres **live and read-only**; it doesn't copy your database. Read-only is enforced by the database itself (a read-only role), not by trying to check the SQL in our code.
 
 ---
 
