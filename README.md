@@ -5,7 +5,7 @@
 - **The problem.** What your data *means* lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. People leave and it walks out the door — and AI agents never had it, so they guess and are confidently wrong.
 - **What Setoku does.** It remembers — definitions, the canonical query for each metric, the gotchas — and hands that to your AI *right before it answers*, so it computes things the way your business actually does.
 - **It's safe to point at production.** The agent only runs read-only, audited queries, and it can't change what the company "knows" — a human approves every addition to the memory, outside the agent's loop. Prompt injection can't poison it.
-- **It runs on your box.** Ships tools, not models — no AI runs on the server, so there are no AI keys and no per-query cost. Just one small VPS plus the Claude seats you already have.
+- **It runs entirely on the Claude subscription you already pay for.** Every bit of inference happens inside *your* Claude — Setoku ships tools and context, never models. Nothing runs on the server but the tools, so there are no AI API keys and no per-token bill. The whole deployment is one small VPS plus the Claude seats your team already has.
 
 Today Setoku is deep on **data** (what your tables and metrics mean). The same memory naturally holds more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
 
@@ -31,6 +31,7 @@ It ships **tools, not models**. No AI runs on the server; all the reasoning happ
 - **Agents are good at SQL but don't know *your* business.** They guess what a column means and get it subtly, confidently wrong. Setoku stores those rules once, verified by a human, and feeds them to every query.
 - **Your data is scattered.** Even a tiny company's data lives across a database, request logs, Slack, a bank, a codebase. Setoku hooks each source up and gives the agent one place to reach them.
 - **Pointing an agent at production data is risky.** Prompt injection is real — an agent reading a Slack message could be talked into doing something. Setoku makes it safe: queries are read-only and enforced by the database engine itself, and the agent can never change what it *knows*. Every change to the knowledge is approved by a human, outside the agent's loop.
+- **We're too small for per-token SaaS — and so are you.** The hosted context-layer products meter you by the token, on top of a model bill. We didn't want to run that gauntlet ourselves, so we didn't build it that way: all of Setoku's reasoning runs through the Claude subscription you already have. One cheap VPS, your existing seats, zero per-query AI cost — that's the whole bill.
 
 ## How to deploy it
 
