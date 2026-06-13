@@ -2,7 +2,7 @@
 
 **Setoku gives Claude the context to answer questions about your data — and a safe, read-only way to query it — on your own server and your own Claude subscription.**
 
-It's basically institutional memory: the stuff about your data that usually lives in people's heads, written down where an agent can use it. We built it for our own two-person company; it turned out useful, so maybe it's useful to you.
+It's basically institutional memory: the stuff about your data that usually lives in people's heads, written down where an agent can use it. We built it for our own two-person company.
 
 - **The problem.** What your data *means* lives in people's heads — which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. Agents never had that, so they guess and get it confidently wrong.
 - **What it does.** It remembers those definitions and gotchas and hands them to Claude right before it answers, so it computes things the way you actually do.
