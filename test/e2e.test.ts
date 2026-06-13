@@ -13,19 +13,15 @@
  * current OS user; override with SETOKU_E2E_PG_HOST / SETOKU_E2E_DB_URL.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { spawn, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import pgPkg from "pg";
-import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { spawnGateway, waitHealthy, connect, call as gwCall, FIXTURES } from "./lib/gateway";
 
 const { Client: PgClient } = pgPkg;
-
-const ROOT = path.resolve(import.meta.dir, "..");
-const HTTP_SERVER = path.join(ROOT, "plugin", "gateway", "http.ts");
-const FIXTURES = path.join(ROOT, "test", "fixtures");
 
 const PG_HOST = process.env.SETOKU_E2E_PG_HOST ?? "/tmp"; // unix socket dir or hostname
 const DB_NAME = "setoku_e2e";
@@ -42,60 +38,18 @@ let dbPath: string;
 let proc: Subprocess;
 let mcp: McpClient; // connected with the curator token
 
-interface ToolResult {
-  isError?: boolean;
-  content: { type: string; text: string }[];
-}
+const call = (name: string, args: Record<string, unknown> = {}) =>
+  gwCall(mcp, name, args);
 
-async function connect(token: string, name = "setoku-e2e"): Promise<McpClient> {
-  const client = new McpClient({ name, version: "0.0.1" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
-      requestInit: { headers: { Authorization: `Bearer ${token}` } },
-    }),
-  );
-  return client;
-}
-
-async function call(
-  name: string,
-  args: Record<string, unknown> = {},
-): Promise<{ text: string; isError: boolean }> {
-  const res = (await mcp.callTool({
-    name,
-    arguments: args,
-  })) as unknown as ToolResult;
-  const text = (res.content ?? []).map((c) => c.text).join("\n");
-  return { text, isError: !!res.isError };
-}
-
-function spawnGateway(): Subprocess {
-  return spawn({
-    cmd: ["bun", HTTP_SERVER],
-    env: {
-      ...(process.env as Record<string, string>),
-      SETOKU_PROJECT_DIR: tmpRepo,
-      SETOKU_DB_PATH: dbPath,
-      SETOKU_E2E_DB_URL: DB_URL,
-      SETOKU_HTTP_PORT: String(PORT),
-      SETOKU_TOKENS: `${ANALYST}=e2e@test`,
-      SETOKU_CURATOR_TOKENS: `${CURATOR}=e2e@test`,
-    },
-    stdout: "ignore",
-    stderr: "pipe",
+function boot(): void {
+  proc = spawnGateway({
+    SETOKU_PROJECT_DIR: tmpRepo,
+    SETOKU_DB_PATH: dbPath,
+    SETOKU_E2E_DB_URL: DB_URL,
+    SETOKU_HTTP_PORT: String(PORT),
+    SETOKU_TOKENS: `${ANALYST}=e2e@test`,
+    SETOKU_CURATOR_TOKENS: `${CURATOR}=e2e@test`,
   });
-}
-
-async function waitHealthy(): Promise<void> {
-  for (let i = 0; i < 50; i++) {
-    try {
-      if ((await fetch(`${BASE}/health`)).ok) return;
-    } catch {
-      /* not up yet */
-    }
-    await new Promise((r) => setTimeout(r, 100));
-  }
-  throw new Error("http gateway did not become healthy");
 }
 
 beforeAll(async () => {
@@ -123,9 +77,9 @@ beforeAll(async () => {
 
   // 3. spawn the HTTP gateway exactly as the box runs it, then connect a real
   // MCP client with the CURATOR token (this suite drives generate/curate).
-  proc = spawnGateway();
-  await waitHealthy();
-  mcp = await connect(CURATOR);
+  boot();
+  await waitHealthy(BASE);
+  mcp = await connect(BASE, CURATOR);
 }, 30_000);
 
 afterAll(async () => {
@@ -155,7 +109,7 @@ describe("tool surface", () => {
   });
 
   it("the analyst token is propose-only: no curated-write tools (I2/I9)", async () => {
-    const proposeOnly = await connect(ANALYST, "propose-only");
+    const proposeOnly = await connect(BASE, ANALYST, "propose-only");
     const names = (await proposeOnly.listTools()).tools.map((t) => t.name);
     // can propose and read the queue …
     expect(names).toContain("report_correction");
@@ -368,9 +322,9 @@ describe("curation + knowledge store + audit", () => {
     await mcp.close();
     proc.kill();
     await proc.exited;
-    proc = spawnGateway();
-    await waitHealthy();
-    mcp = await connect(CURATOR, "setoku-e2e-2");
+    boot();
+    await waitHealthy(BASE);
+    mcp = await connect(BASE, CURATOR, "setoku-e2e-2");
     const got = await call("get_metric", { name: "aov" });
     expect(got.isError).toBe(false);
     expect(got.text).toContain("AVG(total_cents)");

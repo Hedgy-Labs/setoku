@@ -10,18 +10,15 @@
  *            clickhouse/clickhouse-server:25.3
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
-import { spawn, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { spawnGateway, waitHealthy, connect, call as gwCall, FIXTURES } from "./lib/gateway";
 
 const CH_URL = process.env.SETOKU_E2E_CH_URL;
 
-const ROOT = path.resolve(import.meta.dir, "..");
-const HTTP_SERVER = path.join(ROOT, "plugin", "gateway", "http.ts");
-const FIXTURES = path.join(ROOT, "test", "fixtures");
 const TABLE = "setoku_lake_e2e";
 const PORT = 38741;
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -44,26 +41,8 @@ async function chAdmin(query: string, readonly = false): Promise<Response> {
   });
 }
 
-async function connect(token: string): Promise<McpClient> {
-  const client = new McpClient({ name: "lake-e2e", version: "0.0.1" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${BASE}/mcp`), {
-      requestInit: { headers: { Authorization: `Bearer ${token}` } },
-    }),
-  );
-  return client;
-}
-
-async function call(name: string, args: Record<string, unknown> = {}) {
-  const res = (await mcp.callTool({ name, arguments: args })) as unknown as {
-    content: { text: string }[];
-    isError?: boolean;
-  };
-  return {
-    text: (res.content ?? []).map((c) => c.text).join("\n"),
-    isError: !!res.isError,
-  };
-}
+const call = (name: string, args: Record<string, unknown> = {}) =>
+  gwCall(mcp, name, args);
 
 describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
   beforeAll(async () => {
@@ -80,29 +59,16 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
     fs.cpSync(path.join(FIXTURES, "setoku"), path.join(tmpRepo, ".setoku"), {
       recursive: true,
     });
-    proc = spawn({
-      cmd: ["bun", HTTP_SERVER],
-      env: {
-        ...(process.env as Record<string, string>),
-        SETOKU_PROJECT_DIR: tmpRepo,
-        SETOKU_DB_PATH: path.join(tmpRepo, "knowledge.db"),
-        SETOKU_HTTP_PORT: String(PORT),
-        SETOKU_TOKENS: "tok-analyst=lake-e2e@test",
-        SETOKU_CURATOR_TOKENS: "tok-curator=lake-e2e@test",
-        SETOKU_LAKE_URL: CH_URL!,
-      },
-      stdout: "ignore",
-      stderr: "pipe",
+    proc = spawnGateway({
+      SETOKU_PROJECT_DIR: tmpRepo,
+      SETOKU_DB_PATH: path.join(tmpRepo, "knowledge.db"),
+      SETOKU_HTTP_PORT: String(PORT),
+      SETOKU_TOKENS: "tok-analyst=lake-e2e@test",
+      SETOKU_CURATOR_TOKENS: "tok-curator=lake-e2e@test",
+      SETOKU_LAKE_URL: CH_URL!,
     });
-    for (let i = 0; i < 50; i++) {
-      try {
-        if ((await fetch(`${BASE}/health`)).ok) break;
-      } catch {
-        /* not up */
-      }
-      await new Promise((r) => setTimeout(r, 100));
-    }
-    mcp = await connect("tok-analyst");
+    await waitHealthy(BASE);
+    mcp = await connect(BASE, "tok-analyst");
   }, 30_000);
 
   afterAll(async () => {
@@ -165,7 +131,7 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
   });
 
   it("a curator token is refused on the lake (mutual exclusion, I2/I9)", async () => {
-    const curator = await connect("tok-curator");
+    const curator = await connect(BASE, "tok-curator");
     const res = (await curator.callTool({
       name: "run_query",
       arguments: { sql: `SELECT * FROM ${TABLE}`, dialect: "clickhouse" },
