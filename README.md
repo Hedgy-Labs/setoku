@@ -1,8 +1,15 @@
 # Setoku
 
-**Trustworthy data access for AI agents — the context to understand your data, and a governed way to query it — on your own server and your own Claude subscription.**
+**Setoku is institutional memory for AI agents — captured once, used by every agent and teammate, on your own server and your own Claude subscription.**
 
-_Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI. (Naming: [NAMES.md](./NAMES.md). Full design history and rationale: [SPEC.md](./SPEC.md).)_
+- **The problem.** What your data *means* lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. People leave and it walks out the door — and AI agents never had it, so they guess and are confidently wrong.
+- **What Setoku does.** It remembers — definitions, the canonical query for each metric, the gotchas — and hands that to your AI *right before it answers*, so it computes things the way your business actually does.
+- **It's safe to point at production.** The agent only runs read-only, audited queries, and it can't change what the company "knows" — a human approves every addition to the memory, outside the agent's loop. Prompt injection can't poison it.
+- **It runs on your box.** Ships tools, not models — no AI runs on the server, so there are no AI keys and no per-query cost. Just one small VPS plus the Claude seats you already have.
+
+Today Setoku is deep on **data** (what your tables and metrics mean). The same memory naturally holds more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
+
+_Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI. (Naming: [NAMES.md](./NAMES.md). Full design history: [SPEC.md](./SPEC.md).)_
 
 > **Status:** working prototype. One box serves a live pilot today — querying its Postgres read-only, ingesting its logs, Slack, and bank data, and answering questions through Claude.
 
