@@ -11,8 +11,11 @@
  * Env:
  *   SETOKU_PROJECT_DIR  — dir containing .setoku/config.json (+ optional context seed)
  *   SETOKU_DB_PATH      — knowledge store path (put it on the persistent volume)
- *   SETOKU_TOKENS       — "token1=alice@co.com,token2=bob@co.com"
- *   SETOKU_TOKENS_FILE  — optional JSON file { "token": "identity", ... } (merged)
+ *   SETOKU_TOKENS         — analyst tokens (propose-only): "tok1=alice@co.com,tok2=bob@co.com"
+ *   SETOKU_CURATOR_TOKENS — curator tokens (can commit curated knowledge, but are
+ *                           blocked from reading the lake): same "tok=identity" shape.
+ *                           For /setoku:generate + /setoku:curate; keep off analyst machines.
+ *   SETOKU_TOKENS_FILE    — optional JSON file { "token": "identity", ... } (merged, analyst)
  *   SETOKU_HTTP_PORT    — default 8787
  *   <dataSource.urlEnv> — the Postgres URL env var named in config.json
  */
@@ -71,18 +74,32 @@ function storePath(): string {
   return defaultDbPath(projectDir);
 }
 
-function loadTokens(): Map<string, string> {
-  const tokens = new Map<string, string>();
-  for (const pair of (process.env.SETOKU_TOKENS ?? "").split(",")) {
-    const i = pair.indexOf("=");
-    if (i > 0) tokens.set(pair.slice(0, i).trim(), pair.slice(i + 1).trim());
-  }
+interface TokenInfo {
+  identity: string;
+  /** curator tokens may commit curated knowledge but cannot read the lake. */
+  curator: boolean;
+}
+
+function loadTokens(): Map<string, TokenInfo> {
+  const tokens = new Map<string, TokenInfo>();
+  const add = (spec: string | undefined, curator: boolean): void => {
+    for (const pair of (spec ?? "").split(",")) {
+      const i = pair.indexOf("=");
+      if (i > 0)
+        tokens.set(pair.slice(0, i).trim(), {
+          identity: pair.slice(i + 1).trim(),
+          curator,
+        });
+    }
+  };
+  add(process.env.SETOKU_TOKENS, false);
+  add(process.env.SETOKU_CURATOR_TOKENS, true);
   const file = process.env.SETOKU_TOKENS_FILE;
   if (file && fs.existsSync(file)) {
     for (const [token, identity] of Object.entries(
       JSON.parse(fs.readFileSync(file, "utf8")),
     )) {
-      tokens.set(token, String(identity));
+      tokens.set(token, { identity: String(identity), curator: false });
     }
   }
   return tokens;
@@ -114,12 +131,12 @@ if (store.accountCount === 0) {
  * form exists for the consumer "Add custom connector" dialog, whose only auth
  * fields are URL + OAuth — no static-header field — so the token rides in the URL.
  */
-function identityFor(req: http.IncomingMessage): string | null {
+function identityFor(req: http.IncomingMessage): TokenInfo | null {
   const auth = req.headers.authorization ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
   if (m) {
-    const id = tokens.get(m[1].trim());
-    if (id) return id;
+    const t = tokens.get(m[1].trim());
+    if (t) return t;
   }
   const pathTok = (req.url ?? "").match(/^\/mcp\/([^/?]+)/);
   if (pathTok) return tokens.get(decodeURIComponent(pathTok[1])) ?? null;
@@ -392,8 +409,8 @@ const httpServer = http.createServer(async (req, res) => {
     }
     if (req.url?.startsWith("/i/")) {
       const token = decodeURIComponent(req.url.slice(3).split("?")[0]);
-      const identity = tokens.get(token);
-      if (!identity) {
+      const info = tokens.get(token);
+      if (!info) {
         store.audit("anonymous", "installer_rejected", {});
         res.writeHead(404, { "content-type": "text/plain" });
         res.end("unknown installer link\n");
@@ -401,9 +418,9 @@ const httpServer = http.createServer(async (req, res) => {
       }
       const baseUrl =
         process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
-      store.audit(identity, "installer_served", {});
+      store.audit(info.identity, "installer_served", {});
       res.writeHead(200, { "content-type": "text/x-shellscript" });
-      res.end(installerScript(token, identity, baseUrl));
+      res.end(installerScript(token, info.identity, baseUrl));
       return;
     }
     // ---- web approval surface (Phase 5.5) — the human accept/reject path ----
@@ -526,8 +543,8 @@ const httpServer = http.createServer(async (req, res) => {
       res.writeHead(404).end();
       return;
     }
-    const user = identityFor(req);
-    if (!user) {
+    const auth = identityFor(req);
+    if (!auth) {
       store.audit("anonymous", "auth_rejected", { path: req.url });
       res.writeHead(401, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "invalid or missing bearer token" }));
@@ -535,10 +552,16 @@ const httpServer = http.createServer(async (req, res) => {
     }
     // Stateless: a fresh McpServer per request, identity bound from the token.
     // Shared state lives in the SQLite store (WAL), not the server instance.
-    // The deployed gateway is ALWAYS propose-only (canWrite: false): this is
-    // where lake analysts connect, so no token may hold a curated-write tool
-    // (I2/I9). Acceptance happens on the Phase 5 web approval surface.
-    const server = buildServer({ projectDir, store, user, canWrite: false });
+    // Analyst tokens are propose-only (canWrite:false) and may read the lake.
+    // Curator tokens may commit curated knowledge (canWrite) but are blocked
+    // from reading the lake (denyLakeRead) — the two never coexist (I2/I9).
+    const server = buildServer({
+      projectDir,
+      store,
+      user: auth.identity,
+      canWrite: auth.curator,
+      denyLakeRead: auth.curator,
+    });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
     });

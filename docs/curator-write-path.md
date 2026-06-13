@@ -1,6 +1,11 @@
 # Spec: curator write path (one knowledge store, on the box)
 
-**Status:** draft for review.
+**Status:** implemented. The local stdio gateway is gone — there is one gateway
+(the box). Curator tokens (`SETOKU_CURATOR_TOKENS`, minted with
+`admin-cli create-curator-token`) carry `canWrite` + `denyLakeRead`; analyst
+tokens stay propose-only. `/setoku:generate` and `/setoku:curate` connect via a
+`setoku-curator` connector. The design below is what shipped (open decisions
+resolved: dedicated token; local stdio removed entirely).
 
 ## Problem
 

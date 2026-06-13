@@ -53,6 +53,9 @@ services:
     restart: unless-stopped
     environment:
       SETOKU_TOKENS: "${SETOKU_TOKENS:?per-user MCP tokens, e.g. tok1=alice@co.com}"
+      # curator tokens (commit curated knowledge, blocked from the lake) for
+      # /setoku:generate + /setoku:curate — optional; mint with admin-cli.
+      SETOKU_CURATOR_TOKENS: ${SETOKU_CURATOR_TOKENS:-}
       SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
       SETOKU_PUBLIC_URL: https://${SETOKU_DOMAIN:-localhost}
       SETOKU_HEALTHZ_PING: ${SETOKU_HEALTHZ_PING:-}

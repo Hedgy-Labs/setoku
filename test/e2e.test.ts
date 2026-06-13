@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
  * End-to-end test of the Setoku gateway:
- *   real Postgres (synthetic shop schema) ⇄ real MCP client over stdio ⇄ the
- *   exact server.ts the plugin ships, launched the way Claude Code launches it.
+ *   real Postgres (synthetic shop schema) ⇄ real MCP client over HTTP ⇄ the
+ *   exact http.ts the box runs. Exercises both token classes: a **curator**
+ *   token (may commit curated knowledge, blocked from the lake) drives the
+ *   generate/curate surface; an **analyst** token is propose-only (I2/I9).
  *
  * No LLM is involved — this proves the deterministic layer (tools, governance,
  * retrieval). The inference layer (skills) is exercised live in Claude Code.
@@ -11,44 +13,43 @@
  * current OS user; override with SETOKU_E2E_PG_HOST / SETOKU_E2E_DB_URL.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
+import type { Subprocess } from "bun";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import pgPkg from "pg";
-import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import type { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { spawnGateway, waitHealthy, connect, call as gwCall, FIXTURES } from "./lib/gateway";
 
 const { Client: PgClient } = pgPkg;
-
-const ROOT = path.resolve(import.meta.dir, "..");
-const SERVER = path.join(ROOT, "plugin", "gateway", "server.ts");
-const FIXTURES = path.join(ROOT, "test", "fixtures");
 
 const PG_HOST = process.env.SETOKU_E2E_PG_HOST ?? "/tmp"; // unix socket dir or hostname
 const DB_NAME = "setoku_e2e";
 const DB_URL =
   process.env.SETOKU_E2E_DB_URL ??
   `postgresql:///${DB_NAME}?host=${encodeURIComponent(PG_HOST)}`;
+const PORT = 38731;
+const BASE = `http://127.0.0.1:${PORT}`;
+const CURATOR = "tok-curator";
+const ANALYST = "tok-analyst";
 
 let tmpRepo: string;
 let dbPath: string;
-let mcp: McpClient;
+let proc: Subprocess;
+let mcp: McpClient; // connected with the curator token
 
-interface ToolResult {
-  isError?: boolean;
-  content: { type: string; text: string }[];
-}
+const call = (name: string, args: Record<string, unknown> = {}) =>
+  gwCall(mcp, name, args);
 
-async function call(
-  name: string,
-  args: Record<string, unknown> = {},
-): Promise<{ text: string; isError: boolean }> {
-  const res = (await mcp.callTool({
-    name,
-    arguments: args,
-  })) as unknown as ToolResult;
-  const text = (res.content ?? []).map((c) => c.text).join("\n");
-  return { text, isError: !!res.isError };
+function boot(): void {
+  proc = spawnGateway({
+    SETOKU_PROJECT_DIR: tmpRepo,
+    SETOKU_DB_PATH: dbPath,
+    SETOKU_E2E_DB_URL: DB_URL,
+    SETOKU_HTTP_PORT: String(PORT),
+    SETOKU_TOKENS: `${ANALYST}=e2e@test`,
+    SETOKU_CURATOR_TOKENS: `${CURATOR}=e2e@test`,
+  });
 }
 
 beforeAll(async () => {
@@ -74,31 +75,21 @@ beforeAll(async () => {
   });
   dbPath = path.join(tmpRepo, "knowledge.db");
 
-  // 3. connect a real MCP client to the real server over stdio
-  mcp = new McpClient({ name: "setoku-e2e", version: "0.0.1" });
-  const transport = new StdioClientTransport({
-    command: "bun",
-    args: [SERVER],
-    cwd: tmpRepo,
-    env: {
-      ...(process.env as Record<string, string>),
-      SETOKU_PROJECT_DIR: tmpRepo,
-      SETOKU_DB_PATH: dbPath,
-      SETOKU_E2E_DB_URL: DB_URL,
-      SETOKU_USER: "e2e@test",
-      SETOKU_CURATOR_MODE: "1", // this suite drives the curate/generate workflow
-    },
-  });
-  await mcp.connect(transport);
+  // 3. spawn the HTTP gateway exactly as the box runs it, then connect a real
+  // MCP client with the CURATOR token (this suite drives generate/curate).
+  boot();
+  await waitHealthy(BASE);
+  mcp = await connect(BASE, CURATOR);
 }, 30_000);
 
 afterAll(async () => {
   await mcp?.close();
+  proc?.kill();
   if (tmpRepo) fs.rmSync(tmpRepo, { recursive: true, force: true });
 });
 
 describe("tool surface", () => {
-  it("exposes the v0 tools (curator mode: write tools present)", async () => {
+  it("exposes the v0 tools (curator token: write tools present)", async () => {
     const { tools } = await mcp.listTools();
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(
@@ -117,25 +108,8 @@ describe("tool surface", () => {
     );
   });
 
-  it("default (non-curator) surface is propose-only: no curated-write tools (I2/I9)", async () => {
-    // a fresh server WITHOUT SETOKU_CURATOR_MODE — the analyst surface
-    const proposeOnly = new McpClient({ name: "propose-only", version: "0.0.1" });
-    const env = { ...(process.env as Record<string, string>) };
-    delete env.SETOKU_CURATOR_MODE;
-    await proposeOnly.connect(
-      new StdioClientTransport({
-        command: "bun",
-        args: [SERVER],
-        cwd: tmpRepo,
-        env: {
-          ...env,
-          SETOKU_PROJECT_DIR: tmpRepo,
-          SETOKU_DB_PATH: dbPath,
-          SETOKU_E2E_DB_URL: DB_URL,
-          SETOKU_USER: "analyst@test",
-        },
-      }),
-    );
+  it("the analyst token is propose-only: no curated-write tools (I2/I9)", async () => {
+    const proposeOnly = await connect(BASE, ANALYST, "propose-only");
     const names = (await proposeOnly.listTools()).tools.map((t) => t.name);
     // can propose and read the queue …
     expect(names).toContain("report_correction");
@@ -151,6 +125,16 @@ describe("tool surface", () => {
     expect(res.isError).toBe(true);
     expect(res.content.map((c) => c.text).join("")).toMatch(/not found/i);
     await proposeOnly.close();
+  });
+
+  it("a curator token cannot read the lake (mutual exclusion, I2/I9)", async () => {
+    const r = await call("run_query", {
+      sql: "SELECT 1",
+      dialect: "clickhouse",
+      purpose: "should be refused",
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text.toLowerCase()).toContain("curator session");
   });
 });
 
@@ -336,30 +320,20 @@ describe("curation + knowledge store + audit", () => {
 
   it("knowledge survives a gateway restart (it lives in the service DB, not the process)", async () => {
     await mcp.close();
-    mcp = new McpClient({ name: "setoku-e2e-2", version: "0.0.1" });
-    await mcp.connect(
-      new StdioClientTransport({
-        command: "bun",
-        args: [SERVER],
-        cwd: tmpRepo,
-        env: {
-          ...(process.env as Record<string, string>),
-          SETOKU_PROJECT_DIR: tmpRepo,
-          SETOKU_DB_PATH: dbPath,
-          SETOKU_E2E_DB_URL: DB_URL,
-          SETOKU_USER: "e2e@test",
-        },
-      }),
-    );
+    proc.kill();
+    await proc.exited;
+    boot();
+    await waitHealthy(BASE);
+    mcp = await connect(BASE, CURATOR, "setoku-e2e-2");
     const got = await call("get_metric", { name: "aov" });
     expect(got.isError).toBe(false);
     expect(got.text).toContain("AVG(total_cents)");
     // seed-import did not re-run / duplicate (store was non-empty on boot)
     const listed = await call("list_entities", {});
     expect((listed.text.match(/- revenue/g) ?? []).length).toBe(1);
-  });
+  }, 15_000);
 
-  it("every call (including rejected writes) is in the audit table", async () => {
+  it("every tool call is attributed in the audit table (seed is system)", async () => {
     const { Database } = await import("bun:sqlite");
     const db = new Database(dbPath, { readonly: true });
     const records = (
@@ -371,7 +345,9 @@ describe("curation + knowledge store + audit", () => {
     ).map((r) => ({ ...r, payload: JSON.parse(r.payload ?? "{}") }));
     db.close();
     expect(records.length).toBeGreaterThan(10);
-    expect(records.every((r) => r.user === "e2e@test")).toBe(true);
+    // tool calls are attributed to the token identity; seed_from_files is a system action
+    const calls = records.filter((r) => r.tool !== "seed_from_files");
+    expect(calls.every((r) => r.user === "e2e@test")).toBe(true);
     const tools = new Set(records.map((r) => r.tool));
     for (const t of [
       "find_context",

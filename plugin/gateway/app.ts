@@ -1,11 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Setoku gateway tool surface, shared by both transports:
- *   - stdio (server.ts): local profile, spawned by the plugin per repo
- *   - HTTP  (http.ts):   deployed profile, bearer-token auth, shared store
- *
- * buildServer() binds an identity per server instance — stdio binds the local
- * user once; HTTP binds the token's identity per request.
+ * Setoku gateway tool surface. One transport: HTTP (http.ts), the deployed box.
+ * buildServer() binds an identity + capabilities per request from the token —
+ * analyst tokens are propose-only and may read the lake; curator tokens may
+ * commit curated knowledge but not read the lake (canWrite / denyLakeRead).
  */
 import path from "node:path";
 import { z } from "zod";
@@ -33,13 +31,24 @@ export interface GatewayDeps {
    * human accepts them. This is the membrane (I2/I9): an agent reading
    * untrusted lake/Slack content is prompt-injectable, so it must not hold a
    * tool that COMMITS curated knowledge — injection attacks the agent's
-   * decision, not its credential, so a per-token "curator" flag would not
-   * help. The deployed HTTP gateway is always propose-only; curator mode is a
-   * deliberate, local, human-initiated stdio invocation (SETOKU_CURATOR_MODE)
-   * for /setoku:generate and /setoku:curate. The real outside-the-loop
-   * acceptance UI is the Phase 5 web approval surface.
+   * decision, not its credential. Analyst tokens are always propose-only;
+   * `canWrite` is granted only to a separate **curator token**, which is in
+   * turn forbidden from reading the lake (see `denyLakeRead`). The two
+   * capabilities — commit knowledge, read untrusted bulk text — never coexist
+   * on one session, by enforcement. The human accept path is the web approval
+   * surface; curator tokens drive /setoku:generate and /setoku:curate.
    */
   canWrite: boolean;
+  /**
+   * Block `run_query` on the `clickhouse` dialect (the lake). Set TRUE for
+   * curator sessions: a session that can COMMIT curated knowledge must not be
+   * able to READ the bulk, attacker-controlled free text in the lake — that
+   * removes the injection vector that could weaponize the write tools. Curator
+   * sessions read only the business Postgres (to validate metric SQL) and the
+   * agent's own codebase (outside the gateway). Analyst sessions are the
+   * inverse: they read the lake but hold no write tool.
+   */
+  denyLakeRead: boolean;
 }
 
 export function buildServer({
@@ -47,6 +56,7 @@ export function buildServer({
   store,
   user,
   canWrite,
+  denyLakeRead,
 }: GatewayDeps): McpServer {
 const server = new McpServer({ name: "setoku", version: "0.4.0" });
 
@@ -540,6 +550,10 @@ server.registerTool(
       const config = requireConfig();
       let result;
       if ((dialect ?? "postgres") === "clickhouse") {
+        if (denyLakeRead)
+          throw new Error(
+            "This is a curator session — reading the lake (clickhouse dialect) is disabled here so a session that can commit curated knowledge can't ingest untrusted bulk text (the I2/I9 membrane). Use an analyst connector to query the lake.",
+          );
         const lake = resolveLakeUrl(projectDir, config);
         if (!lake.ok) throw new Error(lake.error);
         result = await runLakeQuery(lake.url, sql, config);
