@@ -2,7 +2,7 @@
 
 **Setoku gives Claude the context to answer questions about your data — and a safe, read-only way to query it — on your own server and your own Claude subscription.**
 
-It's basically institutional memory: the stuff about your data that usually lives in people's heads, written down where an agent can use it. We built it for our own two-person company.
+It's basically institutional memory: the stuff about your data that usually lives in people's heads, written down where an agent can use it.
 
 - **The problem.** What your data *means* lives in people's heads — which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. Agents never had that, so they guess and get it confidently wrong.
 - **What it does.** It remembers those definitions and gotchas and hands them to Claude right before it answers, so it computes things the way you actually do.
@@ -30,7 +30,7 @@ It ships **tools, not models**. No AI runs on the server; all the reasoning happ
 
 ## Why we built it
 
-We're a two-person company and we run on Claude. The problem was simple: Claude is good at SQL but doesn't know our business. It would write a clean query against the wrong definition — what "paying customer" means, which metric counts, the small gotchas that make an obvious query wrong — and give us a confident, wrong number. The knowledge to get it right was in our heads, not anywhere an agent could read.
+Claude is good at SQL but doesn't know our business. It would write a clean query against the wrong definition — what "paying customer" means, which metric counts, the small gotchas that make an obvious query wrong — and give us a confident, wrong number. The knowledge to get it right was in our heads, not anywhere an agent could read.
 
 We didn't want to pay for a second AI to fix that; we already pay for Claude. So Setoku doesn't run a model of its own — it just hands context and a safe way to query to the Claude we already have. A whole deployment is one small box.
 
