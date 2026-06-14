@@ -76,10 +76,11 @@ flowchart LR
     ADMIN --> K
 ```
 
-**Two pieces:**
+**Three pieces:**
 
-1. **A provisioner** that hooks each data source up on demand — query a Postgres live (read-only), ingest logs and events, pull an API on a schedule, archive Slack. You maintain a handful of proven patterns, not one connector per vendor.
-2. **A gateway** that gives agents two kinds of tools over MCP: *context* tools (look up what the data means) and *data* tools (`get_schema`, `run_query` — read-only, audited, routed to whichever store the data lives in).
+1. **The knowledge store** — the memory itself. Versioned, human-curated docs about what your data means: entity definitions, the canonical query for each metric, the gotchas. This is the part that makes the answers right; the rest exists to fill it and serve it.
+2. **A gateway** that serves it to agents over MCP: *context* tools (`find_context`, `get_metric` — look up what the data means) and *data* tools (`get_schema`, `run_query` — read-only, audited, routed to whichever store the data lives in). The agent reads context first, then queries.
+3. **A provisioner** that hooks each data source up on demand — query a Postgres live (read-only), ingest logs and events, pull an API on a schedule, archive Slack — and writes back what it learns about each source as knowledge. You maintain a handful of proven patterns, not one connector per vendor.
 
 **The membrane — what makes it injection-safe.** Agents can only *propose* knowledge; a human accepts it on the approval page, outside the agent loop. The deployed gateway holds no tool that commits curated knowledge. So an agent tricked by a malicious log line can propose nonsense, but nothing takes effect without a human click.
 
