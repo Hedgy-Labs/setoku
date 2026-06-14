@@ -1,9 +1,36 @@
 # Onboarding via `/setoku:connect`
 
-**Status:** built. The skill is `plugin/skills/connect/SKILL.md`; `onboard` is now
-a thin first-run wrapper over it. The decisions below are what shipped (onboard →
-wrapper; improvised connectors stay box-local until a human PRs them). This doc
-is the design rationale; the skill is the implementation.
+**Status:** built and exercised against the live box. The skill is
+`plugin/skills/connect/SKILL.md`; `onboard` is now a thin first-run wrapper over
+it. The decisions below are what shipped (onboard → wrapper; improvised
+connectors stay box-local until a human PRs them). This doc is the design
+rationale; the skill is the implementation.
+
+**Refined after a live walkthrough + fresh-eyes review (v0.6.0).** Exercising the
+flow surfaced gaps the prose hid, all now fixed in the skill:
+- The **curator connector isn't created by `bootstrap.sh`**, yet Phase 3's "write
+  knowledge back" needs it. The skill now mints it in Phase 0
+  (`admin-cli create-curator-token`) and states the **two-connector model**
+  explicitly: analyst reads everything incl. the lake (propose-only); curator
+  writes knowledge but **cannot read the lake** (verified live — the I2/I9
+  membrane returns a hard refusal). Discovery and writing are *different
+  sessions*; never hold both.
+- `bootstrap.sh` is **interactive** (asks for an admin username) — called out so
+  an agent driving over SSH doesn't hang.
+- Phase 0 now distinguishes three states: tools work / box exists but not
+  connected here / no box — instead of conflating "not connected" with "no box."
+- Recipes gained a **box command cheat-sheet** (`/opt/setoku/.env`,
+  `COMPOSE_PROFILES`, `docker compose --profile X up -d`) — the apply steps were
+  only in per-poller READMEs before.
+- The **never-prod-by-default** guardrail moved into `connect`'s Postgres recipe
+  (it was only in the `onboard` wrapper, but `connect` is the front door).
+- Dropped the implied durable idempotency (there's no `provisioning_log` MCP
+  tool); the agent records what it applied in the Phase 4 summary instead.
+- Phase 4 now points the human at `https://<domain>/admin` and `/setoku:curate`
+  to promote `report_correction`s, instead of dead-ending them.
+- Data gotcha caught by exercising: lake tables mix engines — `ReplacingMergeTree`
+  needs `FINAL`, plain `MergeTree` rejects it (`ILLEGAL_FINAL`). Noted in the
+  verify phase; the live finance knowledge was corrected to match.
 
 The way you get value out of Setoku is: stand up a box, connect your data
 sources, and let the agent learn what the data means. Right now that's spread
