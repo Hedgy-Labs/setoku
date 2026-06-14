@@ -1,6 +1,9 @@
-# Plan: onboarding via `/setoku:connect`
+# Onboarding via `/setoku:connect`
 
-**Status:** plan / proposal. Not built yet.
+**Status:** built. The skill is `plugin/skills/connect/SKILL.md`; `onboard` is now
+a thin first-run wrapper over it. The decisions below are what shipped (onboard →
+wrapper; improvised connectors stay box-local until a human PRs them). This doc
+is the design rationale; the skill is the implementation.
 
 The way you get value out of Setoku is: stand up a box, connect your data
 sources, and let the agent learn what the data means. Right now that's spread
