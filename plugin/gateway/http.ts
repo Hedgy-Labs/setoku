@@ -160,6 +160,24 @@ if (store.accountCount === 0) {
 }
 
 /**
+ * One row per person for the Team page: union of agent-token identities and web
+ * logins, joined by identity string. hasToken = they have an analyst connector;
+ * role = their web-login role if any.
+ */
+function teamPeople(): { identity: string; hasToken: boolean; role?: string }[] {
+  const tokenIds = new Set(analystIdentities());
+  const accounts = store.listAccounts();
+  const ids = new Set<string>([...tokenIds, ...accounts.map((a) => a.username)]);
+  return [...ids]
+    .sort()
+    .map((identity) => ({
+      identity,
+      hasToken: tokenIds.has(identity),
+      role: accounts.find((a) => a.username === identity)?.role,
+    }));
+}
+
+/**
  * Resolve identity from either the Authorization header (Claude Code: it sends
  * the configured header) or a token in the URL path: /mcp/<token>. The path
  * form exists for the consumer "Add custom connector" dialog, whose only auth
@@ -582,11 +600,10 @@ const httpServer = http.createServer(async (req, res) => {
           res.end("not authorized to invite\n");
           return;
         }
-        const teamAccounts = () => store.listAccounts().map((a) => ({ username: a.username, role: a.role }));
         const identity = (form.get("identity") ?? "").trim();
         if (!identity) {
           res.writeHead(200, htmlHead);
-          res.end(renderTeamPage(session, { teammates: analystIdentities(), accounts: teamAccounts(), flash: "Enter a teammate email to invite." }));
+          res.end(renderTeamPage(session, { people: teamPeople(), flash: "Enter a teammate email to invite." }));
           return;
         }
         const token = mintToken();
@@ -596,8 +613,7 @@ const httpServer = http.createServer(async (req, res) => {
         res.writeHead(200, htmlHead);
         res.end(
           renderTeamPage(session, {
-            teammates: analystIdentities(),
-            accounts: teamAccounts(),
+            people: teamPeople(),
             invite: { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted },
           }),
         );
@@ -624,10 +640,19 @@ const httpServer = http.createServer(async (req, res) => {
         const uname = (form.get("username") ?? "").trim();
         let flash = "Invalid request.";
         let newLogin: { username: string; role: string; tempPassword: string } | undefined;
+        let invite: Awaited<ReturnType<typeof buildInvite>> | undefined;
         const tempPw = (): string =>
           Array.from(crypto.getRandomValues(new Uint8Array(9)))
             .map((b) => b.toString(16).padStart(2, "0"))
             .join("");
+        const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
+        const actor = session.identity;
+        function buildInvite(identity: string) {
+          const token = mintToken();
+          const { persisted } = addAnalystToken(token, identity);
+          store.audit(actor, "teammate_invited", { identity, persisted });
+          return { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted };
+        }
         const acct = uname ? store.getAccount(uname) : null;
         const isLastAdmin = (a: { role: string } | null): boolean =>
           !!a && a.role === "admin" && store.countRole("admin") <= 1;
@@ -642,7 +667,9 @@ const httpServer = http.createServer(async (req, res) => {
             store.createAccount({ username: uname, pwhash: await hashPassword(pw), role, createdBy: session.identity });
             store.audit(session.identity, "account_created", { username: uname, role });
             newLogin = { username: uname, role, tempPassword: pw };
-            flash = `Created ${role} login for ${uname}.`;
+            // no login without an agent: mint a connector too if they lack one
+            if (!analystIdentities().includes(uname)) invite = buildInvite(uname);
+            flash = `Created ${role} login for ${uname}${invite ? " + agent connector" : ""}.`;
           }
         } else if (op === "role") {
           const role = form.get("role") ?? "";
@@ -672,17 +699,15 @@ const httpServer = http.createServer(async (req, res) => {
             flash = `Removed login ${uname}.`;
           }
         }
-        const accounts = store.listAccounts().map((a) => ({ username: a.username, role: a.role }));
         res.writeHead(200, htmlHead);
-        res.end(renderTeamPage(session, { teammates: analystIdentities(), accounts, newLogin, flash }));
+        res.end(renderTeamPage(session, { people: teamPeople(), newLogin, invite, flash }));
         return;
       }
 
-      // team — who can reach Setoku, the invite form, and web-login management
+      // team — one row per person: agent status + web login/role, plus management
       if (path === "/admin/team") {
-        const accounts = store.listAccounts().map((a) => ({ username: a.username, role: a.role }));
         res.writeHead(200, htmlHead);
-        res.end(renderTeamPage(session, { teammates: analystIdentities(), accounts }));
+        res.end(renderTeamPage(session, { people: teamPeople() }));
         return;
       }
 

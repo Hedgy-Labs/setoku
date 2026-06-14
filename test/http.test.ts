@@ -343,7 +343,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     });
     expect(r.status).toBe(200);
     const page = await r.text();
-    expect(page).toContain("Invited newhire@co.test");
+    expect(page).toContain("Agent connector for newhire@co.test");
     const token = page.match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
 
     // the brand-new token works over MCP right away, as an analyst (read + propose)
@@ -412,7 +412,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const cookie = await cookieFor("boss", "s3cret-pass");
     const csrf = await teamCsrf(cookie);
     const page = await (await usersPost(cookie, csrf, { op: "create", username: "dana@co.test", role: "member" })).text();
-    expect(page).toContain("Created login for dana@co.test");
+    expect(page).toContain("login for dana@co.test");
     danaPw = page.match(/Temp password: <span class="select-all">([0-9a-f]+)<\/span>/)![1];
 
     // the new login works, and dana (a member) cannot manage accounts
@@ -429,7 +429,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const danaCookie = await cookieFor("dana@co.test", danaPw);
     const ok = await usersPost(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "newbie@co.test", role: "member" });
     expect(ok.status).toBe(200);
-    expect(await ok.text()).toContain("Created login for newbie@co.test");
+    expect(await ok.text()).toContain("login for newbie@co.test");
   });
 
   it("rejects a resolve POST with a bad CSRF token", async () => {

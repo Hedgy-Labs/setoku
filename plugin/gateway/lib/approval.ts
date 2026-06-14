@@ -507,12 +507,6 @@ export interface Invite {
   persisted: boolean; // false → lives in memory only, lost on restart
 }
 
-/** A web login (no password hash) for the admin-access table. */
-export interface TeamAccount {
-  username: string;
-  role: string;
-}
-
 /** A just-created web login, shown once so the admin can hand over the password. */
 export interface NewLogin {
   username: string;
@@ -520,48 +514,52 @@ export interface NewLogin {
   tempPassword: string;
 }
 
+/** One person on the team: their agent connector status and (optional) web login. */
+export interface Person {
+  identity: string;
+  hasToken: boolean; // has an analyst connector configured
+  role?: string; // web-login role, if they have one (admin|member)
+}
+
 /**
- * The Team page. Two kinds of access, deliberately distinct:
- *  - **Agent access** (analyst tokens): who can *use* Setoku. Invite mints these.
- *  - **Admin access** (web accounts): who can sign in to *approve* knowledge, and
- *    at what role. Admins manage these — create logins and promote/demote — so
- *    privilege isn't stuck at the operator/SSH level.
- * Neither path mints curator (agent-side write) capability; that stays an
- * operator action (admin-cli) because it bypasses the human approval click.
+ * The Team page — one row per person. Each person should have an **agent
+ * connector** (read-only, propose-only) so they can use Setoku; some also have a
+ * **web login** to sign in and approve, at a role. Admins manage both from here,
+ * so privilege isn't stuck at the operator/SSH level. Nobody is a **curator**
+ * (agent-side write) by default — that bypasses the approval click and stays a
+ * deliberate operator action (admin-cli), never a one-click web grant.
  */
 export function renderTeamPage(
   session: Session,
   data: {
-    teammates: string[];
-    accounts?: TeamAccount[];
+    people: Person[];
     invite?: Invite;
     newLogin?: NewLogin;
     flash?: string;
   },
 ): string {
   const csrf = esc(session.csrf);
-  const mayInvite = canApprove(session.role); // admins manage; members view
-  const { teammates, invite, flash } = data;
-  const accounts = data.accounts ?? [];
-  const newLogin = data.newLogin;
-  const adminCount = accounts.filter((a) => a.role === "admin").length;
+  const mayManage = canApprove(session.role); // admins manage; members view
+  const { people, invite, newLogin, flash } = data;
+  const adminCount = people.filter((p) => p.role === "admin").length;
+  const noAgent = people.filter((p) => !p.hasToken).length;
 
-  const inviteForm = mayInvite
+  const inviteForm = mayManage
     ? `<form method="POST" action="/admin/invite" class="card flex flex-wrap items-end gap-2 p-4">
         <input type="hidden" name="csrf" value="${csrf}">
         <label class="min-w-[14rem] flex-1">
-          <span class="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">Teammate email</span>
+          <span class="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">Add a teammate (email)</span>
           <input class="input" name="identity" type="email" placeholder="teammate@yourco.com" autocomplete="off" required>
         </label>
         <button class="btn btn-primary" type="submit">Invite</button>
       </form>
-      <p class="mt-2 text-xs text-stone-500">Mints a read-only, propose-only connector. They can ask questions and suggest knowledge; only admins here accept it.</p>`
-    : '<div class="card px-3 py-2 text-sm text-stone-400">You are signed in as a <b class="text-stone-200">member</b> — viewing only. Ask an admin to invite teammates.</div>';
+      <p class="mt-2 text-xs text-stone-500">Mints a read-only, propose-only connector (their agent). Give them a web login below if they should also approve knowledge.</p>`
+    : '<div class="card px-3 py-2 text-sm text-stone-400">You are signed in as a <b class="text-stone-200">member</b> — viewing only. Ask an admin to manage the team.</div>';
 
-  // The shown-once connect block for a just-minted invite.
+  // shown-once connect instructions for a just-minted token
   const inviteResult = invite
     ? `<div class="card border-lime-700/50 bg-lime-950/20 p-4">
-        <div class="mb-2 text-sm font-medium text-lime-300">Invited ${esc(invite.identity)} — send them ONE of these (shown once):</div>
+        <div class="mb-2 text-sm font-medium text-lime-300">Agent connector for ${esc(invite.identity)} — send them ONE of these (shown once):</div>
         <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude Code / Desktop (devs)</div>
         <pre class="mb-3 overflow-x-auto rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">curl -fsSL ${esc(invite.installerUrl)} | sh</pre>
         <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude.ai — add a custom connector (anyone, incl. non-technical)</div>
@@ -574,21 +572,10 @@ export function renderTeamPage(
       </div>`
     : "";
 
-  const list = teammates.length
-    ? `<ul class="card divide-y divide-stone-800">${teammates
-        .map(
-          (id) =>
-            `<li class="flex items-center gap-3 px-4 py-2.5 text-sm"><span class="dot dot-green"></span><span class="text-stone-200">${esc(id)}</span><span class="ml-auto text-xs text-stone-500">analyst · read + propose</span></li>`,
-        )
-        .join("")}</ul>`
-    : '<div class="card p-8 text-center text-stone-500">No teammates yet.</div>';
-
-  /* ---- admin access (web logins) ---- */
-
-  // shown-once temp password for a just-created login
+  // shown-once temp password for a just-created/-reset web login
   const newLoginResult = newLogin
     ? `<div class="card border-lime-700/50 bg-lime-950/20 p-4">
-        <div class="mb-1 text-sm font-medium text-lime-300">Created login for ${esc(newLogin.username)} (${esc(newLogin.role)}) — share once:</div>
+        <div class="mb-1 text-sm font-medium text-lime-300">Web login for ${esc(newLogin.username)} (${esc(newLogin.role)}) — share once:</div>
         <div class="rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">
           <div>Sign in at <span class="select-all">/admin</span></div>
           <div>Username: <span class="select-all">${esc(newLogin.username)}</span></div>
@@ -598,58 +585,72 @@ export function renderTeamPage(
       </div>`
     : "";
 
-  const roleOptions = ROLES.map((r) => `<option value="${r}">${r}</option>`).join("");
-  const createLogin = mayInvite
-    ? `<form method="POST" action="/admin/users" class="card flex flex-wrap items-end gap-2 p-4">
-        <input type="hidden" name="csrf" value="${csrf}">
-        <input type="hidden" name="op" value="create">
-        <label class="min-w-[12rem] flex-1">
-          <span class="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">New login (username/email)</span>
-          <input class="input" name="username" placeholder="teammate@yourco.com" autocomplete="off" required>
-        </label>
-        <label>
-          <span class="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">Role</span>
-          <select class="input" name="role">${roleOptions}</select>
-        </label>
-        <button class="btn btn-primary" type="submit">Create login</button>
-      </form>
-      <p class="mt-2 text-xs text-stone-500"><b class="text-stone-300">admin</b> can approve knowledge and manage the team · <b class="text-stone-300">member</b> can view only. A temp password is shown once.</p>`
-    : "";
-
-  // per-account controls (admin only): promote/demote, reset password, remove.
-  const opBtn = (op: string, username: string, label: string, cls: string, extra = ""): string =>
-    `<form method="POST" action="/admin/users" class="inline">
+  const opBtn = (
+    action: string,
+    op: string,
+    field: string,
+    value: string,
+    label: string,
+    extra = "",
+  ): string =>
+    `<form method="POST" action="${action}" class="inline">
        <input type="hidden" name="csrf" value="${csrf}">
-       <input type="hidden" name="op" value="${op}">
-       <input type="hidden" name="username" value="${esc(username)}">${extra}
-       <button class="${cls}" type="submit">${esc(label)}</button>
+       ${op ? `<input type="hidden" name="op" value="${op}">` : ""}
+       <input type="hidden" name="${field}" value="${esc(value)}">${extra}
+       <button class="btn btn-ghost" type="submit">${esc(label)}</button>
      </form>`;
-  const accountRow = (a: TeamAccount): string => {
-    const isSelf = a.username === session.identity;
-    const isLastAdmin = a.role === "admin" && adminCount <= 1;
-    const badge = a.role === "admin" ? "badge badge-ok" : "badge badge-idle";
+
+  const personRow = (p: Person): string => {
+    const isSelf = p.identity === session.identity;
+    const isLastAdmin = p.role === "admin" && adminCount <= 1;
+
+    // agent column: connected, or a configure CTA (mints a token for them)
+    const agent = p.hasToken
+      ? '<span class="status status-green"><span class="dot dot-green"></span>agent connected</span>'
+      : `<span class="status status-yellow"><span class="dot dot-yellow"></span>no agent</span>`;
+
+    // access column: role badge or "no login"
+    const access = p.role
+      ? `<span class="${p.role === "admin" ? "badge badge-ok" : "badge badge-idle"}">${esc(p.role)}</span>`
+      : '<span class="text-xs text-stone-500">no login</span>';
+
     let controls = "";
-    if (mayInvite) {
-      // promote/demote — but never strand the last admin
-      if (a.role === "member") {
-        controls += opBtn("role", a.username, "Make admin", "btn btn-ghost", '<input type="hidden" name="role" value="admin">');
-      } else if (!isLastAdmin) {
-        controls += opBtn("role", a.username, "Make member", "btn btn-ghost", '<input type="hidden" name="role" value="member">');
+    if (mayManage) {
+      if (!p.hasToken)
+        controls += opBtn("/admin/invite", "", "identity", p.identity, "Configure agent");
+      if (!p.role)
+        controls += opBtn("/admin/users", "create", "username", p.identity, "Grant login", '<input type="hidden" name="role" value="member">');
+      else {
+        if (p.role === "member")
+          controls += opBtn("/admin/users", "role", "username", p.identity, "Make admin", '<input type="hidden" name="role" value="admin">');
+        else if (!isLastAdmin)
+          controls += opBtn("/admin/users", "role", "username", p.identity, "Make member", '<input type="hidden" name="role" value="member">');
+        controls += opBtn("/admin/users", "reset", "username", p.identity, "Reset password");
+        if (!isLastAdmin)
+          controls += opBtn("/admin/users", "delete", "username", p.identity, "Remove login");
       }
-      controls += opBtn("reset", a.username, "Reset password", "btn btn-ghost");
-      if (!isLastAdmin) controls += opBtn("delete", a.username, "Remove", "btn btn-ghost");
     }
-    return `<li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 text-sm">
-      <span class="text-stone-200">${esc(a.username)}</span>
-      <span class="${badge}">${esc(a.role)}</span>
+
+    return `<li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
+      <span class="min-w-0 truncate font-medium text-stone-100">${esc(p.identity)}</span>
       ${isSelf ? '<span class="text-xs text-stone-500">you</span>' : ""}
+      ${agent}
+      ${access}
       ${isLastAdmin ? '<span class="text-xs text-stone-500">last admin</span>' : ""}
       <span class="ml-auto flex flex-wrap items-center gap-1.5">${controls}</span>
     </li>`;
   };
-  const accountList = accounts.length
-    ? `<ul class="card divide-y divide-stone-800">${accounts.map(accountRow).join("")}</ul>`
-    : '<div class="card p-8 text-center text-stone-500">No web logins yet.</div>';
+
+  const list = people.length
+    ? `<ul class="card divide-y divide-stone-800">${people.map(personRow).join("")}</ul>`
+    : '<div class="card p-8 text-center text-stone-500">No one yet. Invite a teammate above.</div>';
+
+  const agentWarning =
+    noAgent > 0 && mayManage
+      ? `<div class="mb-4 rounded-lg border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-sm text-amber-300">${noAgent} ${
+          noAgent === 1 ? "person has" : "people have"
+        } a login but no agent connector — click <b>Configure agent</b> on their row so they can actually query.</div>`
+      : "";
 
   return page(
     session,
@@ -657,23 +658,15 @@ export function renderTeamPage(
     "Setoku — team",
     `${heading(
       "Team",
-      "Who can reach Setoku, and who can sign in to approve. Everyone who's invited gets a read-only, propose-only connector; the curated knowledge they help build is shared across the whole team.",
+      "Everyone gets a read-only, propose-only agent connector; some also get a web login to approve knowledge. The curated context the team builds is shared across everyone. (Curator <i>write</i> connectors are a separate, deliberate step — <code class=\"kbd\">admin-cli</code> on the box — never a default.)",
     )}
 ${flashBanner(flash)}
-
-<h2 class="mb-2 text-sm font-semibold text-stone-200">Agent access</h2>
-<p class="mb-3 text-xs text-stone-500">Read-only, propose-only connectors — for asking questions and suggesting knowledge.</p>
+${agentWarning}
 ${inviteResult}
-<div class="mt-3">${inviteForm}</div>
-<div class="mb-2 mt-4 text-xs font-medium uppercase tracking-wide text-stone-500">Connected (${teammates.length})</div>
-${list}
-
-<h2 class="mb-2 mt-8 text-sm font-semibold text-stone-200">Admin access</h2>
-<p class="mb-3 text-xs text-stone-500">Web logins for the approval surface. <b class="text-stone-300">admin</b> approves knowledge and manages the team; <b class="text-stone-300">member</b> can view only. (Curator <i>write</i> connectors are a separate, deliberate step — minted on the box with <code class="kbd">admin-cli</code> — because they commit without the approval click.)</p>
 ${newLoginResult}
-<div class="mt-3">${createLogin}</div>
-<div class="mb-2 mt-4 text-xs font-medium uppercase tracking-wide text-stone-500">Logins (${accounts.length})</div>
-${accountList}`,
+<div class="mt-3">${inviteForm}</div>
+<div class="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-stone-500">People (${people.length})</div>
+${list}`,
   );
 }
 
