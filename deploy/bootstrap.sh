@@ -69,20 +69,27 @@ dc up -d --build --wait
 log "stack healthy."
 
 # 5. Admin account for the approval surface ---------------------------------
+ADMIN_LOGIN_MSG=""
 if dc exec -T server bun gateway/admin-cli.ts list-users 2>/dev/null | grep -qE '\S'; then
   log "admin account already exists"
+  ADMIN_LOGIN_MSG="login: existing account (reset with: docker compose exec server bun gateway/admin-cli.ts set-password <user>)"
 elif [ -n "${SETOKU_ADMIN_USER:-}" ]; then
-  # non-interactive path: set SETOKU_ADMIN_USER=<name> to skip the prompt (good for SSH/automation)
-  dc exec -T server bun gateway/admin-cli.ts create-user "$SETOKU_ADMIN_USER" --role admin
-  log "created admin user '$SETOKU_ADMIN_USER' (for https://$SETOKU_DOMAIN/admin)"
+  # non-interactive path: SETOKU_ADMIN_USER=<name> skips the prompt (good for SSH/automation).
+  # A password is REQUIRED — generate one (or take SETOKU_ADMIN_PASSWORD) and print it below.
+  ADMIN_PW="${SETOKU_ADMIN_PASSWORD:-$(openssl rand -hex 12)}"
+  dc exec -T -e SETOKU_NEW_PASSWORD="$ADMIN_PW" server bun gateway/admin-cli.ts create-user "$SETOKU_ADMIN_USER" --role admin
+  log "created admin user '$SETOKU_ADMIN_USER'"
+  ADMIN_LOGIN_MSG="login: $SETOKU_ADMIN_USER / $ADMIN_PW   (change it: docker compose exec server bun gateway/admin-cli.ts set-password $SETOKU_ADMIN_USER)"
 elif [ -r /dev/tty ]; then
   echo
   log "create your admin login (for https://$SETOKU_DOMAIN/admin):"
   read -rp "  admin username: " ADMINU </dev/tty
   dc exec server bun gateway/admin-cli.ts create-user "${ADMINU:-admin}" --role admin
+  ADMIN_LOGIN_MSG="login: ${ADMINU:-admin} / (the password you just set)"
 else
   log "no TTY and SETOKU_ADMIN_USER unset — skipping admin account; create one later with:"
   log "  docker compose exec server bun gateway/admin-cli.ts create-user <name> --role admin"
+  ADMIN_LOGIN_MSG="no admin account yet — create one: docker compose exec server bun gateway/admin-cli.ts create-user <name> --role admin"
 fi
 
 # 6. Report -----------------------------------------------------------------
@@ -93,6 +100,8 @@ cat <<EOF
  Setoku is live.
    health:           https://$SETOKU_DOMAIN/healthz
    approval surface: https://$SETOKU_DOMAIN/admin
+     $ADMIN_LOGIN_MSG
+     (this is where you accept proposed knowledge — sign in once now)
 
  Connect Claude Code:
    claude mcp add --transport http setoku https://$SETOKU_DOMAIN/mcp \\

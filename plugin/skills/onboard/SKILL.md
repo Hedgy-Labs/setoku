@@ -34,10 +34,14 @@ engine — follow it; this adds the repo-specific bits.
    Call out the non-technical win — a founder/PM querying *and visualizing* their
    own data in plain language, getting the right number because the annotations
    ride along — it's often the biggest magic moment.
-7. **Wrap up.** Remind the user to commit `.setoku/config.json` (no secrets — env
-   var name only). Knowledge itself lives in the gateway's store; `/setoku:curate`
-   reviews pending knowledge. Close on the reassuring note: connected, read-only
-   confirmed, and nothing can change what Setoku knows without their approval.
+7. **Show them the approval page, then wrap up.** Point the user to their curation
+   surface — `https://<domain>/admin` — and have them sign in once with the login
+   `bootstrap` printed (reset with `admin-cli set-password <user>` if lost). That
+   page is where every proposal you filed this session waits to be accepted, and
+   the *only* place knowledge is committed — by a human, outside the agent's loop.
+   Then remind them to commit `.setoku/config.json` (no secrets — env-var name
+   only). Close on the reassuring note: connected, read-only confirmed, and
+   nothing can change what Setoku knows without their approval.
 
 To connect *more* sources (logs, Slack, a SaaS API, a bank), run
 `/setoku:connect` and pick the source.

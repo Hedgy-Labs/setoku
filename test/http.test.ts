@@ -51,6 +51,13 @@ beforeAll(async () => {
     recursive: true,
   });
 
+  // a teammate token added the way `admin-cli add-teammate` writes it: a JSON
+  // {token: identity} file loaded via SETOKU_TOKENS_FILE (the hot-pluggable path)
+  fs.writeFileSync(
+    path.join(tmpRepo, "teammates.json"),
+    JSON.stringify({ "tok-carol": "carol@co.test" }),
+  );
+
   // bootstrap admin + member accounts the way the CLI does (Phase 5.1)
   {
     const { KnowledgeStore } = await import(
@@ -72,6 +79,7 @@ beforeAll(async () => {
     SETOKU_E2E_DB_URL: DB_URL,
     SETOKU_HTTP_PORT: String(PORT),
     SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test",
+    SETOKU_TOKENS_FILE: path.join(tmpRepo, "teammates.json"),
     // exercise dependency pings: the gateway pings its own /health
     SETOKU_HEALTHZ_PING: `self=http://127.0.0.1:${PORT}/health,down=http://127.0.0.1:1/nope`,
   });
@@ -133,6 +141,18 @@ describe("tools over HTTP", () => {
     expect(rq.isError).toBe(false);
     expect(rq.text).toContain("225");
     await alice.close();
+  });
+
+  it("a teammate token from SETOKU_TOKENS_FILE authenticates as analyst (add-teammate path)", async () => {
+    const carol = await connect("tok-carol");
+    const names = (await carol.listTools()).tools.map((t) => t.name);
+    // read + propose, but no curated-write tools — the safe default for everyone
+    expect(names).toContain("find_context");
+    expect(names).toContain("report_correction");
+    expect(names).not.toContain("upsert_context");
+    const fc = await call(carol, "find_context", { question: "revenue?" });
+    expect(fc.isError).toBe(false);
+    await carol.close();
   });
 
   it("attributes each token's calls to its own identity in the shared audit log", async () => {

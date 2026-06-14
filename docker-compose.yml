@@ -53,6 +53,9 @@ services:
     restart: unless-stopped
     environment:
       SETOKU_TOKENS: "${SETOKU_TOKENS:?per-user MCP tokens, e.g. tok1=alice@co.com}"
+      # Hot-pluggable analyst tokens on the data volume: `admin-cli add-teammate`
+      # appends here so inviting a teammate is one command + restart, no .env edit.
+      SETOKU_TOKENS_FILE: ${SETOKU_TOKENS_FILE:-/data/teammates.json}
       # curator tokens (commit curated knowledge, blocked from the lake) for
       # /setoku:generate + /setoku:curate — optional; mint with admin-cli.
       SETOKU_CURATOR_TOKENS: ${SETOKU_CURATOR_TOKENS:-}

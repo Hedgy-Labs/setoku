@@ -111,9 +111,13 @@ read access (analyst reads the lake; either connector reads the business DB):
 
 **Write down what you learn.** Every confirmed definition / metric / gotcha
 becomes knowledge. The simplest path — you're already on the analyst connector —
-is `report_correction`: propose it, and a human accepts it at `https://<domain>/admin`
-or via `/setoku:curate`. That's the whole loop for most setups; you don't need
-anything else.
+is `report_correction`: propose it, and a human accepts it at `https://<domain>/admin`.
+**This is the moment to introduce the approval page** if you haven't: it's the
+curation surface — the *only* place knowledge is committed, by a human, outside
+the agent's loop. Have them sign in now with the login `bootstrap` printed (reset
+with `admin-cli set-password <user>` if lost). Everything you propose lands there
+as pending until they accept. That's the whole loop for most setups; you don't
+need anything else (`/setoku:curate` is the same accept step from the CLI).
 
 **Only if the human wants to commit knowledge directly during this session** do
 you set up the **curator** connector. It's a separate connector on purpose:
