@@ -30,7 +30,8 @@ engine — follow it; this adds the repo-specific bits.
    most, and one notoriously-ambiguous business term; record the answers
    (`report_correction`/`upsert_context`) so the artifact compounds from day one.
 6. **Share with the team (the real payoff).** The knowledge is now everyone's.
-   Offer to add a teammate or two: `docker compose exec server bun gateway/admin-cli.ts add-teammate <email>` prints a dev one-liner and claude.ai connector steps.
+   Offer to add a teammate or two — the human can click **Invite** on
+   `https://<domain>/admin/team`, or from the CLI: `docker compose exec server bun gateway/admin-cli.ts add-teammate <email>`. Both show a dev one-liner + claude.ai steps.
    Call out the non-technical win — a founder/PM querying *and visualizing* their
    own data in plain language, getting the right number because the annotations
    ride along — it's often the biggest magic moment.

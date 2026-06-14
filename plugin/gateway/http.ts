@@ -33,6 +33,7 @@ import {
   renderAuditPage,
   renderKnowledgePage,
   renderSourcesPage,
+  renderTeamPage,
   applyApprovalAction,
   SessionStore,
   sessionIdFromCookie,
@@ -111,6 +112,39 @@ if (tokens.size === 0) {
     "setoku http: no tokens configured (SETOKU_TOKENS / SETOKU_TOKENS_FILE) — refusing to start unauthenticated",
   );
   process.exit(1);
+}
+
+/** Mint a 24-byte hex token (same shape as admin-cli). */
+function mintToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(24)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Provision an analyst token at runtime (the web "Invite teammate" path): add it
+ * to the in-memory set so it authenticates IMMEDIATELY (no restart), and persist
+ * to SETOKU_TOKENS_FILE if configured so it survives one. Analyst only — the web
+ * surface never mints curator/write capability (that stays an operator action).
+ */
+function addAnalystToken(token: string, identity: string): { persisted: boolean } {
+  tokens.set(token, { identity, curator: false });
+  const file = process.env.SETOKU_TOKENS_FILE;
+  if (!file) return { persisted: false };
+  let map: Record<string, string> = {};
+  try {
+    if (fs.existsSync(file)) map = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    /* a corrupt file shouldn't lose the new invite — start fresh */
+  }
+  map[token] = identity;
+  fs.writeFileSync(file, JSON.stringify(map, null, 2) + "\n");
+  return { persisted: true };
+}
+
+/** Analyst (non-curator) identities currently provisioned — for the Team page. */
+function analystIdentities(): string[] {
+  return [...new Set([...tokens.values()].filter((t) => !t.curator).map((t) => t.identity))].sort();
 }
 
 const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
@@ -529,6 +563,49 @@ const httpServer = http.createServer(async (req, res) => {
       if (path === "/admin/sources") {
         res.writeHead(200, htmlHead);
         res.end(renderSourcesPage(session, await gatherSources()));
+        return;
+      }
+
+      // invite a teammate — mint a read-only analyst connector. CSRF + admin-gated
+      // (members can't invite, mirroring approve). Mints analyst only; web never
+      // grants curate/write (that stays an operator action — admin-cli).
+      if (path === "/admin/invite" && req.method === "POST") {
+        const form = new URLSearchParams(await readRawBody(req));
+        if (form.get("csrf") !== session.csrf) {
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("bad csrf token\n");
+          return;
+        }
+        if (!canApprove(session.role)) {
+          store.audit(session.identity, "teammate_invite_denied", { role: session.role });
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("not authorized to invite\n");
+          return;
+        }
+        const identity = (form.get("identity") ?? "").trim();
+        if (!identity) {
+          res.writeHead(200, htmlHead);
+          res.end(renderTeamPage(session, { teammates: analystIdentities(), flash: "Enter a teammate email to invite." }));
+          return;
+        }
+        const token = mintToken();
+        const { persisted } = addAnalystToken(token, identity);
+        store.audit(session.identity, "teammate_invited", { identity, persisted });
+        const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
+        res.writeHead(200, htmlHead);
+        res.end(
+          renderTeamPage(session, {
+            teammates: analystIdentities(),
+            invite: { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted },
+          }),
+        );
+        return;
+      }
+
+      // team — who can reach Setoku, and the invite form (admins)
+      if (path === "/admin/team") {
+        res.writeHead(200, htmlHead);
+        res.end(renderTeamPage(session, { teammates: analystIdentities() }));
         return;
       }
 

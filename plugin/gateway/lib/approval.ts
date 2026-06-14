@@ -128,7 +128,7 @@ function shell(title: string, inner: string): string {
 <body class="min-h-screen bg-stone-950 font-sans text-stone-100 antialiased">${inner}</body></html>`;
 }
 
-type Tab = "pending" | "knowledge" | "sources" | "audit";
+type Tab = "pending" | "knowledge" | "sources" | "team" | "audit";
 
 /** The brand mark (white square). */
 function brand(size = "h-7 w-7 text-xs"): string {
@@ -143,7 +143,11 @@ function nav(active: Tab): string {
     "/admin/knowledge",
     "Knowledge",
     "knowledge",
-  )}${tab("/admin/sources", "Sources", "sources")}${tab("/admin/audit", "Audit", "audit")}</nav>`;
+  )}${tab("/admin/sources", "Sources", "sources")}${tab("/admin/team", "Team", "team")}${tab(
+    "/admin/audit",
+    "Audit",
+    "audit",
+  )}</nav>`;
 }
 
 /** Sticky top bar: brand, nav, identity, and the sign-out form (carries CSRF). */
@@ -489,6 +493,83 @@ export function renderSourcesPage(session: Session, s: SourcesData): string {
   <span class="status status-yellow"><span class="dot dot-yellow"></span>stale / empty</span>
   <span class="status status-red"><span class="dot dot-red"></span>down</span>
 </div>`,
+  );
+}
+
+/* ------------------------------ team ------------------------------ */
+
+/** A freshly-minted invite, shown once so the admin can hand it to the teammate. */
+export interface Invite {
+  identity: string;
+  token: string;
+  installerUrl: string; // curl one-liner target, https://<host>/i/<token>
+  mcpUrl: string; // https://<host>/mcp  (for the claude.ai custom connector)
+  persisted: boolean; // false → lives in memory only, lost on restart
+}
+
+/**
+ * The Team page: who can reach Setoku, and (for admins) an "Invite teammate"
+ * form that mints a read-only analyst connector. Inviting to *use* is an
+ * everyday admin action; it never grants curate/write — that stays separate.
+ */
+export function renderTeamPage(
+  session: Session,
+  data: { teammates: string[]; invite?: Invite; flash?: string },
+): string {
+  const csrf = esc(session.csrf);
+  const mayInvite = canApprove(session.role); // admins invite; members view
+  const { teammates, invite, flash } = data;
+
+  const inviteForm = mayInvite
+    ? `<form method="POST" action="/admin/invite" class="card flex flex-wrap items-end gap-2 p-4">
+        <input type="hidden" name="csrf" value="${csrf}">
+        <label class="min-w-[14rem] flex-1">
+          <span class="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">Teammate email</span>
+          <input class="input" name="identity" type="email" placeholder="teammate@yourco.com" autocomplete="off" required>
+        </label>
+        <button class="btn btn-primary" type="submit">Invite</button>
+      </form>
+      <p class="mt-2 text-xs text-stone-500">Mints a read-only, propose-only connector. They can ask questions and suggest knowledge; only admins here accept it.</p>`
+    : '<div class="card px-3 py-2 text-sm text-stone-400">You are signed in as a <b class="text-stone-200">member</b> — viewing only. Ask an admin to invite teammates.</div>';
+
+  // The shown-once connect block for a just-minted invite.
+  const inviteResult = invite
+    ? `<div class="card border-lime-700/50 bg-lime-950/20 p-4">
+        <div class="mb-2 text-sm font-medium text-lime-300">Invited ${esc(invite.identity)} — send them ONE of these (shown once):</div>
+        <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude Code / Desktop (devs)</div>
+        <pre class="mb-3 overflow-x-auto rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">curl -fsSL ${esc(invite.installerUrl)} | sh</pre>
+        <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude.ai — add a custom connector (anyone, incl. non-technical)</div>
+        <div class="rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">
+          <div>URL: <span class="select-all">${esc(invite.mcpUrl)}</span></div>
+          <div>Header: <span class="select-all">Authorization: Bearer ${esc(invite.token)}</span></div>
+          <div class="mt-1 text-stone-500">Then just ask in plain language ("show me signups by week") — Claude charts it, using the team's curated context.</div>
+        </div>
+        ${invite.persisted ? "" : '<div class="mt-2 text-xs text-amber-400">⚠ SETOKU_TOKENS_FILE isn\'t set, so this token is in memory only and is lost on restart. Set it to persist invites.</div>'}
+      </div>`
+    : "";
+
+  const list = teammates.length
+    ? `<ul class="card divide-y divide-stone-800">${teammates
+        .map(
+          (id) =>
+            `<li class="flex items-center gap-3 px-4 py-2.5 text-sm"><span class="dot dot-green"></span><span class="text-stone-200">${esc(id)}</span><span class="ml-auto text-xs text-stone-500">analyst · read + propose</span></li>`,
+        )
+        .join("")}</ul>`
+    : '<div class="card p-8 text-center text-stone-500">No teammates yet.</div>';
+
+  return page(
+    session,
+    "team",
+    "Setoku — team",
+    `${heading(
+      "Team",
+      "Who can reach Setoku. Everyone gets a read-only, propose-only connector; the curated knowledge they help build is shared across the whole team.",
+    )}
+${flashBanner(flash)}
+${inviteResult}
+<div class="mt-4">${inviteForm}</div>
+<div class="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-stone-500">Connected (${teammates.length})</div>
+${list}`,
   );
 }
 

@@ -326,6 +326,64 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect([403]).toContain(r.status); // bad csrf or role — either way refused
   });
 
+  it("an admin invites a teammate → the minted token authenticates immediately (no restart)", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    // admin sees the invite form; member does not (checked below)
+    const teamPage = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    expect(teamPage).toContain("Setoku — team");
+    expect(teamPage).toContain('action="/admin/invite"');
+    const csrf = teamPage.match(/name="csrf" value="([^"]+)"/)![1];
+
+    // POST the invite
+    const r = await fetch(`${BASE}/admin/invite`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ csrf, identity: "newhire@co.test" }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(200);
+    const page = await r.text();
+    expect(page).toContain("Invited newhire@co.test");
+    const token = page.match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+
+    // the brand-new token works over MCP right away, as an analyst (read + propose)
+    const client = await connect(token);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("find_context");
+    expect(names).toContain("report_correction");
+    expect(names).not.toContain("upsert_context");
+    await client.close();
+
+    // and it shows up in the team list
+    const after = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    expect(after).toContain("newhire@co.test");
+  });
+
+  it("a member cannot invite (role-gated), and a bad CSRF is refused", async () => {
+    const memberCookie = await cookieFor("viewer", "viewer-pass");
+    // member view: no invite form
+    const mp = await (await fetch(`${BASE}/admin/team`, { headers: { cookie: memberCookie } })).text();
+    expect(mp).not.toContain('action="/admin/invite"');
+    expect(mp).toContain("viewing only");
+    // forged invite POST from a member is refused
+    const r = await fetch(`${BASE}/admin/invite`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: memberCookie },
+      body: new URLSearchParams({ csrf: "x", identity: "evil@co.test" }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(403); // bad csrf or role — either way refused
+    // bad CSRF from an admin is also refused
+    const adminCookie = await cookieFor("boss", "s3cret-pass");
+    const r2 = await fetch(`${BASE}/admin/invite`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: adminCookie },
+      body: new URLSearchParams({ csrf: "wrong", identity: "x@co.test" }),
+      redirect: "manual",
+    });
+    expect(r2.status).toBe(403);
+  });
+
   it("rejects a resolve POST with a bad CSRF token", async () => {
     const cookie = await cookieFor("boss", "s3cret-pass");
     const r = await fetch(`${BASE}/admin/resolve`, {

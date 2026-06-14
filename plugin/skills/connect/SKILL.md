@@ -161,8 +161,9 @@ answer**:
 Then go for the two bigger wins — this is where Setoku beats Claude-on-Postgres:
 
 - **Share it with the team.** The knowledge you just captured is now everyone's.
-  Mint a teammate connector: `docker compose exec server bun gateway/admin-cli.ts add-teammate <their-email>` — it prints a one-line installer for devs and
-  claude.ai connector steps for everyone else. Offer to add a couple of teammates.
+  Easiest: the human clicks **Invite** on `https://<domain>/admin/team` — it mints
+  a read-only connector and shows the dev one-liner + claude.ai steps right there.
+  From the CLI it's `docker compose exec server bun gateway/admin-cli.ts add-teammate <their-email>`. Offer to add a couple of teammates either way.
 - **The non-technical magic moment.** For a founder/PM/ops teammate this may be the
   *first time they can query and visualize their own data in plain language* — and
   get the right number, because your annotations ride along. Tee it up: have them
