@@ -14,9 +14,16 @@
  * scripted/CI use), otherwise prompted interactively (never echoed, never
  * logged). It is argon2id-hashed before it touches the store.
  */
+import fs from "node:fs";
 import { KnowledgeStore, defaultDbPath } from "./lib/store";
 import { hashPassword, isRole, ROLES } from "./lib/accounts";
 import { resolveProjectDir, loadConfig } from "./lib/config";
+
+function randomToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(24)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
 
 function storePath(): string {
   if (process.env.SETOKU_DB_PATH) return process.env.SETOKU_DB_PATH;
@@ -46,6 +53,7 @@ function usage(): never {
       "  admin-cli create-user <username> [--role admin|member]\n" +
       "  admin-cli set-password <username>\n" +
       "  admin-cli list-users\n" +
+      "  admin-cli add-teammate <identity>          (mint an analyst connector for a teammate)\n" +
       "  admin-cli create-curator-token <identity>\n" +
       "(password via SETOKU_NEW_PASSWORD env, else interactive prompt)",
   );
@@ -94,15 +102,57 @@ async function main() {
     return;
   }
 
+  if (cmd === "add-teammate") {
+    // Mint an analyst connector for a teammate — the "share with the team" path.
+    // Analyst tokens are read-only + propose-only (the safe default for everyone).
+    const identity = username;
+    if (!identity) usage();
+    const token = randomToken();
+    const dom = process.env.SETOKU_DOMAIN ?? "<your-domain>";
+    const file = process.env.SETOKU_TOKENS_FILE;
+
+    // Prefer the tokens FILE (hot-pluggable, no .env surgery). Append and tell
+    // the operator to restart so the new token loads.
+    let wired = false;
+    if (file) {
+      let map: Record<string, string> = {};
+      try {
+        if (fs.existsSync(file)) map = JSON.parse(fs.readFileSync(file, "utf8"));
+      } catch {
+        console.error(`could not parse ${file} as JSON — fix it or unset SETOKU_TOKENS_FILE`);
+        process.exit(1);
+      }
+      map[token] = identity;
+      fs.writeFileSync(file, JSON.stringify(map, null, 2) + "\n");
+      wired = true;
+    }
+
+    store.audit("admin-cli", "analyst_token_created", { identity });
+    console.log(`analyst connector for ${identity} (token shown once):\n`);
+    console.log(`  ${token}=${identity}\n`);
+    if (wired) {
+      console.log(`✓ added to ${file}. Restart to load it:  docker compose up -d server\n`);
+    } else {
+      console.log("Add it to SETOKU_TOKENS in /opt/setoku/.env (comma-separated), then restart the server.");
+      console.log("(Tip: set SETOKU_TOKENS_FILE to a JSON file and this command wires teammates in for you.)\n");
+    }
+    console.log("Send your teammate ONE of these:");
+    console.log(`  • Claude Code / Desktop (devs):   curl -fsSL https://${dom}/i/${token} | sh`);
+    console.log(`  • Claude.ai (anyone, incl. non-technical) — add a custom connector:`);
+    console.log(`        URL:    https://${dom}/mcp`);
+    console.log(`        Header: Authorization: Bearer ${token}`);
+    console.log(`    Settings → Connectors → Add custom connector. Then just ask in plain language`);
+    console.log(`    ("show me signups by week") — Claude charts it, using the team's curated context.`);
+    return;
+  }
+
   if (cmd === "create-curator-token") {
     // Mint a curator token (commit curated knowledge; cannot read the lake).
     // Not stored in the DB — it lives in SETOKU_CURATOR_TOKENS on the box. We
     // print it once and record the issuance in the audit log.
     const identity = username;
     if (!identity) usage();
-    const token = Array.from(crypto.getRandomValues(new Uint8Array(24)))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
+    const token = randomToken();
     store.audit("admin-cli", "curator_token_created", { identity });
     const dom = process.env.SETOKU_DOMAIN ?? "<your-domain>";
     console.log(`curator token for ${identity} (shown once):\n`);

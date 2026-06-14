@@ -140,14 +140,37 @@ knowledge you stay on analyst and `report_correction` — curator can't read the
 If the source has a codebase that explains its semantics, offer `/setoku:generate`
 to derive context from the code.
 
-## 4 — Prove the loop, then hand off
+## 4 — Prove the *difference*, then share it
 
-Ask one real business question end-to-end (`find_context` → `run_query` →
-answer) against the new source to prove it works. Then summarize:
+The person doing this is usually an engineer who **already has Claude on their
+Postgres.** "Setoku can run a SELECT" impresses no one. The magic is the
+annotation: the agent now answers *correctly* because it knows what the data
+means. So don't just prove it queries — prove the curated knowledge **changes the
+answer**:
+
+- Pick a question where naive column-guessing gets it wrong but the captured gotcha
+  gets it right (the "active user" excludes test accounts; spend excludes internal
+  transfers; a status column is current-state so you count from the event log).
+  Show the contrast out loud: "without the note you'd get X; the right answer is Y,
+  because <gotcha>." *That* is the moment the engineer feels it.
+
+Then go for the two bigger wins — this is where Setoku beats Claude-on-Postgres:
+
+- **Share it with the team.** The knowledge you just captured is now everyone's.
+  Mint a teammate connector: `docker compose exec server bun gateway/admin-cli.ts add-teammate <their-email>` — it prints a one-line installer for devs and
+  claude.ai connector steps for everyone else. Offer to add a couple of teammates.
+- **The non-technical magic moment.** For a founder/PM/ops teammate this may be the
+  *first time they can query and visualize their own data in plain language* — and
+  get the right number, because your annotations ride along. Tee it up: have them
+  ask something like "show me signups by week" on claude.ai and watch Claude chart
+  it. Name this explicitly when you hand off; it's the highest-value demo.
+
+Then summarize:
 
 - **What's connected** + what you changed on the box (env/profile/schema).
-- **What you learned** (the definitions, metrics, gotchas you wrote down).
-- **Open questions** worth a human's attention.
+- **What you learned** (the definitions, metrics, gotchas you wrote down) — and the
+  one where the annotation changed the answer.
+- **Who you shared it with**, and the open questions worth a human's attention.
 - **Where to promote proposals:** any `report_correction` you filed is pending
   until a human accepts it — at `https://<domain>/admin` (the approval page) or by
   running `/setoku:curate` on the curator connector. Tell them which.
@@ -217,6 +240,9 @@ ADMIN_URL='postgresql://owner:…@host:5432/db' deploy/connect-postgres.sh --env
 
 # apply config / restart the gateway
 docker compose up -d server
+
+# share with a teammate — prints dev one-liner + claude.ai connector steps (Phase 4)
+docker compose exec server bun gateway/admin-cli.ts add-teammate <email>
 
 # mint a curator connector token (Phase 3 — only when committing knowledge directly)
 docker compose exec server bun gateway/admin-cli.ts create-curator-token <identity>

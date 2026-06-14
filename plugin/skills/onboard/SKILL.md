@@ -21,13 +21,20 @@ engine — follow it; this adds the repo-specific bits.
    never clobber) so the team never hits permission prompts. Use the exact glob.
 3. **Generate context from the code.** Offer `/setoku:generate` — the codebase is
    the best source of business semantics. Recommended before the first question.
-4. **First question, end-to-end.** Ask the user a real business question they
-   care about and answer it with the **analyst** workflow (find_context → SQL →
-   run_query). This proves the loop.
+4. **Prove the difference (not just the query).** The user is an engineer who
+   likely already has Claude on their Postgres — a plain SELECT won't impress.
+   Answer a real question where the captured knowledge **changes the answer**
+   (find_context → SQL → run_query) and show the contrast: "without the gotcha
+   you'd get X; the right answer is Y." That's the moment it lands.
 5. **Curation interview (2 questions max).** Ask what they're in the data for
    most, and one notoriously-ambiguous business term; record the answers
    (`report_correction`/`upsert_context`) so the artifact compounds from day one.
-6. **Wrap up.** Remind the user to commit `.setoku/config.json` (no secrets — env
+6. **Share with the team (the real payoff).** The knowledge is now everyone's.
+   Offer to add a teammate or two: `docker compose exec server bun gateway/admin-cli.ts add-teammate <email>` prints a dev one-liner and claude.ai connector steps.
+   Call out the non-technical win — a founder/PM querying *and visualizing* their
+   own data in plain language, getting the right number because the annotations
+   ride along — it's often the biggest magic moment.
+7. **Wrap up.** Remind the user to commit `.setoku/config.json` (no secrets — env
    var name only). Knowledge itself lives in the gateway's store; `/setoku:curate`
    reviews pending knowledge. Close on the reassuring note: connected, read-only
    confirmed, and nothing can change what Setoku knows without their approval.
