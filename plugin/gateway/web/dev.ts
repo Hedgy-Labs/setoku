@@ -79,6 +79,8 @@ const proc = spawn({
     SETOKU_TOKENS_FILE: tokensFile,
     SETOKU_HTTP_PORT: String(PORT),
     SETOKU_PUBLIC_URL: BASE,
+    // local http://localhost — browsers drop Secure cookies, so login would loop
+    SETOKU_COOKIE_INSECURE: "1",
   },
   stdout: "inherit",
   stderr: "inherit",

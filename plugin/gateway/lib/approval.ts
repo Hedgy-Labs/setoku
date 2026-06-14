@@ -98,14 +98,20 @@ export function sessionIdFromCookie(cookieHeader: string | undefined): string | 
   return undefined;
 }
 
+// In production the session cookie is always Secure (HTTPS-only). For LOCAL dev
+// over http://localhost, browsers (notably Safari) drop Secure cookies, so login
+// would silently loop — `bun run dev:admin` sets SETOKU_COOKIE_INSECURE=1 to omit
+// it. Never set this on a real deployment.
+const secureAttr = (): string => (process.env.SETOKU_COOKIE_INSECURE === "1" ? "" : " Secure;");
+
 /** Set-Cookie value for a new session (HttpOnly, Secure, SameSite=Strict). */
 export function sessionSetCookie(sid: string): string {
-  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=43200`;
+  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly;${secureAttr()} SameSite=Strict; Path=/admin; Max-Age=43200`;
 }
 
 /** Set-Cookie value that clears the session cookie. */
 export function sessionClearCookie(): string {
-  return `${COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=0`;
+  return `${COOKIE}=; HttpOnly;${secureAttr()} SameSite=Strict; Path=/admin; Max-Age=0`;
 }
 
 /* ------------------------------ rendering ------------------------------ */
