@@ -11,10 +11,11 @@ engine — follow it; this adds the repo-specific bits.
 
 1. **Run the `connect` flow for the business database.** Ensure a box exists
    (connect phase 0), wire up the repo's Postgres read-only (connect phase 2 —
-   find the DB URL in `.env`/`.env.local`, **default to a dev/local DB, never
-   prod unless the user explicitly chooses it**, store the credential by env-var
-   name only in `.setoku/config.json`), then verify the agent understands the
-   schema (connect phase 3).
+   find an admin DB URL in `.env`/`.env.local`, **default to a dev/local DB,
+   never prod unless the user explicitly chooses it**, then `deploy/connect-postgres.sh`
+   creates the read-only role + URL in one verified step; the repo's
+   `.setoku/config.json` holds only the env-var *name* and the table allow-list,
+   never the secret), then verify the agent understands the schema (connect phase 3).
 2. **Allowlist the tools.** Merge `"mcp__setoku__*"` into `permissions.allow` in
    the repo's `.claude/settings.json` (create if missing; read-modify-write,
    never clobber) so the team never hits permission prompts. Use the exact glob.

@@ -150,13 +150,32 @@ For all of these: the human creates the provider credential; you wire the box an
 restart. Profiles are **off by default** (`bootstrap` seeds only `lake,ingest`),
 so enabling a source means adding its profile — see the cheat-sheet below.
 
-- **Postgres / MySQL (business DB).** Create a read-only role
-  (`deploy/readonly-role.sql`); put the connection string in the box's
-  `SETOKU_DATABASE_URL`; set the table allow-list in the **repo's**
-  `.setoku/config.json` (`allowTables`); restart the server. Verify with
-  `get_schema`. **Default to a dev/staging DB — never point at production unless
-  the human explicitly chooses it.** (Read-only is enforced by the role, but a
-  hastily-made role on prod is still a footgun.)
+- **Postgres (business DB).** **Default to a dev/staging DB — never point at
+  production unless the human explicitly chooses it.** Then one command does the
+  role + URL (ask the human for an admin/owner connection URL to that DB; have
+  them pass it via the `ADMIN_URL` env var so it stays out of shell history):
+
+  ```
+  ADMIN_URL='postgresql://owner:…@host:5432/yourdb' deploy/connect-postgres.sh --env-file /opt/setoku/.env
+  ```
+
+  It creates a least-privilege read-only role `setoku_ro`, **verifies it can read
+  and that writes are refused**, and writes `SETOKU_DATABASE_URL` into the box's
+  `.env` (idempotent — safe to re-run). Then restart: `docker compose up -d server`.
+  (No `--env-file`? It just prints the line to set yourself. MySQL: no helper yet —
+  create a read-only user by hand and set the URL.)
+
+  Last, set the table allow-list in the **repo's** `.setoku/config.json` (scaffold
+  it if missing — `dataSource.urlEnv` is the env-var name, `allowTables` the
+  globs):
+
+  ```json
+  { "dataSource": { "kind": "postgres", "urlEnv": "SETOKU_DATABASE_URL" },
+    "allowTables": ["public.*"], "denyTables": ["public._prisma_migrations"],
+    "rowCap": 200, "statementTimeoutMs": 15000 }
+  ```
+
+  Verify with `get_schema`.
 - **Vercel logs.** Create a log drain to `https://<domain>/ingest/vercel` with
   the ingest token; set `SETOKU_VERCEL_VERIFY` to the value Vercel requires;
   enable the `ingest` profile; restart.
@@ -180,6 +199,9 @@ $EDITOR /opt/setoku/.env          # SETOKU_DATABASE_URL, RENDER_*, SLACK_*, MERC
 
 # enable a source's profile: add it to COMPOSE_PROFILES (comma-separated) in .env, then
 docker compose --profile <name> up -d <service>   # e.g. --profile mercury up -d mercury-poller
+
+# connect a Postgres business DB in one shot (role + read-only URL + verify)
+ADMIN_URL='postgresql://owner:…@host:5432/db' deploy/connect-postgres.sh --env-file /opt/setoku/.env
 
 # apply config / restart the gateway
 docker compose up -d server
