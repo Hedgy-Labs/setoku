@@ -369,6 +369,25 @@ export class KnowledgeStore {
     );
   }
 
+  /** Change a web account's role (member ↔ admin). */
+  setRole(username: string, role: string): boolean {
+    return (
+      this.db.run("UPDATE accounts SET role = ? WHERE username = ?", [role, username]).changes > 0
+    );
+  }
+
+  /** Remove a web account. */
+  deleteAccount(username: string): boolean {
+    return this.db.run("DELETE FROM accounts WHERE username = ?", [username]).changes > 0;
+  }
+
+  /** How many accounts hold a given role — used to guard the last admin. */
+  countRole(role: string): number {
+    return (
+      this.db.query("SELECT count(*) AS n FROM accounts WHERE role = ?").get(role) as { n: number }
+    ).n;
+  }
+
   /* -------------------------------- sessions ---------------------------- */
 
   /** Persist a web-admin session (Phase 5.1). Persisted so a restart/redeploy

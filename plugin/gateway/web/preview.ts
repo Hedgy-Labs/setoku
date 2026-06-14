@@ -119,6 +119,11 @@ const pages: [string, string][] = [
     "team",
     renderTeamPage(session, {
       teammates: ["peter@hedgy.co", "alice@hedgy.co", "steven@hedgy.works"],
+      accounts: [
+        { username: "peter", role: "admin" },
+        { username: "alice@hedgy.co", role: "admin" },
+        { username: "steven@hedgy.works", role: "member" },
+      ],
       invite: {
         identity: "newhire@hedgy.co",
         token: "0123456789abcdef0123456789abcdef0123456789abcdef",

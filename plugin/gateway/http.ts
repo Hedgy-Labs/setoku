@@ -43,7 +43,7 @@ import {
   type SourcesData,
   type SourceTable,
 } from "./lib/approval";
-import { authenticate, canApprove } from "./lib/accounts";
+import { authenticate, canApprove, hashPassword, isRole } from "./lib/accounts";
 import { resolveDatabaseUrl, resolveLakeUrl } from "./lib/config";
 import { introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
@@ -582,10 +582,11 @@ const httpServer = http.createServer(async (req, res) => {
           res.end("not authorized to invite\n");
           return;
         }
+        const teamAccounts = () => store.listAccounts().map((a) => ({ username: a.username, role: a.role }));
         const identity = (form.get("identity") ?? "").trim();
         if (!identity) {
           res.writeHead(200, htmlHead);
-          res.end(renderTeamPage(session, { teammates: analystIdentities(), flash: "Enter a teammate email to invite." }));
+          res.end(renderTeamPage(session, { teammates: analystIdentities(), accounts: teamAccounts(), flash: "Enter a teammate email to invite." }));
           return;
         }
         const token = mintToken();
@@ -596,16 +597,92 @@ const httpServer = http.createServer(async (req, res) => {
         res.end(
           renderTeamPage(session, {
             teammates: analystIdentities(),
+            accounts: teamAccounts(),
             invite: { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted },
           }),
         );
         return;
       }
 
-      // team — who can reach Setoku, and the invite form (admins)
-      if (path === "/admin/team") {
+      // manage web logins (admin access): create / promote-demote / reset / remove.
+      // CSRF + admin-gated. Mints NO agent-side write capability (curator stays an
+      // operator action); this only manages who can sign in here and at what role.
+      if (path === "/admin/users" && req.method === "POST") {
+        const form = new URLSearchParams(await readRawBody(req));
+        if (form.get("csrf") !== session.csrf) {
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("bad csrf token\n");
+          return;
+        }
+        if (!canApprove(session.role)) {
+          store.audit(session.identity, "admin_users_denied", { role: session.role });
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("not authorized to manage accounts\n");
+          return;
+        }
+        const op = form.get("op");
+        const uname = (form.get("username") ?? "").trim();
+        let flash = "Invalid request.";
+        let newLogin: { username: string; role: string; tempPassword: string } | undefined;
+        const tempPw = (): string =>
+          Array.from(crypto.getRandomValues(new Uint8Array(9)))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+        const acct = uname ? store.getAccount(uname) : null;
+        const isLastAdmin = (a: { role: string } | null): boolean =>
+          !!a && a.role === "admin" && store.countRole("admin") <= 1;
+
+        if (op === "create") {
+          const role = form.get("role") ?? "member";
+          if (!uname) flash = "Username required.";
+          else if (!isRole(role)) flash = `Invalid role "${role}".`;
+          else if (store.getAccount(uname)) flash = `"${uname}" already has a login.`;
+          else {
+            const pw = tempPw();
+            store.createAccount({ username: uname, pwhash: await hashPassword(pw), role, createdBy: session.identity });
+            store.audit(session.identity, "account_created", { username: uname, role });
+            newLogin = { username: uname, role, tempPassword: pw };
+            flash = `Created ${role} login for ${uname}.`;
+          }
+        } else if (op === "role") {
+          const role = form.get("role") ?? "";
+          if (!acct) flash = `No login "${uname}".`;
+          else if (!isRole(role)) flash = `Invalid role "${role}".`;
+          else if (role === "member" && isLastAdmin(acct)) flash = "Can't demote the last admin.";
+          else {
+            store.setRole(uname, role);
+            store.audit(session.identity, "account_role_changed", { username: uname, role });
+            flash = `${uname} is now ${role}.`;
+          }
+        } else if (op === "reset") {
+          if (!acct) flash = `No login "${uname}".`;
+          else {
+            const pw = tempPw();
+            store.setPassword(uname, await hashPassword(pw));
+            store.audit(session.identity, "account_password_reset", { username: uname });
+            newLogin = { username: uname, role: acct.role, tempPassword: pw };
+            flash = `Reset password for ${uname}.`;
+          }
+        } else if (op === "delete") {
+          if (!acct) flash = `No login "${uname}".`;
+          else if (isLastAdmin(acct)) flash = "Can't remove the last admin.";
+          else {
+            store.deleteAccount(uname);
+            store.audit(session.identity, "account_deleted", { username: uname });
+            flash = `Removed login ${uname}.`;
+          }
+        }
+        const accounts = store.listAccounts().map((a) => ({ username: a.username, role: a.role }));
         res.writeHead(200, htmlHead);
-        res.end(renderTeamPage(session, { teammates: analystIdentities() }));
+        res.end(renderTeamPage(session, { teammates: analystIdentities(), accounts, newLogin, flash }));
+        return;
+      }
+
+      // team — who can reach Setoku, the invite form, and web-login management
+      if (path === "/admin/team") {
+        const accounts = store.listAccounts().map((a) => ({ username: a.username, role: a.role }));
+        res.writeHead(200, htmlHead);
+        res.end(renderTeamPage(session, { teammates: analystIdentities(), accounts }));
         return;
       }
 

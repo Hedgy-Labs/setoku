@@ -25,7 +25,7 @@
  * from Slack/logs), so every dynamic value is HTML-escaped before rendering.
  */
 import type { KnowledgeStore, KnowledgeDoc, DocType } from "./store";
-import { canApprove } from "./accounts";
+import { canApprove, ROLES } from "./accounts";
 
 /** Escape for HTML text/attribute context. */
 export function esc(s: unknown): string {
@@ -507,18 +507,44 @@ export interface Invite {
   persisted: boolean; // false → lives in memory only, lost on restart
 }
 
+/** A web login (no password hash) for the admin-access table. */
+export interface TeamAccount {
+  username: string;
+  role: string;
+}
+
+/** A just-created web login, shown once so the admin can hand over the password. */
+export interface NewLogin {
+  username: string;
+  role: string;
+  tempPassword: string;
+}
+
 /**
- * The Team page: who can reach Setoku, and (for admins) an "Invite teammate"
- * form that mints a read-only analyst connector. Inviting to *use* is an
- * everyday admin action; it never grants curate/write — that stays separate.
+ * The Team page. Two kinds of access, deliberately distinct:
+ *  - **Agent access** (analyst tokens): who can *use* Setoku. Invite mints these.
+ *  - **Admin access** (web accounts): who can sign in to *approve* knowledge, and
+ *    at what role. Admins manage these — create logins and promote/demote — so
+ *    privilege isn't stuck at the operator/SSH level.
+ * Neither path mints curator (agent-side write) capability; that stays an
+ * operator action (admin-cli) because it bypasses the human approval click.
  */
 export function renderTeamPage(
   session: Session,
-  data: { teammates: string[]; invite?: Invite; flash?: string },
+  data: {
+    teammates: string[];
+    accounts?: TeamAccount[];
+    invite?: Invite;
+    newLogin?: NewLogin;
+    flash?: string;
+  },
 ): string {
   const csrf = esc(session.csrf);
-  const mayInvite = canApprove(session.role); // admins invite; members view
+  const mayInvite = canApprove(session.role); // admins manage; members view
   const { teammates, invite, flash } = data;
+  const accounts = data.accounts ?? [];
+  const newLogin = data.newLogin;
+  const adminCount = accounts.filter((a) => a.role === "admin").length;
 
   const inviteForm = mayInvite
     ? `<form method="POST" action="/admin/invite" class="card flex flex-wrap items-end gap-2 p-4">
@@ -557,19 +583,97 @@ export function renderTeamPage(
         .join("")}</ul>`
     : '<div class="card p-8 text-center text-stone-500">No teammates yet.</div>';
 
+  /* ---- admin access (web logins) ---- */
+
+  // shown-once temp password for a just-created login
+  const newLoginResult = newLogin
+    ? `<div class="card border-lime-700/50 bg-lime-950/20 p-4">
+        <div class="mb-1 text-sm font-medium text-lime-300">Created login for ${esc(newLogin.username)} (${esc(newLogin.role)}) — share once:</div>
+        <div class="rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">
+          <div>Sign in at <span class="select-all">/admin</span></div>
+          <div>Username: <span class="select-all">${esc(newLogin.username)}</span></div>
+          <div>Temp password: <span class="select-all">${esc(newLogin.tempPassword)}</span></div>
+          <div class="mt-1 text-stone-500">They should change it after first sign-in.</div>
+        </div>
+      </div>`
+    : "";
+
+  const roleOptions = ROLES.map((r) => `<option value="${r}">${r}</option>`).join("");
+  const createLogin = mayInvite
+    ? `<form method="POST" action="/admin/users" class="card flex flex-wrap items-end gap-2 p-4">
+        <input type="hidden" name="csrf" value="${csrf}">
+        <input type="hidden" name="op" value="create">
+        <label class="min-w-[12rem] flex-1">
+          <span class="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">New login (username/email)</span>
+          <input class="input" name="username" placeholder="teammate@yourco.com" autocomplete="off" required>
+        </label>
+        <label>
+          <span class="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">Role</span>
+          <select class="input" name="role">${roleOptions}</select>
+        </label>
+        <button class="btn btn-primary" type="submit">Create login</button>
+      </form>
+      <p class="mt-2 text-xs text-stone-500"><b class="text-stone-300">admin</b> can approve knowledge and manage the team · <b class="text-stone-300">member</b> can view only. A temp password is shown once.</p>`
+    : "";
+
+  // per-account controls (admin only): promote/demote, reset password, remove.
+  const opBtn = (op: string, username: string, label: string, cls: string, extra = ""): string =>
+    `<form method="POST" action="/admin/users" class="inline">
+       <input type="hidden" name="csrf" value="${csrf}">
+       <input type="hidden" name="op" value="${op}">
+       <input type="hidden" name="username" value="${esc(username)}">${extra}
+       <button class="${cls}" type="submit">${esc(label)}</button>
+     </form>`;
+  const accountRow = (a: TeamAccount): string => {
+    const isSelf = a.username === session.identity;
+    const isLastAdmin = a.role === "admin" && adminCount <= 1;
+    const badge = a.role === "admin" ? "badge badge-ok" : "badge badge-idle";
+    let controls = "";
+    if (mayInvite) {
+      // promote/demote — but never strand the last admin
+      if (a.role === "member") {
+        controls += opBtn("role", a.username, "Make admin", "btn btn-ghost", '<input type="hidden" name="role" value="admin">');
+      } else if (!isLastAdmin) {
+        controls += opBtn("role", a.username, "Make member", "btn btn-ghost", '<input type="hidden" name="role" value="member">');
+      }
+      controls += opBtn("reset", a.username, "Reset password", "btn btn-ghost");
+      if (!isLastAdmin) controls += opBtn("delete", a.username, "Remove", "btn btn-ghost");
+    }
+    return `<li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-2.5 text-sm">
+      <span class="text-stone-200">${esc(a.username)}</span>
+      <span class="${badge}">${esc(a.role)}</span>
+      ${isSelf ? '<span class="text-xs text-stone-500">you</span>' : ""}
+      ${isLastAdmin ? '<span class="text-xs text-stone-500">last admin</span>' : ""}
+      <span class="ml-auto flex flex-wrap items-center gap-1.5">${controls}</span>
+    </li>`;
+  };
+  const accountList = accounts.length
+    ? `<ul class="card divide-y divide-stone-800">${accounts.map(accountRow).join("")}</ul>`
+    : '<div class="card p-8 text-center text-stone-500">No web logins yet.</div>';
+
   return page(
     session,
     "team",
     "Setoku — team",
     `${heading(
       "Team",
-      "Who can reach Setoku. Everyone gets a read-only, propose-only connector; the curated knowledge they help build is shared across the whole team.",
+      "Who can reach Setoku, and who can sign in to approve. Everyone who's invited gets a read-only, propose-only connector; the curated knowledge they help build is shared across the whole team.",
     )}
 ${flashBanner(flash)}
+
+<h2 class="mb-2 text-sm font-semibold text-stone-200">Agent access</h2>
+<p class="mb-3 text-xs text-stone-500">Read-only, propose-only connectors — for asking questions and suggesting knowledge.</p>
 ${inviteResult}
-<div class="mt-4">${inviteForm}</div>
-<div class="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-stone-500">Connected (${teammates.length})</div>
-${list}`,
+<div class="mt-3">${inviteForm}</div>
+<div class="mb-2 mt-4 text-xs font-medium uppercase tracking-wide text-stone-500">Connected (${teammates.length})</div>
+${list}
+
+<h2 class="mb-2 mt-8 text-sm font-semibold text-stone-200">Admin access</h2>
+<p class="mb-3 text-xs text-stone-500">Web logins for the approval surface. <b class="text-stone-300">admin</b> approves knowledge and manages the team; <b class="text-stone-300">member</b> can view only. (Curator <i>write</i> connectors are a separate, deliberate step — minted on the box with <code class="kbd">admin-cli</code> — because they commit without the approval click.)</p>
+${newLoginResult}
+<div class="mt-3">${createLogin}</div>
+<div class="mb-2 mt-4 text-xs font-medium uppercase tracking-wide text-stone-500">Logins (${accounts.length})</div>
+${accountList}`,
   );
 }
 

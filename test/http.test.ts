@@ -384,6 +384,54 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(r2.status).toBe(403);
   });
 
+  async function teamCsrf(cookie: string): Promise<string> {
+    const page = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    return page.match(/name="csrf" value="([^"]+)"/)![1];
+  }
+  function usersPost(cookie: string, csrf: string, fields: Record<string, string>) {
+    return fetch(`${BASE}/admin/users`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ csrf, ...fields }),
+      redirect: "manual",
+    });
+  }
+
+  it("the last admin cannot be demoted or removed (no lockout)", async () => {
+    // at this point 'boss' is the only admin; 'viewer' is a member
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const csrf = await teamCsrf(cookie);
+    const demote = await (await usersPost(cookie, csrf, { op: "role", username: "boss", role: "member" })).text();
+    expect(demote).toContain("demote the last admin");
+    const del = await (await usersPost(cookie, csrf, { op: "delete", username: "boss" })).text();
+    expect(del).toContain("remove the last admin");
+  });
+
+  let danaPw = "";
+  it("an admin creates a web login, it can sign in, and members can't manage accounts", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const csrf = await teamCsrf(cookie);
+    const page = await (await usersPost(cookie, csrf, { op: "create", username: "dana@co.test", role: "member" })).text();
+    expect(page).toContain("Created login for dana@co.test");
+    danaPw = page.match(/Temp password: <span class="select-all">([0-9a-f]+)<\/span>/)![1];
+
+    // the new login works, and dana (a member) cannot manage accounts
+    const danaCookie = await cookieFor("dana@co.test", danaPw);
+    const denied = await usersPost(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "x@co.test", role: "admin" });
+    expect(denied.status).toBe(403);
+  });
+
+  it("an admin can promote a member to admin (change privilege level)", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const page = await (await usersPost(cookie, await teamCsrf(cookie), { op: "role", username: "dana@co.test", role: "admin" })).text();
+    expect(page).toContain("dana@co.test is now admin");
+    // dana re-logs-in → her new session is admin → she can now manage the team
+    const danaCookie = await cookieFor("dana@co.test", danaPw);
+    const ok = await usersPost(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "newbie@co.test", role: "member" });
+    expect(ok.status).toBe(200);
+    expect(await ok.text()).toContain("Created login for newbie@co.test");
+  });
+
   it("rejects a resolve POST with a bad CSRF token", async () => {
     const cookie = await cookieFor("boss", "s3cret-pass");
     const r = await fetch(`${BASE}/admin/resolve`, {
