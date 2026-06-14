@@ -34,6 +34,7 @@ import {
   renderKnowledgePage,
   renderSourcesPage,
   renderTeamPage,
+  type Invite,
   applyApprovalAction,
   SessionStore,
   sessionIdFromCookie,
@@ -224,6 +225,17 @@ function readRawBody(req: http.IncomingMessage): Promise<string> {
 // and gets an opaque cookie; the token never rides in a URL (no Slack/referer/
 // history leakage). One process, so in-memory is fine.
 const sessions = new SessionStore(store);
+
+// One-time render state for Post/Redirect/Get: a mutating POST (invite, account
+// op) stashes its shown-once result here keyed by session, then 303-redirects;
+// the next GET /admin/team consumes and clears it. Without PRG, refreshing the
+// POST response re-submits it — re-minting tokens on every refresh.
+type TeamFlash = {
+  invite?: Invite;
+  newLogin?: { username: string; role: string; tempPassword: string };
+  flash?: string;
+};
+const teamFlash = new Map<string, TeamFlash>();
 
 const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
 
@@ -602,21 +614,21 @@ const httpServer = http.createServer(async (req, res) => {
         }
         const identity = (form.get("identity") ?? "").trim();
         if (!identity) {
-          res.writeHead(200, htmlHead);
-          res.end(renderTeamPage(session, { people: teamPeople(), flash: "Enter a teammate email to invite." }));
-          return;
-        }
-        const token = mintToken();
-        const { persisted } = addAnalystToken(token, identity);
-        store.audit(session.identity, "teammate_invited", { identity, persisted });
-        const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
-        res.writeHead(200, htmlHead);
-        res.end(
-          renderTeamPage(session, {
-            people: teamPeople(),
+          teamFlash.set(sid ?? "", { flash: "Enter a teammate email to invite." });
+        } else if (analystIdentities().includes(identity)) {
+          teamFlash.set(sid ?? "", { flash: `${identity} already has an agent connector.` });
+        } else {
+          const token = mintToken();
+          const { persisted } = addAnalystToken(token, identity);
+          store.audit(session.identity, "teammate_invited", { identity, persisted });
+          const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
+          teamFlash.set(sid ?? "", {
             invite: { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted },
-          }),
-        );
+          });
+        }
+        // Post/Redirect/Get: never re-mint on refresh
+        res.writeHead(303, { location: "/admin/team" });
+        res.end();
         return;
       }
 
@@ -699,15 +711,19 @@ const httpServer = http.createServer(async (req, res) => {
             flash = `Removed login ${uname}.`;
           }
         }
-        res.writeHead(200, htmlHead);
-        res.end(renderTeamPage(session, { people: teamPeople(), newLogin, invite, flash }));
+        teamFlash.set(sid ?? "", { newLogin, invite, flash });
+        res.writeHead(303, { location: "/admin/team" }); // PRG: refresh won't re-run the op
+        res.end();
         return;
       }
 
-      // team — one row per person: agent status + web login/role, plus management
+      // team — one row per person: agent status + web login/role, plus management.
+      // Consume any one-time result from a preceding POST (shown exactly once).
       if (path === "/admin/team") {
+        const once = teamFlash.get(sid ?? "");
+        teamFlash.delete(sid ?? "");
         res.writeHead(200, htmlHead);
-        res.end(renderTeamPage(session, { people: teamPeople() }));
+        res.end(renderTeamPage(session, { people: teamPeople(), ...once }));
         return;
       }
 

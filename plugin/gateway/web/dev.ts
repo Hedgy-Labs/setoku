@@ -43,8 +43,12 @@ const tokensFile = path.join(dir, "teammates.json");
 
 const store = new KnowledgeStore(dbPath);
 await (async () => {
+  // dev + viewer both have a matching agent token (seeded below) so they show as
+  // "agent connected"; pat has a login but NO token, to demo the Configure-agent
+  // flow + the warning banner.
   store.createAccount({ username: USER, pwhash: await hashPassword(PASS), role: "admin" });
   store.createAccount({ username: "viewer", pwhash: await hashPassword("viewer"), role: "member" });
+  store.createAccount({ username: "pat", pwhash: await hashPassword("patpass"), role: "member" });
   store.upsertDoc(
     { type: "overview", name: "business", body: "Hedgy is a recruiting marketplace. Revenue is success-fee + subscription.", meta: {} },
     USER,
@@ -63,9 +67,13 @@ await (async () => {
 })();
 store.db.close();
 
-// a teammate with an agent connector but no login; the seeded accounts above
-// (dev, viewer) have logins. 'viewer' will show as login-without-agent → banner.
-fs.writeFileSync(tokensFile, JSON.stringify({ devtok: `${USER}@local`, toka: "alice@hedgy.co" }, null, 2));
+// agent tokens, keyed so identities line up with the logins above:
+//   dev   → has login (admin) + agent   viewer → has login (member) + agent
+//   alice → agent only, no login        pat    → login only, no agent (banner)
+fs.writeFileSync(
+  tokensFile,
+  JSON.stringify({ tok_viewer: "viewer", tok_alice: "alice@hedgy.co" }, null, 2),
+);
 
 // 3. run the real gateway
 const proc = spawn({
@@ -75,7 +83,7 @@ const proc = spawn({
     ...(process.env as Record<string, string>),
     SETOKU_PROJECT_DIR: dir,
     SETOKU_DB_PATH: dbPath,
-    SETOKU_TOKENS: "devtok=dev@local",
+    SETOKU_TOKENS: "tok_dev=dev",
     SETOKU_TOKENS_FILE: tokensFile,
     SETOKU_HTTP_PORT: String(PORT),
     SETOKU_PUBLIC_URL: BASE,

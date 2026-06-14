@@ -341,8 +341,8 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
       body: new URLSearchParams({ csrf, identity: "newhire@co.test" }),
       redirect: "manual",
     });
-    expect(r.status).toBe(200);
-    const page = await r.text();
+    expect(r.status).toBe(303); // PRG: the result shows on the redirected GET
+    const page = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
     expect(page).toContain("Agent connector for newhire@co.test");
     const token = page.match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
 
@@ -396,22 +396,26 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
       redirect: "manual",
     });
   }
+  // POST then follow the PRG redirect; the one-time result shows on the GET.
+  async function usersResult(cookie: string, csrf: string, fields: Record<string, string>): Promise<string> {
+    const r = await usersPost(cookie, csrf, fields);
+    expect(r.status).toBe(303);
+    return (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+  }
 
   it("the last admin cannot be demoted or removed (no lockout)", async () => {
     // at this point 'boss' is the only admin; 'viewer' is a member
     const cookie = await cookieFor("boss", "s3cret-pass");
     const csrf = await teamCsrf(cookie);
-    const demote = await (await usersPost(cookie, csrf, { op: "role", username: "boss", role: "member" })).text();
-    expect(demote).toContain("demote the last admin");
-    const del = await (await usersPost(cookie, csrf, { op: "delete", username: "boss" })).text();
-    expect(del).toContain("remove the last admin");
+    expect(await usersResult(cookie, csrf, { op: "role", username: "boss", role: "member" })).toContain("demote the last admin");
+    expect(await usersResult(cookie, csrf, { op: "delete", username: "boss" })).toContain("remove the last admin");
   });
 
   let danaPw = "";
   it("an admin creates a web login, it can sign in, and members can't manage accounts", async () => {
     const cookie = await cookieFor("boss", "s3cret-pass");
     const csrf = await teamCsrf(cookie);
-    const page = await (await usersPost(cookie, csrf, { op: "create", username: "dana@co.test", role: "member" })).text();
+    const page = await usersResult(cookie, csrf, { op: "create", username: "dana@co.test", role: "member" });
     expect(page).toContain("login for dana@co.test");
     danaPw = page.match(/Temp password: <span class="select-all">([0-9a-f]+)<\/span>/)![1];
 
@@ -423,13 +427,12 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
 
   it("an admin can promote a member to admin (change privilege level)", async () => {
     const cookie = await cookieFor("boss", "s3cret-pass");
-    const page = await (await usersPost(cookie, await teamCsrf(cookie), { op: "role", username: "dana@co.test", role: "admin" })).text();
+    const page = await usersResult(cookie, await teamCsrf(cookie), { op: "role", username: "dana@co.test", role: "admin" });
     expect(page).toContain("dana@co.test is now admin");
     // dana re-logs-in → her new session is admin → she can now manage the team
     const danaCookie = await cookieFor("dana@co.test", danaPw);
-    const ok = await usersPost(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "newbie@co.test", role: "member" });
-    expect(ok.status).toBe(200);
-    expect(await ok.text()).toContain("login for newbie@co.test");
+    const okPage = await usersResult(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "newbie@co.test", role: "member" });
+    expect(okPage).toContain("login for newbie@co.test");
   });
 
   it("rejects a resolve POST with a bad CSRF token", async () => {
