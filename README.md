@@ -38,10 +38,10 @@ One command on a fresh Ubuntu VPS (~$12/mo):
 
 ```bash
 git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku
-./deploy/bootstrap.sh
+SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh
 ```
 
-It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect Claude and the token for log drains.
+It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect Claude and the token for log drains. (`SETOKU_ADMIN_USER` is the `/admin` login it creates; set it so the script runs unattended — omit it and it asks once, interactively.)
 
 Then point Claude at the box and run `/setoku:onboard` in a business repo — it wires up your database (the credential stays in your env; only the env-var *name* goes in config), checks the connection, and generates the first knowledge from your code.
 

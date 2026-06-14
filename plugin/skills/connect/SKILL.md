@@ -15,30 +15,14 @@ Act first, narrate briefly. Default to doing the work when you have access
 (e.g. the human pastes SSH); instruct precisely when you don't. Never invent or
 paste a credential — the human creates provider tokens and DB roles.
 
-## Two connectors, never both at once (the membrane — I2/I9)
+**Setup runs on the analyst connector** — read-only, propose-only. That's all you
+need for Phases 0–3: discover the source, query it, verify it. You only set up the
+*curator* connector at the moment you've actually confirmed knowledge worth saving
+(Phase 3) — don't front-load it. (The why: writing curated knowledge and reading
+the untrusted lake are deliberately split across two connectors so an injected log
+line can't poison the store. Full model lives in Phase 3, where it matters.)
 
-Setoku deliberately splits read access from write access into two MCP
-connectors. You will be on exactly one at a time:
-
-| | **analyst** connector | **curator** connector |
-|---|---|---|
-| reads business DB (`get_schema`, `run_query` Postgres) | ✅ | ✅ |
-| reads the lake (`run_query` `dialect:"clickhouse"`) | ✅ | ❌ hard-blocked |
-| writes knowledge (`upsert_context`) | ❌ | ✅ |
-| `report_correction` (propose only) | ✅ | ✅ |
-
-So **discovery and lake reads happen on analyst; writing confirmed knowledge
-happens on curator.** They are different sessions. Switching means telling the
-human which connector to select, or doing the explore pass on analyst and the
-write pass on curator. **Never try to hold both connectors in one session** —
-that's the injection hole the split exists to close. If `upsert_context` isn't
-available, you're on analyst: file `report_correction` and a human promotes it
-via `/setoku:curate` (curator connector) or the `/admin` approval page.
-
-Bootstrap wires up the **analyst** connector only. The curator connector is a
-separate, deliberate step — see Phase 0.
-
-## 0 — Is there a box, and which connectors are wired?
+## 0 — Is there a box?
 
 A box is one small VPS running the gateway + knowledge store + connectors. Three
 states, not two — figure out which:
@@ -51,21 +35,8 @@ states, not two — figure out which:
 formatted `token=identity` — use the part before the `=`). Then continue.
 3. **No box at all** → stand one up:
    - Provision a cheap Ubuntu VPS (~$12/mo). Buying it is the human's step.
-   - `git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku && ./deploy/bootstrap.sh` — installs Docker, generates secrets, gets real HTTPS (sslip.io if no domain), brings the stack up, prints the connect command + tokens. **Heads-up: bootstrap is interactive** — it pauses to ask for an admin username (that's the `/admin` login the human uses later to approve knowledge). It can't run on a fully non-interactive pipe; if you're driving over SSH, run it on a TTY or set the admin user separately with `admin-cli create-user`. If the human pastes SSH, run it for them; otherwise hand them the commands.
-   - Connect this Claude with the printed `claude mcp add …` (analyst connector).
-
-**Mint the curator connector now** (needed for Phase 3 writes, and not created by
-bootstrap). On the box:
-
-```
-cd /opt/setoku && docker compose exec server bun gateway/admin-cli.ts create-curator-token <your-identity>
-```
-
-It prints the line to append to `SETOKU_CURATOR_TOKENS` in `/opt/setoku/.env`
-and the `claude mcp add … setoku-curator …` command. Append, restart the server
-(`docker compose up -d server`), add the connector. Now the human can switch
-between analyst and curator. Don't add it if you don't intend to write knowledge
-this session.
+   - `git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku && SETOKU_ADMIN_USER=<you> ./deploy/bootstrap.sh` — installs Docker, generates secrets, gets real HTTPS (sslip.io if no domain), brings the stack up, prints the connect command + tokens. Setting `SETOKU_ADMIN_USER` keeps it fully non-interactive (otherwise it pauses once to ask for an admin username — the `/admin` login used later to approve knowledge). Safe to run over SSH; if the human pastes SSH access, run it for them, otherwise hand them the command.
+   - Connect this Claude with the printed `claude mcp add …` (analyst connector). That's enough to start — no second connector needed yet.
 
 ## 1 — Pick a source  *(analyst connector)*
 
@@ -131,10 +102,35 @@ read access (analyst reads the lake; either connector reads the business DB):
   means a gotcha is hiding. Dig until it reconciles; the gotcha is the gold.
 
 **Write down what you learn.** Every confirmed definition / metric / gotcha
-becomes knowledge. On the **curator** connector: `upsert_context` (deliberate,
-human-driven, reading the customer's own data — allowed). On **analyst**:
-`report_correction`, then a human promotes it. If the source has a codebase that
-explains its semantics, offer `/setoku:generate` to derive context from the code.
+becomes knowledge. The simplest path — you're already on the analyst connector —
+is `report_correction`: propose it, and a human accepts it at `https://<domain>/admin`
+or via `/setoku:curate`. That's the whole loop for most setups; you don't need
+anything else.
+
+**Only if the human wants to commit knowledge directly during this session** do
+you set up the **curator** connector. It's a separate connector on purpose:
+
+| | **analyst** (setup default) | **curator** |
+|---|---|---|
+| reads business DB / lake | ✅ | DB ✅, **lake ❌ hard-blocked** |
+| `report_correction` (propose) | ✅ | ✅ |
+| `upsert_context` (commit knowledge) | ❌ | ✅ |
+
+The split is the membrane (I2/I9): a session that can commit knowledge can't read
+the untrusted lake, so an injected log line can't poison the store. **Never hold
+both connectors in one session.** To enable curator, on the box:
+
+```
+cd /opt/setoku && docker compose exec server bun gateway/admin-cli.ts create-curator-token <your-identity>
+```
+
+It prints the `SETOKU_CURATOR_TOKENS` line to append to `/opt/setoku/.env` and the
+`claude mcp add … setoku-curator …` command. Append, `docker compose up -d server`,
+add the connector, switch to it, then `upsert_context`. (For finance/lake
+knowledge you stay on analyst and `report_correction` — curator can't read the lake.)
+
+If the source has a codebase that explains its semantics, offer `/setoku:generate`
+to derive context from the code.
 
 ## 4 — Prove the loop, then hand off
 
@@ -188,7 +184,7 @@ docker compose --profile <name> up -d <service>   # e.g. --profile mercury up -d
 # apply config / restart the gateway
 docker compose up -d server
 
-# mint a curator connector token (Phase 0)
+# mint a curator connector token (Phase 3 — only when committing knowledge directly)
 docker compose exec server bun gateway/admin-cli.ts create-curator-token <identity>
 
 # create an /admin login

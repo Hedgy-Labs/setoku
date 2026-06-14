@@ -71,11 +71,18 @@ log "stack healthy."
 # 5. Admin account for the approval surface ---------------------------------
 if dc exec -T server bun gateway/admin-cli.ts list-users 2>/dev/null | grep -qE '\S'; then
   log "admin account already exists"
-else
+elif [ -n "${SETOKU_ADMIN_USER:-}" ]; then
+  # non-interactive path: set SETOKU_ADMIN_USER=<name> to skip the prompt (good for SSH/automation)
+  dc exec -T server bun gateway/admin-cli.ts create-user "$SETOKU_ADMIN_USER" --role admin
+  log "created admin user '$SETOKU_ADMIN_USER' (for https://$SETOKU_DOMAIN/admin)"
+elif [ -r /dev/tty ]; then
   echo
   log "create your admin login (for https://$SETOKU_DOMAIN/admin):"
   read -rp "  admin username: " ADMINU </dev/tty
   dc exec server bun gateway/admin-cli.ts create-user "${ADMINU:-admin}" --role admin
+else
+  log "no TTY and SETOKU_ADMIN_USER unset — skipping admin account; create one later with:"
+  log "  docker compose exec server bun gateway/admin-cli.ts create-user <name> --role admin"
 fi
 
 # 6. Report -----------------------------------------------------------------
