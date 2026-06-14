@@ -29,7 +29,8 @@ engine — follow it; this adds the repo-specific bits.
    (`report_correction`/`upsert_context`) so the artifact compounds from day one.
 6. **Wrap up.** Remind the user to commit `.setoku/config.json` (no secrets — env
    var name only). Knowledge itself lives in the gateway's store; `/setoku:curate`
-   reviews pending knowledge.
+   reviews pending knowledge. Close on the reassuring note: connected, read-only
+   confirmed, and nothing can change what Setoku knows without their approval.
 
 To connect *more* sources (logs, Slack, a SaaS API, a bank), run
 `/setoku:connect` and pick the source.

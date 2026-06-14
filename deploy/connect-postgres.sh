@@ -36,7 +36,12 @@ if [ -z "$ADMIN_URL" ]; then
   echo "   (or set ADMIN_URL in the environment to keep the secret out of shell history)" >&2
   exit 2
 fi
-command -v psql >/dev/null || { echo "error: psql not found on PATH" >&2; exit 1; }
+command -v psql >/dev/null || {
+  echo "error: psql not found on PATH. Install the Postgres client, then re-run:" >&2
+  echo "  Ubuntu/Debian:  sudo apt-get update && sudo apt-get install -y postgresql-client" >&2
+  echo "  macOS:          brew install libpq && brew link --force libpq" >&2
+  exit 1
+}
 
 # Derive host/port/db from the admin URL by replacing only the userinfo — robust
 # to admin passwords containing '@', ':' etc. (we never parse the admin password).

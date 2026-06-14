@@ -13,7 +13,15 @@ with a person who knows the business.
 
 Act first, narrate briefly. Default to doing the work when you have access
 (e.g. the human pastes SSH); instruct precisely when you don't. Never invent or
-paste a credential — the human creates provider tokens and DB roles.
+paste a credential — the human creates provider tokens and DB roles. **This file
+is your runbook, not the human's** — they just answer a few questions; don't make
+them read the machinery.
+
+**Tell the human what they'll need before you start** (so nothing ambushes them
+mid-flow): for a brand-new box — a fresh Ubuntu VPS they can SSH into (~$12/mo);
+for a Postgres source — an admin/owner connection URL to the database they want to
+connect, and `psql` available wherever the connect helper runs. Surface this once,
+up front, then proceed.
 
 **Setup runs on the analyst connector** — read-only, propose-only. That's all you
 need for Phases 0–3: discover the source, query it, verify it. You only set up the
@@ -143,6 +151,10 @@ answer) against the new source to prove it works. Then summarize:
 - **Where to promote proposals:** any `report_correction` you filed is pending
   until a human accepts it — at `https://<domain>/admin` (the approval page) or by
   running `/setoku:curate` on the curator connector. Tell them which.
+
+Close on the note the safety story opened with — state it plainly once it's true,
+e.g.: "Connected, read-only confirmed. Queries can't write, and nothing on your
+box can change what Setoku knows without your approval."
 
 ## Recipes (known sources)
 
