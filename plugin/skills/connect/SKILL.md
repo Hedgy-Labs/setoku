@@ -47,7 +47,8 @@ states, not two — figure out which:
    this Claude is connected. Continue to Phase 1.
 2. **No Setoku tools available here, but the human already has a box** (ask: "do
    you already have a Setoku box? what's its domain?"). Don't provision a new one
-   — just connect this Claude: `claude mcp add --transport http setoku https://<domain>/mcp --header "Authorization: Bearer <analyst-token>"`. The token is the analyst `SETOKU_TOKENS` value from the box's `.env`. Then continue.
+   — just connect this Claude: `claude mcp add --transport http setoku https://<domain>/mcp --header "Authorization: Bearer <analyst-token>"`. The token is the analyst `SETOKU_TOKENS` value from the box's `.env` (which is
+formatted `token=identity` — use the part before the `=`). Then continue.
 3. **No box at all** → stand one up:
    - Provision a cheap Ubuntu VPS (~$12/mo). Buying it is the human's step.
    - `git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku && ./deploy/bootstrap.sh` — installs Docker, generates secrets, gets real HTTPS (sslip.io if no domain), brings the stack up, prints the connect command + tokens. **Heads-up: bootstrap is interactive** — it pauses to ask for an admin username (that's the `/admin` login the human uses later to approve knowledge). It can't run on a fully non-interactive pipe; if you're driving over SSH, run it on a TTY or set the admin user separately with `admin-cli create-user`. If the human pastes SSH, run it for them; otherwise hand them the commands.
