@@ -609,10 +609,28 @@ export function renderTeamPage(
       ? '<span class="status status-green"><span class="dot dot-green"></span>agent connected</span>'
       : `<span class="status status-yellow"><span class="dot dot-yellow"></span>no agent</span>`;
 
-    // access column: role badge or "no login"
-    const access = p.role
-      ? `<span class="${p.role === "admin" ? "badge badge-ok" : "badge badge-idle"}">${esc(p.role)}</span>`
-      : '<span class="text-xs text-stone-500">no login</span>';
+    // a role <select> that submits on change (admins); last admin is locked so
+    // they can't demote themselves into a lockout (server enforces this too).
+    const roleSelect = (role: string): string =>
+      `<form method="POST" action="/admin/users" class="inline">
+         <input type="hidden" name="csrf" value="${csrf}">
+         <input type="hidden" name="op" value="role">
+         <input type="hidden" name="username" value="${esc(p.identity)}">
+         <select name="role" class="input w-auto py-1 text-sm" aria-label="role for ${esc(p.identity)}" onchange="this.form.submit()"${isLastAdmin ? " disabled" : ""}>
+           ${ROLES.map((r) => `<option value="${r}"${r === role ? " selected" : ""}>${r}</option>`).join("")}
+         </select>
+       </form>`;
+
+    // access column: role widget — a dropdown for admins, a read-only badge for
+    // members, or "no login" when they have none.
+    let access: string;
+    if (p.role) {
+      access = mayManage
+        ? roleSelect(p.role)
+        : `<span class="${p.role === "admin" ? "badge badge-ok" : "badge badge-idle"}">${esc(p.role)}</span>`;
+    } else {
+      access = '<span class="text-xs text-stone-500">no login</span>';
+    }
 
     let controls = "";
     if (mayManage) {
@@ -621,10 +639,6 @@ export function renderTeamPage(
       if (!p.role)
         controls += opBtn("/admin/users", "create", "username", p.identity, "Grant login", '<input type="hidden" name="role" value="member">');
       else {
-        if (p.role === "member")
-          controls += opBtn("/admin/users", "role", "username", p.identity, "Make admin", '<input type="hidden" name="role" value="admin">');
-        else if (!isLastAdmin)
-          controls += opBtn("/admin/users", "role", "username", p.identity, "Make member", '<input type="hidden" name="role" value="member">');
         controls += opBtn("/admin/users", "reset", "username", p.identity, "Reset password");
         if (!isLastAdmin)
           controls += opBtn("/admin/users", "delete", "username", p.identity, "Remove login");
