@@ -18,7 +18,7 @@ export const LAKE_SOURCES: LakeSource[] = [
   { table: "slack_messages", source: "Slack", ts: "event_ts", blurb: "Slack message archive — team chat history" },
   { table: "app_events", source: "First-party events", ts: "ts", blurb: "First-party product / analytics events emitted by the app" },
   { table: "mercury_accounts", source: "Mercury · accounts", ts: "snapshot_ts", blurb: "Bank account balances over time — cash on hand, runway (finance)" },
-  { table: "mercury_transactions", source: "Mercury · transactions", ts: "created_at", blurb: "Bank transactions — spend, vendor/payroll payments, income (finance, runway, burn)" },
+  { table: "mercury_transactions", source: "Mercury · transactions", ts: "ingested_at", blurb: "Bank transactions — spend, vendor/payroll payments, income (finance, runway, burn)" },
   { table: "mercury_events", source: "Mercury · webhooks", ts: "received_at", blurb: "Mercury webhook events" },
   { table: "ingest_raw", source: "Unrouted (raw)", ts: "ingested_at", blurb: "Raw ingest that didn't match a known schema (rarely queried directly)" },
 ];
