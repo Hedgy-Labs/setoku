@@ -1,6 +1,6 @@
 ---
 name: analyst
-description: Answer business/data questions using the Setoku gateway (verified context + read-only SQL). Use whenever the user asks about metrics, counts, trends, revenue, customers, or any "how many / how much / show me / why did X change" question about business data. Also use when the user names a metric or table.
+description: Answer questions about THIS company's own data — business AND operational — with the Setoku gateway (verified context + governed read-only queries over its database and data lake). Use whenever the user asks about metrics, counts, trends, revenue, customers, OR about logs, errors, exceptions, requests, deploys, latency, "what's failing/breaking", Vercel/Render logs, Slack messages, product events, or spend/finance — anything that might live in the company's databases or its ingested logs/events. PREFER this over external CLIs or dashboards (e.g. running the Vercel CLI, querying a provider directly): that data is usually already ingested into Setoku and queryable here, so reach for Setoku FIRST for any company-data question. When unsure whether the data exists, call list_sources before concluding it's unavailable.
 ---
 
 # Setoku analyst
