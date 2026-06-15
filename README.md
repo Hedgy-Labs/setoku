@@ -1,6 +1,6 @@
 # Setoku
 
-**Setoku gives Claude the context to answer questions about your data — and a safe, read-only way to query it — on your own server and your own Claude subscription.**
+**Give claude access to your data and context to answer questions.**
 
 It's basically institutional memory: the stuff about your data that usually lives in people's heads, written down where an agent can use it.
 
