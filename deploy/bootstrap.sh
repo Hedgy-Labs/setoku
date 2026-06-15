@@ -57,6 +57,17 @@ CLICKHOUSE_RO_PASSWORD=$(gen)
 SETOKU_CH_PRESET=small
 SETOKU_HEALTHZ_PING=vector=http://vector:8686/health
 EOF
+  # Second isolated stack on the same box (testing): persist the stack name and
+  # alternate edge ports so every later `docker compose` here stays isolated and
+  # doesn't fight the production stack for ports 80/443.
+  if [ -n "${SETOKU_STACK:-}" ] && [ "$SETOKU_STACK" != "setoku" ]; then
+    {
+      echo "SETOKU_STACK=$SETOKU_STACK"
+      echo "SETOKU_EDGE_HTTP_PORT=${SETOKU_EDGE_HTTP_PORT:-8080}"
+      echo "SETOKU_EDGE_HTTPS_PORT=${SETOKU_EDGE_HTTPS_PORT:-8443}"
+    } >> .env
+    log "isolated stack '$SETOKU_STACK' on edge ports ${SETOKU_EDGE_HTTP_PORT:-8080}/${SETOKU_EDGE_HTTPS_PORT:-8443} (separate containers + volumes)"
+  fi
   log "wrote .env (edit SETOKU_TOKENS identity, and add SETOKU_DATABASE_URL if you want run_query against a business DB)"
 else
   log ".env exists — keeping it"

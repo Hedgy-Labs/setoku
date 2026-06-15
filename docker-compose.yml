@@ -15,7 +15,10 @@
 # Invariant I1: only caddy publishes ports. Postgres/ClickHouse/Vector/server
 # listen on the compose network only.
 
-name: setoku
+# Project name — override with SETOKU_STACK to run a second, fully isolated stack
+# on the same box (its own containers, network, and volumes) for testing. Default
+# keeps the production stack named "setoku".
+name: ${SETOKU_STACK:-setoku}
 
 services:
   caddy:
