@@ -1,0 +1,81 @@
+# OAuth for Setoku — engineering scope
+
+**Status:** scoping (not built). Decide *if/when* before building.
+
+## Why
+Today a teammate connects with a **long-lived bearer token in a URL** (`/mcp/<token>`)
+— claude.ai's connector dialog has no header field, so the secret rides in the path.
+That leaks easily (history, proxy logs, screenshots) and never expires. OAuth removes
+the URL secret and gives **short-lived, refreshable, revocable, per-user** tokens with a
+consent screen. It's the expected posture once Setoku serves less-trusted users.
+
+What it does **not** change: the membrane (analyst vs curator), read-only enforcement,
+the audit log. Those stay; OAuth just replaces *how the bearer credential is obtained*.
+
+## The model (current MCP spec, 2025-11-25)
+The MCP server is an **OAuth 2.1 Resource Server**; token issuance is an **Authorization
+Server** (which **may be co-hosted** in the same gateway, or a separate service). claude.ai
++ Claude Desktop do the whole flow from the URL alone — **dynamic client registration +
+auth-code + PKCE + refresh** — *if* the server advertises the right metadata.
+
+### What our gateway MUST implement (Resource Server)
+- `GET /.well-known/oauth-protected-resource/mcp` (RFC 9728) → `{ resource, authorization_servers:[…], scopes_supported:[…, "offline_access"] }` — **path-aware** (our endpoint is `/mcp`).
+- `401` on the MCP endpoint with `WWW-Authenticate: Bearer resource_metadata="https://<domain>/.well-known/oauth-protected-resource/mcp"`.
+- Validate the access token's **audience** (RFC 8707) — reject tokens not minted for us; never pass them through.
+
+### What an Authorization Server must provide (co-hosted or external)
+- `GET /.well-known/oauth-authorization-server` (RFC 8414) metadata.
+- `/authorize` (login + consent) and `/token` (code+PKCE, refresh w/ rotation).
+- **PKCE S256** (advertise `code_challenge_methods_supported:["S256"]`).
+- **Open Dynamic Client Registration** `/register` (RFC 7591) — *this is why the dialog's Client ID/Secret are optional*; Claude self-registers. (SHOULD in 06-18, MAY in 11-25 — skippable if we use CIMD/Anthropic-held creds instead, but DCR is the smoothest.)
+- Advertise **`offline_access`** in `scopes_supported` or Claude won't get a refresh token (→ re-auth loops).
+
+## Build options
+
+### Path A — Self-contained AS in the gateway, reusing our accounts  ★ recommended
+The gateway is both RS and AS. **Reuse the existing argon2 accounts + `/admin` login** as
+the authn + consent UI; map roles/capabilities to **scopes** (`setoku:analyst`,
+`setoku:curator` ↔ `canWrite`/`denyLakeRead`). Generate signing keys at bootstrap.
+- **Pro:** fully self-hosted, **no new container**, one identity source (our accounts), per-user OAuth identity = the account, matches Setoku's "one small box" ethos. Co-locating `/authorize`+`/token` is also the *lowest client-compat risk* topology.
+- **Con:** you're shipping an OAuth AS — security-critical (PKCE, token signing/validation, refresh rotation, DCR output that satisfies Claude's strict Zod parsing, CORS). Most code of the three.
+- **Key unknown (spike first):** the **MCP TypeScript SDK ships OAuth server scaffolding** (`mcpAuthRouter`, an `OAuthServerProvider` interface, DCR + metadata routes). If it covers the metadata/DCR/authorize/token plumbing, Path A shrinks to: wire login/consent to our accounts + issue/validate tokens + scope mapping. **This is the highest-leverage thing to validate before estimating.**
+
+### Path B — Delegate to self-hosted Ory Hydra (+login/consent app +DCR shim)
+Gateway = pure RS (smaller change). Add Hydra + Postgres + a login/consent app + a small
+DCR-proxy shim (Claude rejects Hydra's empty `client_uri`/`contacts`).
+- **Pro:** don't hand-roll the AS crypto.
+- **Con:** ~3–4 new containers (~1 GB), you *still* build a login/consent app (wired to our accounts) + a shim, and operate Hydra per tenant box. Heavier infra, against the lightweight ethos.
+
+### Path C — Delegate to Keycloak
+Built-in login UI + official MCP guide, but a JVM service (~1.25 GB+) per tiny box. Least
+custom code, most operational weight. Not a fit for "one small VPS."
+
+## Migration
+Run **dual auth** during transition: keep `SETOKU_TOKENS`/`/mcp/<token>` working while
+OAuth lands, so existing connectors don't break. Switch the invite UI to the OAuth URL,
+deprecate path-tokens once everyone's migrated. Rotate/expire remaining static tokens.
+
+## Gotchas to budget for (all from real claude.ai MCP failures)
+- **CORS:** OAuth/metadata endpoints must answer preflight `OPTIONS` with `Access-Control-Allow-Origin: *` (else `Failed to fetch`).
+- **WAF:** allowlist Anthropic's egress `160.79.104.0/21` (their post-auth server callback has no cookies → Bot-Fight-Mode blocks it; the error is a misleading "Authorization failed").
+- **Redirect URIs:** register `https://claude.ai/api/mcp/auth_callback` (+ `claude.com`); Claude Code uses RFC 8252 loopback `http://localhost:<port>/callback`.
+- **Path-aware well-known** (`…/oauth-protected-resource/mcp`, not bare).
+- **Advertise `offline_access`** or no refresh tokens.
+
+## Effort (rough, Path A)
+- RS bits (9728 metadata, 401 `WWW-Authenticate`, JWT validate + audience): ~1–2 days.
+- AS bits (8414 metadata, `/authorize` w/ account login + consent, `/token` code+PKCE+refresh+rotation, DCR, key-gen, CORS): **~1–2 weeks** of careful, security-critical work — **materially less if the MCP TS SDK auth router does the plumbing** (the spike).
+- Scope↔capability mapping + dual-auth migration: ~2–3 days.
+- claude.ai integration hardening (CORS, WAF, redirect URIs, offline_access — iterate against the live client): real, lumpy time.
+- **Total: ~2–4 weeks** for a solid self-contained AS; a spike on the SDK could cut the AS portion significantly.
+
+## Recommendation
+1. **Spike (½–1 day):** confirm what the **MCP TypeScript SDK's OAuth server support** gives us. This determines whether Path A is "wire up the SDK + our accounts" (days) or "build an AS" (weeks).
+2. If the SDK carries the plumbing → **Path A** (self-contained, reuse accounts). Best ethos fit, no new infra.
+3. If not, and we want to avoid hand-rolling crypto → **Path B (Hydra)**, accepting the extra containers.
+4. Ship behind **dual auth** so nothing breaks mid-migration.
+
+## Open decisions for the user
+- Is OAuth pilot-blocking, or a pre-GA item? (Today's token-in-URL is read-only/propose-only + rotatable — bounded blast radius.)
+- Self-hosted-only requirement? (Yes → Path A or self-hosted Hydra; rules out hosted IdPs.)
+- One identity source (reuse our accounts) vs. an external IdP the company already has (Google/Okta)? The latter argues for Path B/C with that IdP as the AS.
