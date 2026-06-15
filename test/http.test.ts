@@ -355,7 +355,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(r.status).toBe(303); // PRG: the result shows on the redirected GET
     const page = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
     expect(page).toContain("Agent connector for newhire@co.test");
-    const token = page.match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+    const token = page.match(/\/mcp\/([0-9a-f]{48})/)![1];
 
     // the brand-new token works over MCP right away, as an analyst (read + propose)
     const client = await connect(token);
@@ -380,7 +380,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
       redirect: "manual",
     });
     const before = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
-    const token = before.match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+    const token = before.match(/\/mcp\/([0-9a-f]{48})/)![1];
     // the person ROW name span (not the one-time invite/login block) → to </li>
     const rowOf = (html: string, id: string) => {
       const anchor = `text-stone-100">${id}</span>`;
@@ -411,7 +411,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
         redirect: "manual",
       });
       expect(r.status).toBe(303);
-      return (await grab()).match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+      return (await grab()).match(/\/mcp\/([0-9a-f]{48})/)![1];
     };
     const t1 = await inv({ identity: "rot@co.test" });
     // old token works

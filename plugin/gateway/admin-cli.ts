@@ -137,12 +137,13 @@ async function main() {
       console.log("(Tip: set SETOKU_TOKENS_FILE to a JSON file and this command wires teammates in for you.)\n");
     }
     console.log("Send your teammate ONE of these:");
-    console.log(`  • Claude Code / Desktop (devs):   curl -fsSL https://${dom}/i/${token} | sh`);
-    console.log(`  • Claude.ai (anyone, incl. non-technical) — add a custom connector:`);
-    console.log(`        URL:    https://${dom}/mcp`);
-    console.log(`        Header: Authorization: Bearer ${token}`);
-    console.log(`    Settings → Connectors → Add custom connector. Then just ask in plain language`);
-    console.log(`    ("show me signups by week") — Claude charts it, using the team's curated context.`);
+    console.log(`  • Claude Code (CLI):   curl -fsSL https://${dom}/i/${token} | sh`);
+    console.log(`  • Claude.ai / Desktop app (anyone, incl. non-technical) — Settings → Connectors →`);
+    console.log(`    Add custom connector. The dialog has NO header field, so paste the token-in-URL as`);
+    console.log(`    the "Remote MCP server URL" (leave OAuth blank):`);
+    console.log(`        https://${dom}/mcp/${token}`);
+    console.log(`    (this URL carries the access token — treat it like a password). Then just ask in`);
+    console.log(`    plain language ("show me signups by week").`);
     return;
   }
 

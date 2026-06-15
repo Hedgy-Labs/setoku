@@ -567,12 +567,13 @@ export function renderTeamPage(
   const inviteResult = invite
     ? `<div class="card border-lime-700/50 bg-lime-950/20 p-4">
         <div class="mb-2 text-sm font-medium text-lime-300">Agent connector for ${esc(invite.identity)} — send them ONE of these (shown once):</div>
-        <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude Code / Desktop (devs)</div>
+        <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude Code (CLI)</div>
         <pre class="mb-3 overflow-x-auto rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">curl -fsSL ${esc(invite.installerUrl)} | sh</pre>
-        <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude.ai — add a custom connector (anyone, incl. non-technical)</div>
+        <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude.ai / Desktop app — "Add custom connector" (anyone, incl. non-technical)</div>
         <div class="rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">
-          <div>URL: <span class="select-all">${esc(invite.mcpUrl)}</span></div>
-          <div>Header: <span class="select-all">Authorization: Bearer ${esc(invite.token)}</span></div>
+          <div>Paste as <b class="text-stone-100">Remote MCP server URL</b> (the dialog has no header field — leave OAuth blank):</div>
+          <div class="mt-1 break-all"><span class="select-all">${esc(invite.mcpUrl)}/${esc(invite.token)}</span></div>
+          <div class="mt-1 text-amber-400">This URL carries the access token — treat it like a password; rotate it if it leaks.</div>
           <div class="mt-1 text-stone-500">Then just ask in plain language ("show me signups by week") — Claude charts it, using the team's curated context.</div>
         </div>
         ${invite.persisted ? "" : '<div class="mt-2 text-xs text-amber-400">⚠ SETOKU_TOKENS_FILE isn\'t set, so this token is in memory only and is lost on restart. Set it to persist invites.</div>'}
