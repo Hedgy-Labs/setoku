@@ -69,6 +69,44 @@ deprecate path-tokens once everyone's migrated. Rotate/expire remaining static t
 - claude.ai integration hardening (CORS, WAF, redirect URIs, offline_access — iterate against the live client): real, lumpy time.
 - **Total: ~2–4 weeks** for a solid self-contained AS; a spike on the SDK could cut the AS portion significantly.
 
+## Spike result — the MCP TS SDK carries the protocol plumbing ✅
+We already depend on `@modelcontextprotocol/sdk@1.29.0`, and its `server/auth/*` layer
+provides everything protocol-level, so **Path A is "wire up the SDK + our accounts," not
+"build an AS."**
+
+**The SDK gives us (no code from us):**
+- `mcpAuthRouter({ provider, issuerUrl, resourceServerUrl, … })` — mounts `/authorize`,
+  `/token`, `/register` (DCR), `/revoke`, **RFC 8414 AS metadata**, and **RFC 9728
+  protected-resource metadata** (path-aware). `mcpAuthMetadataRouter` covers the RS-only
+  (delegated) case.
+- `requireBearerAuth({ verifier, requiredScopes, resourceMetadataUrl })` — the MCP-endpoint
+  middleware that does **401 + `WWW-Authenticate: …resource_metadata=…`** and scope checks.
+- DCR (register handler + a clients store), **PKCE S256 verification** (router does it using
+  our stored challenge), the token endpoint mechanics, metadata helpers, and a
+  `ProxyOAuthServerProvider` if we ever delegate.
+
+**We implement only the `OAuthServerProvider` (≈7 well-defined methods) + storage:**
+`clientsStore` (DCR clients), `authorize()` (← reuse our existing `/admin` argon2 accounts +
+session login + a consent page), `challengeForAuthorizationCode()`, `exchangeAuthorizationCode()`,
+`exchangeRefreshToken()` (rotation), `verifyAccessToken()` (→ identity + scopes → our
+`canWrite`/`denyLakeRead`), optional `revokeToken()`. Backing storage = a few SQLite tables
+(clients / codes / tokens) — we already use `bun:sqlite`.
+
+**The one real surprise:** the SDK auth router is **Express-based**, but our gateway is raw
+`node:http`. So the biggest non-OAuth task is **moving the HTTP layer to Express** (mount the
+auth router + the StreamableHTTP `/mcp` transport — which supports Express, per the SDK's
+`simpleStreamableHttp` example — + our existing `/admin` and `/health`). Moderate, well-trodden.
+
+**Revised estimate (Path A, with the SDK): ~1.5–2.5 weeks**, roughly half the hand-rolled
+number, and it removes the riskiest crypto (PKCE, token endpoint, metadata) from our code:
+- Express-ify the HTTP layer: ~1–2 d · OAuthServerProvider + SQLite stores: ~2–4 d ·
+  authorize()/consent reusing accounts: ~1–2 d · scope↔capability + verify wired into
+  `buildServer`: ~1 d · dual-auth migration (keep static tokens): ~1 d · claude.ai hardening
+  (CORS, WAF allowlist `160.79.104.0/21`, redirect URIs, `offline_access`, live testing): ~2–4 d.
+
+**Verdict:** Path A is real and not a moonshot. No new external service, reuses our accounts,
+self-hosted. Recommend it over Hydra/Keycloak.
+
 ## Recommendation
 1. **Spike (½–1 day):** confirm what the **MCP TypeScript SDK's OAuth server support** gives us. This determines whether Path A is "wire up the SDK + our accounts" (days) or "build an AS" (weeks).
 2. If the SDK carries the plumbing → **Path A** (self-contained, reuse accounts). Best ethos fit, no new infra.
