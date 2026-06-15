@@ -45,6 +45,7 @@ import {
   type SourceTable,
 } from "./lib/approval";
 import { authenticate, canApprove, hashPassword, isRole } from "./lib/accounts";
+import { VERSION } from "./lib/version";
 import { resolveDatabaseUrl, resolveLakeUrl } from "./lib/config";
 import { introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
@@ -346,7 +347,7 @@ async function healthz(): Promise<{
     (disk ? disk.used_pct < 90 : true);
   const value = {
     status: ok ? 200 : 503,
-    body: { ok, docs: store.docCount, disk, deps },
+    body: { ok, version: VERSION, docs: store.docCount, disk, deps },
   };
   healthzCache = { at: Date.now(), value };
   return value;
@@ -480,7 +481,7 @@ const httpServer = http.createServer(async (req, res) => {
   try {
     if (req.url === "/health") {
       res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({ ok: true, docs: store.docCount }));
+      res.end(JSON.stringify({ ok: true, version: VERSION, docs: store.docCount }));
       return;
     }
     if (req.url === "/healthz" || req.url?.startsWith("/healthz?")) {

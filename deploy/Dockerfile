@@ -7,6 +7,9 @@ COPY plugin/package.json ./package.json
 RUN bun install --production --silent --no-progress
 
 COPY plugin/gateway ./gateway
+# the plugin manifest — single source of truth for the version (lib/version.ts);
+# surfaced in MCP serverInfo + /health so a deploy is verifiable from a session.
+COPY plugin/.claude-plugin/plugin.json ./plugin.json
 
 # Project dir: config + (optionally) a context seed baked into the image.
 # The seed imports into the knowledge store on first boot only.

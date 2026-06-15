@@ -20,6 +20,7 @@ import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type DocType } from "./lib/store";
 import { LAKE_SOURCES } from "./lib/sources";
+import { VERSION } from "./lib/version";
 
 export interface GatewayDeps {
   projectDir: string;
@@ -59,7 +60,7 @@ export function buildServer({
   canWrite,
   denyLakeRead,
 }: GatewayDeps): McpServer {
-const server = new McpServer({ name: "setoku", version: "0.4.0" });
+const server = new McpServer({ name: "setoku", version: VERSION });
 
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 const errorText = (s: string) => ({
