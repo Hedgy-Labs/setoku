@@ -657,6 +657,13 @@ export function renderTeamPage(
           '<input type="hidden" name="rotate" value="1">',
           "Revoke the current connector and issue a new one? The old token stops working immediately.",
         );
+      if (!p.role)
+        // give an existing (token-only) person a web login — a temp password is
+        // shown once; promote to admin afterward with the role dropdown.
+        controls += opBtn(
+          "/admin/users", "create", "username", p.identity, "Grant login",
+          '<input type="hidden" name="role" value="member">',
+        );
       if (p.role) {
         controls += opBtn(
           "/admin/users", "reset", "username", p.identity, "Reset password", "",
