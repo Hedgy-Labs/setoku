@@ -593,6 +593,16 @@ server.registerTool(
         "",
         `${result.rowCount} row(s) in ${result.ms}ms${result.truncated ? ` — TRUNCATED at row cap (${config.rowCap}); add aggregation or LIMIT` : ""}`,
       );
+      // No curated context yet → the agent is querying from raw schema, which is
+      // exactly when it confidently returns a wrong number (test accounts not
+      // excluded, refunds not netted, status-vs-event-log confusion). Make that
+      // provisional state visible so the answer carries the caveat to the human.
+      if (store.docCount === 0) {
+        lines.unshift(
+          "⚠ No curated business context exists yet, so this is computed from raw schema and may be WRONG (e.g. internal/test accounts not excluded, refunds not netted). Tell the user the number is provisional, and add context via /setoku:generate or report_correction.",
+          "",
+        );
+      }
       return text(lines.join("\n"));
     } catch (e) {
       const msg = (e as Error).message;
