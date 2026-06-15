@@ -79,9 +79,10 @@ function requireDb(config: SetokuConfig): string {
 }
 
 const NO_KNOWLEDGE_HINT =
-  "The knowledge store is empty. Answers will rely on raw schema only — " +
-  "run the /setoku:generate skill to derive verified business context (from the codebase, " +
-  "SaaS schemas, or an interview) and save it via upsert_context.";
+  "No curated knowledge yet — answers rely on raw schema only and may be wrong " +
+  "(test accounts not excluded, etc.); say so. Build context with /setoku:generate " +
+  "or report_correction; both work on this (analyst) connector and land as pending " +
+  "for a human to approve. (upsert_context commits directly but needs a curator connector.)";
 
 /* ------------------------------ context tools ------------------------------ */
 

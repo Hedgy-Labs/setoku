@@ -111,7 +111,10 @@ read access (analyst reads the lake; either connector reads the business DB):
 
 **Write down what you learn.** Every confirmed definition / metric / gotcha
 becomes knowledge. The simplest path — you're already on the analyst connector —
-is `report_correction`: propose it, and a human accepts it at `https://<domain>/admin`.
+is `report_correction` (required args: `kind` ∈ {gotcha, metric, entity, other}
+and `content`; optional `relates_to`), e.g.
+`report_correction {"kind":"gotcha","content":"Active companies exclude Company.isInternal=true (internal/test tenants)","relates_to":"Company"}`.
+Propose it, and a human accepts it at `https://<domain>/admin`.
 **This is the moment to introduce the approval page** if you haven't: it's the
 curation surface — the *only* place knowledge is committed, by a human, outside
 the agent's loop. Have them sign in now with the login `bootstrap` printed (reset
@@ -191,22 +194,40 @@ restart. Profiles are **off by default** (`bootstrap` seeds only `lake,ingest`),
 so enabling a source means adding its profile — see the cheat-sheet below.
 
 - **Postgres (business DB).** **Default to a dev/staging DB — never point at
-  production unless the human explicitly chooses it.** Then one command does the
-  role + URL (ask the human for an admin/owner connection URL to that DB; have
-  them pass it via the `ADMIN_URL` env var so it stays out of shell history):
+  production unless the human explicitly chooses it.**
+
+  *Finding the admin URL is the tricky part — don't assume `DATABASE_URL`.* Many
+  real apps don't have it. Look in this order, and **grep out only the one URL you
+  need — never read or echo the rest of `.env`** (it holds API keys, tokens, session
+  cookies):
+  - **Prisma:** the datasource URL is usually injected via `prisma.config.ts` /
+    `schema.prisma` from an env var — commonly `POSTGRES_PRISMA_URL` (a **pooler**)
+    and `POSTGRES_URL_NON_POOLING` (**direct**). Read those files to learn which var
+    actually feeds the DB.
+  - **Prefer a `localhost`/`127.0.0.1` URL.** Treat any `*.supabase.co`,
+    `*.pooler.supabase.com`, `*.rds.amazonaws.com` host as remote production —
+    confirm with the human before using it; the script will also gate it.
+  - **Supabase/pgbouncer:** use the **DIRECT / non-pooling** URL (`...NON_POOLING`,
+    or `db.<ref>.supabase.co:5432`), NOT the `pgbouncer=true` / `:6543` pooler — role
+    creation and the read-only setting don't work through a transaction pooler (the
+    script refuses poolers for this reason).
+
+  Then one command does the role + URL (pass the admin URL via `ADMIN_URL` so it
+  stays out of shell history):
 
   ```
-  ADMIN_URL='postgresql://owner:…@host:5432/yourdb' deploy/connect-postgres.sh --env-file /opt/setoku/.env
+  ADMIN_URL='postgresql://owner:…@localhost:5432/yourdb' deploy/connect-postgres.sh --env-file /opt/setoku/.env
   ```
 
-  It creates a least-privilege read-only role `setoku_ro`, **verifies it can read
-  and that writes are refused**, and writes `SETOKU_DATABASE_URL` into the box's
-  `.env` (idempotent — safe to re-run). Then restart: `docker compose up -d server`.
-  (No `--env-file`? It just prints the line to set yourself. MySQL: no helper yet —
-  create a read-only user by hand and set the URL.)
+  It creates a least-privilege read-only role `setoku_ro`, **verifies writes are
+  refused**, and writes `SETOKU_DATABASE_URL` into the box's `.env`. Re-running is
+  safe — it **reuses** the role's password (won't knock a running gateway offline);
+  `--rotate` forces a new one; `--allow-remote` is required for a non-local host.
+  Then restart: `docker compose up -d server`. (No `--env-file`? It prints the line.
+  MySQL: no helper yet — create a read-only user by hand and set the URL.)
 
   Last, set the table allow-list in the **repo's** `.setoku/config.json` (scaffold
-  it if missing — `dataSource.urlEnv` is the env-var name, `allowTables` the
+  it if missing — `dataSource.urlEnv` is the env-var *name*, `allowTables` the
   globs):
 
   ```json
@@ -215,7 +236,11 @@ so enabling a source means adding its profile — see the cheat-sheet below.
     "rowCap": 200, "statementTimeoutMs": 15000 }
   ```
 
-  Verify with `get_schema`.
+  The config holds only the *name*; the actual URL is resolved at query time from
+  `process.env[urlEnv]` first, then the repo's `.env`. So keep the secret on the box
+  (`/opt/setoku/.env`) and out of git. `allowTables: ["public.*"]` is a good default
+  — it also scopes away Supabase system schemas (`auth`, `storage`, …); keep
+  `_prisma_migrations` in `denyTables`. Verify with `get_schema`.
 - **Vercel logs.** Create a log drain to `https://<domain>/ingest/vercel` with
   the ingest token; set `SETOKU_VERCEL_VERIFY` to the value Vercel requires;
   enable the `ingest` profile; restart.

@@ -10,17 +10,24 @@ business database, plus a context-generation pass. The connect skill is the
 engine — follow it; this adds the repo-specific bits.
 
 1. **Run the `connect` flow for the business database.** Ensure a box exists
-   (connect phase 0), wire up the repo's Postgres read-only (connect phase 2 —
-   find an admin DB URL in `.env`/`.env.local`, **default to a dev/local DB,
-   never prod unless the user explicitly chooses it**, then `deploy/connect-postgres.sh`
-   creates the read-only role + URL in one verified step; the repo's
-   `.setoku/config.json` holds only the env-var *name* and the table allow-list,
-   never the secret), then verify the agent understands the schema (connect phase 3).
-2. **Allowlist the tools.** Merge `"mcp__setoku__*"` into `permissions.allow` in
-   the repo's `.claude/settings.json` (create if missing; read-modify-write,
-   never clobber) so the team never hits permission prompts. Use the exact glob.
+   (connect phase 0), wire up the repo's Postgres read-only (connect phase 2 — it
+   explains how to find the admin URL for real apps: **don't assume `DATABASE_URL`**
+   (Prisma/Vercel use `POSTGRES_PRISMA_URL`/`POSTGRES_URL_NON_POOLING`), **prefer a
+   `localhost` URL, never prod unless the user explicitly chooses it**, use the
+   direct/non-pooling URL, and grab only that one line — never echo the rest of
+   `.env`). `deploy/connect-postgres.sh` then mints the read-only role + URL; the
+   repo's `.setoku/config.json` holds only the env-var *name*. If `get_schema`
+   already returns tables, the DB is wired — skip ahead. Then verify the agent
+   understands the schema (connect phase 3).
+2. **Allowlist the tools.** Merge `"mcp__setoku"` into `permissions.allow` in the
+   repo's `.claude/settings.json` (create if missing; read-modify-write, never
+   clobber) so the team never hits permission prompts. The bare server prefix
+   matches all of Setoku's tools — don't add a `__*` suffix.
 3. **Generate context from the code.** Offer `/setoku:generate` — the codebase is
-   the best source of business semantics. Recommended before the first question.
+   the best source of business semantics. Point it at the schema definition (e.g.
+   `prisma/schema.prisma`, a Drizzle/SQL schema, or migrations). Recommended before
+   the first question. (Note: generation commits via the curator connector or files
+   `report_correction` proposals — it doesn't need write access to be useful.)
 4. **Prove the difference (not just the query).** The user is an engineer who
    likely already has Claude on their Postgres — a plain SELECT won't impress.
    Answer a real question where the captured knowledge **changes the answer**
