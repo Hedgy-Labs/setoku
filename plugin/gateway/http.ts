@@ -143,6 +143,35 @@ function addAnalystToken(token: string, identity: string): { persisted: boolean 
   return { persisted: true };
 }
 
+/**
+ * Revoke every analyst token for an identity: drop from the in-memory set
+ * (effective on the NEXT request — no restart) and from SETOKU_TOKENS_FILE.
+ * Returns how many were removed, and whether any lived in SETOKU_TOKENS (env),
+ * which we can't rewrite — those reappear on restart, so the caller should warn.
+ */
+function removeAnalystTokens(identity: string): { removed: number; envBacked: boolean } {
+  const file = process.env.SETOKU_TOKENS_FILE;
+  let fileMap: Record<string, string> = {};
+  if (file && fs.existsSync(file)) {
+    try {
+      fileMap = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      /* ignore a corrupt file */
+    }
+  }
+  let removed = 0;
+  let envBacked = false;
+  for (const [tok, info] of [...tokens]) {
+    if (info.curator || info.identity !== identity) continue;
+    tokens.delete(tok);
+    removed++;
+    if (tok in fileMap) delete fileMap[tok];
+    else envBacked = true; // came from SETOKU_TOKENS env, not the file
+  }
+  if (file) fs.writeFileSync(file, JSON.stringify(fileMap, null, 2) + "\n");
+  return { removed, envBacked };
+}
+
 /** Analyst (non-curator) identities currently provisioned — for the Team page. */
 function analystIdentities(): string[] {
   return [...new Set([...tokens.values()].filter((t) => !t.curator).map((t) => t.identity))].sort();
@@ -615,11 +644,19 @@ const httpServer = http.createServer(async (req, res) => {
           return;
         }
         const identity = (form.get("identity") ?? "").trim();
+        const rotate = form.get("rotate") === "1"; // revoke any existing token first
         if (!identity) {
           teamFlash.set(sid ?? "", { flash: "Enter a teammate email to invite." });
-        } else if (analystIdentities().includes(identity)) {
-          teamFlash.set(sid ?? "", { flash: `${identity} already has an agent connector.` });
+        } else if (!rotate && analystIdentities().includes(identity)) {
+          teamFlash.set(sid ?? "", { flash: `${identity} already has an agent connector — use Rotate to replace it.` });
         } else {
+          // Rotate = kill the old token (lost/leaked) before issuing a new one.
+          let revokedEnv = false;
+          if (rotate) {
+            const r = removeAnalystTokens(identity);
+            revokedEnv = r.envBacked;
+            store.audit(session.identity, "connector_rotated", { identity, removed: r.removed });
+          }
           // mint the connector AND ensure a web account exists — an agent always
           // implies an account (member by default; promote later if they curate).
           const token = mintToken();
@@ -628,7 +665,9 @@ const httpServer = http.createServer(async (req, res) => {
           const slot: TeamFlash = {
             invite: { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted },
           };
-          store.audit(session.identity, "teammate_invited", { identity, persisted });
+          if (rotate)
+            slot.flash = `Rotated ${identity}'s connector — the old token no longer works.${revokedEnv ? " (One old token is in SETOKU_TOKENS env, not the file — it returns on restart; remove it from .env to fully revoke.)" : ""}`;
+          if (!rotate) store.audit(session.identity, "teammate_invited", { identity, persisted });
           if (!store.getAccount(identity)) {
             const pw = Array.from(crypto.getRandomValues(new Uint8Array(9)))
               .map((b) => b.toString(16).padStart(2, "0"))
@@ -719,9 +758,11 @@ const httpServer = http.createServer(async (req, res) => {
           if (!acct) flash = `No login "${uname}".`;
           else if (isLastAdmin(acct)) flash = "Can't remove the last admin.";
           else {
+            // full offboard: remove the account AND revoke their agent connector
             store.deleteAccount(uname);
-            store.audit(session.identity, "account_deleted", { username: uname });
-            flash = `Removed login ${uname}.`;
+            const { removed, envBacked } = removeAnalystTokens(uname);
+            store.audit(session.identity, "account_deleted", { username: uname, tokensRevoked: removed });
+            flash = `Removed ${uname} (account + ${removed} connector${removed === 1 ? "" : "s"} revoked).${envBacked ? " One token is in SETOKU_TOKENS env — remove it from .env to fully revoke." : ""}`;
           }
         }
         teamFlash.set(sid ?? "", { newLogin, invite, flash });

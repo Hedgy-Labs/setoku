@@ -387,6 +387,36 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(rowOf(after, "usage@co.test")).not.toContain("invited");
   });
 
+  it("rotating a connector revokes the old token and issues a working new one", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const grab = async () =>
+      (await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text());
+    const csrf1 = (await grab()).match(/name="csrf" value="([^"]+)"/)![1];
+    const inv = async (fields: Record<string, string>) => {
+      const r = await fetch(`${BASE}/admin/invite`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+        body: new URLSearchParams({ csrf: csrf1, ...fields }),
+        redirect: "manual",
+      });
+      expect(r.status).toBe(303);
+      return (await grab()).match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+    };
+    const t1 = await inv({ identity: "rot@co.test" });
+    // old token works
+    const c1 = await connect(t1);
+    expect((await c1.listTools()).tools.length).toBeGreaterThan(0);
+    await c1.close();
+    // rotate → new token
+    const t2 = await inv({ identity: "rot@co.test", rotate: "1" });
+    expect(t2).not.toBe(t1);
+    // old token is now rejected; new one works
+    expect(connect(t1)).rejects.toThrow();
+    const c2 = await connect(t2);
+    expect((await c2.listTools()).tools.length).toBeGreaterThan(0);
+    await c2.close();
+  });
+
   it("a member cannot invite (role-gated), and a bad CSRF is refused", async () => {
     const memberCookie = await cookieFor("viewer", "viewer-pass");
     // member view: no invite form

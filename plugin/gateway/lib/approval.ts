@@ -592,6 +592,8 @@ export function renderTeamPage(
       </div>`
     : "";
 
+  // confirmMsg (no quotes/apostrophes — it rides in an inline handler) gates a
+  // destructive submit behind a native confirm() dialog.
   const opBtn = (
     action: string,
     op: string,
@@ -599,8 +601,11 @@ export function renderTeamPage(
     value: string,
     label: string,
     extra = "",
+    confirmMsg = "",
   ): string =>
-    `<form method="POST" action="${action}" class="inline">
+    `<form method="POST" action="${action}" class="inline"${
+      confirmMsg ? ` onsubmit="return confirm('${confirmMsg}')"` : ""
+    }>
        <input type="hidden" name="csrf" value="${csrf}">
        ${op ? `<input type="hidden" name="op" value="${op}">` : ""}
        <input type="hidden" name="${field}" value="${esc(value)}">${extra}
@@ -646,10 +651,22 @@ export function renderTeamPage(
     if (mayManage) {
       if (!p.hasToken)
         controls += opBtn("/admin/invite", "", "identity", p.identity, "Configure agent");
+      else
+        controls += opBtn(
+          "/admin/invite", "", "identity", p.identity, "Rotate connector",
+          '<input type="hidden" name="rotate" value="1">',
+          "Revoke the current connector and issue a new one? The old token stops working immediately.",
+        );
       if (p.role) {
-        controls += opBtn("/admin/users", "reset", "username", p.identity, "Reset password");
+        controls += opBtn(
+          "/admin/users", "reset", "username", p.identity, "Reset password", "",
+          "Reset this password? The current one stops working.",
+        );
         if (!isLastAdmin)
-          controls += opBtn("/admin/users", "delete", "username", p.identity, "Remove login");
+          controls += opBtn(
+            "/admin/users", "delete", "username", p.identity, "Remove person", "",
+            "Remove this person, deleting their login and revoking their agent connector?",
+          );
       }
     }
 
