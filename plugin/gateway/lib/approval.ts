@@ -571,11 +571,11 @@ export function renderTeamPage(
         <pre class="mb-3 overflow-x-auto rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">curl -fsSL ${esc(invite.installerUrl)} | sh</pre>
         <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude.ai / Desktop app — "Add custom connector" (anyone, incl. non-technical)</div>
         <div class="rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">
-          <div>Paste as <b class="text-stone-100">Remote MCP server URL</b> (the dialog has no header field — leave OAuth blank):</div>
+          <div>Paste as <b class="text-stone-100">Remote MCP server URL</b>:</div>
           <div class="mt-1 break-all"><span class="select-all">${esc(invite.mcpUrl)}/${esc(invite.token)}</span></div>
           <div class="mt-1 text-amber-400">This URL carries the access token — treat it like a password; rotate it if it leaks.</div>
-          <div class="mt-1 text-stone-500">Then just ask in plain language ("show me signups by week") — Claude charts it, using the team's curated context.</div>
         </div>
+        <div class="mt-2 text-xs text-stone-500">Once connected (either way), just ask in plain language ("show me signups by week") — Claude charts it, using the team's curated context.</div>
         ${invite.persisted ? "" : '<div class="mt-2 text-xs text-amber-400">⚠ SETOKU_TOKENS_FILE isn\'t set, so this token is in memory only and is lost on restart. Set it to persist invites.</div>'}
       </div>`
     : "";
