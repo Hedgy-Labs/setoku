@@ -268,8 +268,13 @@ docker compose --profile <name> up -d <service>   # e.g. --profile mercury up -d
 # connect a Postgres business DB in one shot (role + read-only URL + verify)
 ADMIN_URL='postgresql://owner:…@host:5432/db' deploy/connect-postgres.sh --env-file /opt/setoku/.env
 
-# apply config / restart the gateway
+# apply config / restart the gateway (picks up .env + profile changes)
 docker compose up -d server
+
+# deploy a CODE change to the box (git-clone deploys — the bootstrap default)
+cd /opt/setoku && git pull && docker compose up -d --build server
+#   then verify:  curl -s https://<domain>/health   → check the "version" field
+#   (rsync-based box, or a deeper deploy / rollback: see docs/deploy.md)
 
 # share with a teammate — prints dev one-liner + claude.ai connector steps (Phase 4)
 docker compose exec server bun gateway/admin-cli.ts add-teammate <email>
