@@ -136,9 +136,9 @@ function shell(title: string, inner: string): string {
 
 type Tab = "pending" | "knowledge" | "sources" | "team" | "audit";
 
-/** The brand mark (white square). */
-function brand(size = "h-7 w-7 text-xs"): string {
-  return `<div class="grid ${size} place-items-center rounded-lg bg-white font-bold text-stone-900">S</div>`;
+/** The Setoku wordmark, in the Bagel Fat One display font. */
+function brand(size = "text-2xl"): string {
+  return `<span class="font-brand ${size} leading-none text-white">Setoku</span>`;
 }
 
 /** Tab nav shared by every signed-in page; the active tab is highlighted. */
@@ -160,7 +160,7 @@ function nav(active: Tab): string {
 function topbar(session: Session, active: Tab): string {
   return `<header class="sticky top-0 z-10 border-b border-stone-800 bg-stone-950/80 backdrop-blur">
   <div class="mx-auto flex max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
-    <a href="/admin" class="flex items-center gap-2">${brand()}<span class="font-semibold">Setoku</span></a>
+    <a href="/admin">${brand()}</a>
     ${nav(active)}
     <div class="ml-auto flex items-center gap-3">
       <span class="hidden text-xs text-stone-500 sm:inline">${esc(session.identity)} · ${esc(session.role)}</span>
@@ -201,7 +201,7 @@ export function renderLoginPage(flash?: string): string {
     "Setoku — sign in",
     `<main class="flex min-h-screen items-center justify-center p-6">
   <div class="card w-full max-w-sm p-7">
-    <div class="mb-5 flex items-center gap-2">${brand("h-8 w-8 text-sm")}<h1 class="text-lg font-semibold">Setoku</h1></div>
+    <h1 class="mb-5">${brand("text-3xl")}</h1>
     <p class="mb-5 text-sm leading-relaxed text-stone-400">Sign in to review pending
     knowledge. This is a separate credential from the access token you give
     Claude — agents never have it.</p>
