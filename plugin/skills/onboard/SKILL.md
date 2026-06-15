@@ -1,37 +1,55 @@
 ---
 name: onboard
-description: Set up Setoku in the current repository — create .setoku/config.json, verify database connectivity, and run the first question end-to-end. Use when the user says "set up setoku", "onboard", or when setoku tools report missing config.
+description: First-run setup for Setoku in a repo — connect the business database, generate context from the code, and answer a first question end-to-end. Use when the user says "set up setoku" or "onboard", or when setoku tools report missing config. (Thin wrapper over /setoku:connect.)
 ---
 
-# Setoku onboarding
+# Setoku onboarding (first run)
 
-Goal: from zero to a verified working loop in minutes, conversationally. Everything happens in this repo; nothing is sent anywhere except the user's own database.
+Onboarding is just the first run of **`/setoku:connect`**, pointed at the
+business database, plus a context-generation pass. The connect skill is the
+engine — follow it; this adds the repo-specific bits.
 
-## Steps
+1. **Run the `connect` flow for the business database.** Ensure a box exists
+   (connect phase 0), wire up the repo's Postgres read-only (connect phase 2 — it
+   explains how to find the admin URL for real apps: **don't assume `DATABASE_URL`**
+   (Prisma/Vercel use `POSTGRES_PRISMA_URL`/`POSTGRES_URL_NON_POOLING`), **prefer a
+   `localhost` URL, never prod unless the user explicitly chooses it**, use the
+   direct/non-pooling URL, and grab only that one line — never echo the rest of
+   `.env`). `deploy/connect-postgres.sh` then mints the read-only role + URL; the
+   repo's `.setoku/config.json` holds only the env-var *name*. If `get_schema`
+   already returns tables, the DB is wired — skip ahead. Then verify the agent
+   understands the schema (connect phase 3).
+2. **Allowlist the tools.** Merge `"mcp__setoku"` into `permissions.allow` in the
+   repo's `.claude/settings.json` (create if missing; read-modify-write, never
+   clobber) so the team never hits permission prompts. The bare server prefix
+   matches all of Setoku's tools — don't add a `__*` suffix.
+3. **Generate context from the code.** Offer `/setoku:generate` — the codebase is
+   the best source of business semantics. Point it at the schema definition (e.g.
+   `prisma/schema.prisma`, a Drizzle/SQL schema, or migrations). Recommended before
+   the first question. (Note: generation commits via the curator connector or files
+   `report_correction` proposals — it doesn't need write access to be useful.)
+4. **Prove the difference (not just the query).** The user is an engineer who
+   likely already has Claude on their Postgres — a plain SELECT won't impress.
+   Answer a real question where the captured knowledge **changes the answer**
+   (find_context → SQL → run_query) and show the contrast: "without the gotcha
+   you'd get X; the right answer is Y." That's the moment it lands.
+5. **Curation interview (2 questions max).** Ask what they're in the data for
+   most, and one notoriously-ambiguous business term; record the answers
+   (`report_correction`/`upsert_context`) so the artifact compounds from day one.
+6. **Share with the team (the real payoff).** The knowledge is now everyone's.
+   Offer to add a teammate or two — the human can click **Invite** on
+   `https://<domain>/admin/team`, or from the CLI: `docker compose exec server bun gateway/admin-cli.ts add-teammate <email>`. Both show a dev one-liner + claude.ai steps.
+   Call out the non-technical win — a founder/PM querying *and visualizing* their
+   own data in plain language, getting the right number because the annotations
+   ride along — it's often the biggest magic moment.
+7. **Show them the approval page, then wrap up.** Point the user to their curation
+   surface — `https://<domain>/admin` — and have them sign in once with the login
+   `bootstrap` printed (reset with `admin-cli set-password <user>` if lost). That
+   page is where every proposal you filed this session waits to be accepted, and
+   the *only* place knowledge is committed — by a human, outside the agent's loop.
+   Then remind them to commit `.setoku/config.json` (no secrets — env-var name
+   only). Close on the reassuring note: connected, read-only confirmed, and
+   nothing can change what Setoku knows without their approval.
 
-1. **Check state.** Does `.setoku/config.json` exist? If yes, skip to step 4. If `.setoku/context/` also exists, skip to step 5.
-2. **Interview for config (keep it to 2–3 questions).**
-   - Find the database connection yourself first: look for env files (`.env`, `.env.local`) and config referencing a Postgres URL; propose the most likely env var name and confirm with the user. Ask rather than guess if multiple candidates (dev vs prod!). **Default to a dev/local database — never prod without the user explicitly choosing it.**
-   - Which tables are in scope? Default `["public.*"]`; offer to exclude system/noise schemas.
-3. **Write `.setoku/config.json`** (never put the credential itself in the file — reference the env var):
-
-```json
-{
-  "dataSource": {
-    "kind": "postgres",
-    "urlEnv": "DATABASE_URL",
-    "envFile": ".env"
-  },
-  "allowTables": ["public.*"],
-  "denyTables": [],
-  "rowCap": 200,
-  "statementTimeoutMs": 15000
-}
-```
-
-4. **Verify connectivity.** Call `get_schema` (no args). Show the user a short summary of what's visible (table count, notable tables). If it fails, debug the config with the user (wrong env var, env file path, db not running).
-   - **Then allowlist the Setoku tools so the team never hits permission prompts.** Merge `"mcp__setoku__*"` into `permissions.allow` in the repo's `.claude/settings.json` (create the file if missing; read-modify-write, never clobber existing rules). The Setoku tools are read-only / propose-only, so this is safe to commit and share. Use the exact glob `mcp__setoku__*` — the bare `mcp__setoku` does **not** work. Permissions hot-reload, so it takes effect immediately. (If the user connects via the deployed HTTP gateway across many repos, suggest putting it in their user-level `~/.claude/settings.json` instead.)
-5. **Generate context.** If `list_entities` reports an empty knowledge store, tell the user the answers will be far better with business context and offer to run `/setoku:generate` now (recommended). If they decline, continue — the gateway works schema-only.
-6. **First question, end-to-end.** Ask the user for a real business question they care about (or propose one from the schema). Answer it using the **analyst** workflow (find_context → SQL → run_query → answer). This proves the loop.
-7. **Curation interview (2 questions max).** Ask: (a) what role they're in / what questions they ask most, (b) one business term that's notoriously ambiguous in their company. Record the answers via `report_correction` (kind: `entity`/`metric`/`gotcha` as appropriate) so the artifact starts compounding from day one.
-8. **Wrap up.** Remind the user to commit `.setoku/config.json` (no secrets — env var name only). The knowledge itself lives in the gateway's store (SQLite, service-owned); `/setoku:curate` reviews pending knowledge.
+To connect *more* sources (logs, Slack, a SaaS API, a bank), run
+`/setoku:connect` and pick the source.

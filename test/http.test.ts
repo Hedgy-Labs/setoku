@@ -51,6 +51,13 @@ beforeAll(async () => {
     recursive: true,
   });
 
+  // a teammate token added the way `admin-cli add-teammate` writes it: a JSON
+  // {token: identity} file loaded via SETOKU_TOKENS_FILE (the hot-pluggable path)
+  fs.writeFileSync(
+    path.join(tmpRepo, "teammates.json"),
+    JSON.stringify({ "tok-carol": "carol@co.test" }),
+  );
+
   // bootstrap admin + member accounts the way the CLI does (Phase 5.1)
   {
     const { KnowledgeStore } = await import(
@@ -72,6 +79,7 @@ beforeAll(async () => {
     SETOKU_E2E_DB_URL: DB_URL,
     SETOKU_HTTP_PORT: String(PORT),
     SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test",
+    SETOKU_TOKENS_FILE: path.join(tmpRepo, "teammates.json"),
     // exercise dependency pings: the gateway pings its own /health
     SETOKU_HEALTHZ_PING: `self=http://127.0.0.1:${PORT}/health,down=http://127.0.0.1:1/nope`,
   });
@@ -133,6 +141,29 @@ describe("tools over HTTP", () => {
     expect(rq.isError).toBe(false);
     expect(rq.text).toContain("225");
     await alice.close();
+  });
+
+  it("list_sources reports the connected data surfaces (capability discovery)", async () => {
+    const alice = await connect("tok-alice");
+    expect((await alice.listTools()).tools.map((t) => t.name)).toContain("list_sources");
+    const r = await call(alice, "list_sources");
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain("BUSINESS DATABASE");
+    expect(r.text).toContain("public.orders"); // a fixture table
+    expect(r.text).toMatch(/lake/i); // names the lake even when absent
+    await alice.close();
+  });
+
+  it("a teammate token from SETOKU_TOKENS_FILE authenticates as analyst (add-teammate path)", async () => {
+    const carol = await connect("tok-carol");
+    const names = (await carol.listTools()).tools.map((t) => t.name);
+    // read + propose, but no curated-write tools — the safe default for everyone
+    expect(names).toContain("find_context");
+    expect(names).toContain("report_correction");
+    expect(names).not.toContain("upsert_context");
+    const fc = await call(carol, "find_context", { question: "revenue?" });
+    expect(fc.isError).toBe(false);
+    await carol.close();
   });
 
   it("attributes each token's calls to its own identity in the shared audit log", async () => {
@@ -304,6 +335,173 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
       redirect: "manual",
     });
     expect([403]).toContain(r.status); // bad csrf or role — either way refused
+  });
+
+  it("an admin invites a teammate → the minted token authenticates immediately (no restart)", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    // admin sees the invite form; member does not (checked below)
+    const teamPage = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    expect(teamPage).toContain("Setoku — team");
+    expect(teamPage).toContain('action="/admin/invite"');
+    const csrf = teamPage.match(/name="csrf" value="([^"]+)"/)![1];
+
+    // POST the invite
+    const r = await fetch(`${BASE}/admin/invite`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ csrf, identity: "newhire@co.test" }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(303); // PRG: the result shows on the redirected GET
+    const page = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    expect(page).toContain("Agent connector for newhire@co.test");
+    const token = page.match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+
+    // the brand-new token works over MCP right away, as an analyst (read + propose)
+    const client = await connect(token);
+    const names = (await client.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("find_context");
+    expect(names).toContain("report_correction");
+    expect(names).not.toContain("upsert_context");
+    await client.close();
+
+    // and it shows up in the team list
+    const after = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    expect(after).toContain("newhire@co.test");
+  });
+
+  it("a teammate shows 'invited' until they actually use the agent, then 'connected'", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const csrf = (await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text()).match(/name="csrf" value="([^"]+)"/)![1];
+    await fetch(`${BASE}/admin/invite`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ csrf, identity: "usage@co.test" }),
+      redirect: "manual",
+    });
+    const before = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    const token = before.match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+    // the person ROW name span (not the one-time invite/login block) → to </li>
+    const rowOf = (html: string, id: string) => {
+      const anchor = `text-stone-100">${id}</span>`;
+      const i = html.indexOf(anchor);
+      return i < 0 ? "" : html.slice(i, html.indexOf("</li>", i));
+    };
+    expect(rowOf(before, "usage@co.test")).toContain("invited"); // minted, not used yet
+
+    // actually use the agent (an MCP tool call), then it reads "connected"
+    const client = await connect(token);
+    await call(client, "find_context", { question: "anything" });
+    await client.close();
+    const after = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    expect(rowOf(after, "usage@co.test")).toContain("connected");
+    expect(rowOf(after, "usage@co.test")).not.toContain("invited");
+  });
+
+  it("rotating a connector revokes the old token and issues a working new one", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const grab = async () =>
+      (await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text());
+    const csrf1 = (await grab()).match(/name="csrf" value="([^"]+)"/)![1];
+    const inv = async (fields: Record<string, string>) => {
+      const r = await fetch(`${BASE}/admin/invite`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+        body: new URLSearchParams({ csrf: csrf1, ...fields }),
+        redirect: "manual",
+      });
+      expect(r.status).toBe(303);
+      return (await grab()).match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+    };
+    const t1 = await inv({ identity: "rot@co.test" });
+    // old token works
+    const c1 = await connect(t1);
+    expect((await c1.listTools()).tools.length).toBeGreaterThan(0);
+    await c1.close();
+    // rotate → new token
+    const t2 = await inv({ identity: "rot@co.test", rotate: "1" });
+    expect(t2).not.toBe(t1);
+    // old token is now rejected; new one works
+    expect(connect(t1)).rejects.toThrow();
+    const c2 = await connect(t2);
+    expect((await c2.listTools()).tools.length).toBeGreaterThan(0);
+    await c2.close();
+  });
+
+  it("a member cannot invite (role-gated), and a bad CSRF is refused", async () => {
+    const memberCookie = await cookieFor("viewer", "viewer-pass");
+    // member view: no invite form
+    const mp = await (await fetch(`${BASE}/admin/team`, { headers: { cookie: memberCookie } })).text();
+    expect(mp).not.toContain('action="/admin/invite"');
+    expect(mp).toContain("viewing only");
+    // forged invite POST from a member is refused
+    const r = await fetch(`${BASE}/admin/invite`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: memberCookie },
+      body: new URLSearchParams({ csrf: "x", identity: "evil@co.test" }),
+      redirect: "manual",
+    });
+    expect(r.status).toBe(403); // bad csrf or role — either way refused
+    // bad CSRF from an admin is also refused
+    const adminCookie = await cookieFor("boss", "s3cret-pass");
+    const r2 = await fetch(`${BASE}/admin/invite`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie: adminCookie },
+      body: new URLSearchParams({ csrf: "wrong", identity: "x@co.test" }),
+      redirect: "manual",
+    });
+    expect(r2.status).toBe(403);
+  });
+
+  async function teamCsrf(cookie: string): Promise<string> {
+    const page = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    return page.match(/name="csrf" value="([^"]+)"/)![1];
+  }
+  function usersPost(cookie: string, csrf: string, fields: Record<string, string>) {
+    return fetch(`${BASE}/admin/users`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ csrf, ...fields }),
+      redirect: "manual",
+    });
+  }
+  // POST then follow the PRG redirect; the one-time result shows on the GET.
+  async function usersResult(cookie: string, csrf: string, fields: Record<string, string>): Promise<string> {
+    const r = await usersPost(cookie, csrf, fields);
+    expect(r.status).toBe(303);
+    return (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+  }
+
+  it("the last admin cannot be demoted or removed (no lockout)", async () => {
+    // at this point 'boss' is the only admin; 'viewer' is a member
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const csrf = await teamCsrf(cookie);
+    expect(await usersResult(cookie, csrf, { op: "role", username: "boss", role: "member" })).toContain("demote the last admin");
+    expect(await usersResult(cookie, csrf, { op: "delete", username: "boss" })).toContain("remove the last admin");
+  });
+
+  let danaPw = "";
+  it("an admin creates a web login, it can sign in, and members can't manage accounts", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const csrf = await teamCsrf(cookie);
+    const page = await usersResult(cookie, csrf, { op: "create", username: "dana@co.test", role: "member" });
+    expect(page).toContain("login for dana@co.test");
+    danaPw = page.match(/Temp password: <span class="select-all">([0-9a-f]+)<\/span>/)![1];
+
+    // the new login works, and dana (a member) cannot manage accounts
+    const danaCookie = await cookieFor("dana@co.test", danaPw);
+    const denied = await usersPost(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "x@co.test", role: "admin" });
+    expect(denied.status).toBe(403);
+  });
+
+  it("an admin can promote a member to admin (change privilege level)", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const page = await usersResult(cookie, await teamCsrf(cookie), { op: "role", username: "dana@co.test", role: "admin" });
+    expect(page).toContain("dana@co.test is now admin");
+    // dana re-logs-in → her new session is admin → she can now manage the team
+    const danaCookie = await cookieFor("dana@co.test", danaPw);
+    const okPage = await usersResult(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "newbie@co.test", role: "member" });
+    expect(okPage).toContain("login for newbie@co.test");
   });
 
   it("rejects a resolve POST with a bad CSRF token", async () => {

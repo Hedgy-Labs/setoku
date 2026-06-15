@@ -25,7 +25,7 @@
  * from Slack/logs), so every dynamic value is HTML-escaped before rendering.
  */
 import type { KnowledgeStore, KnowledgeDoc, DocType } from "./store";
-import { canApprove } from "./accounts";
+import { canApprove, ROLES } from "./accounts";
 
 /** Escape for HTML text/attribute context. */
 export function esc(s: unknown): string {
@@ -98,14 +98,20 @@ export function sessionIdFromCookie(cookieHeader: string | undefined): string | 
   return undefined;
 }
 
+// In production the session cookie is always Secure (HTTPS-only). For LOCAL dev
+// over http://localhost, browsers (notably Safari) drop Secure cookies, so login
+// would silently loop — `bun run dev:admin` sets SETOKU_COOKIE_INSECURE=1 to omit
+// it. Never set this on a real deployment.
+const secureAttr = (): string => (process.env.SETOKU_COOKIE_INSECURE === "1" ? "" : " Secure;");
+
 /** Set-Cookie value for a new session (HttpOnly, Secure, SameSite=Strict). */
 export function sessionSetCookie(sid: string): string {
-  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=43200`;
+  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly;${secureAttr()} SameSite=Strict; Path=/admin; Max-Age=43200`;
 }
 
 /** Set-Cookie value that clears the session cookie. */
 export function sessionClearCookie(): string {
-  return `${COOKIE}=; HttpOnly; Secure; SameSite=Strict; Path=/admin; Max-Age=0`;
+  return `${COOKIE}=; HttpOnly;${secureAttr()} SameSite=Strict; Path=/admin; Max-Age=0`;
 }
 
 /* ------------------------------ rendering ------------------------------ */
@@ -128,11 +134,11 @@ function shell(title: string, inner: string): string {
 <body class="min-h-screen bg-stone-950 font-sans text-stone-100 antialiased">${inner}</body></html>`;
 }
 
-type Tab = "pending" | "knowledge" | "sources" | "audit";
+type Tab = "pending" | "knowledge" | "sources" | "team" | "audit";
 
-/** The brand mark (white square). */
-function brand(size = "h-7 w-7 text-xs"): string {
-  return `<div class="grid ${size} place-items-center rounded-lg bg-white font-bold text-stone-900">S</div>`;
+/** The Setoku wordmark, in the Bagel Fat One display font. */
+function brand(size = "text-2xl"): string {
+  return `<span class="font-brand ${size} leading-none text-white">Setoku</span>`;
 }
 
 /** Tab nav shared by every signed-in page; the active tab is highlighted. */
@@ -143,14 +149,18 @@ function nav(active: Tab): string {
     "/admin/knowledge",
     "Knowledge",
     "knowledge",
-  )}${tab("/admin/sources", "Sources", "sources")}${tab("/admin/audit", "Audit", "audit")}</nav>`;
+  )}${tab("/admin/sources", "Sources", "sources")}${tab("/admin/team", "Team", "team")}${tab(
+    "/admin/audit",
+    "Audit",
+    "audit",
+  )}</nav>`;
 }
 
 /** Sticky top bar: brand, nav, identity, and the sign-out form (carries CSRF). */
 function topbar(session: Session, active: Tab): string {
   return `<header class="sticky top-0 z-10 border-b border-stone-800 bg-stone-950/80 backdrop-blur">
   <div class="mx-auto flex max-w-4xl flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3">
-    <a href="/admin" class="flex items-center gap-2">${brand()}<span class="font-semibold">Setoku</span></a>
+    <a href="/admin">${brand()}</a>
     ${nav(active)}
     <div class="ml-auto flex items-center gap-3">
       <span class="hidden text-xs text-stone-500 sm:inline">${esc(session.identity)} · ${esc(session.role)}</span>
@@ -191,7 +201,7 @@ export function renderLoginPage(flash?: string): string {
     "Setoku — sign in",
     `<main class="flex min-h-screen items-center justify-center p-6">
   <div class="card w-full max-w-sm p-7">
-    <div class="mb-5 flex items-center gap-2">${brand("h-8 w-8 text-sm")}<h1 class="text-lg font-semibold">Setoku</h1></div>
+    <h1 class="mb-5">${brand("text-3xl")}</h1>
     <p class="mb-5 text-sm leading-relaxed text-stone-400">Sign in to review pending
     knowledge. This is a separate credential from the access token you give
     Claude — agents never have it.</p>
@@ -489,6 +499,213 @@ export function renderSourcesPage(session: Session, s: SourcesData): string {
   <span class="status status-yellow"><span class="dot dot-yellow"></span>stale / empty</span>
   <span class="status status-red"><span class="dot dot-red"></span>down</span>
 </div>`,
+  );
+}
+
+/* ------------------------------ team ------------------------------ */
+
+/** A freshly-minted invite, shown once so the admin can hand it to the teammate. */
+export interface Invite {
+  identity: string;
+  token: string;
+  installerUrl: string; // curl one-liner target, https://<host>/i/<token>
+  mcpUrl: string; // https://<host>/mcp  (for the claude.ai custom connector)
+  persisted: boolean; // false → lives in memory only, lost on restart
+}
+
+/** A just-created web login, shown once so the admin can hand over the password. */
+export interface NewLogin {
+  username: string;
+  role: string;
+  tempPassword: string;
+}
+
+/** One person on the team: their agent connector status and (optional) web login. */
+export interface Person {
+  identity: string;
+  hasToken: boolean; // a connector has been minted for them
+  used: boolean; // they've actually used it (made an MCP call) → "connected"
+  role?: string; // web-login role, if they have one (admin|member)
+}
+
+/**
+ * The Team page — one row per person. Each person should have an **agent
+ * connector** (read-only, propose-only) so they can use Setoku; some also have a
+ * **web login** to sign in and approve, at a role. Admins manage both from here,
+ * so privilege isn't stuck at the operator/SSH level. Nobody is a **curator**
+ * (agent-side write) by default — that bypasses the approval click and stays a
+ * deliberate operator action (admin-cli), never a one-click web grant.
+ */
+export function renderTeamPage(
+  session: Session,
+  data: {
+    people: Person[];
+    invite?: Invite;
+    newLogin?: NewLogin;
+    flash?: string;
+  },
+): string {
+  const csrf = esc(session.csrf);
+  const mayManage = canApprove(session.role); // admins manage; members view
+  const { people, invite, newLogin, flash } = data;
+  const adminCount = people.filter((p) => p.role === "admin").length;
+  const noAgent = people.filter((p) => !p.hasToken).length;
+
+  const inviteForm = mayManage
+    ? `<form method="POST" action="/admin/invite" class="card flex flex-wrap items-end gap-2 p-4">
+        <input type="hidden" name="csrf" value="${csrf}">
+        <label class="min-w-[14rem] flex-1">
+          <span class="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">Add a teammate (email)</span>
+          <input class="input" name="identity" type="email" placeholder="teammate@yourco.com" autocomplete="off" required>
+        </label>
+        <button class="btn btn-primary" type="submit">Invite</button>
+      </form>
+      <p class="mt-2 text-xs text-stone-500">Creates their account + a read-only, propose-only agent connector. They join as a <b class="text-stone-300">member</b> (can use the agent + view); promote to <b class="text-stone-300">admin</b> in their row if they should approve knowledge.</p>`
+    : '<div class="card px-3 py-2 text-sm text-stone-400">You are signed in as a <b class="text-stone-200">member</b> — viewing only. Ask an admin to manage the team.</div>';
+
+  // shown-once connect instructions for a just-minted token
+  const inviteResult = invite
+    ? `<div class="card border-lime-700/50 bg-lime-950/20 p-4">
+        <div class="mb-2 text-sm font-medium text-lime-300">Agent connector for ${esc(invite.identity)} — send them ONE of these (shown once):</div>
+        <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude Code / Desktop (devs)</div>
+        <pre class="mb-3 overflow-x-auto rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">curl -fsSL ${esc(invite.installerUrl)} | sh</pre>
+        <div class="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude.ai — add a custom connector (anyone, incl. non-technical)</div>
+        <div class="rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">
+          <div>URL: <span class="select-all">${esc(invite.mcpUrl)}</span></div>
+          <div>Header: <span class="select-all">Authorization: Bearer ${esc(invite.token)}</span></div>
+          <div class="mt-1 text-stone-500">Then just ask in plain language ("show me signups by week") — Claude charts it, using the team's curated context.</div>
+        </div>
+        ${invite.persisted ? "" : '<div class="mt-2 text-xs text-amber-400">⚠ SETOKU_TOKENS_FILE isn\'t set, so this token is in memory only and is lost on restart. Set it to persist invites.</div>'}
+      </div>`
+    : "";
+
+  // shown-once temp password for a just-created/-reset web login
+  const newLoginResult = newLogin
+    ? `<div class="card border-lime-700/50 bg-lime-950/20 p-4">
+        <div class="mb-1 text-sm font-medium text-lime-300">Web login for ${esc(newLogin.username)} (${esc(newLogin.role)}) — share once:</div>
+        <div class="rounded-md bg-stone-900 px-3 py-2 text-xs text-stone-200">
+          <div>Sign in at <span class="select-all">/admin</span></div>
+          <div>Username: <span class="select-all">${esc(newLogin.username)}</span></div>
+          <div>Temp password: <span class="select-all">${esc(newLogin.tempPassword)}</span></div>
+          <div class="mt-1 text-stone-500">They should change it after first sign-in.</div>
+        </div>
+      </div>`
+    : "";
+
+  // confirmMsg (no quotes/apostrophes — it rides in an inline handler) gates a
+  // destructive submit behind a native confirm() dialog.
+  const opBtn = (
+    action: string,
+    op: string,
+    field: string,
+    value: string,
+    label: string,
+    extra = "",
+    confirmMsg = "",
+  ): string =>
+    `<form method="POST" action="${action}" class="inline"${
+      confirmMsg ? ` onsubmit="return confirm('${confirmMsg}')"` : ""
+    }>
+       <input type="hidden" name="csrf" value="${csrf}">
+       ${op ? `<input type="hidden" name="op" value="${op}">` : ""}
+       <input type="hidden" name="${field}" value="${esc(value)}">${extra}
+       <button class="btn btn-ghost" type="submit">${esc(label)}</button>
+     </form>`;
+
+  const personRow = (p: Person): string => {
+    const isSelf = p.identity === session.identity;
+    const isLastAdmin = p.role === "admin" && adminCount <= 1;
+
+    // agent column: connected only once they've actually used it; otherwise the
+    // connector is just issued ("invited"); or none at all ("no agent").
+    const agent = !p.hasToken
+      ? '<span class="status status-yellow"><span class="dot dot-yellow"></span>no agent</span>'
+      : p.used
+        ? '<span class="status status-green"><span class="dot dot-green"></span>connected</span>'
+        : '<span class="status status-yellow"><span class="dot dot-yellow"></span>invited · not connected yet</span>';
+
+    // a role <select> that submits on change (admins); last admin is locked so
+    // they can't demote themselves into a lockout (server enforces this too).
+    const roleSelect = (role: string): string =>
+      `<form method="POST" action="/admin/users" class="inline">
+         <input type="hidden" name="csrf" value="${csrf}">
+         <input type="hidden" name="op" value="role">
+         <input type="hidden" name="username" value="${esc(p.identity)}">
+         <select name="role" class="input w-auto py-1 text-sm" aria-label="role for ${esc(p.identity)}" onchange="this.form.submit()"${isLastAdmin ? " disabled" : ""}>
+           ${ROLES.map((r) => `<option value="${r}"${r === role ? " selected" : ""}>${r}</option>`).join("")}
+         </select>
+       </form>`;
+
+    // access column: role widget — a dropdown for admins, a read-only badge for
+    // members, or "no login" when they have none.
+    let access: string;
+    if (p.role) {
+      access = mayManage
+        ? roleSelect(p.role)
+        : `<span class="${p.role === "admin" ? "badge badge-ok" : "badge badge-idle"}">${esc(p.role)}</span>`;
+    } else {
+      access = '<span class="text-xs text-stone-500">no login</span>';
+    }
+
+    let controls = "";
+    if (mayManage) {
+      if (!p.hasToken)
+        controls += opBtn("/admin/invite", "", "identity", p.identity, "Configure agent");
+      else
+        controls += opBtn(
+          "/admin/invite", "", "identity", p.identity, "Rotate connector",
+          '<input type="hidden" name="rotate" value="1">',
+          "Revoke the current connector and issue a new one? The old token stops working immediately.",
+        );
+      if (p.role) {
+        controls += opBtn(
+          "/admin/users", "reset", "username", p.identity, "Reset password", "",
+          "Reset this password? The current one stops working.",
+        );
+        if (!isLastAdmin)
+          controls += opBtn(
+            "/admin/users", "delete", "username", p.identity, "Remove person", "",
+            "Remove this person, deleting their login and revoking their agent connector?",
+          );
+      }
+    }
+
+    return `<li class="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
+      <span class="min-w-0 truncate font-medium text-stone-100">${esc(p.identity)}</span>
+      ${isSelf ? '<span class="text-xs text-stone-500">you</span>' : ""}
+      ${agent}
+      ${access}
+      ${isLastAdmin ? '<span class="text-xs text-stone-500">last admin</span>' : ""}
+      <span class="ml-auto flex flex-wrap items-center gap-1.5">${controls}</span>
+    </li>`;
+  };
+
+  const list = people.length
+    ? `<ul class="card divide-y divide-stone-800">${people.map(personRow).join("")}</ul>`
+    : '<div class="card p-8 text-center text-stone-500">No one yet. Invite a teammate above.</div>';
+
+  const agentWarning =
+    noAgent > 0 && mayManage
+      ? `<div class="mb-4 rounded-lg border border-amber-800/60 bg-amber-950/20 px-3 py-2 text-sm text-amber-300">${noAgent} ${
+          noAgent === 1 ? "person has" : "people have"
+        } a login but no agent connector — click <b>Configure agent</b> on their row so they can actually query.</div>`
+      : "";
+
+  return page(
+    session,
+    "team",
+    "Setoku — team",
+    `${heading(
+      "Team",
+      "Everyone gets an account with a read-only, propose-only agent connector. Members can use the agent and view; admins also approve knowledge. The curated context the team builds is shared across everyone. (Curator <i>write</i> connectors are a separate, deliberate step — <code class=\"kbd\">admin-cli</code> on the box — never a default.)",
+    )}
+${flashBanner(flash)}
+${agentWarning}
+${inviteResult}
+${newLoginResult}
+<div class="mt-3">${inviteForm}</div>
+<div class="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-stone-500">People (${people.length})</div>
+${list}`,
   );
 }
 

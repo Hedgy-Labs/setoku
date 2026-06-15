@@ -40,12 +40,14 @@ One command on a fresh Ubuntu VPS (~$12/mo):
 
 ```bash
 git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku
-./deploy/bootstrap.sh
+SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh
 ```
 
-It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect Claude and the token for log drains.
+It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect Claude and the token for log drains. (`SETOKU_ADMIN_USER` is the `/admin` login it creates; set it so the script runs unattended — omit it and it asks once, interactively.)
 
-Then point Claude at the box and run `/setoku:onboard` in a business repo — it wires up your database (the credential stays in your env; only the env-var *name* goes in config), checks the connection, and generates the first knowledge from your code.
+Then point Claude at the box and run `/setoku:onboard` in a business repo — it wires up your database (the credential stays in your env; only the env-var *name* goes in config) and generates the first knowledge from your code.
+
+The point isn't that Claude can query your Postgres — if you're an engineer, it already can. The point is that the *meaning* gets captured once and **shared with the whole team**: `add-teammate` mints a connector for anyone, and a non-technical teammate can then query and visualize their own data in plain language on claude.ai ("show me signups by week") — and get the *right* number, because your annotations ride along.
 
 ## High level architecture
 

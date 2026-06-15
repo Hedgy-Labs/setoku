@@ -33,6 +33,8 @@ import {
   renderAuditPage,
   renderKnowledgePage,
   renderSourcesPage,
+  renderTeamPage,
+  type Invite,
   applyApprovalAction,
   SessionStore,
   sessionIdFromCookie,
@@ -42,7 +44,7 @@ import {
   type SourcesData,
   type SourceTable,
 } from "./lib/approval";
-import { authenticate, canApprove } from "./lib/accounts";
+import { authenticate, canApprove, hashPassword, isRole } from "./lib/accounts";
 import { resolveDatabaseUrl, resolveLakeUrl } from "./lib/config";
 import { introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
@@ -113,6 +115,68 @@ if (tokens.size === 0) {
   process.exit(1);
 }
 
+/** Mint a 24-byte hex token (same shape as admin-cli). */
+function mintToken(): string {
+  return Array.from(crypto.getRandomValues(new Uint8Array(24)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/**
+ * Provision an analyst token at runtime (the web "Invite teammate" path): add it
+ * to the in-memory set so it authenticates IMMEDIATELY (no restart), and persist
+ * to SETOKU_TOKENS_FILE if configured so it survives one. Analyst only — the web
+ * surface never mints curator/write capability (that stays an operator action).
+ */
+function addAnalystToken(token: string, identity: string): { persisted: boolean } {
+  tokens.set(token, { identity, curator: false });
+  const file = process.env.SETOKU_TOKENS_FILE;
+  if (!file) return { persisted: false };
+  let map: Record<string, string> = {};
+  try {
+    if (fs.existsSync(file)) map = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    /* a corrupt file shouldn't lose the new invite — start fresh */
+  }
+  map[token] = identity;
+  fs.writeFileSync(file, JSON.stringify(map, null, 2) + "\n");
+  return { persisted: true };
+}
+
+/**
+ * Revoke every analyst token for an identity: drop from the in-memory set
+ * (effective on the NEXT request — no restart) and from SETOKU_TOKENS_FILE.
+ * Returns how many were removed, and whether any lived in SETOKU_TOKENS (env),
+ * which we can't rewrite — those reappear on restart, so the caller should warn.
+ */
+function removeAnalystTokens(identity: string): { removed: number; envBacked: boolean } {
+  const file = process.env.SETOKU_TOKENS_FILE;
+  let fileMap: Record<string, string> = {};
+  if (file && fs.existsSync(file)) {
+    try {
+      fileMap = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch {
+      /* ignore a corrupt file */
+    }
+  }
+  let removed = 0;
+  let envBacked = false;
+  for (const [tok, info] of [...tokens]) {
+    if (info.curator || info.identity !== identity) continue;
+    tokens.delete(tok);
+    removed++;
+    if (tok in fileMap) delete fileMap[tok];
+    else envBacked = true; // came from SETOKU_TOKENS env, not the file
+  }
+  if (file) fs.writeFileSync(file, JSON.stringify(fileMap, null, 2) + "\n");
+  return { removed, envBacked };
+}
+
+/** Analyst (non-curator) identities currently provisioned — for the Team page. */
+function analystIdentities(): string[] {
+  return [...new Set([...tokens.values()].filter((t) => !t.curator).map((t) => t.identity))].sort();
+}
+
 const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
 if (store.empty) {
   const imported = seedFromFiles(store, projectDir);
@@ -123,6 +187,26 @@ if (store.accountCount === 0) {
     "setoku gateway: no admin accounts yet — the approval surface (/admin) has no one who can sign in.\n" +
       "  Bootstrap one:  bun gateway/admin-cli.ts create-user <name> --role admin",
   );
+}
+
+/**
+ * One row per person for the Team page: union of agent-token identities and web
+ * logins, joined by identity string. hasToken = they have an analyst connector;
+ * role = their web-login role if any.
+ */
+function teamPeople(): { identity: string; hasToken: boolean; used: boolean; role?: string }[] {
+  const tokenIds = new Set(analystIdentities());
+  const active = store.activeIdentities();
+  const accounts = store.listAccounts();
+  const ids = new Set<string>([...tokenIds, ...accounts.map((a) => a.username)]);
+  return [...ids]
+    .sort()
+    .map((identity) => ({
+      identity,
+      hasToken: tokenIds.has(identity),
+      used: active.has(identity),
+      role: accounts.find((a) => a.username === identity)?.role,
+    }));
 }
 
 /**
@@ -172,6 +256,17 @@ function readRawBody(req: http.IncomingMessage): Promise<string> {
 // and gets an opaque cookie; the token never rides in a URL (no Slack/referer/
 // history leakage). One process, so in-memory is fine.
 const sessions = new SessionStore(store);
+
+// One-time render state for Post/Redirect/Get: a mutating POST (invite, account
+// op) stashes its shown-once result here keyed by session, then 303-redirects;
+// the next GET /admin/team consumes and clears it. Without PRG, refreshing the
+// POST response re-submits it — re-minting tokens on every refresh.
+type TeamFlash = {
+  invite?: Invite;
+  newLogin?: { username: string; role: string; tempPassword: string };
+  flash?: string;
+};
+const teamFlash = new Map<string, TeamFlash>();
 
 const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
 
@@ -307,22 +402,9 @@ echo "    how many companies are paying us right now?"
 `;
 }
 
-/**
- * Lake source tables we know how to surface on the /admin Sources page, mapped
- * to a friendly connector name and the column to read freshness from. We only
- * query the ones that actually exist (so a deploy without a given connector
- * just omits its row) — see gatherSources().
- */
-const LAKE_SOURCES: { table: string; source: string; ts: string }[] = [
-  { table: "logs_vercel", source: "Vercel logs", ts: "ts" },
-  { table: "logs_render", source: "Render logs", ts: "ts" },
-  { table: "slack_messages", source: "Slack", ts: "event_ts" },
-  { table: "app_events", source: "First-party events", ts: "ts" },
-  { table: "mercury_accounts", source: "Mercury · accounts", ts: "snapshot_ts" },
-  { table: "mercury_transactions", source: "Mercury · transactions", ts: "created_at" },
-  { table: "mercury_events", source: "Mercury · webhooks", ts: "received_at" },
-  { table: "ingest_raw", source: "Unrouted (raw)", ts: "ingested_at" },
-];
+// Lake source tables we know how to surface (shared with the list_sources MCP
+// tool) — query only the ones that actually exist; see gatherSources().
+import { LAKE_SOURCES } from "./lib/sources";
 
 /**
  * Gather the /admin Sources view live: is Postgres configured + reachable (+
@@ -529,6 +611,160 @@ const httpServer = http.createServer(async (req, res) => {
       if (path === "/admin/sources") {
         res.writeHead(200, htmlHead);
         res.end(renderSourcesPage(session, await gatherSources()));
+        return;
+      }
+
+      // invite a teammate — mint a read-only analyst connector. CSRF + admin-gated
+      // (members can't invite, mirroring approve). Mints analyst only; web never
+      // grants curate/write (that stays an operator action — admin-cli).
+      if (path === "/admin/invite" && req.method === "POST") {
+        const form = new URLSearchParams(await readRawBody(req));
+        if (form.get("csrf") !== session.csrf) {
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("bad csrf token\n");
+          return;
+        }
+        if (!canApprove(session.role)) {
+          store.audit(session.identity, "teammate_invite_denied", { role: session.role });
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("not authorized to invite\n");
+          return;
+        }
+        const identity = (form.get("identity") ?? "").trim();
+        const rotate = form.get("rotate") === "1"; // revoke any existing token first
+        if (!identity) {
+          teamFlash.set(sid ?? "", { flash: "Enter a teammate email to invite." });
+        } else if (!rotate && analystIdentities().includes(identity)) {
+          teamFlash.set(sid ?? "", { flash: `${identity} already has an agent connector — use Rotate to replace it.` });
+        } else {
+          // Rotate = kill the old token (lost/leaked) before issuing a new one.
+          let revokedEnv = false;
+          if (rotate) {
+            const r = removeAnalystTokens(identity);
+            revokedEnv = r.envBacked;
+            store.audit(session.identity, "connector_rotated", { identity, removed: r.removed });
+          }
+          // mint the connector AND ensure a web account exists — an agent always
+          // implies an account (member by default; promote later if they curate).
+          const token = mintToken();
+          const { persisted } = addAnalystToken(token, identity);
+          const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
+          const slot: TeamFlash = {
+            invite: { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted },
+          };
+          if (rotate)
+            slot.flash = `Rotated ${identity}'s connector — the old token no longer works.${revokedEnv ? " (One old token is in SETOKU_TOKENS env, not the file — it returns on restart; remove it from .env to fully revoke.)" : ""}`;
+          if (!rotate) store.audit(session.identity, "teammate_invited", { identity, persisted });
+          if (!store.getAccount(identity)) {
+            const pw = Array.from(crypto.getRandomValues(new Uint8Array(9)))
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("");
+            store.createAccount({ username: identity, pwhash: await hashPassword(pw), role: "member", createdBy: session.identity });
+            store.audit(session.identity, "account_created", { username: identity, role: "member" });
+            slot.newLogin = { username: identity, role: "member", tempPassword: pw };
+          }
+          teamFlash.set(sid ?? "", slot);
+        }
+        // Post/Redirect/Get: never re-mint on refresh
+        res.writeHead(303, { location: "/admin/team" });
+        res.end();
+        return;
+      }
+
+      // manage web logins (admin access): create / promote-demote / reset / remove.
+      // CSRF + admin-gated. Mints NO agent-side write capability (curator stays an
+      // operator action); this only manages who can sign in here and at what role.
+      if (path === "/admin/users" && req.method === "POST") {
+        const form = new URLSearchParams(await readRawBody(req));
+        if (form.get("csrf") !== session.csrf) {
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("bad csrf token\n");
+          return;
+        }
+        if (!canApprove(session.role)) {
+          store.audit(session.identity, "admin_users_denied", { role: session.role });
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("not authorized to manage accounts\n");
+          return;
+        }
+        const op = form.get("op");
+        const uname = (form.get("username") ?? "").trim();
+        let flash = "Invalid request.";
+        let newLogin: { username: string; role: string; tempPassword: string } | undefined;
+        let invite: Awaited<ReturnType<typeof buildInvite>> | undefined;
+        const tempPw = (): string =>
+          Array.from(crypto.getRandomValues(new Uint8Array(9)))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+        const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
+        const actor = session.identity;
+        function buildInvite(identity: string) {
+          const token = mintToken();
+          const { persisted } = addAnalystToken(token, identity);
+          store.audit(actor, "teammate_invited", { identity, persisted });
+          return { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted };
+        }
+        const acct = uname ? store.getAccount(uname) : null;
+        const isLastAdmin = (a: { role: string } | null): boolean =>
+          !!a && a.role === "admin" && store.countRole("admin") <= 1;
+
+        if (op === "create") {
+          const role = form.get("role") ?? "member";
+          if (!uname) flash = "Username required.";
+          else if (!isRole(role)) flash = `Invalid role "${role}".`;
+          else if (store.getAccount(uname)) flash = `"${uname}" already has a login.`;
+          else {
+            const pw = tempPw();
+            store.createAccount({ username: uname, pwhash: await hashPassword(pw), role, createdBy: session.identity });
+            store.audit(session.identity, "account_created", { username: uname, role });
+            newLogin = { username: uname, role, tempPassword: pw };
+            // no login without an agent: mint a connector too if they lack one
+            if (!analystIdentities().includes(uname)) invite = buildInvite(uname);
+            flash = `Created ${role} login for ${uname}${invite ? " + agent connector" : ""}.`;
+          }
+        } else if (op === "role") {
+          const role = form.get("role") ?? "";
+          if (!acct) flash = `No login "${uname}".`;
+          else if (!isRole(role)) flash = `Invalid role "${role}".`;
+          else if (role === "member" && isLastAdmin(acct)) flash = "Can't demote the last admin.";
+          else {
+            store.setRole(uname, role);
+            store.audit(session.identity, "account_role_changed", { username: uname, role });
+            flash = `${uname} is now ${role}.`;
+          }
+        } else if (op === "reset") {
+          if (!acct) flash = `No login "${uname}".`;
+          else {
+            const pw = tempPw();
+            store.setPassword(uname, await hashPassword(pw));
+            store.audit(session.identity, "account_password_reset", { username: uname });
+            newLogin = { username: uname, role: acct.role, tempPassword: pw };
+            flash = `Reset password for ${uname}.`;
+          }
+        } else if (op === "delete") {
+          if (!acct) flash = `No login "${uname}".`;
+          else if (isLastAdmin(acct)) flash = "Can't remove the last admin.";
+          else {
+            // full offboard: remove the account AND revoke their agent connector
+            store.deleteAccount(uname);
+            const { removed, envBacked } = removeAnalystTokens(uname);
+            store.audit(session.identity, "account_deleted", { username: uname, tokensRevoked: removed });
+            flash = `Removed ${uname} (account + ${removed} connector${removed === 1 ? "" : "s"} revoked).${envBacked ? " One token is in SETOKU_TOKENS env — remove it from .env to fully revoke." : ""}`;
+          }
+        }
+        teamFlash.set(sid ?? "", { newLogin, invite, flash });
+        res.writeHead(303, { location: "/admin/team" }); // PRG: refresh won't re-run the op
+        res.end();
+        return;
+      }
+
+      // team — one row per person: agent status + web login/role, plus management.
+      // Consume any one-time result from a preceding POST (shown exactly once).
+      if (path === "/admin/team") {
+        const once = teamFlash.get(sid ?? "");
+        teamFlash.delete(sid ?? "");
+        res.writeHead(200, htmlHead);
+        res.end(renderTeamPage(session, { people: teamPeople(), ...once }));
         return;
       }
 

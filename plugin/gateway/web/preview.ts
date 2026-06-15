@@ -18,6 +18,7 @@ import {
   renderApprovalPage,
   renderKnowledgePage,
   renderSourcesPage,
+  renderTeamPage,
   renderAuditPage,
   type Session,
 } from "../lib/approval";
@@ -114,6 +115,24 @@ const pages: [string, string][] = [
   ["pending", renderApprovalPage(store, session)],
   ["knowledge", renderKnowledgePage(store, session)],
   ["sources", renderSourcesPage(session, sources)],
+  [
+    "team",
+    renderTeamPage(session, {
+      people: [
+        { identity: "peter", hasToken: true, used: true, role: "admin" },
+        { identity: "alice@hedgy.co", hasToken: true, used: true, role: "admin" },
+        { identity: "steven@hedgy.works", hasToken: true, used: false, role: "member" },
+        { identity: "dana@hedgy.co", hasToken: false, used: false, role: "member" },
+      ],
+      invite: {
+        identity: "newhire@hedgy.co",
+        token: "0123456789abcdef0123456789abcdef0123456789abcdef",
+        installerUrl: "https://hedgy.setoku.com/i/0123456789abcdef0123456789abcdef0123456789abcdef",
+        mcpUrl: "https://hedgy.setoku.com/mcp",
+        persisted: true,
+      },
+    }),
+  ],
   ["audit", renderAuditPage(store, session)],
 ];
 

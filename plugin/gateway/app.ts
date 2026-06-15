@@ -19,6 +19,7 @@ import { introspectSchema, runReadOnlyQuery } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type DocType } from "./lib/store";
+import { LAKE_SOURCES } from "./lib/sources";
 
 export interface GatewayDeps {
   projectDir: string;
@@ -79,9 +80,10 @@ function requireDb(config: SetokuConfig): string {
 }
 
 const NO_KNOWLEDGE_HINT =
-  "The knowledge store is empty. Answers will rely on raw schema only — " +
-  "run the /setoku:generate skill to derive verified business context (from the codebase, " +
-  "SaaS schemas, or an interview) and save it via upsert_context.";
+  "No curated knowledge yet — answers rely on raw schema only and may be wrong " +
+  "(test accounts not excluded, etc.); say so. Build context with /setoku:generate " +
+  "or report_correction; both work on this (analyst) connector and land as pending " +
+  "for a human to approve. (upsert_context commits directly but needs a curator connector.)";
 
 /* ------------------------------ context tools ------------------------------ */
 
@@ -418,6 +420,93 @@ server.registerTool(
 /* -------------------------------- data tools ------------------------------- */
 
 server.registerTool(
+  "list_sources",
+  {
+    annotations: { readOnlyHint: true, openWorldHint: true },
+    title: "List connected data sources (capabilities)",
+    description:
+      "Lists the data Setoku can actually query RIGHT NOW: the business database tables, the data-lake " +
+      "tables (logs, product events, finance, chat) with what each holds, and the knowledge store. " +
+      "Capabilities are DYNAMIC — what's connected on the box changes — so call this whenever you're " +
+      "unsure whether Setoku has data for a question, BEFORE telling the user it isn't available. " +
+      'Logs, errors, product events, finance, and chat live in the LAKE (query run_query with ' +
+      'dialect:"clickhouse"), not the business Postgres.',
+    inputSchema: {},
+  },
+  async () => {
+    const lines: string[] = ["Data sources you can query right now:"];
+    let config: SetokuConfig | null = null;
+    try {
+      config = requireConfig();
+    } catch {
+      /* no config — sections below report "not configured" */
+    }
+
+    // business database (Postgres)
+    try {
+      const db = config ? resolveDatabaseUrl(projectDir, config) : { ok: false as const, error: "" };
+      if (config && db.ok) {
+        const tables = await introspectSchema(db.url, config);
+        const names = tables.map((t) => `${t.schema}.${t.name}`);
+        lines.push(
+          "",
+          `BUSINESS DATABASE (Postgres) — run_query, default dialect — ${names.length} tables:`,
+          "  " + names.slice(0, 40).join(", ") + (names.length > 40 ? ", …" : "") + "  (get_schema for columns)",
+        );
+      } else {
+        lines.push("", "BUSINESS DATABASE: not configured.");
+      }
+    } catch (e) {
+      lines.push("", `BUSINESS DATABASE: configured but unreachable (${String(e).slice(0, 120)}).`);
+    }
+
+    // data lake (ClickHouse). Curator sessions can't read the lake (membrane), so
+    // we don't probe it there — list the known sources statically with a pointer.
+    if (denyLakeRead) {
+      lines.push(
+        "",
+        'DATA LAKE: a curator session can\'t read the lake. Switch to an analyst connector to query it (run_query dialect:"clickhouse"). Known lake sources:',
+        ...LAKE_SOURCES.filter((s) => s.table !== "ingest_raw").map((s) => `  - ${s.table} — ${s.blurb}`),
+      );
+    } else {
+      try {
+        const lake = config ? resolveLakeUrl(projectDir, config) : { ok: false as const, error: "" };
+        if (config && lake.ok) {
+          // SHOW TABLES is metadata only (no row content); setoku_ro can run it.
+          const res = await runLakeQuery(lake.url, "SHOW TABLES FROM setoku", {
+            rowCap: 500,
+            statementTimeoutMs: 8000,
+          });
+          const present = new Set(res.rows.map((r) => String(Object.values(r)[0] ?? "")));
+          const known = LAKE_SOURCES.filter((s) => present.has(s.table));
+          const extra = [...present].filter((t) => !LAKE_SOURCES.some((s) => s.table === t));
+          if (known.length || extra.length) {
+            lines.push("", 'DATA LAKE (ClickHouse) — run_query with dialect:"clickhouse" — tables:');
+            for (const s of known) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
+            for (const t of extra) lines.push(`  - setoku.${t}`);
+          } else {
+            lines.push("", "DATA LAKE: configured but empty.");
+          }
+        } else {
+          lines.push("", "DATA LAKE: not configured (no logs/events/finance lake on this box).");
+        }
+      } catch (e) {
+        lines.push("", `DATA LAKE: configured but unreachable (${String(e).slice(0, 120)}).`);
+      }
+    }
+
+    lines.push(
+      "",
+      `KNOWLEDGE STORE: ${store.docCount} curated docs — call find_context to retrieve what your data MEANS (definitions, gotchas, canonical SQL).`,
+      "",
+      'Reminder: logs, errors, product events, finance, and chat are in the LAKE — query them with dialect:"clickhouse", not Postgres.',
+    );
+    store.audit(user, "list_sources", {});
+    return text(lines.join("\n"));
+  },
+);
+
+server.registerTool(
   "get_schema",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
@@ -593,6 +682,16 @@ server.registerTool(
         "",
         `${result.rowCount} row(s) in ${result.ms}ms${result.truncated ? ` — TRUNCATED at row cap (${config.rowCap}); add aggregation or LIMIT` : ""}`,
       );
+      // No curated context yet → the agent is querying from raw schema, which is
+      // exactly when it confidently returns a wrong number (test accounts not
+      // excluded, refunds not netted, status-vs-event-log confusion). Make that
+      // provisional state visible so the answer carries the caveat to the human.
+      if (store.docCount === 0) {
+        lines.unshift(
+          "⚠ No curated business context exists yet, so this is computed from raw schema and may be WRONG (e.g. internal/test accounts not excluded, refunds not netted). Tell the user the number is provisional, and add context via /setoku:generate or report_correction.",
+          "",
+        );
+      }
       return text(lines.join("\n"));
     } catch (e) {
       const msg = (e as Error).message;

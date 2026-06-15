@@ -100,6 +100,7 @@ describe("tool surface", () => {
         "get_schema",
         "list_corrections",
         "list_entities",
+        "list_sources",
         "report_correction",
         "resolve_correction",
         "run_query",
