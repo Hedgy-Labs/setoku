@@ -1,6 +1,16 @@
 # OAuth for Setoku — engineering scope
 
-**Status:** scoping (not built). Decide *if/when* before building.
+**Status:** scoped, **deferred** (2026-06-15). We're staying on **bearer tokens** for now —
+they're the right single model for a small self-hosted pilot, and the token-in-URL cost is
+bounded (read-only + propose-only + one-click rotate). This doc is the "when we're ready"
+plan.
+
+**When we do build OAuth, it REPLACES bearer — it is not an option alongside it.** Two code
+paths / two debug stories / "which mode am I in?" is friction we don't want. There are exactly
+two single-model end states (claude.ai's dialog only accepts URL or OAuth, no third path):
+*bearer-only* (today) or *OAuth-only* (the swap). Build the swap when we cross a real
+threshold — onboarding people we don't fully trust, multi-tenant, or GA. The dual-auth window
+below is a **throwaway migration bridge (days, then deleted)**, never a permanent feature.
 
 ## Why
 Today a teammate connects with a **long-lived bearer token in a URL** (`/mcp/<token>`)
@@ -50,10 +60,12 @@ DCR-proxy shim (Claude rejects Hydra's empty `client_uri`/`contacts`).
 Built-in login UI + official MCP guide, but a JVM service (~1.25 GB+) per tiny box. Least
 custom code, most operational weight. Not a fit for "one small VPS."
 
-## Migration
-Run **dual auth** during transition: keep `SETOKU_TOKENS`/`/mcp/<token>` working while
-OAuth lands, so existing connectors don't break. Switch the invite UI to the OAuth URL,
-deprecate path-tokens once everyone's migrated. Rotate/expire remaining static tokens.
+## Migration (single-model swap, bridge-then-delete)
+Dual auth is a **temporary bridge, not a feature**: keep `SETOKU_TOKENS`/`/mcp/<token>`
+working for the few days OAuth lands so connectors don't break, switch the invite UI to the
+OAuth flow, then **delete the bearer path entirely** once everyone's migrated. End state =
+exactly one model live. (Note: ingest/poller credentials — `SETOKU_INGEST_TOKEN`, direct DB —
+are a separate surface and unaffected; they're not part of this swap.)
 
 ## Gotchas to budget for (all from real claude.ai MCP failures)
 - **CORS:** OAuth/metadata endpoints must answer preflight `OPTIONS` with `Access-Control-Allow-Origin: *` (else `Failed to fetch`).
