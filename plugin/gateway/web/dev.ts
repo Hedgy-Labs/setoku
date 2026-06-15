@@ -43,12 +43,18 @@ const tokensFile = path.join(dir, "teammates.json");
 
 const store = new KnowledgeStore(dbPath);
 await (async () => {
-  // dev + viewer both have a matching agent token (seeded below) so they show as
-  // "agent connected"; pat has a login but NO token, to demo the Configure-agent
-  // flow + the warning banner.
+  // Everyone has an account (an agent implies an account). States demoed:
+  //   dev   admin + token + used   → "connected"
+  //   alice member + token + used  → "connected"
+  //   viewer member + token, never used → "invited · not connected yet"
+  //   pat   member, NO token       → "no agent" + Configure (warning banner)
   store.createAccount({ username: USER, pwhash: await hashPassword(PASS), role: "admin" });
+  store.createAccount({ username: "alice@hedgy.co", pwhash: await hashPassword("alicepass"), role: "member" });
   store.createAccount({ username: "viewer", pwhash: await hashPassword("viewer"), role: "member" });
   store.createAccount({ username: "pat", pwhash: await hashPassword("patpass"), role: "member" });
+  // mark dev + alice as having actually used their agent (an MCP call in the audit)
+  store.audit(USER, "find_context", { question: "demo" });
+  store.audit("alice@hedgy.co", "run_query", { purpose: "demo" });
   store.upsertDoc(
     { type: "overview", name: "business", body: "Hedgy is a recruiting marketplace. Revenue is success-fee + subscription.", meta: {} },
     USER,
@@ -67,9 +73,7 @@ await (async () => {
 })();
 store.db.close();
 
-// agent tokens, keyed so identities line up with the logins above:
-//   dev   → has login (admin) + agent   viewer → has login (member) + agent
-//   alice → agent only, no login        pat    → login only, no agent (banner)
+// agent tokens, keyed so identities line up with the logins above (pat has none)
 fs.writeFileSync(
   tokensFile,
   JSON.stringify({ tok_viewer: "viewer", tok_alice: "alice@hedgy.co" }, null, 2),

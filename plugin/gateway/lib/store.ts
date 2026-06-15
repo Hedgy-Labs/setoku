@@ -388,6 +388,23 @@ export class KnowledgeStore {
     ).n;
   }
 
+  /**
+   * Identities that have actually used an agent connector — i.e. made at least
+   * one MCP tool call (audited under the token's identity). Lets the Team page
+   * say "connected" only once someone has really used their agent, vs "invited".
+   */
+  activeIdentities(): Set<string> {
+    const MCP_TOOLS = [
+      "find_context", "get_schema", "run_query", "list_entities", "describe_entity",
+      "get_metric", "list_corrections", "report_correction", "upsert_context", "resolve_correction",
+    ];
+    const ph = MCP_TOOLS.map(() => "?").join(",");
+    const rows = this.db
+      .query(`SELECT DISTINCT user FROM audit WHERE tool IN (${ph})`)
+      .all(...MCP_TOOLS) as { user: string }[];
+    return new Set(rows.map((r) => r.user));
+  }
+
   /* -------------------------------- sessions ---------------------------- */
 
   /** Persist a web-admin session (Phase 5.1). Persisted so a restart/redeploy

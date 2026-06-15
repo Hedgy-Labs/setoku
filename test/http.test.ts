@@ -359,6 +359,34 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(after).toContain("newhire@co.test");
   });
 
+  it("a teammate shows 'invited' until they actually use the agent, then 'connected'", async () => {
+    const cookie = await cookieFor("boss", "s3cret-pass");
+    const csrf = (await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text()).match(/name="csrf" value="([^"]+)"/)![1];
+    await fetch(`${BASE}/admin/invite`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
+      body: new URLSearchParams({ csrf, identity: "usage@co.test" }),
+      redirect: "manual",
+    });
+    const before = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    const token = before.match(/Authorization: Bearer ([0-9a-f]{48})/)![1];
+    // the person ROW name span (not the one-time invite/login block) → to </li>
+    const rowOf = (html: string, id: string) => {
+      const anchor = `text-stone-100">${id}</span>`;
+      const i = html.indexOf(anchor);
+      return i < 0 ? "" : html.slice(i, html.indexOf("</li>", i));
+    };
+    expect(rowOf(before, "usage@co.test")).toContain("invited"); // minted, not used yet
+
+    // actually use the agent (an MCP tool call), then it reads "connected"
+    const client = await connect(token);
+    await call(client, "find_context", { question: "anything" });
+    await client.close();
+    const after = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
+    expect(rowOf(after, "usage@co.test")).toContain("connected");
+    expect(rowOf(after, "usage@co.test")).not.toContain("invited");
+  });
+
   it("a member cannot invite (role-gated), and a bad CSRF is refused", async () => {
     const memberCookie = await cookieFor("viewer", "viewer-pass");
     // member view: no invite form

@@ -523,7 +523,8 @@ export interface NewLogin {
 /** One person on the team: their agent connector status and (optional) web login. */
 export interface Person {
   identity: string;
-  hasToken: boolean; // has an analyst connector configured
+  hasToken: boolean; // a connector has been minted for them
+  used: boolean; // they've actually used it (made an MCP call) → "connected"
   role?: string; // web-login role, if they have one (admin|member)
 }
 
@@ -559,7 +560,7 @@ export function renderTeamPage(
         </label>
         <button class="btn btn-primary" type="submit">Invite</button>
       </form>
-      <p class="mt-2 text-xs text-stone-500">Mints a read-only, propose-only connector (their agent). Give them a web login below if they should also approve knowledge.</p>`
+      <p class="mt-2 text-xs text-stone-500">Creates their account + a read-only, propose-only agent connector. They join as a <b class="text-stone-300">member</b> (can use the agent + view); promote to <b class="text-stone-300">admin</b> in their row if they should approve knowledge.</p>`
     : '<div class="card px-3 py-2 text-sm text-stone-400">You are signed in as a <b class="text-stone-200">member</b> — viewing only. Ask an admin to manage the team.</div>';
 
   // shown-once connect instructions for a just-minted token
@@ -610,10 +611,13 @@ export function renderTeamPage(
     const isSelf = p.identity === session.identity;
     const isLastAdmin = p.role === "admin" && adminCount <= 1;
 
-    // agent column: connected, or a configure CTA (mints a token for them)
-    const agent = p.hasToken
-      ? '<span class="status status-green"><span class="dot dot-green"></span>agent connected</span>'
-      : `<span class="status status-yellow"><span class="dot dot-yellow"></span>no agent</span>`;
+    // agent column: connected only once they've actually used it; otherwise the
+    // connector is just issued ("invited"); or none at all ("no agent").
+    const agent = !p.hasToken
+      ? '<span class="status status-yellow"><span class="dot dot-yellow"></span>no agent</span>'
+      : p.used
+        ? '<span class="status status-green"><span class="dot dot-green"></span>connected</span>'
+        : '<span class="status status-yellow"><span class="dot dot-yellow"></span>invited · not connected yet</span>';
 
     // a role <select> that submits on change (admins); last admin is locked so
     // they can't demote themselves into a lockout (server enforces this too).
@@ -642,9 +646,7 @@ export function renderTeamPage(
     if (mayManage) {
       if (!p.hasToken)
         controls += opBtn("/admin/invite", "", "identity", p.identity, "Configure agent");
-      if (!p.role)
-        controls += opBtn("/admin/users", "create", "username", p.identity, "Grant login", '<input type="hidden" name="role" value="member">');
-      else {
+      if (p.role) {
         controls += opBtn("/admin/users", "reset", "username", p.identity, "Reset password");
         if (!isLastAdmin)
           controls += opBtn("/admin/users", "delete", "username", p.identity, "Remove login");
@@ -678,7 +680,7 @@ export function renderTeamPage(
     "Setoku — team",
     `${heading(
       "Team",
-      "Everyone gets a read-only, propose-only agent connector; some also get a web login to approve knowledge. The curated context the team builds is shared across everyone. (Curator <i>write</i> connectors are a separate, deliberate step — <code class=\"kbd\">admin-cli</code> on the box — never a default.)",
+      "Everyone gets an account with a read-only, propose-only agent connector. Members can use the agent and view; admins also approve knowledge. The curated context the team builds is shared across everyone. (Curator <i>write</i> connectors are a separate, deliberate step — <code class=\"kbd\">admin-cli</code> on the box — never a default.)",
     )}
 ${flashBanner(flash)}
 ${agentWarning}

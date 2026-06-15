@@ -119,11 +119,10 @@ const pages: [string, string][] = [
     "team",
     renderTeamPage(session, {
       people: [
-        { identity: "peter", hasToken: true, role: "admin" },
-        { identity: "alice@hedgy.co", hasToken: true, role: "admin" },
-        { identity: "steven@hedgy.works", hasToken: true, role: "member" },
-        { identity: "dana@hedgy.co", hasToken: false, role: "member" },
-        { identity: "newhire@hedgy.co", hasToken: true },
+        { identity: "peter", hasToken: true, used: true, role: "admin" },
+        { identity: "alice@hedgy.co", hasToken: true, used: true, role: "admin" },
+        { identity: "steven@hedgy.works", hasToken: true, used: false, role: "member" },
+        { identity: "dana@hedgy.co", hasToken: false, used: false, role: "member" },
       ],
       invite: {
         identity: "newhire@hedgy.co",

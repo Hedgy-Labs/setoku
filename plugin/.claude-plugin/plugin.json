@@ -1,7 +1,7 @@
 {
   "name": "setoku",
   "displayName": "Setoku",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "description": "Governed agentic BI on your Claude subscription. Setoku gives Claude a verified business-context layer (derived from your codebase) plus read-only, audited access to your database \u2014 so it answers business questions accurately instead of guessing from column names.",
   "author": {
     "name": "Hedgy Labs"

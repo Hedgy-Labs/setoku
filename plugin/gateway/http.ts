@@ -165,8 +165,9 @@ if (store.accountCount === 0) {
  * logins, joined by identity string. hasToken = they have an analyst connector;
  * role = their web-login role if any.
  */
-function teamPeople(): { identity: string; hasToken: boolean; role?: string }[] {
+function teamPeople(): { identity: string; hasToken: boolean; used: boolean; role?: string }[] {
   const tokenIds = new Set(analystIdentities());
+  const active = store.activeIdentities();
   const accounts = store.listAccounts();
   const ids = new Set<string>([...tokenIds, ...accounts.map((a) => a.username)]);
   return [...ids]
@@ -174,6 +175,7 @@ function teamPeople(): { identity: string; hasToken: boolean; role?: string }[] 
     .map((identity) => ({
       identity,
       hasToken: tokenIds.has(identity),
+      used: active.has(identity),
       role: accounts.find((a) => a.username === identity)?.role,
     }));
 }
@@ -618,13 +620,24 @@ const httpServer = http.createServer(async (req, res) => {
         } else if (analystIdentities().includes(identity)) {
           teamFlash.set(sid ?? "", { flash: `${identity} already has an agent connector.` });
         } else {
+          // mint the connector AND ensure a web account exists — an agent always
+          // implies an account (member by default; promote later if they curate).
           const token = mintToken();
           const { persisted } = addAnalystToken(token, identity);
-          store.audit(session.identity, "teammate_invited", { identity, persisted });
           const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
-          teamFlash.set(sid ?? "", {
+          const slot: TeamFlash = {
             invite: { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted },
-          });
+          };
+          store.audit(session.identity, "teammate_invited", { identity, persisted });
+          if (!store.getAccount(identity)) {
+            const pw = Array.from(crypto.getRandomValues(new Uint8Array(9)))
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("");
+            store.createAccount({ username: identity, pwhash: await hashPassword(pw), role: "member", createdBy: session.identity });
+            store.audit(session.identity, "account_created", { username: identity, role: "member" });
+            slot.newLogin = { username: identity, role: "member", tempPassword: pw };
+          }
+          teamFlash.set(sid ?? "", slot);
         }
         // Post/Redirect/Get: never re-mint on refresh
         res.writeHead(303, { location: "/admin/team" });
