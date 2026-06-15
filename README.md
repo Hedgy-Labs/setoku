@@ -1,8 +1,6 @@
 # Setoku
 
-**Give claude access to your data and context to answer questions.**
-
-It's basically institutional memory: the stuff about your data that usually lives in people's heads, written down where an agent can use it.
+**Give claude access to your data + context to answer questions.**
 
 - **The problem.** What your data *means* lives in people's heads — which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. Agents never had that, so they guess and get it confidently wrong.
 - **What it does.** It remembers those definitions and gotchas and hands them to Claude right before it answers, so it computes things the way you actually do.
@@ -11,9 +9,7 @@ It's basically institutional memory: the stuff about your data that usually live
 
 Today it's mostly about **data** (what your tables and metrics mean). The same idea could hold more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
 
-_Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI. (Naming: [NAMES.md](./NAMES.md). Full design history: [SPEC.md](./SPEC.md).)_
-
-> **Status:** working prototype. One box serves a live pilot today — querying its Postgres read-only, ingesting its logs, Slack, and bank data, and answering questions through Claude.
+_Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI.
 
 ---
 
