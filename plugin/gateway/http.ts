@@ -402,22 +402,9 @@ echo "    how many companies are paying us right now?"
 `;
 }
 
-/**
- * Lake source tables we know how to surface on the /admin Sources page, mapped
- * to a friendly connector name and the column to read freshness from. We only
- * query the ones that actually exist (so a deploy without a given connector
- * just omits its row) — see gatherSources().
- */
-const LAKE_SOURCES: { table: string; source: string; ts: string }[] = [
-  { table: "logs_vercel", source: "Vercel logs", ts: "ts" },
-  { table: "logs_render", source: "Render logs", ts: "ts" },
-  { table: "slack_messages", source: "Slack", ts: "event_ts" },
-  { table: "app_events", source: "First-party events", ts: "ts" },
-  { table: "mercury_accounts", source: "Mercury · accounts", ts: "snapshot_ts" },
-  { table: "mercury_transactions", source: "Mercury · transactions", ts: "created_at" },
-  { table: "mercury_events", source: "Mercury · webhooks", ts: "received_at" },
-  { table: "ingest_raw", source: "Unrouted (raw)", ts: "ingested_at" },
-];
+// Lake source tables we know how to surface (shared with the list_sources MCP
+// tool) — query only the ones that actually exist; see gatherSources().
+import { LAKE_SOURCES } from "./lib/sources";
 
 /**
  * Gather the /admin Sources view live: is Postgres configured + reachable (+

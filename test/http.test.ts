@@ -143,6 +143,17 @@ describe("tools over HTTP", () => {
     await alice.close();
   });
 
+  it("list_sources reports the connected data surfaces (capability discovery)", async () => {
+    const alice = await connect("tok-alice");
+    expect((await alice.listTools()).tools.map((t) => t.name)).toContain("list_sources");
+    const r = await call(alice, "list_sources");
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain("BUSINESS DATABASE");
+    expect(r.text).toContain("public.orders"); // a fixture table
+    expect(r.text).toMatch(/lake/i); // names the lake even when absent
+    await alice.close();
+  });
+
   it("a teammate token from SETOKU_TOKENS_FILE authenticates as analyst (add-teammate path)", async () => {
     const carol = await connect("tok-carol");
     const names = (await carol.listTools()).tools.map((t) => t.name);
