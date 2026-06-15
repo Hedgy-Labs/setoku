@@ -13,7 +13,13 @@ gateway is the **`server`** service. Code lives under `DIR`; secrets live in `DI
 
 ## 1. Ship a code change to the box
 
-There are two deploy models depending on how the box was set up.
+**One command (rsync boxes):** `bun run deploy` — rsyncs the gateway code, rebuilds the
+`server` container, and checks `/health`. It reads the box target from a gitignored
+`deploy/target.local` (or env): `SETOKU_DEPLOY_SSH`, `SETOKU_DEPLOY_DIR`,
+`SETOKU_DEPLOY_DOMAIN`. Create `deploy/target.local` once per machine and any agent in this
+repo can deploy with `bun run deploy` — no box-specific knowledge required.
+
+The two models below are what that script automates (and what a git-clone box does instead).
 
 ### A. Git clone (the default — `bootstrap.sh` does `git clone … /opt/setoku`)
 ```bash

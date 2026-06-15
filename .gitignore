@@ -5,3 +5,6 @@ plugin/node_modules/
 license-report.tsv
 .env
 backups/
+
+# box deploy target (per-machine, never committed/on-box)
+deploy/target.local
