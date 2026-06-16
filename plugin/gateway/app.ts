@@ -299,7 +299,10 @@ server.registerTool(
       "as unverified knowledge; a curator later promotes or rejects it via /setoku:curate.\n\n" +
       "Split what you record: `fact` is the SINGLE concise claim worth storing (one sentence, no reasoning); " +
       "`context` is the supporting evidence / where you saw it — shown to the curator but NOT stored as the fact. " +
-      "Keep the fact tight; put the 'why' in context.",
+      "Keep the fact tight; put the 'why' in context.\n\n" +
+      "ALWAYS set `relates_to` to the entity or metric this is about (e.g. \"revenue\", \"Customer\") — it's how " +
+      "the knowledge gets organized by subject and how conflicts with existing facts are detected. Only omit it " +
+      "for a genuinely cross-cutting fact that belongs to no single entity/metric.",
     inputSchema: {
       kind: z.enum(["gotcha", "metric", "entity", "query", "other"]),
       fact: z
@@ -316,7 +319,10 @@ server.registerTool(
       relates_to: z
         .string()
         .optional()
-        .describe("Entity/metric name this relates to, if any"),
+        .describe(
+          "The entity or metric name this fact is about (e.g. \"revenue\", \"Customer\"). Set this whenever the " +
+            "fact is about a specific entity/metric — it organizes the knowledge by subject and powers conflict detection.",
+        ),
     },
   },
   async ({ kind, fact, context, relates_to }) => {

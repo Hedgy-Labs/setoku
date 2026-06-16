@@ -70,8 +70,8 @@ export interface KnowledgeView {
   docs: number;
   subjects: SubjectGroup[];
   health: { contradictions: number; duplicates: number; verbose: number; stale: number };
-  contradictions: { subject: string; a: string; b: string; reason: string }[];
-  merges: { a: string; b: string; subject: string; similarity: number; reason: string }[];
+  contradictions: { kind: "contradiction"; subject: string; a: string; b: string; reason: string }[];
+  merges: { kind: "merge"; a: string; b: string; subject: string; similarity: number; reason: string }[];
 }
 
 export interface KnowledgeDoc {

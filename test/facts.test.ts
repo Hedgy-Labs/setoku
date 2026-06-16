@@ -87,6 +87,11 @@ describe("wellFormedness (avenue 1)", () => {
     expect(wellFormedness({ fact: "" }).score).toBe(0);
     expect(wellFormedness({ fact: "a thing happens" }).reasons.some((r) => r.includes("no subject"))).toBe(true);
   });
+
+  it("rejects a punctuation-only fact as having no word content", () => {
+    expect(wellFormedness({ fact: "!!!", subject: "x" }).score).toBe(0);
+    expect(judgeProposal({ fact: "???", subject: "x" }, []).verdict).toBe("reject");
+  });
 });
 
 /* ----------------------------- avenue 4 ---------------------------------- */
@@ -114,6 +119,18 @@ describe("extractFacts (avenue 4)", () => {
     const facts = extractFacts(docs, corr);
     const corrFact = facts.find((f) => f.origin === "correction")!;
     expect(corrFact.subject).toBe("metric:revenue"); // grouped with the doc, not "revenue"
+  });
+
+  it("resolves a name collision to the canonical (non-gotcha) doc, regardless of order", () => {
+    // a metric and a gotcha share the name "mrr"; a correction about "mrr"
+    // must group with the metric (so a real conflict is detected), not the gotcha.
+    const mixed = [
+      doc({ type: "gotcha", name: "mrr", body: "MRR note." }),
+      doc({ type: "metric", name: "mrr", meta: { summary: "MRR is recognized monthly." } }),
+    ];
+    const corr = [correction({ id: 9, relatesTo: "mrr", kind: "metric", content: "MRR is recognized annually." })];
+    const facts = extractFacts(mixed, corr);
+    expect(facts.find((f) => f.origin === "correction")!.subject).toBe("metric:mrr");
   });
 });
 
@@ -166,6 +183,14 @@ describe("findContradictions (avenue 2)", () => {
     const facts: Fact[] = [
       { subject: "topic:launch", predicate: "metric", object: "", claim: "The v2 dashboard shipped in 2026 to the pilot cohort", origin: "correction", ref: "a" },
       { subject: "topic:launch", predicate: "metric", object: "", claim: "It supports 7 chart types", origin: "correction", ref: "b" },
+    ];
+    expect(findContradictions(facts)).toHaveLength(0);
+  });
+
+  it("does NOT flag numbers that differ only by formatting (100 vs 100.0)", () => {
+    const facts: Fact[] = [
+      { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 100 for dollars", origin: "doc", ref: "a" },
+      { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 100.0 for dollars", origin: "correction", ref: "b" },
     ];
     expect(findContradictions(facts)).toHaveLength(0);
   });

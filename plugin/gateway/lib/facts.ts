@@ -127,10 +127,13 @@ export function splitFactCommentary(text: string): {
   commentary: string;
 } {
   const fact = conciseClaim(text);
+  // a truncated fact (length cap hit) has no clean sentence boundary, so there
+  // is no meaningful commentary to split — returning the mid-word tail would be
+  // garbage.
+  if (fact.endsWith("…")) return { fact, commentary: "" };
   const rest = String(text ?? "").trim();
-  const idx = rest.indexOf(fact.replace(/…$/, ""));
-  const commentary =
-    idx >= 0 ? rest.slice(idx + fact.replace(/…$/, "").length).trim() : "";
+  const idx = rest.indexOf(fact);
+  const commentary = idx >= 0 ? rest.slice(idx + fact.length).trim() : "";
   return { fact, commentary };
 }
 
@@ -158,9 +161,14 @@ export function extractFacts(
 
   for (const d of docs) {
     const subject = `${d.type}:${normalize(d.name)}`;
-    subjectByKey.set(normalize(d.name), subject);
+    // canonical (entity/metric/…) docs win the name/table key over a gotcha
+    // that happens to share the name, so a correction resolves to the thing it
+    // describes — and deterministically, regardless of doc order.
+    const canonical = d.type !== "gotcha";
+    const claimKey = normalize(d.name);
+    if (canonical || !subjectByKey.has(claimKey)) subjectByKey.set(claimKey, subject);
     const tbl = normalize(String(d.meta.table ?? ""));
-    if (tbl) subjectByKey.set(tbl, subject);
+    if (tbl && (canonical || !subjectByKey.has(tbl))) subjectByKey.set(tbl, subject);
 
     const summary = String(d.meta.summary ?? "");
     const claim = conciseClaim(summary || d.body || d.name);
@@ -187,9 +195,14 @@ export function extractFacts(
   for (const c of corrections) {
     // structured proposals carry the concise fact authoritatively (avenue 1);
     // legacy single-blob proposals fall back to the heuristic split.
-    const claim = c.fact?.trim() || conciseClaim(c.content);
-    const commentary = c.fact?.trim()
-      ? c.content || undefined
+    const factTrim = c.fact?.trim();
+    const claim = factTrim || conciseClaim(c.content);
+    // when no context was supplied, addCorrection mirrors content := fact, so
+    // skip the duplicate; otherwise content IS the supporting context.
+    const commentary = factTrim
+      ? c.content && c.content !== factTrim
+        ? c.content
+        : undefined
       : splitFactCommentary(c.content).commentary || undefined;
     const rel = c.relatesTo ? normalize(c.relatesTo) : "";
     const subject = rel
@@ -240,6 +253,9 @@ export function wellFormedness(p: Proposal): WellFormedness {
 
   if (fact.length === 0) {
     return { score: 0, reasons: ["empty fact"] };
+  }
+  if (!tokenize(fact).length) {
+    return { score: 0, reasons: ["no word content"] }; // e.g. "!!!"
   }
   // a single concise claim, not a paragraph
   const sentences = fact.split(/(?<=[.!?])\s+/).filter((s) => s.trim().length);
@@ -423,7 +439,7 @@ function conflictReason(a: Fact, b: Fact): string | null {
     if (
       na.length &&
       nb.length &&
-      na[0] !== nb[0] &&
+      Number(na[0]) !== Number(nb[0]) && // numeric compare: "100" == "100.0"
       jaccard(nonNumericTokens(a.claim), nonNumericTokens(b.claim)) >= 0.5
     )
       return `numbers disagree: ${na[0]} vs ${nb[0]}`;

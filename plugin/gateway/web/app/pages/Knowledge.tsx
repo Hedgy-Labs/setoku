@@ -137,8 +137,8 @@ function SubjectCard({ s }: { s: SubjectGroup }) {
         {review ? <Badge tone="down">⚠ review</Badge> : <Badge tone="ok">✓</Badge>}
       </summary>
       <div className="space-y-1 border-t border-stone-200 px-4 py-3">
-        {s.members.map((m) => (
-          <MemberRow key={`${m.type}:${m.name}`} m={m} />
+        {s.members.map((m, i) => (
+          <MemberRow key={`${m.type}:${m.name}:${i}`} m={m} />
         ))}
       </div>
     </details>
