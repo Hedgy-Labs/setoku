@@ -152,12 +152,30 @@ describe("findContradictions (avenue 2)", () => {
     expect(c[0].reason).toContain("opposing");
   });
 
-  it("catches a numeric mismatch on the same predicate", () => {
+  it("catches a numeric mismatch when the claims are otherwise the same statement", () => {
     const facts: Fact[] = [
       { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 100 for dollars", origin: "doc", ref: "a" },
       { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 1000 for dollars", origin: "correction", ref: "b" },
     ];
     expect(findContradictions(facts)[0].reason).toContain("numbers disagree");
+  });
+
+  it("does NOT treat a year as a quantity (real-store false positive)", () => {
+    // two pending corrections on one topic; one mentions a year, one a count.
+    const facts: Fact[] = [
+      { subject: "topic:launch", predicate: "metric", object: "", claim: "The v2 dashboard shipped in 2026 to the pilot cohort", origin: "correction", ref: "a" },
+      { subject: "topic:launch", predicate: "metric", object: "", claim: "It supports 7 chart types", origin: "correction", ref: "b" },
+    ];
+    expect(findContradictions(facts)).toHaveLength(0);
+  });
+
+  it("does NOT flag two unrelated numbers on the same subject", () => {
+    // different statements that each contain a number must not collide.
+    const facts: Fact[] = [
+      { subject: "metric:revenue", predicate: "metric", object: "", claim: "Revenue grew 20 percent last quarter", origin: "doc", ref: "a" },
+      { subject: "metric:revenue", predicate: "metric", object: "", claim: "We have 5 sales reps covering it", origin: "correction", ref: "b" },
+    ];
+    expect(findContradictions(facts)).toHaveLength(0);
   });
 
   it("catches an atomic-predicate object mismatch", () => {

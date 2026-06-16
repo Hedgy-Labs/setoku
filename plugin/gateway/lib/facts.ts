@@ -307,8 +307,22 @@ function opposingGroups(g1: number, g2: number): boolean {
 const ATOMIC_PREDICATES = new Set(["unit", "status", "type", "grain", "format"]);
 
 const NUM_RE = /-?\d[\d,]*\.?\d*/g;
+
+/** Numbers in text, excluding 4-digit years (1900–2099). Years are dates, not
+ *  quantities to compare — treating one as a quantity produced a false
+ *  contradiction on the real store ("2026" read as disagreeing with "7"). We
+ *  trade catching year-vs-year conflicts for precision; this is a
+ *  recommend-only pass, so a false flag costs more than a miss. */
 function numbers(text: string): string[] {
-  return (text.match(NUM_RE) ?? []).map((n) => n.replace(/,/g, ""));
+  return (text.match(NUM_RE) ?? [])
+    .map((n) => n.replace(/,/g, ""))
+    .filter((n) => !/^(?:19|20)\d{2}$/.test(n));
+}
+
+/** Token set of a claim with numbers stripped — for the "same statement,
+ *  different number" check. */
+function nonNumericTokens(text: string): Set<string> {
+  return new Set(tokenize(text.replace(NUM_RE, " ")));
 }
 
 /**
@@ -400,11 +414,18 @@ function conflictReason(a: Fact, b: Fact): string | null {
     }
   }
 
-  // 3 — numeric mismatch on the same predicate
+  // 3 — numeric mismatch: only when the two claims are otherwise nearly the
+  // SAME statement (so we're comparing the same quantity), not merely two
+  // claims that each happen to contain a number.
   if (a.predicate === b.predicate) {
     const na = numbers(a.claim);
     const nb = numbers(b.claim);
-    if (na.length && nb.length && na[0] !== nb[0])
+    if (
+      na.length &&
+      nb.length &&
+      na[0] !== nb[0] &&
+      jaccard(nonNumericTokens(a.claim), nonNumericTokens(b.claim)) >= 0.5
+    )
       return `numbers disagree: ${na[0]} vs ${nb[0]}`;
   }
 
