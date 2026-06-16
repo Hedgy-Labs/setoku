@@ -136,7 +136,12 @@ export function retrievalMetrics<T extends ScorableDoc>(
     const relevant = new Set(c.relevant);
     const matched = topk.filter((n) => relevant.has(n));
 
-    const precision = topk.length ? matched.length / k : 0;
+    // precision among what was actually returned (scoreDocs returns only
+    // docs with score > 0, so topk can be < k). Dividing by k instead would
+    // cap precision below 100% on small curated stores — the common case
+    // here — and misread as a retrieval problem. recall@k / MRR are the
+    // headline metrics; precision is "of what I surfaced, how much was right".
+    const precision = topk.length ? matched.length / topk.length : 0;
     const recall = relevant.size ? matched.length / relevant.size : 0;
 
     let firstRelevantRank: number | null = null;
@@ -286,6 +291,9 @@ export function defectMetrics(
 export function knowledgeStats<T extends ScorableDoc>(
   docs: T[],
   redundancyThreshold = 0.6,
+  /** Precomputed pair count, to avoid recomputing the O(n²) report when the
+   *  caller already has it (e.g. the CLI runs redundancyReport separately). */
+  precomputedRedundantPairs?: number,
 ): KnowledgeStats {
   const byType: Record<string, number> = {};
   let totalTokens = 0;
@@ -298,6 +306,8 @@ export function knowledgeStats<T extends ScorableDoc>(
     byType,
     totalTokens,
     avgTokensPerDoc: docs.length ? totalTokens / docs.length : 0,
-    redundantPairs: redundancyReport(docs, redundancyThreshold).length,
+    redundantPairs:
+      precomputedRedundantPairs ??
+      redundancyReport(docs, redundancyThreshold).length,
   };
 }

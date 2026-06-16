@@ -76,23 +76,47 @@ export function runQuality(spec: QualitySpec, docs: ScorableDoc[]) {
   const k = spec.k ?? 5;
   const threshold = spec.redundancyThreshold ?? 0.6;
 
-  const stats = knowledgeStats(docs, threshold);
+  const redundant = redundancyReport(docs, threshold);
+  const stats = knowledgeStats(docs, threshold, redundant.length);
   const retrieval = spec.retrieval?.length
     ? retrievalMetrics(docs, spec.retrieval, k)
     : null;
-  const redundant = redundancyReport(docs, threshold);
   const judgement = spec.judgement?.length
     ? judgementMetrics(spec.judgement)
     : null;
 
   let defects = null;
+  // When `found` is omitted we can only auto-derive the DUPLICATE detector
+  // (redundancyReport is model-free). Scoring non-`dup:` planted defects
+  // (contradictions, stale) against that derived set would count them all as
+  // missed — misleading. So without explicit `found`, score only the dup-kind
+  // planted defects and report the rest as unscored (no detector supplied).
+  let defectsUnscored: string[] = [];
   if (spec.defects?.planted?.length) {
-    const found =
-      spec.defects.found ?? redundant.map((p) => dupKey(p.a, p.b));
-    defects = defectMetrics(found, spec.defects.planted);
+    if (spec.defects.found) {
+      defects = defectMetrics(spec.defects.found, spec.defects.planted);
+    } else {
+      const derived = redundant.map((p) => dupKey(p.a, p.b));
+      const plantedDup = spec.defects.planted.filter((key) =>
+        key.startsWith("dup:"),
+      );
+      defectsUnscored = spec.defects.planted.filter(
+        (key) => !key.startsWith("dup:"),
+      );
+      defects = defectMetrics(derived, plantedDup);
+    }
   }
 
-  return { stats, retrieval, redundant, judgement, defects, k, threshold };
+  return {
+    stats,
+    retrieval,
+    redundant,
+    judgement,
+    defects,
+    defectsUnscored,
+    k,
+    threshold,
+  };
 }
 
 type QualityResult = ReturnType<typeof runQuality>;
@@ -157,25 +181,47 @@ function renderScorecard(r: QualityResult): string {
     lines.push(`| F1 | ${d.f1.toFixed(3)} |`);
     if (d.missed.length) lines.push(`\nmissed: ${d.missed.join(", ")}`);
     if (d.spurious.length) lines.push(`spurious: ${d.spurious.join(", ")}`);
+    if (r.defectsUnscored.length)
+      lines.push(
+        `unscored (no detector output supplied — pass defects.found): ${r.defectsUnscored.join(", ")}`,
+      );
     lines.push("");
   }
 
   return lines.join("\n");
 }
 
-/** Returns [] when no gate configured or all pass; otherwise the list of failures. */
+/**
+ * Returns [] when no gate configured or all pass; otherwise the list of
+ * failures. A threshold that references a dimension absent from the run is
+ * itself a failure (e.g. minHitRate set but no retrieval cases ran) — silently
+ * skipping it would let a misconfigured spec report a passing gate in CI.
+ */
 export function checkGate(spec: QualitySpec, r: QualityResult): string[] {
   const g = spec.gate;
   if (!g) return [];
   const fails: string[] = [];
-  if (g.minHitRate != null && r.retrieval && r.retrieval.hitRate < g.minHitRate)
-    fails.push(`hit rate ${pct(r.retrieval.hitRate)} < ${pct(g.minHitRate)}`);
-  if (g.minRecallAtK != null && r.retrieval && r.retrieval.recallAtK < g.minRecallAtK)
-    fails.push(`recall@k ${pct(r.retrieval.recallAtK)} < ${pct(g.minRecallAtK)}`);
-  if (g.maxFalseAcceptRate != null && r.judgement && r.judgement.falseAcceptRate > g.maxFalseAcceptRate)
-    fails.push(`false-accept rate ${pct(r.judgement.falseAcceptRate)} > ${pct(g.maxFalseAcceptRate)}`);
-  if (g.minDefectRecall != null && r.defects && r.defects.recall < g.minDefectRecall)
-    fails.push(`defect recall ${pct(r.defects.recall)} < ${pct(g.minDefectRecall)}`);
+  if (g.minHitRate != null) {
+    if (!r.retrieval) fails.push("minHitRate set but no retrieval cases ran");
+    else if (r.retrieval.hitRate < g.minHitRate)
+      fails.push(`hit rate ${pct(r.retrieval.hitRate)} < ${pct(g.minHitRate)}`);
+  }
+  if (g.minRecallAtK != null) {
+    if (!r.retrieval) fails.push("minRecallAtK set but no retrieval cases ran");
+    else if (r.retrieval.recallAtK < g.minRecallAtK)
+      fails.push(`recall@k ${pct(r.retrieval.recallAtK)} < ${pct(g.minRecallAtK)}`);
+  }
+  if (g.maxFalseAcceptRate != null) {
+    if (!r.judgement)
+      fails.push("maxFalseAcceptRate set but no judgement decisions ran");
+    else if (r.judgement.falseAcceptRate > g.maxFalseAcceptRate)
+      fails.push(`false-accept rate ${pct(r.judgement.falseAcceptRate)} > ${pct(g.maxFalseAcceptRate)}`);
+  }
+  if (g.minDefectRecall != null) {
+    if (!r.defects) fails.push("minDefectRecall set but no defects scored");
+    else if (r.defects.recall < g.minDefectRecall)
+      fails.push(`defect recall ${pct(r.defects.recall)} < ${pct(g.minDefectRecall)}`);
+  }
   return fails;
 }
 
@@ -188,7 +234,20 @@ function main() {
     process.exit(2);
   }
 
-  const spec: QualitySpec = JSON.parse(fs.readFileSync(args.spec, "utf8"));
+  let spec: QualitySpec;
+  try {
+    spec = JSON.parse(fs.readFileSync(args.spec, "utf8"));
+  } catch (e) {
+    console.error(`could not read/parse spec ${args.spec}: ${(e as Error).message}`);
+    process.exit(2);
+  }
+
+  // Constructing a KnowledgeStore creates the db file + dirs, so a typo'd --db
+  // would silently leave an empty store behind. Require the path to exist.
+  if (args.db && !fs.existsSync(args.db)) {
+    console.error(`--db not found: ${args.db}`);
+    process.exit(2);
+  }
   const docs: ScorableDoc[] = args.db
     ? new KnowledgeStore(args.db).listDocs()
     : (spec.docs ?? []);

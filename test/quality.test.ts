@@ -28,6 +28,10 @@ describe("retrievalMetrics", () => {
     expect(m.hitRate).toBe(1); // every question retrieves a relevant doc
     expect(m.recallAtK).toBeGreaterThan(0.9);
     expect(m.mrr).toBeGreaterThan(0);
+    // precision is "of what was surfaced, how much was relevant" — not capped
+    // by k on a small store. Here ≈0.64; the old k-capped form (÷5) would
+    // report ≈0.27 for identical retrieval, which reads as a false problem.
+    expect(m.precisionAtK).toBeGreaterThan(0.6);
   });
 
   it("counts a coverage gap when the relevant doc is absent from the store", () => {
@@ -120,5 +124,27 @@ describe("runQuality + checkGate (CLI core)", () => {
     const fails = checkGate(strict, r);
     expect(fails.length).toBe(1);
     expect(fails[0]).toContain("false-accept rate");
+  });
+
+  it("fails the gate when a threshold references a dimension absent from the run", () => {
+    // gate demands a hit rate, but the spec has no retrieval cases — must NOT
+    // silently pass (that would be a false green in CI).
+    const noRetrieval = { docs: DOCS, gate: { minHitRate: 0.9 } };
+    const r = runQuality(noRetrieval, DOCS);
+    const fails = checkGate(noRetrieval, r);
+    expect(fails.length).toBe(1);
+    expect(fails[0]).toContain("no retrieval cases");
+  });
+
+  it("does not score non-duplicate planted defects against the auto-derived dup detector", () => {
+    // A planted contradiction with no explicit `found` must be reported as
+    // unscored, not counted as a miss (which would tank recall misleadingly).
+    const spec = {
+      docs: DOCS,
+      defects: { planted: ["contradiction:revenue|recognized_revenue"] },
+    };
+    const r = runQuality(spec, DOCS);
+    expect(r.defectsUnscored).toEqual(["contradiction:revenue|recognized_revenue"]);
+    expect(r.defects!.planted).toBe(0); // nothing dup-kind to score
   });
 });
