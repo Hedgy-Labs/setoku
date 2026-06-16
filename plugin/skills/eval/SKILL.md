@@ -60,8 +60,6 @@ The spec (see `test/fixtures/eval/knowledge.json` for the shape) carries frozen,
 
 **Cost split.** The structural metrics are free (deterministic, automatable in CI). The *fuzzy detectors that produce the labels* — does fact X contradict fact Y? did the auto-judge decide right? — run in **this session on the Max subscription** (no server-side inference, I8). Reserve those for interactive runs after a structural change; gate the deterministic metrics continuously.
 
-## Compaction & triage (the companion pass — issue #10)
+## Compaction (the companion pass — issue #10)
 
-`bun run compact --db <knowledge.db> [--triage]` runs the deterministic compaction ("REM sleep") pass over the live store: it derives structured facts (see [docs/knowledge-facts.md](../../../docs/knowledge-facts.md)) and reports **merge candidates** (near-duplicate facts), **contradictions to review** (antonym/numeric/atomic-object clashes on the same subject), and stale flags. With `--triage` it adds an **advisory** accept/reject/review verdict per pending correction.
-
-It is **read-only and recommend-only** (I2/I9): it never edits curated knowledge — a human still enacts decisions on the approval surface. Use it to pre-sort a noisy queue before `/setoku:curate`, and watch its false-accept rate via the harness above.
+Compaction ("REM sleep") — merging duplicate facts, resolving contradictions, tightening verbose docs — is judgment work, so it runs **in a curator session** via [`/setoku:compact`](../compact/SKILL.md), not as a server-side job (I8). The `/admin/knowledge` health bar surfaces the deterministic signals (contradictions / duplicates / verbose / stale counts) as a cheap map; the skill does the actual semantic cleanup and commits it through the curator membrane (I9). The metrics above are how you check that a compaction pass actually improved the store.

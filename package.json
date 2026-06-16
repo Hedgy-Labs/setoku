@@ -8,7 +8,6 @@
     "test": "bun test test/ ingest/",
     "test:e2e": "bun test e2e/",
     "eval:knowledge": "bun plugin/gateway/quality-cli.ts",
-    "compact": "bun plugin/gateway/compaction-cli.ts",
     "setup:hooks": "git config core.hooksPath scripts/hooks",
     "typecheck": "tsc --noEmit",
     "build:admin-css": "tailwindcss -i plugin/gateway/web/input.css -o plugin/gateway/web/app.css --minify",
