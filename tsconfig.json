@@ -3,7 +3,8 @@
     "target": "ESNext",
     "module": "ESNext",
     "moduleResolution": "bundler",
-    "lib": ["ESNext"],
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
     "types": ["bun", "node"],
     "strict": true,
     "noEmit": true,
@@ -14,6 +15,7 @@
   },
   "include": [
     "plugin/gateway/**/*.ts",
+    "plugin/gateway/web/app/**/*.tsx",
     "provisioner/**/*.ts",
     "test/**/*.ts"
   ]

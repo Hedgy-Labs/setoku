@@ -229,31 +229,44 @@ describe("tools over HTTP", () => {
 });
 
 describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
-  /** Log in with a local account; return the session cookie. */
-  async function login(username: string, password: string): Promise<Response> {
-    return fetch(`${BASE}/admin/login`, {
+  /** Log in with a local account (JSON API). */
+  function login(username: string, password: string): Promise<Response> {
+    return fetch(`${BASE}/admin/api/login`, {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ username, password }),
-      redirect: "manual",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, password }),
     });
   }
-  async function cookieFor(username: string, password: string): Promise<string> {
+  /** Sign in and return the session cookie + the CSRF token the SPA echoes. */
+  async function session(username: string, password: string): Promise<{ cookie: string; csrf: string }> {
     const r = await login(username, password);
-    expect(r.status).toBe(303);
+    expect(r.status).toBe(200);
     const setCookie = r.headers.get("set-cookie") ?? "";
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
-    return setCookie.split(";")[0];
+    const body = (await r.json()) as { csrf: string };
+    return { cookie: setCookie.split(";")[0], csrf: body.csrf };
+  }
+  function apiGet(path: string, cookie?: string): Promise<Response> {
+    return fetch(`${BASE}/admin/api/${path}`, { headers: cookie ? { cookie } : {} });
+  }
+  function apiPost(path: string, opts: { cookie?: string; csrf?: string; body?: unknown }): Promise<Response> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (opts.cookie) headers.cookie = opts.cookie;
+    if (opts.csrf !== undefined) headers["x-csrf-token"] = opts.csrf;
+    return fetch(`${BASE}/admin/api/${path}`, { method: "POST", headers, body: JSON.stringify(opts.body ?? {}) });
   }
 
-  it("the bare /admin link is safe to share — no session shows a login form, no secret in any URL", async () => {
+  it("the bare /admin link is safe to share — it serves a data-less SPA shell, and unauthenticated API reads are refused", async () => {
+    // GET /admin → the static React shell: no session, no secrets, no data
     const r = await fetch(`${BASE}/admin`);
     expect(r.status).toBe(200);
     const page = await r.text();
-    expect(page).toContain("sign in");
-    expect(page).toContain("password");
-    expect(page).not.toContain("Pending (");
+    expect(page).toContain('id="root"');
+    expect(page).toContain("/admin/app.js");
+    // and no API data leaks without a session
+    expect((await apiGet("session")).status).toBe(401);
+    expect((await apiGet("pending")).status).toBe(401);
   });
 
   it("an MCP bearer token is NOT an admin credential — an agent cannot log in (I9)", async () => {
@@ -271,6 +284,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
   it("rejects a wrong password", async () => {
     const r = await login("boss", "wrong");
     expect(r.status).toBe(401);
+    expect(r.headers.get("set-cookie")).toBeNull();
   });
 
   it("an admin approves a pending gotcha → it enters verified context; agents never could", async () => {
@@ -284,21 +298,19 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     await alice.close();
 
     // 2. a human signs in with their ADMIN ACCOUNT (not the MCP token) and sees it
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const page = await (await fetch(`${BASE}/admin`, { headers: { cookie } })).text();
-    expect(page).toContain("Gift-card top-ups");
-    expect(page).toContain("Approve");
-    const id = page.match(/name="id" value="(\d+)"/)![1];
-    const csrf = page.match(/name="csrf" value="([^"]+)"/)![1];
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const pending = (await (await apiGet("pending", cookie)).json()) as { id: number; content: string }[];
+    const corr = pending.find((c) => c.content.includes("Gift-card top-ups"));
+    expect(corr).toBeDefined();
 
     // 3. the human POSTs Approve — the commit happens here, outside any agent
-    const post = await fetch(`${BASE}/admin/resolve`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-      body: new URLSearchParams({ id, csrf, action: "accepted", reason: "confirmed with finance" }),
-      redirect: "manual",
+    const post = await apiPost("resolve", {
+      cookie,
+      csrf,
+      body: { id: corr!.id, action: "accepted", reason: "confirmed with finance" },
     });
-    expect(post.status).toBe(303);
+    expect(post.status).toBe(200);
+    expect(((await post.json()) as { ok: boolean }).ok).toBe(true);
 
     // 4. it now surfaces as verified context to a fresh agent session
     const bob = await connect("tok-bob");
@@ -322,40 +334,25 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const alice = await connect("tok-alice");
     await call(alice, "report_correction", { kind: "gotcha", content: "Members must not be able to approve this" });
     await alice.close();
-    const cookie = await cookieFor("viewer", "viewer-pass");
-    const page = await (await fetch(`${BASE}/admin`, { headers: { cookie } })).text();
-    expect(page).toContain("Members must not be able to approve this"); // can see
-    expect(page).toContain("viewing only"); // told they can't act
-    expect(page).not.toContain("name=\"action\" value=\"accepted\""); // no approve button
-    // and a forged resolve POST from a member is refused server-side
-    const r = await fetch(`${BASE}/admin/resolve`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-      body: new URLSearchParams({ id: "999", csrf: "x", action: "accepted" }),
-      redirect: "manual",
-    });
-    expect([403]).toContain(r.status); // bad csrf or role — either way refused
+    const { cookie, csrf } = await session("viewer", "viewer-pass");
+    // a member CAN read the pending view ...
+    const pending = (await (await apiGet("pending", cookie)).json()) as { content: string }[];
+    expect(pending.some((c) => c.content.includes("Members must not be able to approve this"))).toBe(true);
+    // ... and the session endpoint that drives the UI reports their role as member ...
+    expect(((await (await apiGet("session", cookie)).json()) as { role: string }).role).toBe("member");
+    // ... but a resolve POST — even with a VALID csrf — is refused on ROLE (I9)
+    const r = await apiPost("resolve", { cookie, csrf, body: { id: 999, action: "accepted" } });
+    expect(r.status).toBe(403);
   });
 
   it("an admin invites a teammate → the minted token authenticates immediately (no restart)", async () => {
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    // admin sees the invite form; member does not (checked below)
-    const teamPage = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
-    expect(teamPage).toContain("Setoku — team");
-    expect(teamPage).toContain('action="/admin/invite"');
-    const csrf = teamPage.match(/name="csrf" value="([^"]+)"/)![1];
-
-    // POST the invite
-    const r = await fetch(`${BASE}/admin/invite`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-      body: new URLSearchParams({ csrf, identity: "newhire@co.test" }),
-      redirect: "manual",
-    });
-    expect(r.status).toBe(303); // PRG: the result shows on the redirected GET
-    const page = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
-    expect(page).toContain("Agent connector for newhire@co.test");
-    const token = page.match(/\/mcp\/([0-9a-f]{48})/)![1];
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const r = await apiPost("invite", { cookie, csrf, body: { identity: "newhire@co.test" } });
+    expect(r.status).toBe(200);
+    const result = (await r.json()) as { ok: boolean; invite: { token: string; mcpUrl: string } };
+    expect(result.ok).toBe(true);
+    const token = result.invite.token;
+    expect(token).toMatch(/^[0-9a-f]{48}$/);
 
     // the brand-new token works over MCP right away, as an analyst (read + propose)
     const client = await connect(token);
@@ -366,52 +363,37 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     await client.close();
 
     // and it shows up in the team list
-    const after = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
-    expect(after).toContain("newhire@co.test");
+    const team = (await (await apiGet("team", cookie)).json()) as { people: { identity: string }[] };
+    expect(team.people.some((p) => p.identity === "newhire@co.test")).toBe(true);
   });
 
-  it("a teammate shows 'invited' until they actually use the agent, then 'connected'", async () => {
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const csrf = (await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text()).match(/name="csrf" value="([^"]+)"/)![1];
-    await fetch(`${BASE}/admin/invite`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-      body: new URLSearchParams({ csrf, identity: "usage@co.test" }),
-      redirect: "manual",
-    });
-    const before = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
-    const token = before.match(/\/mcp\/([0-9a-f]{48})/)![1];
-    // the person ROW name span (not the one-time invite/login block) → to </li>
-    const rowOf = (html: string, id: string) => {
-      const anchor = `text-stone-100">${id}</span>`;
-      const i = html.indexOf(anchor);
-      return i < 0 ? "" : html.slice(i, html.indexOf("</li>", i));
+  it("a teammate shows 'invited' (not used) until they use the agent, then 'connected' (used)", async () => {
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const inv = await apiPost("invite", { cookie, csrf, body: { identity: "usage@co.test" } });
+    const token = ((await inv.json()) as { invite: { token: string } }).invite.token;
+    const rowFor = async (id: string) => {
+      const team = (await (await apiGet("team", cookie)).json()) as {
+        people: { identity: string; used: boolean; hasToken: boolean }[];
+      };
+      return team.people.find((p) => p.identity === id)!;
     };
-    expect(rowOf(before, "usage@co.test")).toContain("invited"); // minted, not used yet
+    const before = await rowFor("usage@co.test");
+    expect(before.hasToken).toBe(true);
+    expect(before.used).toBe(false); // minted, not used yet
 
     // actually use the agent (an MCP tool call), then it reads "connected"
     const client = await connect(token);
     await call(client, "find_context", { question: "anything" });
     await client.close();
-    const after = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
-    expect(rowOf(after, "usage@co.test")).toContain("connected");
-    expect(rowOf(after, "usage@co.test")).not.toContain("invited");
+    expect((await rowFor("usage@co.test")).used).toBe(true);
   });
 
   it("rotating a connector revokes the old token and issues a working new one", async () => {
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const grab = async () =>
-      (await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text());
-    const csrf1 = (await grab()).match(/name="csrf" value="([^"]+)"/)![1];
-    const inv = async (fields: Record<string, string>) => {
-      const r = await fetch(`${BASE}/admin/invite`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-        body: new URLSearchParams({ csrf: csrf1, ...fields }),
-        redirect: "manual",
-      });
-      expect(r.status).toBe(303);
-      return (await grab()).match(/\/mcp\/([0-9a-f]{48})/)![1];
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const inv = async (body: Record<string, unknown>): Promise<string> => {
+      const r = await apiPost("invite", { cookie, csrf, body });
+      expect(r.status).toBe(200);
+      return ((await r.json()) as { invite: { token: string } }).invite.token;
     };
     const t1 = await inv({ identity: "rot@co.test" });
     // old token works
@@ -419,7 +401,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect((await c1.listTools()).tools.length).toBeGreaterThan(0);
     await c1.close();
     // rotate → new token
-    const t2 = await inv({ identity: "rot@co.test", rotate: "1" });
+    const t2 = await inv({ identity: "rot@co.test", rotate: true });
     expect(t2).not.toBe(t1);
     // old token is now rejected; new one works
     expect(connect(t1)).rejects.toThrow();
@@ -429,153 +411,110 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
   });
 
   it("a member cannot invite (role-gated), and a bad CSRF is refused", async () => {
-    const memberCookie = await cookieFor("viewer", "viewer-pass");
-    // member view: no invite form
-    const mp = await (await fetch(`${BASE}/admin/team`, { headers: { cookie: memberCookie } })).text();
-    expect(mp).not.toContain('action="/admin/invite"');
-    expect(mp).toContain("viewing only");
-    // forged invite POST from a member is refused
-    const r = await fetch(`${BASE}/admin/invite`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie: memberCookie },
-      body: new URLSearchParams({ csrf: "x", identity: "evil@co.test" }),
-      redirect: "manual",
-    });
-    expect(r.status).toBe(403); // bad csrf or role — either way refused
-    // bad CSRF from an admin is also refused
-    const adminCookie = await cookieFor("boss", "s3cret-pass");
-    const r2 = await fetch(`${BASE}/admin/invite`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie: adminCookie },
-      body: new URLSearchParams({ csrf: "wrong", identity: "x@co.test" }),
-      redirect: "manual",
-    });
+    const member = await session("viewer", "viewer-pass");
+    // a member is refused on ROLE even with a valid csrf
+    const r = await apiPost("invite", { cookie: member.cookie, csrf: member.csrf, body: { identity: "evil@co.test" } });
+    expect(r.status).toBe(403);
+    // a bad CSRF from an admin is also refused
+    const admin = await session("boss", "s3cret-pass");
+    const r2 = await apiPost("invite", { cookie: admin.cookie, csrf: "wrong", body: { identity: "x@co.test" } });
     expect(r2.status).toBe(403);
   });
 
-  async function teamCsrf(cookie: string): Promise<string> {
-    const page = await (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
-    return page.match(/name="csrf" value="([^"]+)"/)![1];
-  }
-  function usersPost(cookie: string, csrf: string, fields: Record<string, string>) {
-    return fetch(`${BASE}/admin/users`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-      body: new URLSearchParams({ csrf, ...fields }),
-      redirect: "manual",
-    });
-  }
-  // POST then follow the PRG redirect; the one-time result shows on the GET.
-  async function usersResult(cookie: string, csrf: string, fields: Record<string, string>): Promise<string> {
-    const r = await usersPost(cookie, csrf, fields);
-    expect(r.status).toBe(303);
-    return (await fetch(`${BASE}/admin/team`, { headers: { cookie } })).text();
-  }
-
   it("the last admin cannot be demoted or removed (no lockout)", async () => {
     // at this point 'boss' is the only admin; 'viewer' is a member
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const csrf = await teamCsrf(cookie);
-    expect(await usersResult(cookie, csrf, { op: "role", username: "boss", role: "member" })).toContain("demote the last admin");
-    expect(await usersResult(cookie, csrf, { op: "delete", username: "boss" })).toContain("remove the last admin");
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const demote = await apiPost("users", { cookie, csrf, body: { op: "role", username: "boss", role: "member" } });
+    expect(demote.status).toBe(409);
+    expect(((await demote.json()) as { error: string }).error).toContain("demote the last admin");
+    const del = await apiPost("users", { cookie, csrf, body: { op: "delete", username: "boss" } });
+    expect(del.status).toBe(409);
+    expect(((await del.json()) as { error: string }).error).toContain("remove the last admin");
   });
 
   let danaPw = "";
   it("an admin creates a web login, it can sign in, and members can't manage accounts", async () => {
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const csrf = await teamCsrf(cookie);
-    const page = await usersResult(cookie, csrf, { op: "create", username: "dana@co.test", role: "member" });
-    expect(page).toContain("login for dana@co.test");
-    danaPw = page.match(/Temp password: <span class="select-all">([0-9a-f]+)<\/span>/)![1];
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const r = await apiPost("users", { cookie, csrf, body: { op: "create", username: "dana@co.test", role: "member" } });
+    expect(r.status).toBe(200);
+    const result = (await r.json()) as { flash: string; newLogin: { tempPassword: string } };
+    expect(result.flash).toContain("login for dana@co.test");
+    danaPw = result.newLogin.tempPassword;
 
     // the new login works, and dana (a member) cannot manage accounts
-    const danaCookie = await cookieFor("dana@co.test", danaPw);
-    const denied = await usersPost(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "x@co.test", role: "admin" });
+    const dana = await session("dana@co.test", danaPw);
+    const denied = await apiPost("users", {
+      cookie: dana.cookie,
+      csrf: dana.csrf,
+      body: { op: "create", username: "x@co.test", role: "admin" },
+    });
     expect(denied.status).toBe(403);
   });
 
   it("an admin can promote a member to admin (change privilege level)", async () => {
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const page = await usersResult(cookie, await teamCsrf(cookie), { op: "role", username: "dana@co.test", role: "admin" });
-    expect(page).toContain("dana@co.test is now admin");
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const r = await apiPost("users", { cookie, csrf, body: { op: "role", username: "dana@co.test", role: "admin" } });
+    expect(((await r.json()) as { flash: string }).flash).toContain("dana@co.test is now admin");
     // dana re-logs-in → her new session is admin → she can now manage the team
-    const danaCookie = await cookieFor("dana@co.test", danaPw);
-    const okPage = await usersResult(danaCookie, await teamCsrf(danaCookie), { op: "create", username: "newbie@co.test", role: "member" });
-    expect(okPage).toContain("login for newbie@co.test");
+    const dana = await session("dana@co.test", danaPw);
+    const ok = await apiPost("users", {
+      cookie: dana.cookie,
+      csrf: dana.csrf,
+      body: { op: "create", username: "newbie@co.test", role: "member" },
+    });
+    expect(((await ok.json()) as { flash: string }).flash).toContain("login for newbie@co.test");
   });
 
   it("rejects a resolve POST with a bad CSRF token", async () => {
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const r = await fetch(`${BASE}/admin/resolve`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", cookie },
-      body: new URLSearchParams({ id: "1", csrf: "wrong", action: "accepted" }),
-      redirect: "manual",
-    });
+    const { cookie } = await session("boss", "s3cret-pass");
+    const r = await apiPost("resolve", { cookie, csrf: "wrong", body: { id: 1, action: "accepted" } });
     expect(r.status).toBe(403);
   });
 
-  it("the knowledge browser lists curated docs and requires a session", async () => {
-    // unauthenticated → login form, never the knowledge itself
-    const anon = await fetch(`${BASE}/admin/knowledge`, { redirect: "manual" });
-    const anonPage = await anon.text();
-    expect(anonPage).toContain("sign in");
-    expect(anonPage).not.toContain("Setoku — knowledge");
-
-    // signed in → the page renders with the shared tab nav
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const r = await fetch(`${BASE}/admin/knowledge`, { headers: { cookie } });
+  it("the knowledge endpoint lists curated docs and requires a session", async () => {
+    expect((await apiGet("knowledge")).status).toBe(401); // unauthenticated → refused
+    const { cookie } = await session("boss", "s3cret-pass");
+    const r = await apiGet("knowledge", cookie);
     expect(r.status).toBe(200);
-    const page = await r.text();
-    expect(page).toContain("Setoku — knowledge");
-    expect(page).toContain('href="/admin/sources"'); // nav present
-    expect(page).toContain("Curated business context");
+    const docs = (await r.json()) as { type: string }[];
+    expect(Array.isArray(docs)).toBe(true);
   });
 
-  it("the sources page shows what's connected and requires a session", async () => {
-    const anon = await fetch(`${BASE}/admin/sources`, { redirect: "manual" });
-    expect(await anon.text()).toContain("sign in");
-
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const r = await fetch(`${BASE}/admin/sources`, { headers: { cookie } });
+  it("the sources endpoint shows what's connected and requires a session", async () => {
+    expect((await apiGet("sources")).status).toBe(401);
+    const { cookie } = await session("boss", "s3cret-pass");
+    const r = await apiGet("sources", cookie);
     expect(r.status).toBe(200);
-    const page = await r.text();
-    expect(page).toContain("Setoku — sources");
-    expect(page).toContain("Business database");
-    expect(page).toContain("Knowledge store");
-    // flat source rows with colored status (lime/amber/red) + legend
-    expect(page).toContain("status-");
-    expect(page).toContain("flowing");
+    const s = (await r.json()) as { postgres: { configured: boolean }; knowledge: { docs: number } };
+    expect(s.postgres).toBeDefined();
+    expect(s.knowledge).toBeDefined();
   });
 
   it("a resolve POST without a session is refused", async () => {
-    const r = await fetch(`${BASE}/admin/resolve`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ id: "1", csrf: "x", action: "accepted" }),
-      redirect: "manual",
-    });
+    const r = await apiPost("resolve", { csrf: "x", body: { id: 1, action: "accepted" } });
     expect(r.status).toBe(401);
   });
 
-  it("the audit log page lists actions for a signed-in admin (5.6)", async () => {
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const page = await (await fetch(`${BASE}/admin/audit`, { headers: { cookie } })).text();
-    expect(page).toContain("audit log");
-    expect(page).toContain("admin_login"); // our own login is recorded
+  it("the audit endpoint lists actions for a signed-in admin (5.6)", async () => {
+    const { cookie } = await session("boss", "s3cret-pass");
+    const rows = (await (await apiGet("audit", cookie)).json()) as { tool: string }[];
+    expect(rows.some((r) => r.tool === "admin_login")).toBe(true); // our own login is recorded
   });
 
-  it("escapes attacker-influenceable correction content (no stored XSS in the gate)", async () => {
+  it("serves correction content as JSON data, not interpolated HTML (no stored XSS in the gate)", async () => {
     const alice = await connect("tok-alice");
     await call(alice, "report_correction", {
       kind: "other",
       content: "<script>alert('xss')</script> pwn",
     });
     await alice.close();
-    const cookie = await cookieFor("boss", "s3cret-pass");
-    const page = await (await fetch(`${BASE}/admin`, { headers: { cookie } })).text();
-    expect(page).not.toContain("<script>alert('xss')</script>");
-    expect(page).toContain("&lt;script&gt;");
+    const { cookie } = await session("boss", "s3cret-pass");
+    // the gate returns content as a JSON string value (data, not markup); React
+    // escapes it on render. The static shell never carries it either.
+    const pending = (await (await apiGet("pending", cookie)).json()) as { content: string }[];
+    expect(pending.some((c) => c.content === "<script>alert('xss')</script> pwn")).toBe(true);
+    const shell = await (await fetch(`${BASE}/admin`)).text();
+    expect(shell).not.toContain("<script>alert('xss')</script>");
   });
 });
 

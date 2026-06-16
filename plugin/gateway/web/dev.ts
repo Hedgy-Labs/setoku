@@ -25,12 +25,18 @@ const BASE = `http://localhost:${PORT}`;
 const USER = "dev";
 const PASS = "dev";
 
-// 1. build the stylesheet so the page isn't unstyled
+// 1. build the stylesheet + the React bundle so the page isn't unstyled/blank
 await spawn({
   cmd: ["bun", "x", "tailwindcss", "-i", "plugin/gateway/web/input.css", "-o", "plugin/gateway/web/app.css", "--minify"],
   cwd: ROOT,
   stdout: "ignore",
   stderr: "ignore",
+}).exited;
+await spawn({
+  cmd: ["bun", "plugin/gateway/web/build-admin.ts"],
+  cwd: ROOT,
+  stdout: "ignore",
+  stderr: "inherit",
 }).exited;
 
 // 2. throwaway project dir + store seeded with representative data

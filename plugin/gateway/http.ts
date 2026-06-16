@@ -28,19 +28,12 @@ import { buildServer } from "./app";
 import { loadConfig, resolveProjectDir } from "./lib/config";
 import { KnowledgeStore, defaultDbPath, seedFromFiles } from "./lib/store";
 import {
-  renderApprovalPage,
-  renderLoginPage,
-  renderAuditPage,
-  renderKnowledgePage,
-  renderSourcesPage,
-  renderTeamPage,
   type Invite,
   applyApprovalAction,
   SessionStore,
   sessionIdFromCookie,
   sessionSetCookie,
   sessionClearCookie,
-  setStylesheetHref,
   type SourcesData,
   type SourceTable,
 } from "./lib/approval";
@@ -66,7 +59,32 @@ const ADMIN_CSS = ((): string => {
 // The link becomes /admin/app.css?v=<hash>; since the URL changes with content,
 // the response can be cached immutably (no stale CSS against new HTML).
 const ADMIN_CSS_VER = Bun.hash(ADMIN_CSS).toString(36);
-setStylesheetHref(`/admin/app.css?v=${ADMIN_CSS_VER}`);
+
+// The /admin React bundle (web/app/main.tsx → web/dist/app.js, committed; rebuild
+// with `bun run build:admin-js`). Read once at startup, content-versioned like the
+// CSS, and served at /admin/app.js so the surface has no runtime external dependency.
+const ADMIN_JS = ((): string => {
+  try {
+    return fs.readFileSync(path.join(import.meta.dir, "web", "dist", "app.js"), "utf8");
+  } catch {
+    return "";
+  }
+})();
+const ADMIN_JS_VER = Bun.hash(ADMIN_JS).toString(36);
+
+// The single-page-app shell: a static document that boots the React app. It holds
+// no data and no secrets — the app fetches /admin/api/session and renders login
+// when unauthenticated — so it's safe to serve for every /admin route (deep links
+// included; client-side routing takes over once the bundle loads).
+const ADMIN_SHELL = `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setoku — admin</title>
+<link rel="stylesheet" href="/admin/app.css?v=${ADMIN_CSS_VER}">
+</head>
+<body class="min-h-screen bg-stone-50 font-sans text-stone-900 antialiased">
+<div id="root"></div>
+<script type="module" src="/admin/app.js?v=${ADMIN_JS_VER}"></script>
+</body></html>`;
 
 function storePath(): string {
   const res = loadConfig(projectDir);
@@ -244,30 +262,12 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
-function readRawBody(req: http.IncomingMessage): Promise<string> {
-  return new Promise((resolve, reject) => {
-    let data = "";
-    req.on("data", (c) => (data += c));
-    req.on("end", () => resolve(data));
-    req.on("error", reject);
-  });
-}
-
-// Approval-surface sessions — the human authenticates once with their token
+// Approval-surface sessions — the human authenticates with a username/password
 // and gets an opaque cookie; the token never rides in a URL (no Slack/referer/
-// history leakage). One process, so in-memory is fine.
+// history leakage). Sessions persist in the store, so a restart doesn't sign out.
+// The SPA's shown-once secrets (invite token, temp password) ride back in the
+// mutation's JSON response, so no server-side PRG stash is needed.
 const sessions = new SessionStore(store);
-
-// One-time render state for Post/Redirect/Get: a mutating POST (invite, account
-// op) stashes its shown-once result here keyed by session, then 303-redirects;
-// the next GET /admin/team consumes and clears it. Without PRG, refreshing the
-// POST response re-submits it — re-minting tokens on every refresh.
-type TeamFlash = {
-  invite?: Invite;
-  newLogin?: { username: string; role: string; tempPassword: string };
-  flash?: string;
-};
-const teamFlash = new Map<string, TeamFlash>();
 
 const PORT = Number(process.env.SETOKU_HTTP_PORT ?? 8787);
 
@@ -506,19 +506,18 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(installerScript(token, info.identity, baseUrl));
       return;
     }
-    // ---- web approval surface (Phase 5.5) — the human accept/reject path ----
-    // Auth is a session COOKIE, not a token in the URL: the link (/admin) is
-    // safe to share; the token only ever travels in the POST /admin/login body.
+    // ---- web approval surface — React SPA + JSON API ----
+    // Auth is a session COOKIE, not a token in the URL: every /admin route is safe
+    // to share. The SPA shell and its assets are public (no secrets); the JSON API
+    // under /admin/api/* is session-gated, and mutations additionally require the
+    // CSRF token (x-csrf-token header) + admin role. The token only ever travels in
+    // the POST /admin/api/login body (I9 — the agent has the token, not the password).
     if (req.url === "/admin" || req.url?.startsWith("/admin/") || req.url?.startsWith("/admin?")) {
-      const htmlHead = {
-        "content-type": "text/html; charset=utf-8",
-        "referrer-policy": "no-referrer",
-      } as const;
-      const path = req.url.split("?")[0];
+      const reqPath = req.url.split("?")[0];
 
-      // the admin stylesheet — public (not secret), served before the auth gate.
-      // URL is content-versioned (?v=hash), so it's safe to cache immutably.
-      if (path === "/admin/app.css") {
+      // public, content-versioned assets — safe to cache immutably (URL changes
+      // with content), served before the auth gate.
+      if (reqPath === "/admin/app.css") {
         res.writeHead(200, {
           "content-type": "text/css; charset=utf-8",
           "cache-control": "public, max-age=31536000, immutable",
@@ -526,253 +525,201 @@ const httpServer = http.createServer(async (req, res) => {
         res.end(ADMIN_CSS);
         return;
       }
-
-      // login: username + password (a LOCAL ACCOUNT, never the MCP token) →
-      // session cookie. The agent has the token but not the password (I9).
-      if (path === "/admin/login" && req.method === "POST") {
-        const form = new URLSearchParams(await readRawBody(req));
-        const username = (form.get("username") ?? "").trim();
-        const auth = await authenticate(store, username, form.get("password") ?? "");
-        if (!auth.ok) {
-          store.audit(username || "anonymous", "admin_login_rejected", {});
-          res.writeHead(401, htmlHead);
-          res.end(renderLoginPage("Invalid username or password."));
-          return;
-        }
-        const { sid } = sessions.create(username, auth.role);
-        store.audit(username, "admin_login", { role: auth.role });
-        res.writeHead(303, { location: "/admin", "set-cookie": sessionSetCookie(sid) });
-        res.end();
+      if (reqPath === "/admin/app.js") {
+        res.writeHead(200, {
+          "content-type": "text/javascript; charset=utf-8",
+          "cache-control": "public, max-age=31536000, immutable",
+        });
+        res.end(ADMIN_JS);
         return;
       }
 
-      const sid = sessionIdFromCookie(req.headers.cookie);
-      const session = sessions.get(sid);
+      // ---- JSON API ----
+      if (reqPath.startsWith("/admin/api/")) {
+        const api = reqPath.slice("/admin/api/".length);
+        const json = (status: number, body: unknown): void => {
+          res.writeHead(status, { "content-type": "application/json", "referrer-policy": "no-referrer" });
+          res.end(JSON.stringify(body));
+        };
 
-      // logout
-      if (path === "/admin/logout" && req.method === "POST") {
-        sessions.destroy(sid);
-        res.writeHead(303, { location: "/admin", "set-cookie": sessionClearCookie() });
-        res.end();
-        return;
-      }
-
-      // everything else requires a session
-      if (!session) {
-        res.writeHead(path === "/admin" ? 200 : 401, htmlHead);
-        res.end(renderLoginPage());
-        return;
-      }
-
-      // approve/reject — CSRF-checked (belt-and-suspenders with SameSite=Strict)
-      // and ROLE-gated: only admins may accept (I9 — the membrane's human side).
-      if (path === "/admin/resolve" && req.method === "POST") {
-        const form = new URLSearchParams(await readRawBody(req));
-        if (form.get("csrf") !== session.csrf) {
-          res.writeHead(403, { "content-type": "text/plain" });
-          res.end("bad csrf token\n");
-          return;
-        }
-        if (!canApprove(session.role)) {
-          store.audit(session.identity, "admin_resolve_denied", { role: session.role });
-          res.writeHead(403, { "content-type": "text/plain" });
-          res.end("not authorized to approve\n");
-          return;
-        }
-        const id = Number(form.get("id"));
-        const action = form.get("action");
-        let flash = "Invalid action.";
-        if (Number.isInteger(id) && (action === "accepted" || action === "rejected")) {
-          flash = applyApprovalAction(store, session.identity, {
-            id,
-            action,
-            reason: form.get("reason") ?? undefined,
-          });
-        }
-        res.writeHead(303, { location: `/admin?flash=${encodeURIComponent(flash)}` });
-        res.end();
-        return;
-      }
-
-      // audit log (Phase 5.6)
-      if (path === "/admin/audit") {
-        res.writeHead(200, htmlHead);
-        res.end(renderAuditPage(store, session));
-        return;
-      }
-
-      // knowledge browser — read the curated memories
-      if (path === "/admin/knowledge") {
-        res.writeHead(200, htmlHead);
-        res.end(renderKnowledgePage(store, session));
-        return;
-      }
-
-      // connected sources — what's wired up + live freshness from the lake
-      if (path === "/admin/sources") {
-        res.writeHead(200, htmlHead);
-        res.end(renderSourcesPage(session, await gatherSources()));
-        return;
-      }
-
-      // invite a teammate — mint a read-only analyst connector. CSRF + admin-gated
-      // (members can't invite, mirroring approve). Mints analyst only; web never
-      // grants curate/write (that stays an operator action — admin-cli).
-      if (path === "/admin/invite" && req.method === "POST") {
-        const form = new URLSearchParams(await readRawBody(req));
-        if (form.get("csrf") !== session.csrf) {
-          res.writeHead(403, { "content-type": "text/plain" });
-          res.end("bad csrf token\n");
-          return;
-        }
-        if (!canApprove(session.role)) {
-          store.audit(session.identity, "teammate_invite_denied", { role: session.role });
-          res.writeHead(403, { "content-type": "text/plain" });
-          res.end("not authorized to invite\n");
-          return;
-        }
-        const identity = (form.get("identity") ?? "").trim();
-        const rotate = form.get("rotate") === "1"; // revoke any existing token first
-        if (!identity) {
-          teamFlash.set(sid ?? "", { flash: "Enter a teammate email to invite." });
-        } else if (!rotate && analystIdentities().includes(identity)) {
-          teamFlash.set(sid ?? "", { flash: `${identity} already has an agent connector — use Rotate to replace it.` });
-        } else {
-          // Rotate = kill the old token (lost/leaked) before issuing a new one.
-          let revokedEnv = false;
-          if (rotate) {
-            const r = removeAnalystTokens(identity);
-            revokedEnv = r.envBacked;
-            store.audit(session.identity, "connector_rotated", { identity, removed: r.removed });
+        // login: username + password (a LOCAL ACCOUNT, never the MCP token) →
+        // session cookie + the CSRF token the SPA echoes on every mutation.
+        if (api === "login" && req.method === "POST") {
+          const body = (await readBody(req)) as { username?: string; password?: string } | undefined;
+          const username = (body?.username ?? "").trim();
+          const auth = await authenticate(store, username, body?.password ?? "");
+          if (!auth.ok) {
+            store.audit(username || "anonymous", "admin_login_rejected", {});
+            return json(401, { ok: false, error: "Invalid username or password." });
           }
-          // mint the connector AND ensure a web account exists — an agent always
-          // implies an account (member by default; promote later if they curate).
-          const token = mintToken();
-          const { persisted } = addAnalystToken(token, identity);
+          const { sid, csrf } = sessions.create(username, auth.role);
+          store.audit(username, "admin_login", { role: auth.role });
+          res.writeHead(200, { "content-type": "application/json", "set-cookie": sessionSetCookie(sid) });
+          res.end(JSON.stringify({ ok: true, identity: username, role: auth.role, csrf }));
+          return;
+        }
+
+        const sid = sessionIdFromCookie(req.headers.cookie);
+        const session = sessions.get(sid);
+
+        if (api === "logout" && req.method === "POST") {
+          sessions.destroy(sid);
+          res.writeHead(200, { "content-type": "application/json", "set-cookie": sessionClearCookie() });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+
+        // everything below requires a session
+        if (!session) return json(401, { ok: false, error: "not signed in" });
+
+        // who am I — drives the SPA's auth state + the CSRF token for mutations
+        if (api === "session")
+          return json(200, { identity: session.identity, role: session.role, csrf: session.csrf });
+
+        // read endpoints — any signed-in user (members included) may view
+        if (api === "pending" && req.method === "GET") return json(200, store.listCorrections("pending"));
+        if (api === "knowledge" && req.method === "GET") return json(200, store.listDocs());
+        if (api === "audit" && req.method === "GET") return json(200, store.listAudit(200));
+        if (api === "sources" && req.method === "GET") return json(200, await gatherSources());
+        if (api === "team" && req.method === "GET")
+          return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
+
+        // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----
+        if (req.method === "POST") {
+          if ((req.headers["x-csrf-token"] ?? "") !== session.csrf)
+            return json(403, { ok: false, error: "bad csrf token" });
+          if (!canApprove(session.role)) {
+            store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+            return json(403, { ok: false, error: "not authorized" });
+          }
           const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
-          const slot: TeamFlash = {
-            invite: { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted },
-          };
-          if (rotate)
-            slot.flash = `Rotated ${identity}'s connector — the old token no longer works.${revokedEnv ? " (One old token is in SETOKU_TOKENS env, not the file — it returns on restart; remove it from .env to fully revoke.)" : ""}`;
-          if (!rotate) store.audit(session.identity, "teammate_invited", { identity, persisted });
-          if (!store.getAccount(identity)) {
-            const pw = Array.from(crypto.getRandomValues(new Uint8Array(9)))
+          const tempPw = (): string =>
+            Array.from(crypto.getRandomValues(new Uint8Array(9)))
               .map((b) => b.toString(16).padStart(2, "0"))
               .join("");
-            store.createAccount({ username: identity, pwhash: await hashPassword(pw), role: "member", createdBy: session.identity });
-            store.audit(session.identity, "account_created", { username: identity, role: "member" });
-            slot.newLogin = { username: identity, role: "member", tempPassword: pw };
+          const buildInvite = (identity: string): Invite => {
+            const token = mintToken();
+            const { persisted } = addAnalystToken(token, identity);
+            store.audit(session.identity, "teammate_invited", { identity, persisted });
+            return { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted };
+          };
+
+          // approve/reject — the membrane's human side (I9). Folds an accepted
+          // gotcha into curated context; everything else is recorded for a curator.
+          if (api === "resolve") {
+            const body = (await readBody(req)) as { id?: number; action?: string; reason?: string } | undefined;
+            const id = Number(body?.id);
+            const action = body?.action;
+            if (!Number.isInteger(id) || (action !== "accepted" && action !== "rejected"))
+              return json(400, { ok: false, error: "invalid action" });
+            const flash = applyApprovalAction(store, session.identity, { id, action, reason: body?.reason });
+            return json(200, { ok: true, flash });
           }
-          teamFlash.set(sid ?? "", slot);
+
+          // invite a teammate — mint a read-only analyst connector (+ a member
+          // account if they have none). Never grants curate/write (operator-only).
+          // The shown-once secrets ride back in the response (no PRG stash needed).
+          if (api === "invite") {
+            const body = (await readBody(req)) as { identity?: string; rotate?: boolean } | undefined;
+            const identity = (body?.identity ?? "").trim();
+            const rotate = body?.rotate === true;
+            if (!identity) return json(400, { ok: false, error: "Enter a teammate email to invite." });
+            if (!rotate && analystIdentities().includes(identity))
+              return json(409, { ok: false, error: `${identity} already has an agent connector — use Rotate to replace it.` });
+            let flash: string | undefined;
+            let revokedEnv = false;
+            if (rotate) {
+              const r = removeAnalystTokens(identity);
+              revokedEnv = r.envBacked;
+              store.audit(session.identity, "connector_rotated", { identity, removed: r.removed });
+            }
+            const token = mintToken();
+            const { persisted } = addAnalystToken(token, identity);
+            const invite: Invite = { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted };
+            if (rotate)
+              flash = `Rotated ${identity}'s connector — the old token no longer works.${revokedEnv ? " (One old token is in SETOKU_TOKENS env, not the file — it returns on restart; remove it from .env to fully revoke.)" : ""}`;
+            else store.audit(session.identity, "teammate_invited", { identity, persisted });
+            let newLogin: { username: string; role: string; tempPassword: string } | undefined;
+            if (!store.getAccount(identity)) {
+              const pw = tempPw();
+              store.createAccount({ username: identity, pwhash: await hashPassword(pw), role: "member", createdBy: session.identity });
+              store.audit(session.identity, "account_created", { username: identity, role: "member" });
+              newLogin = { username: identity, role: "member", tempPassword: pw };
+            }
+            return json(200, { ok: true, invite, newLogin, flash });
+          }
+
+          // manage web logins: create / promote-demote / reset / remove. Manages
+          // who can sign in here and at what role — no agent-side write capability.
+          if (api === "users") {
+            const body = (await readBody(req)) as { op?: string; username?: string; role?: string } | undefined;
+            const op = body?.op;
+            const uname = (body?.username ?? "").trim();
+            const acct = uname ? store.getAccount(uname) : null;
+            const isLastAdmin = (a: { role: string } | null): boolean =>
+              !!a && a.role === "admin" && store.countRole("admin") <= 1;
+
+            if (op === "create") {
+              const role = body?.role ?? "member";
+              if (!uname) return json(400, { ok: false, error: "Username required." });
+              if (!isRole(role)) return json(400, { ok: false, error: `Invalid role "${role}".` });
+              if (store.getAccount(uname)) return json(409, { ok: false, error: `"${uname}" already has a login.` });
+              const pw = tempPw();
+              store.createAccount({ username: uname, pwhash: await hashPassword(pw), role, createdBy: session.identity });
+              store.audit(session.identity, "account_created", { username: uname, role });
+              const newLogin = { username: uname, role, tempPassword: pw };
+              const invite = analystIdentities().includes(uname) ? undefined : buildInvite(uname);
+              return json(200, {
+                ok: true,
+                flash: `Created ${role} login for ${uname}${invite ? " + agent connector" : ""}.`,
+                newLogin,
+                invite,
+              });
+            }
+            if (op === "role") {
+              const role = body?.role ?? "";
+              if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
+              if (!isRole(role)) return json(400, { ok: false, error: `Invalid role "${role}".` });
+              if (role === "member" && isLastAdmin(acct)) return json(409, { ok: false, error: "Can't demote the last admin." });
+              store.setRole(uname, role);
+              store.audit(session.identity, "account_role_changed", { username: uname, role });
+              return json(200, { ok: true, flash: `${uname} is now ${role}.` });
+            }
+            if (op === "reset") {
+              if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
+              const pw = tempPw();
+              store.setPassword(uname, await hashPassword(pw));
+              store.audit(session.identity, "account_password_reset", { username: uname });
+              return json(200, {
+                ok: true,
+                flash: `Reset password for ${uname}.`,
+                newLogin: { username: uname, role: acct.role, tempPassword: pw },
+              });
+            }
+            if (op === "delete") {
+              if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
+              if (isLastAdmin(acct)) return json(409, { ok: false, error: "Can't remove the last admin." });
+              store.deleteAccount(uname);
+              const { removed, envBacked } = removeAnalystTokens(uname);
+              store.audit(session.identity, "account_deleted", { username: uname, tokensRevoked: removed });
+              return json(200, {
+                ok: true,
+                flash: `Removed ${uname} (account + ${removed} connector${removed === 1 ? "" : "s"} revoked).${envBacked ? " One token is in SETOKU_TOKENS env — remove it from .env to fully revoke." : ""}`,
+              });
+            }
+            return json(400, { ok: false, error: "Unknown operation." });
+          }
+
+          return json(404, { ok: false, error: "unknown endpoint" });
         }
-        // Post/Redirect/Get: never re-mint on refresh
-        res.writeHead(303, { location: "/admin/team" });
-        res.end();
-        return;
+
+        return json(404, { ok: false, error: "unknown endpoint" });
       }
 
-      // manage web logins (admin access): create / promote-demote / reset / remove.
-      // CSRF + admin-gated. Mints NO agent-side write capability (curator stays an
-      // operator action); this only manages who can sign in here and at what role.
-      if (path === "/admin/users" && req.method === "POST") {
-        const form = new URLSearchParams(await readRawBody(req));
-        if (form.get("csrf") !== session.csrf) {
-          res.writeHead(403, { "content-type": "text/plain" });
-          res.end("bad csrf token\n");
-          return;
-        }
-        if (!canApprove(session.role)) {
-          store.audit(session.identity, "admin_users_denied", { role: session.role });
-          res.writeHead(403, { "content-type": "text/plain" });
-          res.end("not authorized to manage accounts\n");
-          return;
-        }
-        const op = form.get("op");
-        const uname = (form.get("username") ?? "").trim();
-        let flash = "Invalid request.";
-        let newLogin: { username: string; role: string; tempPassword: string } | undefined;
-        let invite: Awaited<ReturnType<typeof buildInvite>> | undefined;
-        const tempPw = (): string =>
-          Array.from(crypto.getRandomValues(new Uint8Array(9)))
-            .map((b) => b.toString(16).padStart(2, "0"))
-            .join("");
-        const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
-        const actor = session.identity;
-        function buildInvite(identity: string) {
-          const token = mintToken();
-          const { persisted } = addAnalystToken(token, identity);
-          store.audit(actor, "teammate_invited", { identity, persisted });
-          return { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted };
-        }
-        const acct = uname ? store.getAccount(uname) : null;
-        const isLastAdmin = (a: { role: string } | null): boolean =>
-          !!a && a.role === "admin" && store.countRole("admin") <= 1;
-
-        if (op === "create") {
-          const role = form.get("role") ?? "member";
-          if (!uname) flash = "Username required.";
-          else if (!isRole(role)) flash = `Invalid role "${role}".`;
-          else if (store.getAccount(uname)) flash = `"${uname}" already has a login.`;
-          else {
-            const pw = tempPw();
-            store.createAccount({ username: uname, pwhash: await hashPassword(pw), role, createdBy: session.identity });
-            store.audit(session.identity, "account_created", { username: uname, role });
-            newLogin = { username: uname, role, tempPassword: pw };
-            // no login without an agent: mint a connector too if they lack one
-            if (!analystIdentities().includes(uname)) invite = buildInvite(uname);
-            flash = `Created ${role} login for ${uname}${invite ? " + agent connector" : ""}.`;
-          }
-        } else if (op === "role") {
-          const role = form.get("role") ?? "";
-          if (!acct) flash = `No login "${uname}".`;
-          else if (!isRole(role)) flash = `Invalid role "${role}".`;
-          else if (role === "member" && isLastAdmin(acct)) flash = "Can't demote the last admin.";
-          else {
-            store.setRole(uname, role);
-            store.audit(session.identity, "account_role_changed", { username: uname, role });
-            flash = `${uname} is now ${role}.`;
-          }
-        } else if (op === "reset") {
-          if (!acct) flash = `No login "${uname}".`;
-          else {
-            const pw = tempPw();
-            store.setPassword(uname, await hashPassword(pw));
-            store.audit(session.identity, "account_password_reset", { username: uname });
-            newLogin = { username: uname, role: acct.role, tempPassword: pw };
-            flash = `Reset password for ${uname}.`;
-          }
-        } else if (op === "delete") {
-          if (!acct) flash = `No login "${uname}".`;
-          else if (isLastAdmin(acct)) flash = "Can't remove the last admin.";
-          else {
-            // full offboard: remove the account AND revoke their agent connector
-            store.deleteAccount(uname);
-            const { removed, envBacked } = removeAnalystTokens(uname);
-            store.audit(session.identity, "account_deleted", { username: uname, tokensRevoked: removed });
-            flash = `Removed ${uname} (account + ${removed} connector${removed === 1 ? "" : "s"} revoked).${envBacked ? " One token is in SETOKU_TOKENS env — remove it from .env to fully revoke." : ""}`;
-          }
-        }
-        teamFlash.set(sid ?? "", { newLogin, invite, flash });
-        res.writeHead(303, { location: "/admin/team" }); // PRG: refresh won't re-run the op
-        res.end();
-        return;
-      }
-
-      // team — one row per person: agent status + web login/role, plus management.
-      // Consume any one-time result from a preceding POST (shown exactly once).
-      if (path === "/admin/team") {
-        const once = teamFlash.get(sid ?? "");
-        teamFlash.delete(sid ?? "");
-        res.writeHead(200, htmlHead);
-        res.end(renderTeamPage(session, { people: teamPeople(), ...once }));
-        return;
-      }
-
-      // the page
-      const flash = new URL(req.url, "http://x").searchParams.get("flash") ?? undefined;
-      res.writeHead(200, htmlHead);
-      res.end(renderApprovalPage(store, session, flash));
+      // SPA shell for every other /admin GET — client-side routing renders the
+      // view; the app fetches /admin/api/session and shows login if unauthenticated.
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "referrer-policy": "no-referrer" });
+      res.end(ADMIN_SHELL);
       return;
     }
 

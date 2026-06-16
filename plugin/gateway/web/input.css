@@ -3,76 +3,95 @@
  * served by the gateway at /admin/app.css). Rebuild:  bun run build:admin-css
  * Tailwind scans approval.ts (the render functions) for the classes in use.
  *
- * Palette: dark "stone + white" — neutral stone greys with white as the only
- * emphasis. No chromatic accent (muted red kept only for error/down states). */
+ * Palette: light "stone + ink" — neutral stone greys on an off-white ground
+ * with near-black (stone-900) as the only emphasis. No chromatic accent (muted
+ * red kept only for error/down states). */
 @import "tailwindcss";
-@source "../lib/approval.ts";
+@source "./app";
 
 @layer components {
   .card {
-    @apply rounded-xl border border-stone-800 bg-stone-900/50;
+    @apply rounded-xl border border-stone-200 bg-white;
   }
   .input {
-    @apply block w-full rounded-lg border border-stone-700 bg-stone-950/50 px-3 py-2 text-sm
-      text-stone-100 outline-none placeholder:text-stone-500
-      focus:border-stone-400 focus:ring-2 focus:ring-stone-400/20;
+    @apply block w-full rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm
+      text-stone-900 outline-none placeholder:text-stone-400
+      focus:border-stone-500 focus:ring-2 focus:ring-stone-500/20;
   }
   .btn {
     @apply inline-flex cursor-pointer select-none items-center justify-center gap-1.5
       rounded-lg px-3.5 py-2 text-sm font-medium transition;
   }
   .btn-primary {
-    @apply bg-white text-stone-900 hover:bg-stone-200;
+    @apply bg-stone-900 text-white hover:bg-stone-700;
   }
   .btn-ghost {
-    @apply border border-stone-700 text-stone-300 hover:bg-stone-800;
+    @apply border border-stone-300 text-stone-700 hover:bg-stone-100;
   }
   .badge {
     @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium;
   }
   .badge-ok {
-    @apply border-stone-600 bg-stone-100/10 text-stone-100;
+    @apply border-stone-300 bg-stone-100 text-stone-700;
   }
   .badge-down {
-    @apply border-red-500/30 bg-red-500/10 text-red-400;
+    @apply border-red-300 bg-red-50 text-red-600;
   }
   .badge-idle {
-    @apply border-stone-700 text-stone-500;
+    @apply border-stone-300 text-stone-500;
   }
   .tab {
-    @apply rounded-lg px-3 py-1.5 text-sm font-medium text-stone-400 transition
-      hover:bg-stone-800 hover:text-stone-200;
+    @apply rounded-lg px-3 py-1.5 text-sm font-medium text-stone-500 transition
+      hover:bg-stone-200 hover:text-stone-800;
   }
   .tab-active {
-    @apply bg-stone-800 text-stone-100 hover:bg-stone-800 hover:text-stone-100;
+    @apply bg-stone-200 text-stone-900 hover:bg-stone-200 hover:text-stone-900;
   }
   .kbd {
-    @apply rounded bg-stone-800 px-1.5 py-0.5 font-mono text-xs text-stone-300;
+    @apply rounded bg-stone-100 px-1.5 py-0.5 font-mono text-xs text-stone-700;
+  }
+  /* row-action dropdown (native <details>): a kebab trigger + a menu panel of
+     full-width item rows. Each item is a POST form's submit button. */
+  .icon-btn {
+    @apply inline-flex h-8 w-8 cursor-pointer select-none items-center justify-center
+      rounded-lg text-stone-500 transition hover:bg-stone-100 hover:text-stone-800;
+  }
+  .menu {
+    @apply absolute right-0 z-20 mt-1 min-w-[12rem] overflow-hidden rounded-lg border
+      border-stone-200 bg-white py-1 shadow-lg;
+  }
+  .menu-item {
+    @apply flex w-full cursor-pointer select-none items-center px-3 py-1.5 text-left
+      text-sm font-medium text-stone-700 outline-none transition hover:bg-stone-100
+      data-[highlighted]:bg-stone-100;
+  }
+  .menu-item-danger {
+    @apply text-red-600 hover:bg-red-50 data-[highlighted]:bg-red-50;
   }
   /* status indicators (semantic, not brand accent): lime / amber / red */
   .status {
     @apply inline-flex items-center gap-1.5 text-xs font-medium;
   }
   .status-green {
-    @apply text-lime-400;
+    @apply text-lime-600;
   }
   .status-yellow {
-    @apply text-amber-400;
+    @apply text-amber-600;
   }
   .status-red {
-    @apply text-red-400;
+    @apply text-red-600;
   }
   .dot {
     @apply inline-block h-2 w-2 shrink-0 rounded-full;
   }
   .dot-green {
-    @apply bg-lime-400;
+    @apply bg-lime-500;
   }
   .dot-yellow {
-    @apply bg-amber-400;
+    @apply bg-amber-500;
   }
   .dot-red {
-    @apply bg-red-400;
+    @apply bg-red-500;
   }
 }
 
