@@ -185,8 +185,12 @@ export function extractFacts(
   }
 
   for (const c of corrections) {
-    const claim = conciseClaim(c.content);
-    const { commentary } = splitFactCommentary(c.content);
+    // structured proposals carry the concise fact authoritatively (avenue 1);
+    // legacy single-blob proposals fall back to the heuristic split.
+    const claim = c.fact?.trim() || conciseClaim(c.content);
+    const commentary = c.fact?.trim()
+      ? c.content || undefined
+      : splitFactCommentary(c.content).commentary || undefined;
     const rel = c.relatesTo ? normalize(c.relatesTo) : "";
     const subject = rel
       ? (subjectByKey.get(rel) ?? `topic:${rel}`)

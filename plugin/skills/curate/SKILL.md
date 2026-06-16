@@ -13,7 +13,7 @@ You are helping a **curator** — typically a business user, not a developer —
 
 1. **Read the queue:** `list_corrections` (status pending). If empty, say so and stop. Otherwise summarize: how many, from whom, what kinds.
 2. **Review in batches, conversationally.** For each candidate (group related ones):
-   - Show it plainly: what it claims, who said it, when, what it relates to.
+   - Show it plainly: what it claims, who said it, when, what it relates to. Structured proposals carry a concise **fact** (the thing to store) and separate **context** (supporting evidence, shown but not stored) — promote the fact, use the context to judge it. Legacy proposals are a single blob.
    - Sanity-check against existing knowledge (`describe_entity` / `get_metric`) and, when cheap, against the data (`run_query`) — e.g. verify a claimed enum value actually exists.
    - Flag conflicts with existing verified knowledge explicitly — never silently overwrite verified content with a contradicting candidate; ask the curator which is right.
    - Ask: **accept / edit / reject**. Default to accept-with-light-editing; the curator's judgment wins.

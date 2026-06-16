@@ -170,7 +170,7 @@ describe("tools over HTTP", () => {
     const bob = await connect("tok-bob");
     await call(bob, "report_correction", {
       kind: "gotcha",
-      content:
+      fact:
         "Gift-card orders have total_cents = 0 and are excluded from AOV",
     });
     await bob.close();
@@ -198,7 +198,7 @@ describe("tools over HTTP", () => {
     // propose-only over HTTP: report_correction (pending), not upsert_context
     await call(alice, "report_correction", {
       kind: "gotcha",
-      content:
+      fact:
         "Wholesale orders are tagged via order_items.sku prefix WS- and excluded from retail metrics",
     });
     await alice.close();
@@ -292,7 +292,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const alice = await connect("tok-alice");
     await call(alice, "report_correction", {
       kind: "gotcha",
-      content:
+      fact:
         "Gift-card top-ups post to ledger_entries with type=GC and are excluded from net revenue",
     });
     await alice.close();
@@ -332,7 +332,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
 
   it("a member can view but NOT approve (role-gated)", async () => {
     const alice = await connect("tok-alice");
-    await call(alice, "report_correction", { kind: "gotcha", content: "Members must not be able to approve this" });
+    await call(alice, "report_correction", { kind: "gotcha", fact: "Members must not be able to approve this" });
     await alice.close();
     const { cookie, csrf } = await session("viewer", "viewer-pass");
     // a member CAN read the pending view ...
@@ -505,7 +505,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const alice = await connect("tok-alice");
     await call(alice, "report_correction", {
       kind: "other",
-      content: "<script>alert('xss')</script> pwn",
+      fact: "<script>alert('xss')</script> pwn",
     });
     await alice.close();
     const { cookie } = await session("boss", "s3cret-pass");

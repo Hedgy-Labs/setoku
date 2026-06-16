@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { describe, it, expect, afterAll } from "bun:test";
+import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,6 +37,7 @@ function correction(over: Partial<Correction> & { id: number; content: string })
     ts: "2026-01-02T00:00:00Z",
     user: "analyst@example.com",
     kind: "gotcha",
+    fact: null,
     relatesTo: null,
     status: "pending",
     ...over,
@@ -264,6 +266,69 @@ describe("buildReport over a real KnowledgeStore", () => {
     expect(report.contradictions.length).toBeGreaterThanOrEqual(1);
     expect(triage).toHaveLength(1);
     expect(triage[0].verdict).toBe("review"); // contradiction → review, not auto-accept
+  });
+});
+
+/* ------------- avenue 1: structured propose path + migration ------------- */
+
+describe("structured proposals through the store (avenue 1)", () => {
+  const dbPath = path.join(os.tmpdir(), `setoku-propose-${process.pid}.db`);
+  afterAll(() => {
+    for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) fs.rmSync(f, { force: true });
+  });
+
+  it("stores the concise fact and the context separately, and feeds the authoritative fact to extraction", () => {
+    const store = new KnowledgeStore(dbPath);
+    store.addCorrection({
+      user: "a@x.com",
+      kind: "metric",
+      fact: "Revenue excludes refunded orders.",
+      context: "Confirmed against the Q1 export, which double-counted refunds.",
+      relatesTo: "revenue",
+    });
+    const [row] = store.listCorrections("pending");
+    expect(row.fact).toBe("Revenue excludes refunded orders.");
+    expect(row.content).toContain("Q1 export"); // context lives in content, not the fact
+
+    const f = extractFacts([], [row]).find((x) => x.origin === "correction")!;
+    expect(f.claim).toBe("Revenue excludes refunded orders."); // authoritative, not heuristic-split
+    expect(f.commentary).toContain("Q1 export");
+  });
+
+  it("still accepts a legacy single-blob proposal (fact NULL → heuristic split)", () => {
+    const store = new KnowledgeStore(dbPath);
+    const id = store.addCorrection({ user: "a@x.com", kind: "gotcha", content: "Money is cents. Divide by 100." });
+    const row = store.listCorrections("pending").find((c) => c.id === id)!;
+    expect(row.fact).toBeNull();
+    expect(row.content).toBe("Money is cents. Divide by 100.");
+    const f = extractFacts([], [row])[0];
+    expect(f.claim).toBe("Money is cents."); // conciseClaim of the blob
+  });
+});
+
+describe("corrections schema migrates in place (back-compat)", () => {
+  const dbPath = path.join(os.tmpdir(), `setoku-migrate-${process.pid}.db`);
+  afterAll(() => {
+    for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) fs.rmSync(f, { force: true });
+  });
+
+  it("adds the `fact` column to a pre-#10 corrections table without losing rows", () => {
+    // hand-build the OLD schema (no `fact` column) + a legacy row
+    const raw = new Database(dbPath);
+    raw.run(`CREATE TABLE corrections (id INTEGER PRIMARY KEY, ts TEXT NOT NULL, user TEXT NOT NULL,
+      kind TEXT NOT NULL, content TEXT NOT NULL, relates_to TEXT, status TEXT NOT NULL DEFAULT 'pending',
+      resolved_by TEXT, resolved_ts TEXT)`);
+    raw.run("INSERT INTO corrections (ts, user, kind, content) VALUES ('2026-01-01','old@x.com','gotcha','Legacy gotcha.')");
+    raw.close();
+
+    // opening through KnowledgeStore runs the idempotent ALTER
+    const store = new KnowledgeStore(dbPath);
+    const rows = store.listCorrections("pending");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toBe("Legacy gotcha.");
+    expect(rows[0].fact).toBeNull();
+    // and a new structured proposal works against the migrated table
+    expect(() => store.addCorrection({ user: "n@x.com", kind: "gotcha", fact: "New fact.", context: "why" })).not.toThrow();
   });
 });
 

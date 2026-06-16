@@ -41,7 +41,10 @@ export interface Correction {
   ts: string;
   user: string;
   kind: string;
+  /** Supporting context (the fuller text); for legacy proposals, the whole blob. */
   content: string;
+  /** The concise claim to store (#10, avenue 1); null for legacy proposals. */
+  fact: string | null;
   relatesTo: string | null;
   status: string;
 }
