@@ -6,6 +6,8 @@
   "type": "module",
   "scripts": {
     "test": "bun test test/ ingest/",
+    "test:e2e": "bun test e2e/",
+    "setup:hooks": "git config core.hooksPath scripts/hooks",
     "typecheck": "tsc --noEmit",
     "build:admin-css": "tailwindcss -i plugin/gateway/web/input.css -o plugin/gateway/web/app.css --minify",
     "build:admin-js": "bun plugin/gateway/web/build-admin.ts",

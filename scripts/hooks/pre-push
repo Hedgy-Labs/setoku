@@ -1,0 +1,6 @@
+#!/bin/sh
+# Gate every push on the fast test suite (~4s). The browser e2e (`bun run test:e2e`)
+# is intentionally NOT run here — it's slower and needs Chrome; run it before deploys.
+# Bypass once (e.g. pushing a WIP branch) with:  git push --no-verify
+echo "pre-push: running fast tests…"
+exec bun test test/ ingest/

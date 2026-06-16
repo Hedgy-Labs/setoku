@@ -17,6 +17,7 @@
     "plugin/gateway/**/*.ts",
     "plugin/gateway/web/app/**/*.tsx",
     "provisioner/**/*.ts",
-    "test/**/*.ts"
+    "test/**/*.ts",
+    "e2e/**/*.ts"
   ]
 }
