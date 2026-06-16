@@ -154,12 +154,16 @@ export function applyApprovalAction(
     // store only the concise FACT as knowledge (#10, avenue 1); the supporting
     // context (corr.content) stays in the corrections record, not the gotcha.
     const knowledge = corr.fact?.trim() || corr.content;
+    // attribution: `proposed_by` is who filed the correction; the doc's
+    // updated_by (= identity, the approver) records who accepted it.
+    const meta: Record<string, string> = { proposed_by: corr.user };
+    if (corr.relatesTo) meta.relates_to = corr.relatesTo;
     store.upsertDoc(
       {
         type: "gotcha",
         name: slug(knowledge),
         body: knowledge,
-        meta: corr.relatesTo ? { relates_to: corr.relatesTo } : {},
+        meta,
       },
       identity,
     );

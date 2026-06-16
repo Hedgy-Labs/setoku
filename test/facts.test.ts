@@ -21,6 +21,7 @@ import {
 } from "../plugin/gateway/lib/facts";
 import { buildReport } from "../plugin/gateway/compaction-cli";
 import { judgementMetrics } from "../plugin/gateway/lib/quality";
+import { applyApprovalAction } from "../plugin/gateway/lib/approval";
 
 function doc(over: Partial<KnowledgeDoc> & { name: string; type: KnowledgeDoc["type"] }): KnowledgeDoc {
   return {
@@ -429,6 +430,51 @@ describe("buildKnowledgeView", () => {
     expect(revenue.flags).toContain("review");
     expect(revenue.members.find((m) => m.name === "revenue")!.flags).toContain("conflict");
     expect(v.health.contradictions).toBeGreaterThanOrEqual(1);
+  });
+});
+
+/* ------------------- attribution + usage (/admin) ------------------------ */
+
+describe("knowledge attribution + usage", () => {
+  const dbPath = path.join(os.tmpdir(), `setoku-attr-${process.pid}.db`);
+  afterAll(() => {
+    for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) fs.rmSync(f, { force: true });
+  });
+
+  it("records the proposer on approval and shows proposed-by + approved-by", () => {
+    const store = new KnowledgeStore(dbPath);
+    const id = store.addCorrection({
+      user: "alice@x.com",
+      kind: "gotcha",
+      fact: "Refunded orders are excluded from revenue.",
+      relatesTo: "revenue",
+    });
+    applyApprovalAction(store, "boss@x.com", { id, action: "accepted" });
+
+    const view = buildKnowledgeView(store.listDocs(), store.listCorrections("pending"));
+    const member = view.subjects.flatMap((s) => s.members).find((m) => m.proposedBy);
+    expect(member?.proposedBy).toBe("alice@x.com"); // who filed it
+    expect(member?.updatedBy).toBe("boss@x.com"); // who approved it
+  });
+
+  it("knowledgeUsage tallies surfaced docs from the audit log", () => {
+    const store = new KnowledgeStore(dbPath);
+    store.audit("u@x.com", "find_context", { question: "q", docs: ["revenue", "Customer"] });
+    store.audit("u@x.com", "find_context", { question: "q2", docs: ["revenue"] });
+    store.audit("u@x.com", "get_metric", { name: "revenue", ok: true });
+    store.audit("u@x.com", "describe_entity", { name: "Missing", ok: false }); // not counted
+    const usage = store.knowledgeUsage();
+    expect(usage["revenue"]).toBe(3); // 2 find_context + 1 get_metric
+    expect(usage["Customer"]).toBe(1);
+    expect(usage["Missing"]).toBeUndefined();
+  });
+
+  it("buildKnowledgeView attaches usage counts to members", () => {
+    const docs = [doc({ type: "metric", name: "revenue", meta: { summary: "Paid orders only." } })];
+    const view = buildKnowledgeView(docs, [], { revenue: 7 });
+    const m = view.subjects[0].members[0];
+    expect(m.uses).toBe(7);
+    expect(m.name).toBe("revenue");
   });
 });
 
