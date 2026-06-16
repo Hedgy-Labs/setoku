@@ -119,6 +119,7 @@ class FakeSlack {
 class FakeClickHouse {
   readonly server: ReturnType<typeof Bun.serve>;
   readonly rows: SlackMessageRow[] = [];
+  readonly heartbeats: Array<{ connector: string; beat_at: string; detail: string }> = [];
   readonly queries: string[] = [];
   fail = false;
   failedRequests = 0;
@@ -131,10 +132,13 @@ class FakeClickHouse {
           this.failedRequests++;
           return new Response("Code: 999. simulated outage", { status: 500 });
         }
-        this.queries.push(new URL(req.url).searchParams.get("query") ?? "");
+        const query = new URL(req.url).searchParams.get("query") ?? "";
+        this.queries.push(query);
         const body = await req.text();
         for (const line of body.split("\n")) {
-          if (line.trim()) this.rows.push(JSON.parse(line) as SlackMessageRow);
+          if (!line.trim()) continue;
+          if (query.includes("ingest_heartbeats")) this.heartbeats.push(JSON.parse(line));
+          else this.rows.push(JSON.parse(line) as SlackMessageRow);
         }
         return new Response("");
       },
@@ -152,7 +156,12 @@ class FakeClickHouse {
   }
 }
 
-function makeListener(slack: FakeSlack, ch: FakeClickHouse, spoolDir: string): SlackListener {
+function makeListener(
+  slack: FakeSlack,
+  ch: FakeClickHouse,
+  spoolDir: string,
+  overrides: Partial<ConstructorParameters<typeof SlackListener>[0]> = {},
+): SlackListener {
   const listener = new SlackListener({
     appToken: "xapp-test-token",
     slackApiUrl: slack.apiUrl,
@@ -163,6 +172,8 @@ function makeListener(slack: FakeSlack, ch: FakeClickHouse, spoolDir: string): S
     maxBatch: 100,
     retryBaseMs: 30,
     retryMaxMs: 200,
+    heartbeatIntervalMs: 0, // off by default — heartbeat has its own test
+    ...overrides,
   });
   cleanups.push(() => listener.stop());
   return listener;
@@ -305,6 +316,31 @@ test("acks every envelope and inserts the exact row shape", async () => {
   // The reconnected socket still ingests.
   slack.send(envelope("env-4", { channel: "C001", ts: "1718000200.000000", user: "U001", text: "after reconnect" }));
   await waitFor(() => ch.rows.length === 4, "row after reconnect");
+
+  await listener.stop();
+});
+
+// ---------------------------------------------------------------------------
+// Liveness heartbeat
+// ---------------------------------------------------------------------------
+
+test("emits a connector heartbeat once connected (proves liveness when idle)", async () => {
+  const slack = new FakeSlack();
+  const ch = new FakeClickHouse();
+  // Short interval so the periodic beat fires within the test.
+  const listener = makeListener(slack, ch, tmpSpoolDir(), { heartbeatIntervalMs: 40 });
+  listener.start();
+
+  await waitFor(() => ch.heartbeats.length >= 1, "at least one heartbeat");
+
+  // Ensures the table first, then beats — best-effort DDL is in the query log.
+  expect(ch.queries.some((q) => q.includes("CREATE TABLE IF NOT EXISTS setoku.ingest_heartbeats"))).toBe(true);
+  const beat = ch.heartbeats[0]!;
+  expect(beat.connector).toBe("slack-listener");
+  expect(beat.detail).toBe("connected");
+  expect(beat.beat_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/);
+  // No Slack messages were sent — the source is "quiet" but still beating.
+  expect(ch.rows.length).toBe(0);
 
   await listener.stop();
 });

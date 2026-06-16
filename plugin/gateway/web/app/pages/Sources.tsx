@@ -97,9 +97,10 @@ function SourceList({ data }: { data: SourcesData }) {
   } else if (lake.configured) {
     for (const t of lake.tables) {
       rows.push(
-        <Row key={t.source} name={t.source} status={freshness(t.rows, t.last)} last={t.last}>
+        <Row key={t.source} name={t.source} status={freshness(t.rows, t.last, t.beat)} last={t.last}>
           {kv("rows", t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US"))}
           {kv("last ingest", t.last ? `${String(t.last).slice(0, 19)} UTC` : "—")}
+          {t.beat ? kv("connector", `live · last beat ${relTime(t.beat)}`) : null}
         </Row>,
       );
     }

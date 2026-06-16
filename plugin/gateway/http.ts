@@ -450,6 +450,22 @@ async function gatherSources(): Promise<SourcesData> {
         lake.error = String(e).slice(0, 200);
       }
       if (lake.ok) {
+        // Connector liveness beats — a source with a `connector` shows "flowing"
+        // off its latest beat (pipeline up) rather than data recency, so a quiet
+        // source isn't false-"stale". Absent table (un-migrated box) → fall back.
+        const beats: Record<string, string> = {};
+        try {
+          const hb = await runLakeQuery(
+            lakeUrl.url,
+            "SELECT connector, toString(max(beat_at)) AS beat FROM setoku.ingest_heartbeats GROUP BY connector",
+            qopts,
+          );
+          for (const r of hb.rows as Array<Record<string, unknown>>) {
+            beats[String(r.connector)] = String(r.beat);
+          }
+        } catch {
+          /* ingest_heartbeats absent — sources fall back to data-recency freshness */
+        }
         const probes = await Promise.all(
           LAKE_SOURCES.map(async (s): Promise<SourceTable | null> => {
             try {
@@ -460,7 +476,12 @@ async function gatherSources(): Promise<SourcesData> {
               );
               const row = (res.rows[0] ?? {}) as Record<string, unknown>;
               const rows = Number(row.rows ?? 0);
-              return { source: s.source, rows, last: rows > 0 ? String(row.last) : null };
+              return {
+                source: s.source,
+                rows,
+                last: rows > 0 ? String(row.last) : null,
+                beat: s.connector ? (beats[s.connector] ?? null) : null,
+              };
             } catch {
               return null; // table absent or not granted — omit this connector
             }

@@ -66,7 +66,8 @@ export interface AuditRow {
 export interface SourceTable {
   source: string;
   rows: number | null;
-  last: string | null;
+  last: string | null; // data recency: max(freshness column)
+  beat?: string | null; // last connector liveness beat, when the source has a connector
 }
 
 export interface SourcesData {

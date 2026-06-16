@@ -8,14 +8,19 @@
 export interface LakeSource {
   table: string;
   source: string; // friendly label (also used by the /admin Sources page)
-  ts: string; // freshness column
+  ts: string; // freshness column (data recency — when business activity last landed)
   blurb: string; // what it holds — so the agent knows when to reach for it
+  // Long-running connector that emits liveness beats into `ingest_heartbeats`.
+  // When set, the Sources page reads "flowing" from the beat (pipeline is up)
+  // rather than data recency — so a quiet-but-healthy source isn't false-"stale".
+  // Omit for passive drains (log/webhook sinks) where data recency IS liveness.
+  connector?: string;
 }
 
 export const LAKE_SOURCES: LakeSource[] = [
   { table: "logs_vercel", source: "Vercel logs", ts: "ts", blurb: "Vercel platform logs — HTTP requests, build & runtime errors, status codes, latency (level=error/fatal are problems)" },
   { table: "logs_render", source: "Render logs", ts: "ts", blurb: "Render service logs — app stdout/stderr, deploy & runtime errors" },
-  { table: "slack_messages", source: "Slack", ts: "event_ts", blurb: "Slack message archive — team chat history" },
+  { table: "slack_messages", source: "Slack", ts: "event_ts", blurb: "Slack message archive — team chat history", connector: "slack-listener" },
   { table: "app_events", source: "First-party events", ts: "ts", blurb: "First-party product / analytics events emitted by the app" },
   { table: "mercury_accounts", source: "Mercury · accounts", ts: "snapshot_ts", blurb: "Bank account balances over time — cash on hand, runway (finance)" },
   { table: "mercury_transactions", source: "Mercury · transactions", ts: "ingested_at", blurb: "Bank transactions — spend, vendor/payroll payments, income (finance, runway, burn)" },

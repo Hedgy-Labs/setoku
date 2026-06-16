@@ -136,6 +136,50 @@ export async function insertSlackRows(
   }
 }
 
+/**
+ * Create the heartbeat table if it's missing — boxes initialised before this
+ * table existed won't have it (the schema files only run on a fresh ClickHouse).
+ * Best-effort: the caller swallows failures so a missing CREATE grant can't keep
+ * the listener from running.
+ */
+export async function ensureHeartbeatTable(ch: ClickHouseOptions): Promise<void> {
+  const ddl =
+    `CREATE TABLE IF NOT EXISTS ${ch.db}.ingest_heartbeats ` +
+    `(connector LowCardinality(String), beat_at DateTime64(3), detail String) ` +
+    `ENGINE = ReplacingMergeTree(beat_at) ORDER BY connector`;
+  const res = await fetch(`${ch.url}/?query=${encodeURIComponent(ddl)}`, {
+    method: "POST",
+    headers: { Authorization: "Basic " + btoa(`${ch.user}:${ch.password}`) },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    throw new Error(`heartbeat ddl failed: HTTP ${res.status} ${await res.text().catch(() => "")}`);
+  }
+}
+
+/** Upsert a liveness beat for `connector` into <db>.ingest_heartbeats. Throws on failure. */
+export async function beatHeartbeat(
+  ch: ClickHouseOptions,
+  connector: string,
+  detail: string,
+): Promise<void> {
+  // ClickHouse DateTime64 accepts "YYYY-MM-DD HH:MM:SS.sss" — ISO with the T/Z stripped.
+  const beat_at = new Date().toISOString().replace("T", " ").replace("Z", "");
+  const query = `INSERT INTO ${ch.db}.ingest_heartbeats FORMAT JSONEachRow`;
+  const res = await fetch(`${ch.url}/?query=${encodeURIComponent(query)}`, {
+    method: "POST",
+    headers: {
+      Authorization: "Basic " + btoa(`${ch.user}:${ch.password}`),
+      "content-type": "application/x-ndjson",
+    },
+    body: JSON.stringify({ connector, beat_at, detail }) + "\n",
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) {
+    throw new Error(`heartbeat insert failed: HTTP ${res.status} ${await res.text().catch(() => "")}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Spool — append-only NDJSON file + byte-offset progress marker (I4).
 // ---------------------------------------------------------------------------
@@ -258,6 +302,8 @@ export interface ListenerOptions {
   /** Base for both ClickHouse-retry and reconnect backoff (jittered, capped). */
   retryBaseMs?: number; // default 1000
   retryMaxMs?: number; // default 30000
+  /** How often to emit a liveness beat while connected. Default 60000. */
+  heartbeatIntervalMs?: number; // default 60000
 }
 
 export class SlackListener {
@@ -271,6 +317,7 @@ export class SlackListener {
   private ws: WebSocket | null = null;
   private stopped = true;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private healthServer: ReturnType<typeof Bun.serve> | null = null;
   private flushing = false;
   private chFailures = 0;
@@ -285,6 +332,7 @@ export class SlackListener {
       maxBatch: 100,
       retryBaseMs: 1000,
       retryMaxMs: 30_000,
+      heartbeatIntervalMs: 60_000,
       ...options,
     };
     this.spool = new Spool(this.o.spoolDir);
@@ -317,13 +365,37 @@ export class SlackListener {
     }
     this.flushTimer = setInterval(() => void this.flush(), this.o.flushIntervalMs);
     void this.flush(); // drain any spool remainder from a previous run first
+    // Liveness heartbeat — proves the pipeline is alive even when the workspace
+    // is quiet, so the admin Sources page reads "flowing" off this instead of
+    // message recency (a quiet Slack is not a broken one). Ensure the table
+    // first (best-effort) for boxes provisioned before it existed. 0 disables
+    // it (tests that only exercise message flow).
+    if (this.o.heartbeatIntervalMs > 0) {
+      void ensureHeartbeatTable(this.o.clickhouse)
+        .then(() => this.beat())
+        .catch((e) => console.error(`slack-listener: heartbeat init failed: ${e}`));
+      this.heartbeatTimer = setInterval(() => void this.beat(), this.o.heartbeatIntervalMs);
+    }
     void this.connectLoop();
+  }
+
+  /** Emit a liveness beat — only while connected, so a dead/disconnected listener
+   *  stops beating and the source correctly goes stale. Best-effort. */
+  private async beat(): Promise<void> {
+    if (!this.connected) return;
+    try {
+      await beatHeartbeat(this.o.clickhouse, "slack-listener", "connected");
+    } catch (e) {
+      console.error(`slack-listener: heartbeat failed: ${e}`);
+    }
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
     if (this.flushTimer) clearInterval(this.flushTimer);
     this.flushTimer = null;
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
     this.ws?.close();
     this.ws = null;
     this.healthServer?.stop(true);

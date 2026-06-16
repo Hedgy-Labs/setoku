@@ -26,8 +26,18 @@ export function relTime(s: string | null | undefined): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
-/** Freshness → status: green if data within 24h, yellow if stale/empty. */
-export function freshness(rows: number | null, last: string | null): { color: StatusColor; label: string } {
+/**
+ * Freshness → status. A live connector heartbeat (beat within 10m) means the
+ * pipeline is up even if the source is quiet — "flowing", not a false "stale".
+ * Sources without a connector fall back to data recency: green within 24h.
+ */
+export function freshness(
+  rows: number | null,
+  last: string | null,
+  beat?: string | null,
+): { color: StatusColor; label: string } {
+  const beatMs = lakeTsToMs(beat);
+  if (beatMs != null && Date.now() - beatMs < 10 * 60 * 1000) return { color: "green", label: "flowing" };
   if (!rows || !last) return { color: "yellow", label: "no data" };
   const ms = lakeTsToMs(last);
   if (ms != null && Date.now() - ms < 24 * 60 * 60 * 1000) return { color: "green", label: "flowing" };
