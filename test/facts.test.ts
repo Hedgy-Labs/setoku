@@ -170,36 +170,15 @@ describe("findContradictions (avenue 2)", () => {
     expect(c[0].reason).toContain("opposing");
   });
 
-  it("catches a numeric mismatch when the claims are otherwise the same statement", () => {
+  it("does NOT deterministically flag numeric differences (left to in-session compaction)", () => {
+    // numbers can't be told apart structurally — a salient quantity vs an
+    // incidental id (member 100 vs 101) vs a year. The heuristic false-fired on
+    // real data, so it's gone; /setoku:compact judges these semantically.
     const facts: Fact[] = [
-      { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 100 for dollars", origin: "doc", ref: "a" },
-      { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 1000 for dollars", origin: "correction", ref: "b" },
-    ];
-    expect(findContradictions(facts)[0].reason).toContain("numbers disagree");
-  });
-
-  it("does NOT treat a year as a quantity (real-store false positive)", () => {
-    // two pending corrections on one topic; one mentions a year, one a count.
-    const facts: Fact[] = [
-      { subject: "topic:launch", predicate: "metric", object: "", claim: "The v2 dashboard shipped in 2026 to the pilot cohort", origin: "correction", ref: "a" },
-      { subject: "topic:launch", predicate: "metric", object: "", claim: "It supports 7 chart types", origin: "correction", ref: "b" },
-    ];
-    expect(findContradictions(facts)).toHaveLength(0);
-  });
-
-  it("does NOT flag numbers that differ only by formatting (100 vs 100.0)", () => {
-    const facts: Fact[] = [
-      { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 100 for dollars", origin: "doc", ref: "a" },
-      { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 100.0 for dollars", origin: "correction", ref: "b" },
-    ];
-    expect(findContradictions(facts)).toHaveLength(0);
-  });
-
-  it("does NOT flag two unrelated numbers on the same subject", () => {
-    // different statements that each contain a number must not collide.
-    const facts: Fact[] = [
-      { subject: "metric:revenue", predicate: "metric", object: "", claim: "Revenue grew 20 percent last quarter", origin: "doc", ref: "a" },
-      { subject: "metric:revenue", predicate: "metric", object: "", claim: "We have 5 sales reps covering it", origin: "correction", ref: "b" },
+      { subject: "topic:member-origin", predicate: "metric", object: "", claim: "Manual review by steven for member 100", origin: "correction", ref: "a" },
+      { subject: "topic:member-origin", predicate: "metric", object: "", claim: "Manual review by steven for member 101", origin: "correction", ref: "b" },
+      { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 100 for dollars", origin: "doc", ref: "c" },
+      { subject: "metric:revenue", predicate: "unit", object: "", claim: "Divide total_cents by 1000 for dollars", origin: "correction", ref: "d" },
     ];
     expect(findContradictions(facts)).toHaveLength(0);
   });

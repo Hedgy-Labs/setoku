@@ -322,25 +322,6 @@ function opposingGroups(g1: number, g2: number): boolean {
  *  conflict (vs. free-prose definitions, where it never would be). */
 const ATOMIC_PREDICATES = new Set(["unit", "status", "type", "grain", "format"]);
 
-const NUM_RE = /-?\d[\d,]*\.?\d*/g;
-
-/** Numbers in text, excluding 4-digit years (1900–2099). Years are dates, not
- *  quantities to compare — treating one as a quantity produced a false
- *  contradiction on the real store ("2026" read as disagreeing with "7"). We
- *  trade catching year-vs-year conflicts for precision; this is a
- *  recommend-only pass, so a false flag costs more than a miss. */
-function numbers(text: string): string[] {
-  return (text.match(NUM_RE) ?? [])
-    .map((n) => n.replace(/,/g, ""))
-    .filter((n) => !/^(?:19|20)\d{2}$/.test(n));
-}
-
-/** Token set of a claim with numbers stripped — for the "same statement,
- *  different number" check. */
-function nonNumericTokens(text: string): Set<string> {
-  return new Set(tokenize(text.replace(NUM_RE, " ")));
-}
-
 /**
  * Near-duplicate facts (avenue 2 merge candidates). Same-subject pairs flag at
  * `threshold`; different-subject pairs need much stronger evidence
@@ -430,21 +411,12 @@ function conflictReason(a: Fact, b: Fact): string | null {
     }
   }
 
-  // 3 — numeric mismatch: only when the two claims are otherwise nearly the
-  // SAME statement (so we're comparing the same quantity), not merely two
-  // claims that each happen to contain a number.
-  if (a.predicate === b.predicate) {
-    const na = numbers(a.claim);
-    const nb = numbers(b.claim);
-    if (
-      na.length &&
-      nb.length &&
-      Number(na[0]) !== Number(nb[0]) && // numeric compare: "100" == "100.0"
-      jaccard(nonNumericTokens(a.claim), nonNumericTokens(b.claim)) >= 0.5
-    )
-      return `numbers disagree: ${na[0]} vs ${nb[0]}`;
-  }
-
+  // NOTE: no deterministic numeric-mismatch rule. Telling a salient quantity
+  // ("divide by 100" vs "1000") from an incidental reference ("member 100" vs
+  // "member 101", a year, an id) is semantic — it false-fired on real data more
+  // than it helped. Numeric/semantic contradictions are found by the in-session
+  // /setoku:compact pass; the deterministic detector keeps only the
+  // high-precision signals above (atomic-predicate mismatch, antonym clash).
   return null;
 }
 
