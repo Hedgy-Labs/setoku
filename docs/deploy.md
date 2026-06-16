@@ -19,6 +19,12 @@ gateway is the **`server`** service. Code lives under `DIR`; secrets live in `DI
 `SETOKU_DEPLOY_DOMAIN`. Create `deploy/target.local` once per machine and any agent in this
 repo can deploy with `bun run deploy` — no box-specific knowledge required.
 
+> ⚠ `bun run deploy` rebuilds **only the `server` (gateway) container.** It rsyncs the
+> rest, but a changed connector image (`ingest/*-poller`) is **not** rebuilt and an edited
+> `deploy/vector/vector.yaml` is **not** reloaded — both fail silently (no error, data just
+> never flows). After connector/vector changes, also run on the box:
+> `docker compose up -d --build <poller>` and/or `docker compose up -d vector`.
+
 The two models below are what that script automates (and what a git-clone box does instead).
 
 ### A. Git clone (the default — `bootstrap.sh` does `git clone … /opt/setoku`)
@@ -83,6 +89,11 @@ ssh BOX 'cd DIR && git checkout <previous-sha> && docker compose up -d --build s
   `SETOKU_DATABASE_URL` points at the wrong DB (e.g. staging vs prod). Re-grant
   `USAGE`+`SELECT` on the right project, or repoint the URL. For Supabase, use the
   **direct/non-pooling** URL for role/grant DDL (the pooler can cache stale grants).
+- **A new lake table never receives data (custom ClickHouse connector)** → `ingest/schemas/*.sql`
+  run **only once, on first init of an empty `ch_data` volume** (the `/docker-entrypoint-initdb.d`
+  mount, exactly like Postgres). On an *existing* box a newly-added schema file is silently
+  ignored, so the connector pushes rows Vector can't sink. Apply it by hand once:
+  `docker compose exec -T clickhouse clickhouse-client < ingest/schemas/0XX_yours.sql`.
 - **A connector "fails to connect"** → check `https://DOMAIN/health`, then
   `docker compose logs server` on the box. A stale local/old connector pointing at a
   dead URL (e.g. a torn-down host) 5xx's independently of the live box.

@@ -283,6 +283,56 @@ export async function introspectSchema(
   }
 }
 
+/**
+ * Why did introspection return zero tables? Distinguishes "the read-only role's
+ * grants were revoked" from "the database is genuinely empty". This closes a
+ * real diagnostic gap: information_schema only lists tables the role can touch,
+ * so a revoked GRANT and an empty DB look identical ("0 allowed tables") — the
+ * exact failure mode that made a prod mispointing hard to diagnose. We probe the
+ * catalog (readable by everyone) for tables that physically exist but the role
+ * can't see, and return a copy-pasteable re-grant hint, or null if the DB really
+ * has no tables (or the role can read some, i.e. it's an allow-list/empty issue).
+ */
+export async function diagnoseNoTables(url: string): Promise<string | null> {
+  const client = await poolFor(url).connect();
+  try {
+    const res = await client.query(`
+      SELECT n.nspname AS schema,
+             count(c.oid) AS total,
+             count(c.oid) FILTER (
+               WHERE has_table_privilege(current_user, c.oid, 'SELECT')
+             ) AS readable,
+             has_schema_privilege(current_user, n.nspname, 'USAGE') AS usage
+      FROM pg_namespace n
+      LEFT JOIN pg_class c
+        ON c.relnamespace = n.oid AND c.relkind IN ('r','v','m','p','f')
+      WHERE n.nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+        AND n.nspname NOT LIKE 'pg_temp%'
+        AND n.nspname NOT LIKE 'pg_toast_temp%'
+      GROUP BY n.nspname, n.oid`);
+    const withTables = res.rows.filter((r) => Number(r.total) > 0);
+    if (!withTables.length) return null; // genuinely empty database
+    // tables exist, but the role can read none in any of those schemas → grants gone
+    const blocked = withTables.filter(
+      (r) => !r.usage || Number(r.readable) === 0,
+    );
+    if (blocked.length < withTables.length) return null; // role can read some → not a perms wall
+    const schemas = blocked.map((r) => r.schema);
+    const ex = schemas[0];
+    return (
+      `permission denied — the read-only role can't see any of the ${withTables.reduce((n, r) => n + Number(r.total), 0)} table(s) ` +
+      `that exist in schema(s) ${schemas.join(", ")}. The grants were almost certainly revoked. Re-grant, e.g.:\n` +
+      `  GRANT USAGE ON SCHEMA ${ex} TO <read-only-role>;\n` +
+      `  GRANT SELECT ON ALL TABLES IN SCHEMA ${ex} TO <read-only-role>;\n` +
+      `(or just re-run deploy/connect-postgres.sh, which sets these up idempotently).`
+    );
+  } catch {
+    return null; // diagnosis is best-effort; never mask the original result
+  } finally {
+    client.release();
+  }
+}
+
 export async function closePools(): Promise<void> {
   await Promise.all([...pools.values()].map((p) => p.end().catch(() => {})));
   pools.clear();

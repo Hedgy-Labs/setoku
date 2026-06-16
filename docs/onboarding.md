@@ -82,10 +82,10 @@ one.
   `ingest/mercury-poller`), draft the connector + lake schema + compose wiring,
   and propose it. You provide the credential and approve the apply.
 - **Safety / membrane throughout** — the agent *proposes*; a human approves the
-  credential and the actual apply (editing the box `.env`, restarting). Each step
-  is recorded in `provisioning_log` (idempotency key → re-runs skip what's done;
-  secrets redacted). Connecting a source is inherently human-gated (buying infra,
-  provider creds, DB roles — see I9).
+  credential and the actual apply (editing the box `.env`, restarting). Steps land
+  in the store's audit log (there is no dedicated `provisioning_log` tool — see the
+  changelog note above). Connecting a source is inherently human-gated (buying
+  infra, provider creds, DB roles — see I9).
 
 ### 3 — Verify it understands the data *(the important part)*
 Connecting isn't done when bytes flow — it's done when the agent has *checked its
@@ -133,11 +133,10 @@ connected, what was learned, and the open questions worth a human's attention.
    ones fall back to improvisation. (Largely already encoded in `deploy/` and
    `ingest/`; this just indexes them for the skill.)
 3. Optional gateway support, nice-to-have, not required for v1:
-   - a `list_sources` MCP tool (reuse the Sources gather logic) so the skill can
-     see what's connected without SSH;
-   - expose `log_provisioning` as a curator tool so `connect` records steps in
-     `provisioning_log` for idempotency + audit (today it's a store method with
-     no tool).
+   - ~~a `list_sources` MCP tool~~ — **done**: `list_sources` ships and the
+     `connect` skill uses it to see what's connected without SSH;
+   - a `log_provisioning` curator tool for durable idempotency + audit was
+     considered and **not built** — steps land in the existing audit log instead.
 4. Reuse as-is: `deploy/bootstrap.sh`, `deploy/readonly-role.sql`, the
    `ingest/*-poller` patterns, compose profiles, the curator write-path.
 
