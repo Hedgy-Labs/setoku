@@ -24,7 +24,7 @@
  * sets survive the very migration they measure (free-text docs → a more formal
  * fact structure).
  */
-import { scoreDocs, tokenize, type ScorableDoc } from "./search";
+import { jaccard, scoreDocs, tokenize, type ScorableDoc } from "./search";
 
 /* --------------------------------- types --------------------------------- */
 
@@ -190,13 +190,6 @@ function docText(doc: ScorableDoc): string {
     : String(doc.meta.keywords ?? "");
   const summary = String(doc.meta.summary ?? "");
   return `${doc.name} ${kw} ${summary} ${doc.body}`;
-}
-
-function jaccard(a: Set<string>, b: Set<string>): number {
-  if (!a.size && !b.size) return 0;
-  let inter = 0;
-  for (const t of a) if (b.has(t)) inter += 1;
-  return inter / (a.size + b.size - inter);
 }
 
 /**
