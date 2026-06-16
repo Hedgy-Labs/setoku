@@ -56,6 +56,10 @@ export interface KnowledgeMember {
   body: string;
   verified: boolean;
   flags: string[];
+  updatedBy: string | null;
+  updatedAt: string | null;
+  proposedBy: string | null;
+  uses: number;
 }
 
 export interface SubjectGroup {

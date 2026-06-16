@@ -338,6 +338,41 @@ export class KnowledgeStore {
     }
   }
 
+  /**
+   * How often each curated doc has been surfaced, tallied from the audit log:
+   * names that find_context returned (payload.docs[]) plus direct
+   * describe_entity / get_metric lookups. Keyed by doc name. Aggregated in SQL
+   * (json1) so it doesn't materialize the whole audit table.
+   */
+  knowledgeUsage(): Record<string, number> {
+    const counts: Record<string, number> = {};
+    const add = (name: unknown, n: number) => {
+      if (typeof name === "string" && name)
+        counts[name] = (counts[name] ?? 0) + n;
+    };
+    for (const r of this.db
+      .query(
+        `SELECT je.value AS name, count(*) AS n
+         FROM audit, json_each(json_extract(audit.payload, '$.docs')) je
+         WHERE audit.tool = 'find_context'
+           AND json_extract(audit.payload, '$.docs') IS NOT NULL
+         GROUP BY je.value`,
+      )
+      .all() as { name: string; n: number }[])
+      add(r.name, r.n);
+    for (const r of this.db
+      .query(
+        `SELECT json_extract(payload, '$.name') AS name, count(*) AS n
+         FROM audit
+         WHERE tool IN ('describe_entity', 'get_metric')
+           AND json_extract(payload, '$.ok') = 1
+         GROUP BY name`,
+      )
+      .all() as { name: string; n: number }[])
+      add(r.name, r.n);
+    return counts;
+  }
+
   /** Most-recent audit rows, newest first (the 5.6 audit-log page). */
   listAudit(limit = 100): AuditRow[] {
     return this.db

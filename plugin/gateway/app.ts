@@ -117,8 +117,10 @@ server.registerTool(
   },
   async ({ question, max_results }) => {
     const started = Date.now();
-    const docs = store.listDocs().filter((d) => d.type !== "gotcha");
-    const gotchas = store.gotchas();
+    const allDocs = store.listDocs();
+    const docs = allDocs.filter((d) => d.type !== "gotcha");
+    const gotchaDocs = allDocs.filter((d) => d.type === "gotcha");
+    const gotchas = gotchaDocs.map((d) => d.body || d.name);
     const pending = matchByTokens(
       store.listCorrections("pending"),
       (c) => `${c.fact ?? c.content} ${c.relatesTo ?? ""}`,
@@ -173,11 +175,19 @@ server.registerTool(
         );
       }
     }
+    // record the knowledge actually surfaced (docs + matched gotchas), by name,
+    // so per-doc usage can be tallied from the audit log.
+    const matchedSet = new Set(matchedGotchas);
+    const surfaced = [
+      ...top.map((t) => t.doc.name),
+      ...gotchaDocs.filter((d) => matchedSet.has(d.body || d.name)).map((d) => d.name),
+    ];
     store.audit(user, "find_context", {
       question,
       results: top.length,
       gotchas: matchedGotchas.length,
       unverified: pending.length,
+      docs: surfaced,
       ms: Date.now() - started,
     });
     return text(out.join("\n"));

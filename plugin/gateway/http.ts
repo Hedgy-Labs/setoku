@@ -604,7 +604,11 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "knowledge_view" && req.method === "GET")
           return json(
             200,
-            buildKnowledgeView(store.listDocs(), store.listCorrections("pending")),
+            buildKnowledgeView(
+              store.listDocs(),
+              store.listCorrections("pending"),
+              store.knowledgeUsage(),
+            ),
           );
         if (api === "audit" && req.method === "GET") return json(200, store.listAudit(200));
         if (api === "sources" && req.method === "GET") return json(200, await gatherSources());

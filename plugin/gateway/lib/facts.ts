@@ -495,6 +495,13 @@ export interface KnowledgeMember {
   verified: boolean;
   /** Per-doc flags: "conflict", "duplicate", "verbose". */
   flags: string[];
+  /** Who committed/approved it into curated context, and when. */
+  updatedBy: string | null;
+  updatedAt: string | null;
+  /** Who originally proposed it (when it came through the corrections queue). */
+  proposedBy: string | null;
+  /** How often it's been surfaced (find_context + direct lookups). */
+  uses: number;
 }
 
 export interface SubjectGroup {
@@ -569,6 +576,7 @@ const SUBJECT_RANK: Record<string, number> = {
 export function buildKnowledgeView(
   docs: KnowledgeDoc[],
   pending: Correction[] = [],
+  usage: Record<string, number> = {},
 ): KnowledgeView {
   // canonical subjects + a lookup from name/table to subject key
   const groups = new Map<string, SubjectGroup>();
@@ -595,7 +603,19 @@ export function buildKnowledgeView(
     const claim = conciseClaim(String(d.meta.summary ?? "") || d.body || d.name);
     const flags: string[] = [];
     if (tokenize(d.body).length > VERBOSE_TOKENS) flags.push("verbose");
-    return { name: d.name, type: d.type, claim, body: d.body, verified: d.verified, flags };
+    const proposedBy = String(d.meta.proposed_by ?? "") || null;
+    return {
+      name: d.name,
+      type: d.type,
+      claim,
+      body: d.body,
+      verified: d.verified,
+      flags,
+      updatedBy: d.updatedBy,
+      updatedAt: d.updatedAt,
+      proposedBy,
+      uses: usage[d.name] ?? 0,
+    };
   };
 
   for (const d of docs.filter((x) => x.type !== "gotcha")) {

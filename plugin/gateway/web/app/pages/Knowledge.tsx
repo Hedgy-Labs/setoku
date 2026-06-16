@@ -145,13 +145,35 @@ function SubjectCard({ s }: { s: SubjectGroup }) {
   );
 }
 
+function attribution(m: KnowledgeMember): string {
+  const parts: string[] = [];
+  if (m.proposedBy && m.proposedBy !== m.updatedBy) {
+    parts.push(`proposed by ${m.proposedBy}`);
+    if (m.updatedBy) parts.push(`approved by ${m.updatedBy}`);
+  } else if (m.updatedBy) {
+    parts.push(`by ${m.updatedBy}`);
+  }
+  if (m.updatedAt) parts.push(String(m.updatedAt).slice(0, 10));
+  return parts.join(" · ");
+}
+
 function MemberRow({ m }: { m: KnowledgeMember }) {
   const hasDetail = m.body && m.body.trim() && m.body.trim() !== m.claim.trim();
+  const meta = attribution(m);
   return (
     <details className="group/m">
       <summary className="flex cursor-pointer list-none items-start gap-2 py-1 [&::-webkit-details-marker]:hidden">
         <span className="mt-0.5 text-stone-300">·</span>
-        <span className="flex-1 text-sm leading-relaxed text-stone-700">{m.claim}</span>
+        <span className="flex-1 text-sm leading-relaxed text-stone-700">
+          {m.claim}
+          {meta ? <span className="mt-0.5 block text-xs text-stone-400">{meta}</span> : null}
+        </span>
+        <span
+          className="mt-0.5 shrink-0 text-xs text-stone-400"
+          title="times surfaced (find_context + lookups)"
+        >
+          {m.uses === 0 ? "unused" : `${m.uses}×`}
+        </span>
         {m.flags.map((f) => (
           <Flag key={f} kind={f} />
         ))}
