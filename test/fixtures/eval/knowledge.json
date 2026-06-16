@@ -1,0 +1,72 @@
+{
+  "_note": "Synthetic fact-database quality eval spec (issue #10). No real tenant data (I3). Self-contained: inline docs let `quality-cli.ts` run without a --db. `recognized_revenue` is a deliberate planted near-duplicate of `revenue` to exercise redundancy + defect detection.",
+  "k": 5,
+  "redundancyThreshold": 0.6,
+  "docs": [
+    {
+      "type": "metric",
+      "name": "revenue",
+      "meta": {
+        "summary": "Recognized revenue — paid orders only; refunded orders excluded entirely.",
+        "keywords": ["sales", "income", "money", "earned", "revenue"]
+      },
+      "body": "Sum of orders.total_cents where status = 'paid', divided by 100 for dollars. Refunded orders are excluded entirely, not netted."
+    },
+    {
+      "type": "metric",
+      "name": "recognized_revenue",
+      "meta": {
+        "summary": "Recognized revenue — paid orders only; refunded orders excluded entirely.",
+        "keywords": ["sales", "income", "money", "earned", "revenue"]
+      },
+      "body": "Sum of orders.total_cents where status = 'paid', divided by 100 for dollars. Refunded orders are excluded entirely, not netted."
+    },
+    {
+      "type": "entity",
+      "name": "Customer",
+      "meta": {
+        "table": "public.customers",
+        "summary": "A shopper account; soft-deleted via deleted_at.",
+        "keywords": ["customers", "active", "shopper", "account", "buyer"]
+      },
+      "body": "One row per shopper. deleted_at IS NOT NULL means soft-deleted and must be excluded from active customer counts."
+    },
+    {
+      "type": "entity",
+      "name": "Order",
+      "meta": {
+        "table": "public.orders",
+        "summary": "A purchase; status drives revenue recognition.",
+        "keywords": ["orders", "paid", "refunded", "status", "purchase"]
+      },
+      "body": "One row per purchase. status = 'paid' counts toward revenue; 'refunded' is excluded. total_cents is integer cents."
+    },
+    {
+      "type": "gotcha",
+      "name": "money-is-cents",
+      "meta": { "keywords": ["cents", "money", "dollars"] },
+      "body": "All money columns are integer cents — divide by 100 for dollars."
+    }
+  ],
+  "retrieval": [
+    { "question": "How much revenue did we make?", "relevant": ["revenue", "recognized_revenue"] },
+    { "question": "How many active customers do we have?", "relevant": ["Customer"] },
+    { "question": "What counts as a paid order?", "relevant": ["Order"] }
+  ],
+  "defects": {
+    "planted": ["dup:recognized_revenue|revenue"]
+  },
+  "judgement": [
+    { "id": "j1", "gold": "accept", "predicted": "accept" },
+    { "id": "j2", "gold": "accept", "predicted": "accept" },
+    { "id": "j3", "gold": "reject", "predicted": "reject" },
+    { "id": "j4", "gold": "reject", "predicted": "reject" },
+    { "id": "j5", "gold": "reject", "predicted": "accept" }
+  ],
+  "gate": {
+    "minHitRate": 1.0,
+    "minRecallAtK": 0.9,
+    "maxFalseAcceptRate": 0.4,
+    "minDefectRecall": 1.0
+  }
+}

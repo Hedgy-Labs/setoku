@@ -40,3 +40,22 @@ If the file doesn't exist, offer to create it: propose 5–10 questions from the
 | --- | -------- | ------ | -------------- | --- |
 
 Summarize: pass rate, the dominant failure layer, and the top 1–2 artifact improvements that would raise the score. Offer to apply them via `/setoku:generate` (refresh mode).
+
+## Structural quality metrics (the fact database itself — issue #10)
+
+The golden-question run above scores the *answer*. To credit (or catch regressions in) changes to the **knowledge store's structure** — concise facts, compaction, auto-judgement — score the intermediate layers directly. These are **deterministic** (pure token/set math reusing the production retrieval scorer), so they need **no model and no API key** and run for free in CI (I8):
+
+```bash
+bun run eval:knowledge --spec <spec.json> [--db <knowledge.db>] [--gate]
+```
+
+The spec (see `test/fixtures/eval/knowledge.json` for the shape) carries frozen, representation-agnostic ground truth — questions and doc **names**, never internal ids, so the goldens survive a migration of the fact representation. Dimensions:
+
+- **Retrieval** — `precision/recall@k`, hit rate, MRR against labeled `question → relevant doc names`. Catches retrieval misses and coverage gaps.
+- **Redundancy** — near-duplicate doc pairs (Jaccard); the deterministic signal behind "merge repetitive facts".
+- **Auto-judgement** — confusion matrix vs human-gold accept/reject labels. The headline is **false-accept rate** (FP/(FP+TN)): the I2/I9 number, since false-accepts are an agent waving bad knowledge past the human-click membrane.
+- **Defect detection** — precision/recall of the compaction ("REM sleep") pass against **planted** contradictions/duplicates (ground truth you seeded).
+
+`--gate` enforces threshold floors (`minHitRate`, `maxFalseAcceptRate`, …) and exits non-zero — wire it into CI alongside the fast suite.
+
+**Cost split.** The structural metrics are free (deterministic, automatable in CI). The *fuzzy detectors that produce the labels* — does fact X contradict fact Y? did the auto-judge decide right? — run in **this session on the Max subscription** (no server-side inference, I8). Reserve those for interactive runs after a structural change; gate the deterministic metrics continuously.
