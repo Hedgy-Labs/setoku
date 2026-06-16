@@ -96,6 +96,15 @@ export function scoreDocs<T extends ScorableDoc>(
   return scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score);
 }
 
+/** Jaccard overlap of two token sets, in [0,1]. Shared by retrieval-quality and
+ *  fact-dedup (both ask "how similar are these two bags of words?"). */
+export function jaccard(a: Set<string>, b: Set<string>): number {
+  if (!a.size && !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter += 1;
+  return inter / (a.size + b.size - inter);
+}
+
 /** Gotchas are one-liners: include any sharing at least one meaningful token with the question. */
 export function matchGotchas(gotchas: string[], question: string): string[] {
   const qts = new Set(queryTokens(question));

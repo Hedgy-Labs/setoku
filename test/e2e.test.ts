@@ -267,7 +267,7 @@ describe("curation + knowledge store + audit", () => {
   it("report_correction stores an attributed pending candidate", async () => {
     const { text, isError } = await call("report_correction", {
       kind: "gotcha",
-      content: "Pending orders are excluded from conversion-rate denominators",
+      fact: "Pending orders are excluded from conversion-rate denominators",
       relates_to: "Order",
     });
     expect(isError).toBe(false);

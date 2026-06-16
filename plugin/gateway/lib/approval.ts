@@ -151,11 +151,14 @@ export function applyApprovalAction(
 
   let folded = false;
   if (action === "accepted" && corr.kind === "gotcha") {
+    // store only the concise FACT as knowledge (#10, avenue 1); the supporting
+    // context (corr.content) stays in the corrections record, not the gotcha.
+    const knowledge = corr.fact?.trim() || corr.content;
     store.upsertDoc(
       {
         type: "gotcha",
-        name: slug(corr.content),
-        body: corr.content,
+        name: slug(knowledge),
+        body: knowledge,
         meta: corr.relatesTo ? { relates_to: corr.relatesTo } : {},
       },
       identity,

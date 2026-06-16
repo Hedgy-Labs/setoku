@@ -112,8 +112,9 @@ read access (analyst reads the lake; either connector reads the business DB):
 **Write down what you learn.** Every confirmed definition / metric / gotcha
 becomes knowledge. The simplest path — you're already on the analyst connector —
 is `report_correction` (required args: `kind` ∈ {gotcha, metric, entity, other}
-and `content`; optional `relates_to`), e.g.
-`report_correction {"kind":"gotcha","content":"Active companies exclude Company.isInternal=true (internal/test tenants)","relates_to":"Company"}`.
+and `fact` — the single concise claim; optional `context` for supporting
+evidence; **set `relates_to`** to the entity/metric it's about), e.g.
+`report_correction {"kind":"gotcha","fact":"Active companies exclude Company.isInternal=true (internal/test tenants).","context":"isInternal flags our own test tenants; saw it in src/models/company.ts","relates_to":"Company"}`.
 Propose it, and a human accepts it at `https://<domain>/admin`.
 **This is the moment to introduce the approval page** if you haven't: it's the
 curation surface — the *only* place knowledge is committed, by a human, outside

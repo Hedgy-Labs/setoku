@@ -69,13 +69,15 @@ await (async () => {
     { type: "gotcha", name: "test-accounts-excluded", body: "Internal test accounts (email ends @hedgy.test) are excluded from active-user counts.", meta: {} },
     USER,
   );
+  // structured proposal (#10, avenue 1): concise fact + supporting context
   store.addCorrection({
     user: "alice@hedgy.co",
     kind: "gotcha",
-    content: "Contractor placements (placement_type=C2C) are pass-through and excluded from net revenue.",
+    fact: "Contractor placements (placement_type=C2C) are excluded from net revenue.",
+    context: "They're pass-through — we only book the margin, so counting the gross double-counts. Saw this reconciling the March numbers.",
     relatesTo: "net_revenue",
   });
-  store.addCorrection({ user: "bob@hedgy.co", kind: "metric", content: "Define 'activation' as first completed intro within 14 days of signup." });
+  store.addCorrection({ user: "bob@hedgy.co", kind: "metric", fact: "Define 'activation' as first completed intro within 14 days of signup." });
 })();
 store.db.close();
 

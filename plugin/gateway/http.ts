@@ -38,6 +38,7 @@ import {
   type SourceTable,
 } from "./lib/approval";
 import { authenticate, canApprove, hashPassword, isRole } from "./lib/accounts";
+import { buildKnowledgeView } from "./lib/facts";
 import { VERSION } from "./lib/version";
 import { resolveDatabaseUrl, resolveLakeUrl } from "./lib/config";
 import { introspectSchema } from "./lib/db";
@@ -600,6 +601,11 @@ const httpServer = http.createServer(async (req, res) => {
         // read endpoints — any signed-in user (members included) may view
         if (api === "pending" && req.method === "GET") return json(200, store.listCorrections("pending"));
         if (api === "knowledge" && req.method === "GET") return json(200, store.listDocs());
+        if (api === "knowledge_view" && req.method === "GET")
+          return json(
+            200,
+            buildKnowledgeView(store.listDocs(), store.listCorrections("pending")),
+          );
         if (api === "audit" && req.method === "GET") return json(200, store.listAudit(200));
         if (api === "sources" && req.method === "GET") return json(200, await gatherSources());
         if (api === "team" && req.method === "GET")

@@ -41,9 +41,37 @@ export interface Correction {
   ts: string;
   user: string;
   kind: string;
+  /** Supporting context (the fuller text); for legacy proposals, the whole blob. */
   content: string;
+  /** The concise claim to store (#10, avenue 1); null for legacy proposals. */
+  fact: string | null;
   relatesTo: string | null;
   status: string;
+}
+
+export interface KnowledgeMember {
+  name: string;
+  type: string;
+  claim: string;
+  body: string;
+  verified: boolean;
+  flags: string[];
+}
+
+export interface SubjectGroup {
+  key: string;
+  label: string;
+  primaryType: string;
+  members: KnowledgeMember[];
+  flags: string[];
+}
+
+export interface KnowledgeView {
+  docs: number;
+  subjects: SubjectGroup[];
+  health: { contradictions: number; duplicates: number; verbose: number; stale: number };
+  contradictions: { kind: "contradiction"; subject: string; a: string; b: string; reason: string }[];
+  merges: { kind: "merge"; a: string; b: string; subject: string; similarity: number; reason: string }[];
 }
 
 export interface KnowledgeDoc {

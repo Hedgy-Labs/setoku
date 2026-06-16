@@ -59,3 +59,9 @@ The spec (see `test/fixtures/eval/knowledge.json` for the shape) carries frozen,
 `--gate` enforces threshold floors (`minHitRate`, `maxFalseAcceptRate`, …) and exits non-zero — wire it into CI alongside the fast suite.
 
 **Cost split.** The structural metrics are free (deterministic, automatable in CI). The *fuzzy detectors that produce the labels* — does fact X contradict fact Y? did the auto-judge decide right? — run in **this session on the Max subscription** (no server-side inference, I8). Reserve those for interactive runs after a structural change; gate the deterministic metrics continuously.
+
+## Compaction & triage (the companion pass — issue #10)
+
+`bun run compact --db <knowledge.db> [--triage]` runs the deterministic compaction ("REM sleep") pass over the live store: it derives structured facts (see [docs/knowledge-facts.md](../../../docs/knowledge-facts.md)) and reports **merge candidates** (near-duplicate facts), **contradictions to review** (antonym/numeric/atomic-object clashes on the same subject), and stale flags. With `--triage` it adds an **advisory** accept/reject/review verdict per pending correction.
+
+It is **read-only and recommend-only** (I2/I9): it never edits curated knowledge — a human still enacts decisions on the approval surface. Use it to pre-sort a noisy queue before `/setoku:curate`, and watch its false-accept rate via the harness above.

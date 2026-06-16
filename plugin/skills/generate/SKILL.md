@@ -8,7 +8,7 @@ description: Generate or refresh Setoku's business-context knowledge by reading 
 You are deriving the business's **verified context** from its codebase and saving it into the gateway's knowledge store. The code is the source of truth for business semantics; your job is to compress it into compact, retrievable docs **grounded in `file:line` references** so a human can verify every claim. Accuracy beats coverage: a wrong annotation is worse than a missing one.
 
 > **Two ways to save — use whichever connector you're on; generation never requires SSH.**
-> - **Analyst connector (the default, propose-only):** save each doc as a `report_correction` (`kind` = the doc type, `content` = the doc body, `relates_to` = the entity/metric name). They land in **Pending** for a human to approve at `/admin` — a perfect first-run path. (On approval, gotchas fold into the store automatically; entities/metrics are shaped into structured docs in a later curator pass.)
+> - **Analyst connector (the default, propose-only):** save each doc as a `report_correction` (`kind` = the doc type, `fact` = the concise claim, `context` = supporting detail/evidence, `relates_to` = the entity/metric name — always set it). They land in **Pending** for a human to approve at `/admin` — a perfect first-run path. (On approval, gotchas fold into the store automatically; entities/metrics are shaped into structured docs in a later curator pass.)
 > - **Curator connector (optional, commits directly):** if `upsert_context` is available you're on a curator token — save structured docs directly with it. Generation is a deliberate session reading the **repo's own code** (trusted, unlike runtime lake/Slack data), and the curator token is lake-blind, so it structurally can't ingest untrusted bulk text (the I2/I9 membrane). Never run generation in a session that is also analyzing untrusted data.
 >
 > **Detect the mode:** if `upsert_context` is in your tools → curator; otherwise → analyst (use `report_correction`). Don't send the human to SSH for a curator token just to generate — proposing on the analyst connector gets real context into the store today.
@@ -23,7 +23,8 @@ You are deriving the business's **verified context** from its codebase and savin
 ## Doc types and content
 
 Save each via `upsert_context` (curator) **or** `report_correction` (analyst — set
-`kind` to the doc type below, `content` to the body, `relates_to` to the name).
+`kind` to the doc type below, `fact` to the concise claim, `context` to the
+supporting detail, and `relates_to` to the entity/metric name).
 The structure below is the *content* to produce either way.
 
 **entity** — one per business-relevant table (skip pure join/system tables). `meta`: `table` (qualified, e.g. `public.orders`), `summary` (one line), `keywords` (synonyms users say). Body sections:

@@ -87,7 +87,13 @@ function PendingCard({
           {c.relatesTo ? ` · re: ${c.relatesTo}` : ""}
         </span>
       </div>
-      <div className="whitespace-pre-wrap text-sm leading-relaxed text-stone-800">{c.content}</div>
+      {/* the concise fact to store (avenue 1); context shown muted below */}
+      <div className="whitespace-pre-wrap text-sm leading-relaxed text-stone-800">{c.fact ?? c.content}</div>
+      {c.fact && c.content && c.content !== c.fact ? (
+        <div className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-stone-500">
+          context: {c.content}
+        </div>
+      ) : null}
       {mayApprove ? (
         <div className="mt-3 flex flex-wrap items-center gap-2">
           <input

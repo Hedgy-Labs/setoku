@@ -121,7 +121,7 @@ server.registerTool(
     const gotchas = store.gotchas();
     const pending = matchByTokens(
       store.listCorrections("pending"),
-      (c) => `${c.content} ${c.relatesTo ?? ""}`,
+      (c) => `${c.fact ?? c.content} ${c.relatesTo ?? ""}`,
       question,
     ).slice(0, 5);
     const out: string[] = [];
@@ -136,8 +136,9 @@ server.registerTool(
         "## Unverified team knowledge (pending curation — treat as likely true; attribute it when used)",
       );
       for (const c of pending) {
+        // surface the concise fact; the supporting context stays in curation
         out.push(
-          `- ${c.content} (${c.user}, ${c.ts.slice(0, 10)}${c.relatesTo ? `, re: ${c.relatesTo}` : ""})`,
+          `- ${c.fact ?? c.content} (${c.user}, ${c.ts.slice(0, 10)}${c.relatesTo ? `, re: ${c.relatesTo}` : ""})`,
         );
       }
       out.push("");
@@ -295,25 +296,41 @@ server.registerTool(
       "Records a candidate addition or correction to the knowledge store (a new gotcha, a metric " +
       "definition the user clarified, an entity annotation fix). Call this whenever the user corrects you or " +
       "resolves an ambiguity — that's how the whole team's answers improve. The candidate is live immediately " +
-      "as unverified knowledge; a curator later promotes or rejects it via /setoku:curate.",
+      "as unverified knowledge; a curator later promotes or rejects it via /setoku:curate.\n\n" +
+      "Split what you record: `fact` is the SINGLE concise claim worth storing (one sentence, no reasoning); " +
+      "`context` is the supporting evidence / where you saw it — shown to the curator but NOT stored as the fact. " +
+      "Keep the fact tight; put the 'why' in context.\n\n" +
+      "ALWAYS set `relates_to` to the entity or metric this is about (e.g. \"revenue\", \"Customer\") — it's how " +
+      "the knowledge gets organized by subject and how conflicts with existing facts are detected. Only omit it " +
+      "for a genuinely cross-cutting fact that belongs to no single entity/metric.",
     inputSchema: {
       kind: z.enum(["gotcha", "metric", "entity", "query", "other"]),
-      content: z
+      fact: z
         .string()
         .describe(
-          "The correction/clarification, written so a curator can apply it",
+          "The single concise claim to store (one sentence; no reasoning or evidence)",
+        ),
+      context: z
+        .string()
+        .optional()
+        .describe(
+          "Supporting evidence / how you learned it — shown to the curator, not stored as the fact",
         ),
       relates_to: z
         .string()
         .optional()
-        .describe("Entity/metric name this relates to, if any"),
+        .describe(
+          "The entity or metric name this fact is about (e.g. \"revenue\", \"Customer\"). Set this whenever the " +
+            "fact is about a specific entity/metric — it organizes the knowledge by subject and powers conflict detection.",
+        ),
     },
   },
-  async ({ kind, content, relates_to }) => {
+  async ({ kind, fact, context, relates_to }) => {
     const id = store.addCorrection({
       user,
       kind,
-      content,
+      fact,
+      context,
       relatesTo: relates_to,
     });
     store.audit(user, "report_correction", { id, kind });
@@ -347,10 +364,13 @@ server.registerTool(
     if (!rows.length) return text(`No ${status ?? "pending"} corrections.`);
     return text(
       rows
-        .map(
-          (c) =>
-            `#${c.id} [${c.kind}] ${c.content} (${c.user}, ${c.ts.slice(0, 10)}${c.relatesTo ? `, re: ${c.relatesTo}` : ""})`,
-        )
+        .map((c) => {
+          const head = `#${c.id} [${c.kind}] ${c.fact ?? c.content} (${c.user}, ${c.ts.slice(0, 10)}${c.relatesTo ? `, re: ${c.relatesTo}` : ""})`;
+          // show supporting context only when it adds beyond the fact
+          return c.fact && c.content && c.content !== c.fact
+            ? `${head}\n    context: ${c.content}`
+            : head;
+        })
         .join("\n"),
     );
   },

@@ -34,7 +34,12 @@ export interface Correction {
   ts: string;
   user: string;
   kind: string;
+  /** The supporting context shown to a curator (the fuller text). For legacy
+   *  proposals this is the whole blob and doubles as the savable text. */
   content: string;
+  /** The concise claim to store as knowledge (#10, avenue 1). Null for legacy
+   *  proposals, where `content` is used as the savable text instead. */
+  fact: string | null;
   relatesTo: string | null;
   status: "pending" | "accepted" | "rejected";
 }
@@ -135,6 +140,13 @@ export class KnowledgeStore {
       resolved_by TEXT,
       resolved_ts TEXT
     )`);
+    // Structured proposal (#10, avenue 1): split out the concise FACT to store
+    // from its supporting context. We only add `fact`; the existing `content`
+    // column becomes the "context" (the fuller text a curator reads but which
+    // is not itself the stored knowledge). Added idempotently so existing
+    // stores migrate in place; legacy rows keep `fact` NULL and fall back to
+    // `content` as the savable text.
+    this.ensureColumn("corrections", "fact", "TEXT");
     this.db.run(`CREATE TABLE IF NOT EXISTS audit (
       id INTEGER PRIMARY KEY,
       ts TEXT NOT NULL,
@@ -184,6 +196,15 @@ export class KnowledgeStore {
   }
 
   /* ------------------------------- docs ------------------------------- */
+
+  /** Add a column if it isn't already present — idempotent in-place migration. */
+  private ensureColumn(table: string, column: string, type: string): void {
+    const cols = this.db
+      .query(`PRAGMA table_info(${table})`)
+      .all() as { name: string }[];
+    if (!cols.some((c) => c.name === column))
+      this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 
   listDocs(): KnowledgeDoc[] {
     const rows = this.db
@@ -255,21 +276,28 @@ export class KnowledgeStore {
 
   /* ---------------------------- corrections ---------------------------- */
 
+  /**
+   * Record a pending proposal. Two fields (#10 avenue 1): `fact` is the concise
+   * claim to store; `context` is the supporting text shown to a curator. They
+   * map to the `fact` and `content` columns respectively — `content` keeps its
+   * legacy role as the curator-facing text. A legacy single-blob caller can
+   * still pass `content` directly (fact stays NULL).
+   */
   addCorrection(rec: {
     user: string;
     kind: string;
-    content: string;
+    fact?: string;
+    context?: string;
+    content?: string;
     relatesTo?: string;
   }): number {
+    const fact = rec.fact?.trim() || null;
+    // the curator-facing text: the supplied context, else the legacy blob,
+    // else fall back to the fact so the column is never empty.
+    const content = (rec.context?.trim() || rec.content?.trim() || fact || "").trim();
     this.db.run(
-      "INSERT INTO corrections (ts, user, kind, content, relates_to) VALUES (?, ?, ?, ?, ?)",
-      [
-        new Date().toISOString(),
-        rec.user,
-        rec.kind,
-        rec.content,
-        rec.relatesTo ?? null,
-      ],
+      "INSERT INTO corrections (ts, user, kind, content, fact, relates_to) VALUES (?, ?, ?, ?, ?, ?)",
+      [new Date().toISOString(), rec.user, rec.kind, content, fact, rec.relatesTo ?? null],
     );
     return Number(
       this.db.query("SELECT last_insert_rowid() AS id").get()!["id" as never],
@@ -279,7 +307,7 @@ export class KnowledgeStore {
   listCorrections(status: string = "pending"): Correction[] {
     const rows = this.db
       .query(
-        "SELECT id, ts, user, kind, content, relates_to AS relatesTo, status FROM corrections WHERE status = ? ORDER BY id",
+        "SELECT id, ts, user, kind, content, fact, relates_to AS relatesTo, status FROM corrections WHERE status = ? ORDER BY id",
       )
       .all(status) as unknown as Correction[];
     return rows;
