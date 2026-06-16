@@ -7,6 +7,7 @@ import type {
   NewLogin,
   Correction,
   KnowledgeDoc,
+  KnowledgeView,
   AuditRow,
   SourcesData,
   TeamData,
@@ -72,6 +73,7 @@ export const api = {
   resolve: (id: number, action: "accepted" | "rejected", reason?: string) =>
     req<MutationResult>("resolve", { method: "POST", body: { id, action, reason } }),
   knowledge: () => req<KnowledgeDoc[]>("knowledge"),
+  knowledgeView: () => req<KnowledgeView>("knowledge_view"),
   sources: () => req<SourcesData>("sources"),
   audit: () => req<AuditRow[]>("audit"),
   team: () => req<TeamData>("team"),

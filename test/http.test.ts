@@ -480,6 +480,21 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(Array.isArray(docs)).toBe(true);
   });
 
+  it("the knowledge_view endpoint returns the subject-grouped view with health", async () => {
+    expect((await apiGet("knowledge_view")).status).toBe(401); // session required
+    const { cookie } = await session("boss", "s3cret-pass");
+    const r = await apiGet("knowledge_view", cookie);
+    expect(r.status).toBe(200);
+    const v = (await r.json()) as {
+      docs: number;
+      subjects: { key: string; members: unknown[] }[];
+      health: { contradictions: number; verbose: number };
+    };
+    expect(Array.isArray(v.subjects)).toBe(true);
+    expect(v.health).toBeDefined();
+    expect(typeof v.health.contradictions).toBe("number");
+  });
+
   it("the sources endpoint shows what's connected and requires a session", async () => {
     expect((await apiGet("sources")).status).toBe(401);
     const { cookie } = await session("boss", "s3cret-pass");

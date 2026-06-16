@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { KnowledgeStore, type Correction, type KnowledgeDoc } from "../plugin/gateway/lib/store";
 import {
+  buildKnowledgeView,
   compact,
   conciseClaim,
   extractFacts,
@@ -347,6 +348,62 @@ describe("corrections schema migrates in place (back-compat)", () => {
     expect(rows[0].fact).toBeNull();
     // and a new structured proposal works against the migrated table
     expect(() => store.addCorrection({ user: "n@x.com", kind: "gotcha", fact: "New fact.", context: "why" })).not.toThrow();
+  });
+});
+
+/* --------------- subject-grouped knowledge view (/admin) ----------------- */
+
+describe("buildKnowledgeView", () => {
+  const longBody = Array.from({ length: 70 }, (_, i) => `word${i}`).join(" ");
+  const docs: KnowledgeDoc[] = [
+    doc({ type: "metric", name: "revenue", meta: { summary: "Revenue excludes refunded orders." } }),
+    doc({ type: "gotcha", name: "money-is-cents", body: "Money columns are integer cents — divide by 100.", meta: { relates_to: "revenue" } }),
+    doc({ type: "gotcha", name: "standalone-note", body: "An unrelated standalone gotcha." }),
+    doc({ type: "entity", name: "Customer", meta: { summary: "A shopper account." }, body: longBody }),
+  ];
+
+  it("groups a gotcha under the subject it relates to", () => {
+    const v = buildKnowledgeView(docs);
+    const revenue = v.subjects.find((s) => s.label === "revenue")!;
+    expect(revenue.primaryType).toBe("metric");
+    expect(revenue.members.map((m) => m.type).sort()).toEqual(["gotcha", "metric"]);
+  });
+
+  it("keeps an unrelated gotcha as its own subject", () => {
+    const v = buildKnowledgeView(docs);
+    expect(v.subjects.some((s) => s.key === "gotcha:standalone-note")).toBe(true);
+  });
+
+  it("infers a gotcha's subject from its content (plural-aware) when relates_to is absent", () => {
+    const v = buildKnowledgeView([
+      doc({ type: "entity", name: "Customer", meta: { summary: "A shopper." } }),
+      doc({ type: "metric", name: "revenue", meta: { summary: "Paid orders only." } }),
+      // no relates_to; mentions "customers" (plural) → attaches to entity Customer
+      doc({ type: "gotcha", name: "soft-delete", body: "Soft-deleted customers are excluded from counts." }),
+      // mentions "revenue" → attaches to metric revenue
+      doc({ type: "gotcha", name: "refunds", body: "Refunded orders are excluded from revenue." }),
+    ]);
+    const customer = v.subjects.find((s) => s.label === "Customer")!;
+    const revenue = v.subjects.find((s) => s.label === "revenue")!;
+    expect(customer.members.some((m) => m.name === "soft-delete")).toBe(true);
+    expect(revenue.members.some((m) => m.name === "refunds")).toBe(true);
+  });
+
+  it("surfaces concise claims and flags a verbose body", () => {
+    const v = buildKnowledgeView(docs);
+    const customer = v.subjects.find((s) => s.label === "Customer")!;
+    expect(customer.members[0].claim).toBe("A shopper account.");
+    expect(customer.members[0].flags).toContain("verbose");
+    expect(v.health.verbose).toBeGreaterThanOrEqual(1);
+  });
+
+  it("flags a subject for review when a pending correction contradicts it", () => {
+    const pending = [correction({ id: 5, relatesTo: "revenue", kind: "metric", content: "Revenue includes refunded orders." })];
+    const v = buildKnowledgeView(docs, pending);
+    const revenue = v.subjects.find((s) => s.label === "revenue")!;
+    expect(revenue.flags).toContain("review");
+    expect(revenue.members.find((m) => m.name === "revenue")!.flags).toContain("conflict");
+    expect(v.health.contradictions).toBeGreaterThanOrEqual(1);
   });
 });
 

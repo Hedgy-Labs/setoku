@@ -49,6 +49,31 @@ export interface Correction {
   status: string;
 }
 
+export interface KnowledgeMember {
+  name: string;
+  type: string;
+  claim: string;
+  body: string;
+  verified: boolean;
+  flags: string[];
+}
+
+export interface SubjectGroup {
+  key: string;
+  label: string;
+  primaryType: string;
+  members: KnowledgeMember[];
+  flags: string[];
+}
+
+export interface KnowledgeView {
+  docs: number;
+  subjects: SubjectGroup[];
+  health: { contradictions: number; duplicates: number; verbose: number; stale: number };
+  contradictions: { subject: string; a: string; b: string; reason: string }[];
+  merges: { a: string; b: string; subject: string; similarity: number; reason: string }[];
+}
+
 export interface KnowledgeDoc {
   type: string;
   name: string;

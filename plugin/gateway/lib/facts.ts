@@ -468,6 +468,191 @@ export function compact(facts: Fact[], opts: CompactOpts = {}): CompactionReport
   };
 }
 
+/* --------------------- subject-grouped knowledge view -------------------- */
+
+export interface KnowledgeMember {
+  name: string;
+  type: string;
+  /** Concise fact (avenue 1) shown by default; body is the drill-in. */
+  claim: string;
+  body: string;
+  verified: boolean;
+  /** Per-doc flags: "conflict", "duplicate", "verbose". */
+  flags: string[];
+}
+
+export interface SubjectGroup {
+  key: string;
+  label: string;
+  /** The headline type of the subject (entity/metric/…). */
+  primaryType: string;
+  members: KnowledgeMember[];
+  /** Subject-level flags, e.g. "review" when a contradiction touches it. */
+  flags: string[];
+}
+
+export interface KnowledgeHealth {
+  contradictions: number;
+  duplicates: number;
+  verbose: number;
+  stale: number;
+}
+
+export interface KnowledgeView {
+  docs: number;
+  subjects: SubjectGroup[];
+  health: KnowledgeHealth;
+  /** Drill-in detail for the health bar. */
+  contradictions: ContradictionCandidate[];
+  merges: MergeCandidate[];
+}
+
+/** A body longer than this (tokens) carries detail beyond its concise fact. */
+const VERBOSE_TOKENS = 60;
+
+/** Token presence that tolerates simple singular/plural (customer ↔ customers). */
+function hasTokenLike(set: Set<string>, t: string): boolean {
+  return set.has(t) || set.has(`${t}s`) || (t.endsWith("s") && set.has(t.slice(0, -1)));
+}
+
+/**
+ * Infer which canonical subject a gotcha is about from its text, when it
+ * carries no explicit relates_to. Conservative: every token of a subject's name
+ * must appear (plural-aware); the most specific (longest) name wins; ambiguous
+ * or no match → left standalone (we'd rather under-group than mis-group).
+ */
+function inferGotchaTarget(
+  text: Set<string>,
+  canon: { key: string; tokens: string[] }[],
+): string | undefined {
+  let best: { key: string; score: number } | null = null;
+  for (const c of canon) {
+    if (!c.tokens.length) continue;
+    if (c.tokens.every((t) => hasTokenLike(text, t))) {
+      const score = c.tokens.length;
+      if (!best || score > best.score) best = { key: c.key, score };
+    }
+  }
+  return best?.key;
+}
+
+const SUBJECT_RANK: Record<string, number> = {
+  overview: 0,
+  entity: 1,
+  metric: 2,
+  query: 3,
+  gotcha: 4,
+};
+
+/**
+ * Build the subject-grouped knowledge view for /admin/knowledge: canonical
+ * subjects are the non-gotcha docs; gotchas attach to the entity/metric they
+ * declare via `relates_to` (else stand alone). Compaction flags (contradiction,
+ * duplicate, stale) and verbosity are folded in. Pure + model-free (I8).
+ */
+export function buildKnowledgeView(
+  docs: KnowledgeDoc[],
+  pending: Correction[] = [],
+): KnowledgeView {
+  // canonical subjects + a lookup from name/table to subject key
+  const groups = new Map<string, SubjectGroup>();
+  const keyByRef = new Map<string, string>(); // normalized name/table → subject key
+
+  const ensureGroup = (key: string, label: string, type: string): SubjectGroup => {
+    let g = groups.get(key);
+    if (!g) {
+      g = { key, label, primaryType: type, members: [], flags: [] };
+      groups.set(key, g);
+    }
+    return g;
+  };
+
+  for (const d of docs.filter((x) => x.type !== "gotcha")) {
+    const key = `${d.type}:${normalize(d.name)}`;
+    ensureGroup(key, d.name, d.type);
+    keyByRef.set(normalize(d.name), key);
+    const tbl = normalize(String(d.meta.table ?? ""));
+    if (tbl) keyByRef.set(tbl, key);
+  }
+
+  const memberOf = (d: KnowledgeDoc): KnowledgeMember => {
+    const claim = conciseClaim(String(d.meta.summary ?? "") || d.body || d.name);
+    const flags: string[] = [];
+    if (tokenize(d.body).length > VERBOSE_TOKENS) flags.push("verbose");
+    return { name: d.name, type: d.type, claim, body: d.body, verified: d.verified, flags };
+  };
+
+  for (const d of docs.filter((x) => x.type !== "gotcha")) {
+    const key = `${d.type}:${normalize(d.name)}`;
+    groups.get(key)!.members.push(memberOf(d));
+  }
+
+  // canonical subjects' name tokens, for content-based gotcha attachment
+  const canon = [...groups.values()].map((g) => ({
+    key: g.key,
+    tokens: tokenize(g.label),
+  }));
+
+  // attach gotchas to their related subject (explicit relates_to first, then
+  // inferred from content), else give them their own group
+  for (const g of docs.filter((x) => x.type === "gotcha")) {
+    const rel = normalize(String(g.meta.relates_to ?? g.meta.relatesTo ?? ""));
+    const explicit = rel ? keyByRef.get(rel) : undefined;
+    const inferred =
+      explicit ??
+      inferGotchaTarget(
+        new Set(tokenize(`${g.name} ${g.meta.summary ?? ""} ${g.body}`)),
+        canon,
+      );
+    const key = inferred ?? `gotcha:${normalize(g.name)}`;
+    if (!inferred) ensureGroup(key, g.name, "gotcha");
+    groups.get(key)!.members.push(memberOf(g));
+  }
+
+  // fold in compaction flags (contradictions can involve a pending correction)
+  const report = compact(extractFacts(docs, pending));
+  const flagRef = (ref: string, flag: string) => {
+    for (const g of groups.values())
+      for (const m of g.members)
+        if (m.name === ref && !m.flags.includes(flag)) {
+          m.flags.push(flag);
+          if (flag === "conflict" && !g.flags.includes("review")) g.flags.push("review");
+        }
+  };
+  for (const c of report.contradictions) {
+    flagRef(c.a, "conflict");
+    flagRef(c.b, "conflict");
+  }
+  for (const m of report.merges) {
+    flagRef(m.a, "duplicate");
+    flagRef(m.b, "duplicate");
+  }
+
+  const subjects = [...groups.values()].sort(
+    (a, b) =>
+      (SUBJECT_RANK[a.primaryType] ?? 9) - (SUBJECT_RANK[b.primaryType] ?? 9) ||
+      a.label.localeCompare(b.label),
+  );
+
+  const verbose = subjects.reduce(
+    (n, g) => n + g.members.filter((m) => m.flags.includes("verbose")).length,
+    0,
+  );
+
+  return {
+    docs: docs.length,
+    subjects,
+    health: {
+      contradictions: report.contradictions.length,
+      duplicates: report.merges.length,
+      verbose,
+      stale: report.flags.length,
+    },
+    contradictions: report.contradictions,
+    merges: report.merges,
+  };
+}
+
 /* ---------------------- avenue 3: advisory auto-judgement ---------------- */
 
 export interface JudgeOpts {
