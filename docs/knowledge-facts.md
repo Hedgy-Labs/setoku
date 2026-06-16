@@ -89,9 +89,13 @@ A periodic pass over the extracted facts that produces a `CompactionReport` of
 - **flag** — facts whose provenance points at a source that no longer exists, or
   that are explicitly marked suspect → flagged for review.
 
-Deterministic core catches structural + lexical conflicts. Semantic
-contradictions across different phrasings are the **opt-in in-session** upgrade.
-Run read-only via `bun run compact --db <knowledge.db>`.
+The deterministic detectors (`compact()` over the extracted facts) catch
+structural + lexical signals and feed the `/admin/knowledge` health bar. But
+compaction itself — deciding *which* fact is right, merging two into one good
+fact, rewriting verbose into concise — is judgment, so it runs **in a curator
+session** via [`/setoku:compact`](../plugin/skills/compact/SKILL.md), not as a
+server-side job (I8). The human curator commits the result through the membrane
+(I9); nothing auto-edits curated knowledge.
 
 ### 3 — Auto-judgement (advisory)
 

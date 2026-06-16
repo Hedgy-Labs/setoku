@@ -19,7 +19,6 @@ import {
   type Fact,
   type Proposal,
 } from "../plugin/gateway/lib/facts";
-import { buildReport } from "../plugin/gateway/compaction-cli";
 import { judgementMetrics } from "../plugin/gateway/lib/quality";
 import { applyApprovalAction } from "../plugin/gateway/lib/approval";
 
@@ -288,29 +287,6 @@ describe("compact() integration", () => {
     expect(report.contradictions.length).toBeGreaterThanOrEqual(1);
     expect(report.stats.facts).toBe(2);
     expect(report.stats.subjects).toBe(1); // both resolve to metric:revenue
-  });
-});
-
-/* ------------------------- CLI buildReport (store-backed) ---------------- */
-
-describe("buildReport over a real KnowledgeStore", () => {
-  const dbPath = path.join(os.tmpdir(), `setoku-facts-${process.pid}.db`);
-  afterAll(() => {
-    for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) fs.rmSync(f, { force: true });
-  });
-
-  it("surfaces a pending correction that contradicts curated knowledge and triages it", () => {
-    const store = new KnowledgeStore(dbPath);
-    store.upsertDoc(
-      { type: "metric", name: "revenue", meta: { summary: "Revenue excludes refunded orders.", source: "src/billing.ts:14" } },
-      "curator@example.com",
-    );
-    store.addCorrection({ user: "analyst@example.com", kind: "metric", content: "Revenue includes refunded orders.", relatesTo: "revenue" });
-
-    const { report, triage } = buildReport(store.listDocs(), store.listCorrections("pending"), true);
-    expect(report.contradictions.length).toBeGreaterThanOrEqual(1);
-    expect(triage).toHaveLength(1);
-    expect(triage[0].verdict).toBe("review"); // contradiction → review, not auto-accept
   });
 });
 
