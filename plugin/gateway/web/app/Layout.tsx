@@ -37,13 +37,8 @@ export function Layout() {
               </NavLink>
             ))}
           </nav>
-          <div className="ml-auto hidden items-center gap-3 md:flex">
-            <span className="text-xs text-stone-500">
-              {me?.identity} · {me?.role}
-            </span>
-            <button className="btn btn-ghost" onClick={() => void logout()}>
-              Sign out
-            </button>
+          <div className="ml-auto hidden md:block">
+            <AccountMenu identity={me?.identity ?? ""} role={me?.role ?? ""} onSignOut={() => void logout()} />
           </div>
 
           {/* small screens: everything collapses into a hamburger */}
@@ -56,6 +51,47 @@ export function Layout() {
         <Outlet />
       </main>
     </>
+  );
+}
+
+/** Wide-screen account control: a quiet identity button opening a menu with role + sign-out. */
+function AccountMenu({ identity, role, onSignOut }: { identity: string; role: string; onSignOut: () => void }) {
+  return (
+    <DropdownMenu.Root>
+      <DropdownMenu.Trigger className="group inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-stone-500 outline-none transition hover:bg-stone-100 hover:text-stone-800 data-[state=open]:bg-stone-100 data-[state=open]:text-stone-800">
+        <span className="max-w-[16rem] truncate">{identity}</span>
+        <svg
+          width="12"
+          height="12"
+          viewBox="0 0 12 12"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="text-stone-400 transition-transform group-data-[state=open]:rotate-180"
+          aria-hidden="true"
+        >
+          <path d="M3 4.5 6 7.5 9 4.5" />
+        </svg>
+      </DropdownMenu.Trigger>
+      <DropdownMenu.Portal>
+        <DropdownMenu.Content
+          align="end"
+          sideOffset={6}
+          className="z-30 min-w-[12rem] overflow-hidden rounded-lg border border-stone-200 bg-white py-1 shadow-lg"
+        >
+          <div className="px-3 py-2">
+            <div className="truncate text-sm font-medium text-stone-900">{identity}</div>
+            <div className="text-xs text-stone-500">{role}</div>
+          </div>
+          <DropdownMenu.Separator className="my-1 h-px bg-stone-200" />
+          <DropdownMenu.Item className="menu-item" onSelect={onSignOut}>
+            Sign out
+          </DropdownMenu.Item>
+        </DropdownMenu.Content>
+      </DropdownMenu.Portal>
+    </DropdownMenu.Root>
   );
 }
 
