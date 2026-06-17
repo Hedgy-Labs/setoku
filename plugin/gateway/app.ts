@@ -15,7 +15,7 @@ import {
   resolveLakeUrl,
   type SetokuConfig,
 } from "./lib/config";
-import { introspectSchema, runReadOnlyQuery } from "./lib/db";
+import { diagnoseNoTables, introspectSchema, runReadOnlyQuery } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type DocType } from "./lib/store";
@@ -156,8 +156,11 @@ server.registerTool(
     }
     if (top.length === 0) {
       out.push(
-        "No matching context docs. Proceed with get_schema, state your assumptions explicitly in the answer, " +
-          "and use report_correction to capture anything the user clarifies.",
+        pending.length
+          ? // we already surfaced unverified knowledge above — don't then claim there's none
+            "No committed context docs yet — rely on the unverified team knowledge above (treat as likely true; attribute it), and capture anything the user clarifies with report_correction."
+          : "No matching context docs. Proceed with get_schema, state your assumptions explicitly in the answer, " +
+              "and use report_correction to capture anything the user clarifies.",
       );
     }
     for (const { doc } of top) {
@@ -206,8 +209,17 @@ server.registerTool(
   },
   async () => {
     const docs = store.listDocs();
-    if (docs.length === 0) return text(NO_KNOWLEDGE_HINT);
+    const pendingCount = store.pendingCount;
+    // Only truly empty (no committed docs AND no pending proposals) shows the
+    // "nothing here yet" hint. With pending proposals present we fall through so
+    // the "# pending corrections" section below actually surfaces them.
+    if (docs.length === 0 && pendingCount === 0) return text(NO_KNOWLEDGE_HINT);
     const lines: string[] = [];
+    if (docs.length === 0)
+      lines.push(
+        "No committed knowledge yet — only unverified proposals (below). Curate them to make them count.",
+        "",
+      );
     const sections: [DocType, string][] = [
       ["overview", "overview"],
       ["entity", "entities"],
@@ -479,11 +491,21 @@ server.registerTool(
       if (config && db.ok) {
         const tables = await introspectSchema(db.url, config);
         const names = tables.map((t) => `${t.schema}.${t.name}`);
-        lines.push(
-          "",
-          `BUSINESS DATABASE (Postgres) — run_query, default dialect — ${names.length} tables:`,
-          "  " + names.slice(0, 40).join(", ") + (names.length > 40 ? ", …" : "") + "  (get_schema for columns)",
-        );
+        if (names.length === 0) {
+          const denied = await diagnoseNoTables(db.url);
+          lines.push(
+            "",
+            denied
+              ? `BUSINESS DATABASE (Postgres): configured but the read-only role can see no tables — ${denied}`
+              : "BUSINESS DATABASE (Postgres): configured, but no tables match the allow-list (or the database is empty).",
+          );
+        } else {
+          lines.push(
+            "",
+            `BUSINESS DATABASE (Postgres) — run_query, default dialect — ${names.length} tables:`,
+            "  " + names.slice(0, 40).join(", ") + (names.length > 40 ? ", …" : "") + "  (get_schema for columns)",
+          );
+        }
       } else {
         lines.push("", "BUSINESS DATABASE: not configured.");
       }
@@ -580,6 +602,11 @@ server.registerTool(
           lines.push(
             "No allowed tables matched. Call get_schema with no arguments to list allowed tables.",
           );
+      } else if (schema.length === 0) {
+        // 0 tables is ambiguous: empty allow-list vs revoked grants. Probe the
+        // catalog so a permission wall reads as one, not as an empty database.
+        const denied = await diagnoseNoTables(url);
+        lines.push(denied ?? "0 allowed tables (the allow-list matched nothing, or the database is empty).");
       } else {
         lines.push(`${schema.length} allowed tables:`);
         for (const t of schema) {
@@ -718,8 +745,14 @@ server.registerTool(
       // excluded, refunds not netted, status-vs-event-log confusion). Make that
       // provisional state visible so the answer carries the caveat to the human.
       if (store.docCount === 0) {
+        // Distinguish "nothing here at all" from "knowledge exists but is still
+        // unverified" — otherwise the warning tells the agent to report_correction
+        // the very gotcha it just filed (the "I did the right thing and nothing
+        // changed" footgun).
         lines.unshift(
-          "⚠ No curated business context exists yet, so this is computed from raw schema and may be WRONG (e.g. internal/test accounts not excluded, refunds not netted). Tell the user the number is provisional, and add context via /setoku:generate or report_correction.",
+          store.pendingCount > 0
+            ? "⚠ Business context for this data is UNVERIFIED — it exists only as pending proposals awaiting human approval. If your query applied the relevant pending knowledge the number should be right; either way call it provisional until a human approves it (/setoku:curate)."
+            : "⚠ No curated business context exists yet, so this is computed from raw schema and may be WRONG (e.g. internal/test accounts not excluded, refunds not netted). Tell the user the number is provisional, and add context via /setoku:generate or report_correction.",
           "",
         );
       }

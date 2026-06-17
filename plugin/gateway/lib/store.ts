@@ -221,6 +221,19 @@ export class KnowledgeStore {
     return row.n;
   }
 
+  /**
+   * Count of pending (proposed, not-yet-approved) corrections. Cheap — the
+   * empty-store hints gate on this alongside docCount so a box that has *only*
+   * unverified knowledge doesn't claim to be empty right after an agent files a
+   * correction (the "I did the right thing and nothing changed" footgun).
+   */
+  get pendingCount(): number {
+    const row = this.db
+      .query("SELECT count(*) AS n FROM corrections WHERE status = 'pending'")
+      .get() as { n: number };
+    return row.n;
+  }
+
   getDoc(type: DocType | null, name: string): KnowledgeDoc | null {
     const needle = name.toLowerCase();
     const all = this.listDocs().filter((d) => (type ? d.type === type : true));

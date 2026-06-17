@@ -79,8 +79,24 @@ config and restart. The credential lives on the box, never in a repo.
    warehouse) or a **pull-bridge** (poll the API → Vector → the lake), modeled on
    `ingest/mercury-poller/` (the reference pattern; `provisioner/sources/*.ts`
    shows the push/drain variants). Minimize sensitive fields at ingest.
-3. **Draft** the connector + a typed lake schema + the compose wiring, and show
-   the human the plan. They provide the credential and approve the apply.
+3. **Draft** the connector and wire it. A pull-bridge modeled on
+   `ingest/mercury-poller/` is **6 coordinated touchpoints** — miss one and it
+   fails *silently* (no error, data just never lands):
+   1. `ingest/<name>-poller/poll.ts` + its `Dockerfile`;
+   2. a compose **service block** for the poller;
+   3. `ingest/schemas/0XX_<name>.sql` — the typed lake table. ⚠ **initdb runs this
+      only once, on a fresh `ch_data` volume.** On an existing box apply it by hand:
+      `docker compose exec -T clickhouse clickhouse-client < ingest/schemas/0XX_<name>.sql`;
+   4. add the new profile to the **`clickhouse` (and `vector`) service `profiles:` list**
+      in `docker-compose.yml` — else `--profile <name>` starts the poller but not the
+      lake/Vector it pushes to;
+   5. three edits to `deploy/vector/vector.yaml`: a `router` route, a `*_parse` remap,
+      and a `lake_*` ClickHouse sink;
+   6. an inbound *webhook* connector (not a poller) also needs a `handle /ingest/<name>/*`
+      block in the `Caddyfile` with token-path auth + a Caddy reload.
+   Show the human the plan. They provide the credential and approve the apply. Remember
+   `bun run deploy` rebuilds only `server` — rebuild the poller (`up -d --build <poller>`)
+   and reload Vector (`up -d vector`) yourself.
 4. Keep an improvised connector **box-local first**; once it's run clean for a
    while, PR it to the repo so it becomes a proven recipe. (You build what the
    customer needs; we harden what recurs.)
@@ -167,7 +183,7 @@ Then go for the two bigger wins — this is where Setoku beats Claude-on-Postgre
 - **Share it with the team.** The knowledge you just captured is now everyone's.
   Easiest: the human clicks **Invite** on `https://<domain>/admin/team` — it mints
   a read-only connector and shows the dev one-liner + claude.ai steps right there.
-  From the CLI it's `docker compose exec server bun gateway/admin-cli.ts add-teammate <their-email>`. Offer to add a couple of teammates either way.
+  From the CLI it's `docker compose exec server bun gateway/admin-cli.ts add-teammate <identity>` (the identity is conventionally their email). Offer to add a couple of teammates either way.
 - **The non-technical magic moment.** For a founder/PM/ops teammate this may be the
   *first time they can query and visualize their own data in plain language* — and
   get the right number, because your annotations ride along. Tee it up: have them
@@ -278,7 +294,7 @@ cd /opt/setoku && git pull && docker compose up -d --build server
 #   (rsync-based box, or a deeper deploy / rollback: see docs/deploy.md)
 
 # share with a teammate — prints dev one-liner + claude.ai connector steps (Phase 4)
-docker compose exec server bun gateway/admin-cli.ts add-teammate <email>
+docker compose exec server bun gateway/admin-cli.ts add-teammate <identity>
 
 # mint a curator connector token (Phase 3 — only when committing knowledge directly)
 docker compose exec server bun gateway/admin-cli.ts create-curator-token <identity>
