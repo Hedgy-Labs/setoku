@@ -4,7 +4,7 @@ import { useAuth } from "../auth";
 import { Brand } from "../components/Brand";
 
 export function Login() {
-  const { login } = useAuth();
+  const { login, expired } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -32,6 +32,11 @@ export function Login() {
           Sign in to review pending knowledge. This is a separate credential from the access token you
           give Claude — agents never have it.
         </p>
+        {expired && !error ? (
+          <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            Your session expired — please sign in again.
+          </div>
+        ) : null}
         {error ? (
           <div className="mb-4 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700">
             {error}

@@ -19,15 +19,23 @@
  */
 import type { KnowledgeStore } from "./store";
 
-/** kebab slug for a gotcha doc name derived from its content. */
-function slug(s: string): string {
-  return (
+/**
+ * Short, word-boundary name for a gotcha doc. Avoids the mid-word truncation of a
+ * naive 48-char slice (which produced names like "…c2c-are-exc"). When the
+ * proposal says what it relates to, prefix with that so the doc reads cleanly and
+ * sorts near its subject; the actual grouping is by `meta.relates_to` (facts.ts).
+ */
+function gotchaDocName(relatesTo: string | null | undefined, fact: string): string {
+  const words = (s: string, n: number): string =>
     s
       .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "gotcha"
-  );
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, n)
+      .join("-");
+  return [relatesTo ? words(relatesTo, 3) : "", words(fact, 6)].filter(Boolean).join("-") || "gotcha";
 }
 
 /* ------------------------------ sessions ------------------------------ */
@@ -161,7 +169,7 @@ export function applyApprovalAction(
     store.upsertDoc(
       {
         type: "gotcha",
-        name: slug(knowledge),
+        name: gotchaDocName(corr.relatesTo, knowledge),
         body: knowledge,
         meta,
       },

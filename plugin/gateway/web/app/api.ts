@@ -20,6 +20,16 @@ export function setCsrf(token: string): void {
   csrf = token;
 }
 
+let onUnauthorized: (() => void) | null = null;
+/**
+ * Register a callback fired on ANY 401 from /admin/api/*. The auth layer uses it
+ * to drop to the login screen when a session expires mid-use — otherwise the app
+ * keeps rendering signed-in chrome over a dead session (a confusing dead-end).
+ */
+export function setUnauthorizedHandler(fn: (() => void) | null): void {
+  onUnauthorized = fn;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -45,6 +55,7 @@ async function req<T>(path: string, opts: { method?: string; body?: unknown } = 
   const text = await res.text();
   const data = text ? JSON.parse(text) : null;
   if (!res.ok) {
+    if (res.status === 401) onUnauthorized?.();
     const message = (data && typeof data.error === "string" && data.error) || `HTTP ${res.status}`;
     throw new ApiError(message, res.status, data);
   }

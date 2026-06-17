@@ -604,6 +604,7 @@ export function buildKnowledgeView(
   // attach gotchas to their related subject (explicit relates_to first, then
   // inferred from content), else give them their own group
   for (const g of docs.filter((x) => x.type === "gotcha")) {
+    const member = memberOf(g);
     const rel = normalize(String(g.meta.relates_to ?? g.meta.relatesTo ?? ""));
     const explicit = rel ? keyByRef.get(rel) : undefined;
     const inferred =
@@ -613,8 +614,11 @@ export function buildKnowledgeView(
         canon,
       );
     const key = inferred ?? `gotcha:${normalize(g.name)}`;
-    if (!inferred) ensureGroup(key, g.name, "gotcha");
-    groups.get(key)!.members.push(memberOf(g));
+    // A standalone gotcha (no resolvable subject) titles its own group with the
+    // readable claim, not the machine slug of its doc name (which read as e.g.
+    // "contractor-placements-placement-type-c2c-are-exc").
+    if (!inferred) ensureGroup(key, member.claim, "gotcha");
+    groups.get(key)!.members.push(member);
   }
 
   // fold in compaction flags (contradictions can involve a pending correction)
