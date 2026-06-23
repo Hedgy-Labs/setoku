@@ -20,7 +20,7 @@ Deployed on the hedgy box:
 
 | | URL |
 |---|---|
-| **Claude connector (MCP)** | `https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8` |
+| **Claude connector (MCP)** | `https://stags.setoku.com/mcp/1097598a5d333b1e012d517e0380898f39ffea51e0830be9` |
 | **Admin / approval surface** | https://stags.setoku.com/admin |
 | **Health** | https://stags.setoku.com/health |
 
