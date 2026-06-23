@@ -662,6 +662,17 @@ export class KnowledgeStore {
     return row ?? null;
   }
 
+  /** One report's metadata WITHOUT its (up-to-2MB) body — for cheap 404/policy
+   *  gating on hot or credential-free paths before deciding to serve the body. */
+  getPublishedMeta(id: string): PublishedMeta | null {
+    const row = this.db
+      .query(
+        "SELECT id, title, format, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+      )
+      .get(id) as PublishedMeta | null;
+    return row ?? null;
+  }
+
   /** Published reports without bodies, newest first (the admin list page). */
   listPublished(): PublishedMeta[] {
     return this.db

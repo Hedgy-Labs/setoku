@@ -19,6 +19,11 @@ stags.setoku.com, stags.51-81-222-176.sslip.io {
 	handle /admin* {
 		reverse_proxy setoku-stags-demo-server-1:8787
 	}
+	# public reports — credential-free /p/<id> links (server serves only those an
+	# admin promoted to public). Without this the catch-all 404s public demo links.
+	handle /p/* {
+		reverse_proxy setoku-stags-demo-server-1:8787
+	}
 	handle /health* {
 		reverse_proxy setoku-stags-demo-server-1:8787
 	}

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";
 import { Loading, ErrorMsg, Flash } from "../components/Page";
 import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
+import { reportShareUrl } from "../format";
 import type { PublishedReport } from "../types";
 
 /**
@@ -19,11 +20,12 @@ import type { PublishedReport } from "../types";
 export function ReportView() {
   const { id = "" } = useParams();
   const { me } = useAuth();
+  const navigate = useNavigate();
   const isAdmin = me?.role === "admin";
   const { data, loading, error, reload } = useApi<PublishedReport>(() => api.report(id), [id]);
   const [flash, setFlash] = useState<string | null>(null);
 
-  const link = data?.visibility === "public" ? `${location.origin}/p/${id}` : `${location.origin}/admin/p/${id}`;
+  const link = reportShareUrl({ id, visibility: data?.visibility ?? "team" });
   const mine = me?.identity === data?.createdBy;
 
   const copy = async () => {
@@ -40,6 +42,17 @@ export function ReportView() {
       const r = await fn();
       setFlash(r.flash ?? null);
       reload();
+    } catch (e) {
+      setFlash(e instanceof Error ? e.message : "Failed.");
+    }
+  };
+
+  // Archiving makes this report unfetchable (published_get 404s archived rows),
+  // so we leave the viewer rather than reload into an error screen.
+  const archive = async () => {
+    try {
+      await api.archive(id);
+      navigate("/reports");
     } catch (e) {
       setFlash(e instanceof Error ? e.message : "Failed.");
     }
@@ -63,7 +76,7 @@ export function ReportView() {
             </MenuItem>
           ) : null}
           {data && !data.archivedAt && (isAdmin || mine) ? (
-            <MenuItem danger onSelect={() => void act(() => api.archive(id))}>
+            <MenuItem danger onSelect={() => void archive()}>
               Archive
             </MenuItem>
           ) : null}

@@ -536,16 +536,28 @@ const httpServer = http.createServer(async (req, res) => {
     // /admin API even though it's the same host.
     if (req.url?.startsWith("/p/")) {
       const id = decodeURIComponent(req.url.slice(3).split("?")[0]);
+      // Gate on metadata first so a guessed/archived/team id 404s WITHOUT reading
+      // the up-to-2MB body (this path is credential-free and cheap to hammer).
+      const meta = store.getPublishedMeta(id);
+      if (!meta || meta.archivedAt || meta.visibility !== "public") {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not found\n");
+        return;
+      }
       const rep = store.getPublished(id);
-      if (!rep || rep.archivedAt || rep.visibility !== "public") {
+      if (!rep) {
         res.writeHead(404, { "content-type": "text/plain" });
         res.end("not found\n");
         return;
       }
       store.audit("public", "published_viewed_public", { id });
+      // CSP `sandbox allow-scripts` (and nothing else) runs the agent-authored
+      // HTML in an opaque origin AND withholds popups / top-navigation — so a
+      // public report can't open a popup or redirect the top window to a
+      // phishing page, only render and run its own inline scripts in isolation.
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
-        "content-security-policy": "sandbox allow-scripts allow-popups allow-top-navigation-by-user-activation",
+        "content-security-policy": "sandbox allow-scripts",
         "x-content-type-options": "nosniff",
         "referrer-policy": "no-referrer",
       });
@@ -655,40 +667,43 @@ const httpServer = http.createServer(async (req, res) => {
           if ((req.headers["x-csrf-token"] ?? "") !== session.csrf)
             return json(403, { ok: false, error: "bad csrf token" });
 
-          // archive a report — allowed for the CREATOR or an admin (a member can
-          // tidy up their own report without pinging an admin). Handled before
-          // the blanket admin gate below; every OTHER mutation stays admin-only.
+          // Author-or-admin gate for a per-report mutation (archive, visibility):
+          // 404 if missing/archived, 403 unless the caller authored it or is an
+          // admin. Returns false having ALREADY sent the response, so the handler
+          // returns immediately. These two are allowed before the blanket admin
+          // gate below (a member can manage their own report); every OTHER
+          // mutation stays admin-only. The agent never reaches here — it has no
+          // web session — so promotion-to-public is always a human decision.
+          const mayMutateReport = (id: string): boolean => {
+            const rep = id ? store.getPublishedMeta(id) : null;
+            if (!rep || rep.archivedAt) {
+              json(404, { ok: false, error: "No active report with that id." });
+              return false;
+            }
+            if (rep.createdBy !== session.identity && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              json(403, { ok: false, error: "Only the report's author or an admin can manage it." });
+              return false;
+            }
+            return true;
+          };
+
           if (api === "archive") {
             const body = (await readBody(req)) as { id?: string } | undefined;
             const id = (body?.id ?? "").trim();
-            if (!id) return json(400, { ok: false, error: "id required" });
-            const rep = store.getPublished(id);
-            if (!rep || rep.archivedAt) return json(404, { ok: false, error: "No active report with that id." });
-            if (rep.createdBy !== session.identity && !canApprove(session.role)) {
-              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
-              return json(403, { ok: false, error: "Only the report's author or an admin can archive it." });
-            }
+            if (!mayMutateReport(id)) return;
             const ok = store.archivePublished(id);
             store.audit(session.identity, "unpublish_report", { id, ok });
             return json(200, { ok, flash: "Report archived — its link no longer works." });
           }
 
-          // promote / demote a report's visibility (team ↔ public). Allowed for
-          // the report's AUTHOR or an admin — the author is a trusted human with
-          // a box login, not the (injectable) agent, which never gets this tool.
-          // That's the egress boundary: a human chooses to expose, the agent can't.
           if (api === "set_visibility") {
             const body = (await readBody(req)) as { id?: string; visibility?: string } | undefined;
             const id = (body?.id ?? "").trim();
             const visibility = body?.visibility;
             if (visibility !== "team" && visibility !== "public")
               return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
-            const rep = id ? store.getPublished(id) : null;
-            if (!rep || rep.archivedAt) return json(404, { ok: false, error: "No active report with that id." });
-            if (rep.createdBy !== session.identity && !canApprove(session.role)) {
-              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
-              return json(403, { ok: false, error: "Only the report's author or an admin can change its visibility." });
-            }
+            if (!mayMutateReport(id)) return;
             const ok = store.setReportVisibility(id, visibility);
             store.audit(session.identity, "report_visibility_set", { id, visibility, ok });
             return json(ok ? 200 : 404, {

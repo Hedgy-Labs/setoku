@@ -853,8 +853,9 @@ server.registerTool(
   async () => {
     const rows = store.listPublished();
     store.audit(user, "list_published", { count: rows.length });
+    if (!rows.length) return text("No reports published yet. Create one with publish_report.");
     const active = rows.filter((r) => !r.archivedAt);
-    if (!active.length && !rows.length) return text("No reports published yet. Create one with publish_report.");
+    const archived = rows.filter((r) => r.archivedAt);
     const lines: string[] = [];
     if (active.length) {
       lines.push("# active");
@@ -862,8 +863,9 @@ server.registerTool(
         lines.push(
           `- ${r.title} [${r.visibility}] — ${publishUrl(r.id, r.visibility)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`,
         );
+    } else {
+      lines.push("No active reports (all archived).");
     }
-    const archived = rows.filter((r) => r.archivedAt);
     if (archived.length) {
       lines.push("", "# archived", ...archived.map((r) => `- ${r.title} (id ${r.id})`));
     }

@@ -7,12 +7,8 @@ import { useAuth } from "../auth";
 import { Heading, Loading, ErrorMsg, Flash } from "../components/Page";
 import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
+import { reportShareUrl } from "../format";
 import type { PublishedMeta } from "../types";
-
-/** The link to share — public reports get the credential-free /p/<id>; team
- *  reports the in-app /admin/p/<id> (which shows a login first). */
-const shareUrl = (r: Pick<PublishedMeta, "id" | "visibility">): string =>
-  r.visibility === "public" ? `${location.origin}/p/${r.id}` : `${location.origin}/admin/p/${r.id}`;
 
 export function Reports() {
   const { me } = useAuth();
@@ -22,14 +18,14 @@ export function Reports() {
 
   const copy = async (r: PublishedMeta) => {
     try {
-      await navigator.clipboard.writeText(shareUrl(r));
+      await navigator.clipboard.writeText(reportShareUrl(r));
       setFlash(
         r.visibility === "public"
           ? "Public link copied — anyone can open it, no login."
           : "Link copied — recipients must sign in to the box to view.",
       );
     } catch {
-      setFlash(shareUrl(r));
+      setFlash(reportShareUrl(r));
     }
   };
 
