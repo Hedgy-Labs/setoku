@@ -775,6 +775,123 @@ server.registerTool(
   },
 );
 
+/* ------------------------------- publish ------------------------------- */
+// The agent publishes a self-contained report to the box and gets back a
+// shareable URL. v0 is TEAM-ONLY: the link (/admin/p/<id>) is session-gated, so
+// only people who already hold a box login can view it — that's what keeps a
+// (prompt-injectable) analyst session from turning publish into a public data-
+// exfiltration channel. The HTML is rendered in a sandboxed iframe (opaque
+// origin) so it can't reach the admin cookie/API. Available to every session
+// (it neither reads the lake nor commits curated knowledge — outside I2/I9).
+
+const MAX_REPORT_BYTES = 2_000_000; // ~2 MB of HTML; reports should be self-contained, not asset bundles
+
+const mintShareId = (): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(12)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
+// Where a published report lives. SETOKU_PUBLIC_URL is the box's public origin
+// (also used by the installer links); without it we return the path and tell the
+// agent to prefix its box URL.
+const publishBase = (process.env.SETOKU_PUBLIC_URL ?? "").replace(/\/+$/, "");
+// Team reports live in the session-gated SPA (/admin/p/<id>); public ones serve
+// credential-free at /p/<id>. The link an agent hands out follows visibility.
+const publishUrl = (id: string, visibility: "team" | "public" = "team"): string => {
+  const path = visibility === "public" ? `/p/${id}` : `/admin/p/${id}`;
+  return publishBase ? `${publishBase}${path}` : path;
+};
+
+server.registerTool(
+  "publish_report",
+  {
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    title: "Publish a report to the box (team-shareable URL)",
+    description:
+      "Publishes a self-contained HTML report (a chart, dashboard, or written-up answer you generated) to " +
+      "this Setoku box and returns a shareable URL. Use this when the user wants to SHARE a result with their " +
+      "team — not for answering in-session. Pass ONE self-contained HTML document in `html`: inline all CSS, " +
+      "and any data; for charts prefer inline SVG (scripts run sandboxed, so external/CDN scripts may be " +
+      "blocked). The link is TEAM-ONLY — viewers must sign in to the box — so it's safe to share internally but " +
+      "do not present it as public. Revoke with unpublish_report.",
+    inputSchema: {
+      title: z.string().describe("Short human title for the report (shown in the box's Published list)"),
+      html: z
+        .string()
+        .describe("A single self-contained HTML document (inline CSS/SVG/data; no external asset dependencies)"),
+    },
+  },
+  async ({ title, html }) => {
+    const bytes = Buffer.byteLength(html, "utf8");
+    if (bytes > MAX_REPORT_BYTES)
+      return errorText(
+        `Report is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap. Make it self-contained ` +
+          "and trim embedded data (summarize/aggregate before publishing).",
+      );
+    const id = mintShareId();
+    store.createPublished({ id, title: title.trim() || "Untitled report", body: html, createdBy: user });
+    store.audit(user, "publish_report", { id, title, bytes });
+    return text(
+      `Published "${title}" → ${publishUrl(id)}\n\n` +
+        "This link is TEAM-ONLY: anyone you share it with must sign in to the box to view it. " +
+        (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
+        `Revoke any time with unpublish_report("${id}").`,
+    );
+  },
+);
+
+server.registerTool(
+  "list_published",
+  {
+    annotations: { readOnlyHint: true },
+    title: "List reports published to the box",
+    description:
+      "Lists reports published to this box (active first), with their shareable URLs, titles, and who " +
+      "published them. Use it to find a report's link again, or its id to revoke.",
+    inputSchema: {},
+  },
+  async () => {
+    const rows = store.listPublished();
+    store.audit(user, "list_published", { count: rows.length });
+    if (!rows.length) return text("No reports published yet. Create one with publish_report.");
+    const active = rows.filter((r) => !r.archivedAt);
+    const archived = rows.filter((r) => r.archivedAt);
+    const lines: string[] = [];
+    if (active.length) {
+      lines.push("# active");
+      for (const r of active)
+        lines.push(
+          `- ${r.title} [${r.visibility}] — ${publishUrl(r.id, r.visibility)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`,
+        );
+    } else {
+      lines.push("No active reports (all archived).");
+    }
+    if (archived.length) {
+      lines.push("", "# archived", ...archived.map((r) => `- ${r.title} (id ${r.id})`));
+    }
+    return text(lines.join("\n"));
+  },
+);
+
+server.registerTool(
+  "unpublish_report",
+  {
+    annotations: { readOnlyHint: false, destructiveHint: true },
+    title: "Archive a published report",
+    description:
+      "Archives a previously published report by its id (from publish_report / list_published). The link stops " +
+      "working immediately; the record is kept for the audit trail.",
+    inputSchema: { id: z.string().describe("The report id returned by publish_report / list_published") },
+  },
+  async ({ id }) => {
+    const ok = store.archivePublished(id.trim());
+    store.audit(user, "unpublish_report", { id, ok });
+    return ok
+      ? text(`Archived report ${id} — its link no longer works.`)
+      : errorText(`No active report with id "${id}" (already archived, or unknown id). Call list_published to check.`);
+  },
+);
+
 
   return server;
 }

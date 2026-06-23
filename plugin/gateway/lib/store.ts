@@ -62,6 +62,33 @@ export interface AuditRow {
   payload: string;
 }
 
+/**
+ * A report an agent published to the box (the "publish" surface). The agent
+ * passes self-contained HTML via the publish_report tool; we mint an opaque id
+ * and serve it under /admin/p/<id>, which is session-gated — so v0 sharing is
+ * TEAM-ONLY (a viewer must hold a box login). The body is rendered in a
+ * sandboxed iframe (opaque origin) so an injected agent's HTML can't reach the
+ * admin origin's cookie or API. `body` is omitted from list views (it can be
+ * large); fetch a single report to get it.
+ */
+export type ReportVisibility = "team" | "public";
+
+export interface PublishedReport {
+  id: string;
+  title: string;
+  format: "html";
+  body: string;
+  /** "team" = session-gated (default); "public" = served credential-free at
+   *  /p/<id>. Promotion to public is a human (admin) action — never the agent. */
+  visibility: ReportVisibility;
+  createdBy: string;
+  createdAt: string;
+  /** Soft-delete timestamp. Archived reports 404 everywhere but are kept. */
+  archivedAt: string | null;
+}
+
+export type PublishedMeta = Omit<PublishedReport, "body">;
+
 /** Which self-provisioning source a log row came from (task 4.1). */
 export type ProvisioningSource = "vercel" | "render" | "slack" | "events";
 
@@ -193,6 +220,25 @@ export class KnowledgeStore {
       csrf TEXT NOT NULL,
       expires INTEGER NOT NULL
     )`);
+    // Published reports (the "Reports" surface). An agent calls publish_report
+    // with self-contained HTML; we store it under an opaque id. A "team" report
+    // serves session-gated at /admin/p/<id>; a "public" one (an admin promotes
+    // it) serves credential-free at /p/<id>. `archived_at` is a soft delete — an
+    // archived link 404s everywhere but the row (and its audit trail) stays.
+    this.db.run(`CREATE TABLE IF NOT EXISTS published (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      format TEXT NOT NULL DEFAULT 'html',
+      body TEXT NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'team',
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      archived_at TEXT
+    )`);
+    // Brought the table forward in-place for boxes created before visibility /
+    // the revoked→archived rename landed (idempotent — see ensureColumn).
+    this.ensureColumn("published", "visibility", "TEXT NOT NULL DEFAULT 'team'");
+    this.ensureColumn("published", "archived_at", "TEXT");
   }
 
   /* ------------------------------- docs ------------------------------- */
@@ -585,6 +631,77 @@ export class KnowledgeStore {
       )
       .get(idempotencyKey) as { n: number };
     return row.n > 0;
+  }
+
+  /* ------------------------------- published ---------------------------- */
+
+  /** Store a published report. `id` must already be a minted opaque token.
+   *  Visibility defaults to "team" — the agent never publishes public. */
+  createPublished(rec: {
+    id: string;
+    title: string;
+    format?: "html";
+    body: string;
+    visibility?: ReportVisibility;
+    createdBy: string;
+  }): void {
+    this.db.run(
+      "INSERT INTO published (id, title, format, body, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [rec.id, rec.title, rec.format ?? "html", rec.body, rec.visibility ?? "team", rec.createdBy, new Date().toISOString()],
+    );
+  }
+
+  /** Fetch one published report (incl. body). Returns archived rows too — the
+   *  caller decides how to treat `archivedAt` (the viewer 404s on it). */
+  getPublished(id: string): PublishedReport | null {
+    const row = this.db
+      .query(
+        "SELECT id, title, format, body, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+      )
+      .get(id) as PublishedReport | null;
+    return row ?? null;
+  }
+
+  /** One report's metadata WITHOUT its (up-to-2MB) body — for cheap 404/policy
+   *  gating on hot or credential-free paths before deciding to serve the body. */
+  getPublishedMeta(id: string): PublishedMeta | null {
+    const row = this.db
+      .query(
+        "SELECT id, title, format, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+      )
+      .get(id) as PublishedMeta | null;
+    return row ?? null;
+  }
+
+  /** Published reports without bodies, newest first (the admin list page). */
+  listPublished(): PublishedMeta[] {
+    return this.db
+      .query(
+        "SELECT id, title, format, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published ORDER BY created_at DESC",
+      )
+      .all() as unknown as PublishedMeta[];
+  }
+
+  /** Soft-delete (archive) a published report. Returns false if already archived
+   *  or unknown. The row and its audit trail survive. */
+  archivePublished(id: string): boolean {
+    return (
+      this.db.run("UPDATE published SET archived_at = ? WHERE id = ? AND archived_at IS NULL", [
+        new Date().toISOString(),
+        id,
+      ]).changes > 0
+    );
+  }
+
+  /** Set a report's visibility (team ↔ public). Returns false for an unknown or
+   *  archived report. Promoting to public is an admin action (enforced upstream). */
+  setReportVisibility(id: string, visibility: ReportVisibility): boolean {
+    return (
+      this.db.run("UPDATE published SET visibility = ? WHERE id = ? AND archived_at IS NULL", [
+        visibility,
+        id,
+      ]).changes > 0
+    );
   }
 
   get empty(): boolean {
