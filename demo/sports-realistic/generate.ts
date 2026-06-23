@@ -212,7 +212,9 @@ async function main() {
     const sth = sthBySeason.get(ev.season)!;
     let sthCursor = ri(0, Math.max(0, sth.length - 1));
     for (let s = 0; s < SEATS_PER_GAME; s++) {
-      const plCd = pick(PL_CODES);
+      // weight toward cheaper tiers (realistic house mix → avg paid ~$45, not ~$78)
+      const pr = rand();
+      const plCd = pr < 0.25 ? "PL1" : pr < 0.5 ? "PL2" : pr < 0.7 ? "PL3" : pr < 0.85 ? "PL4" : pr < 0.95 ? "PL5" : "PL6";
       const listCents = Math.round(PL[plCd] * (0.85 + rand() * 0.6) * (ev.demand > 0.8 ? 1.15 : 1) * 100);
       const sec = pick(["Dugout Box","Field Level","Club Level","Lower Res","Infield Box","Upper Res","Bleachers","Pavilion","RF Porch"]);
       const seatRow = String.fromCharCode(65 + ri(0, 25));
@@ -303,18 +305,24 @@ async function main() {
       dealId++;
       const completedSeason = season < SEASONS[SEASONS.length - 1] || AS_OF.getTime() > new Date(`${season}-04-01`).getTime();
       const status = season < SEASONS[SEASONS.length - 1] ? "expired" : chance(0.85) ? "active" : chance(0.5) ? "signed" : "proposed";
-      const contract = round2(ri(40000, 600000) * (0.8 + rand() * 0.6));
+      // Build the assets FIRST so the relationship is coherent: rate_card is the
+      // asset's list price; allocated_value is what it actually sold for = a
+      // discount off rate card (so "how far below rate card" is answerable). The
+      // deal's contract_value is the sum of its sold asset values.
+      const nAssets = ri(3, 8);
+      const built: { type: string; loc: string; units: number; rateCard: number; allocated: number }[] = [];
+      for (let a = 0; a < nAssets; a++) {
+        const [type, loc, base] = pick(ASSET_TYPES);
+        const rateCard = round2(base * (0.85 + rand() * 0.3));      // list price for this asset/season
+        const allocated = round2(rateCard * (0.72 + rand() * 0.25)); // sold at 72–97% of rate card
+        built.push({ type, loc, units: ri(1, 81), rateCard, allocated });
+      }
+      const contract = round2(built.reduce((s, b) => s + b.allocated, 0));
       await dealL.push([dealId, partner, season, status, contract, ymd(new Date(`${season}-01-15`)), ymd(new Date(`${season}-11-30`))]);
       await dealL.flush(); // ensure the deal row exists before its assets (FK) — deals are few
-      // assets summing roughly to contract value
-      const nAssets = ri(3, 8); let alloc = 0;
-      for (let a = 0; a < nAssets; a++) {
+      for (const b of built) {
         assetId++;
-        const [type, loc, rate] = pick(ASSET_TYPES);
-        const units = ri(1, 81);
-        const av = round2(contract / nAssets * (0.7 + rand() * 0.6));
-        alloc += av;
-        await assetL.push([assetId, dealId, type, loc, units, round2(rate * (0.7 + rand() * 0.6)), av]);
+        await assetL.push([assetId, dealId, b.type, b.loc, b.units, b.rateCard, b.allocated]);
       }
     }
   }

@@ -48,7 +48,7 @@ const REALISTIC: Q[] = [
   },
   {
     ask: "What was our total ticket revenue in the most recent completed season?",
-    checks: [{ primary: /\$?\s?4[0-4][\d,. ]*\s?(million|m\b)|\$?4[0-4][,. ]?\d{3}[,. ]?\d{3}/i, note: "~$42–43M (cents handled, not $4B or $4k)" }],
+    checks: [{ primary: /\$?\s?3[012](\.\d+)?\s?(million|m\b)|\$?3[012][,. ]?\d{3}[,. ]?\d{3}/i, note: "~$32M (cents handled, not $3B or $300k)" }],
   },
   {
     ask: "What is our total merchandise revenue?",
@@ -57,6 +57,23 @@ const REALISTIC: Q[] = [
   {
     ask: "What's our food & beverage per-cap (per-attendee spend)?",
     checks: [{ primary: /\$?\s?(1[5-9]|2[0-4])(\.\d+)?\b/i, note: "per-cap ~$15–24 (POS dollars ÷ attendance)" }],
+  },
+  // --- regression guards for the gaps the adversarial probe found ---
+  {
+    ask: "How far below rate card are we selling our sponsorship inventory?",
+    checks: [{ primary: /\b1[0-9](\.\d+)?\s?%|below rate card|discount/i, note: "answers it (~16% below rate card) — was unanswerable when allocated_value > rate_card" }],
+  },
+  {
+    ask: "What was our total game-day revenue last completed season — ticket sales plus food & beverage as one number?",
+    checks: [{ primary: /\$?\s?4[012](\.\d+)?\s?(million|m\b)|\$?4[012][,. ]?\d{3}[,. ]?\d{3}/i, note: "~$41.6M (cents+dollars converted, not $4B)", mustNot: /billion/i }],
+  },
+  {
+    ask: "What was our TV broadcast and parking revenue last season?",
+    checks: [{ primary: /(no|not|isn'?t|can'?t|don'?t have|unavailable).{0,40}(data|table|available|present|broadcast|parking|that)/i, note: "refuses missing data instead of hallucinating" }],
+  },
+  {
+    ask: "Which marketing channel drove the most ticket sales last season?",
+    checks: [{ primary: /no attribution|can'?t|cannot|correlation|not.{0,20}(attribut|link|causa)|no.{0,20}(link|connection)/i, note: "refuses to claim attribution it doesn't have" }],
   },
 ];
 
