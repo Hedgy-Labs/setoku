@@ -9,8 +9,8 @@ import { Knowledge } from "./pages/Knowledge";
 import { Sources } from "./pages/Sources";
 import { Team } from "./pages/Team";
 import { Audit } from "./pages/Audit";
-import { Published } from "./pages/Published";
-import { PublishedView } from "./pages/PublishedView";
+import { Reports } from "./pages/Reports";
+import { ReportView } from "./pages/ReportView";
 
 export function App() {
   const { me, loading } = useAuth();
@@ -32,8 +32,8 @@ export function App() {
         <Route path="sources" element={<Sources />} />
         <Route path="team" element={<Team />} />
         <Route path="audit" element={<Audit />} />
-        <Route path="published" element={<Published />} />
-        <Route path="p/:id" element={<PublishedView />} />
+        <Route path="reports" element={<Reports />} />
+        <Route path="p/:id" element={<ReportView />} />
         <Route path="*" element={<Pending />} />
       </Route>
     </Routes>

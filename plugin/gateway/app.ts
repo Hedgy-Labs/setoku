@@ -795,8 +795,12 @@ const mintShareId = (): string =>
 // (also used by the installer links); without it we return the path and tell the
 // agent to prefix its box URL.
 const publishBase = (process.env.SETOKU_PUBLIC_URL ?? "").replace(/\/+$/, "");
-const publishUrl = (id: string): string =>
-  publishBase ? `${publishBase}/admin/p/${id}` : `/admin/p/${id}`;
+// Team reports live in the session-gated SPA (/admin/p/<id>); public ones serve
+// credential-free at /p/<id>. The link an agent hands out follows visibility.
+const publishUrl = (id: string, visibility: "team" | "public" = "team"): string => {
+  const path = visibility === "public" ? `/p/${id}` : `/admin/p/${id}`;
+  return publishBase ? `${publishBase}${path}` : path;
+};
 
 server.registerTool(
   "publish_report",
@@ -849,17 +853,19 @@ server.registerTool(
   async () => {
     const rows = store.listPublished();
     store.audit(user, "list_published", { count: rows.length });
-    const active = rows.filter((r) => !r.revokedAt);
+    const active = rows.filter((r) => !r.archivedAt);
     if (!active.length && !rows.length) return text("No reports published yet. Create one with publish_report.");
     const lines: string[] = [];
     if (active.length) {
-      lines.push("# published");
+      lines.push("# active");
       for (const r of active)
-        lines.push(`- ${r.title} — ${publishUrl(r.id)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`);
+        lines.push(
+          `- ${r.title} [${r.visibility}] — ${publishUrl(r.id, r.visibility)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`,
+        );
     }
-    const revoked = rows.filter((r) => r.revokedAt);
-    if (revoked.length) {
-      lines.push("", "# revoked", ...revoked.map((r) => `- ${r.title} (id ${r.id})`));
+    const archived = rows.filter((r) => r.archivedAt);
+    if (archived.length) {
+      lines.push("", "# archived", ...archived.map((r) => `- ${r.title} (id ${r.id})`));
     }
     return text(lines.join("\n"));
   },
@@ -869,18 +875,18 @@ server.registerTool(
   "unpublish_report",
   {
     annotations: { readOnlyHint: false, destructiveHint: true },
-    title: "Revoke a published report",
+    title: "Archive a published report",
     description:
-      "Revokes a previously published report by its id (from publish_report / list_published). The link stops " +
+      "Archives a previously published report by its id (from publish_report / list_published). The link stops " +
       "working immediately; the record is kept for the audit trail.",
     inputSchema: { id: z.string().describe("The report id returned by publish_report / list_published") },
   },
   async ({ id }) => {
-    const ok = store.revokePublished(id.trim());
+    const ok = store.archivePublished(id.trim());
     store.audit(user, "unpublish_report", { id, ok });
     return ok
-      ? text(`Revoked report ${id} — its link no longer works.`)
-      : errorText(`No active report with id "${id}" (already revoked, or unknown id). Call list_published to check.`);
+      ? text(`Archived report ${id} — its link no longer works.`)
+      : errorText(`No active report with id "${id}" (already archived, or unknown id). Call list_published to check.`);
   },
 );
 

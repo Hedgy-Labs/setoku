@@ -528,6 +528,30 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(installerScript(token, info.identity, baseUrl));
       return;
     }
+    // ---- public report surface — /p/<id>, credential-free ----
+    // Serves ONLY reports an admin has promoted to "public"; a team report or a
+    // bad id 404s, so this path never leaks a session-gated report's content or
+    // existence. The body is served under a CSP `sandbox` (no allow-same-origin)
+    // so its scripts run in an opaque origin and can't reach the box's cookie or
+    // /admin API even though it's the same host.
+    if (req.url?.startsWith("/p/")) {
+      const id = decodeURIComponent(req.url.slice(3).split("?")[0]);
+      const rep = store.getPublished(id);
+      if (!rep || rep.archivedAt || rep.visibility !== "public") {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not found\n");
+        return;
+      }
+      store.audit("public", "published_viewed_public", { id });
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": "sandbox allow-scripts allow-popups allow-top-navigation-by-user-activation",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+      });
+      res.end(rep.body);
+      return;
+    }
     // ---- web approval surface — React SPA + JSON API ----
     // Auth is a session COOKIE, not a token in the URL: every /admin route is safe
     // to share. The SPA shell and its assets are public (no secrets); the JSON API
@@ -621,7 +645,7 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "published_get" && req.method === "GET") {
           const id = new URL(req.url ?? "", "http://x").searchParams.get("id") ?? "";
           const rep = store.getPublished(id);
-          if (!rep || rep.revokedAt) return json(404, { ok: false, error: "report not found or revoked" });
+          if (!rep || rep.archivedAt) return json(404, { ok: false, error: "report not found or archived" });
           store.audit(session.identity, "published_viewed", { id });
           return json(200, rep);
         }
@@ -630,6 +654,53 @@ const httpServer = http.createServer(async (req, res) => {
         if (req.method === "POST") {
           if ((req.headers["x-csrf-token"] ?? "") !== session.csrf)
             return json(403, { ok: false, error: "bad csrf token" });
+
+          // archive a report — allowed for the CREATOR or an admin (a member can
+          // tidy up their own report without pinging an admin). Handled before
+          // the blanket admin gate below; every OTHER mutation stays admin-only.
+          if (api === "archive") {
+            const body = (await readBody(req)) as { id?: string } | undefined;
+            const id = (body?.id ?? "").trim();
+            if (!id) return json(400, { ok: false, error: "id required" });
+            const rep = store.getPublished(id);
+            if (!rep || rep.archivedAt) return json(404, { ok: false, error: "No active report with that id." });
+            if (rep.createdBy !== session.identity && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              return json(403, { ok: false, error: "Only the report's author or an admin can archive it." });
+            }
+            const ok = store.archivePublished(id);
+            store.audit(session.identity, "unpublish_report", { id, ok });
+            return json(200, { ok, flash: "Report archived — its link no longer works." });
+          }
+
+          // promote / demote a report's visibility (team ↔ public). Allowed for
+          // the report's AUTHOR or an admin — the author is a trusted human with
+          // a box login, not the (injectable) agent, which never gets this tool.
+          // That's the egress boundary: a human chooses to expose, the agent can't.
+          if (api === "set_visibility") {
+            const body = (await readBody(req)) as { id?: string; visibility?: string } | undefined;
+            const id = (body?.id ?? "").trim();
+            const visibility = body?.visibility;
+            if (visibility !== "team" && visibility !== "public")
+              return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
+            const rep = id ? store.getPublished(id) : null;
+            if (!rep || rep.archivedAt) return json(404, { ok: false, error: "No active report with that id." });
+            if (rep.createdBy !== session.identity && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              return json(403, { ok: false, error: "Only the report's author or an admin can change its visibility." });
+            }
+            const ok = store.setReportVisibility(id, visibility);
+            store.audit(session.identity, "report_visibility_set", { id, visibility, ok });
+            return json(ok ? 200 : 404, {
+              ok,
+              flash: ok
+                ? visibility === "public"
+                  ? "Report is now PUBLIC — anyone with the /p link can open it, no login required."
+                  : "Report is now team-only."
+                : "No active report with that id.",
+            });
+          }
+
           if (!canApprove(session.role)) {
             store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
             return json(403, { ok: false, error: "not authorized" });
@@ -750,20 +821,6 @@ const httpServer = http.createServer(async (req, res) => {
               });
             }
             return json(400, { ok: false, error: "Unknown operation." });
-          }
-
-          // revoke a published report (the human-side kill switch, mirroring the
-          // agent's unpublish_report tool). Admin-gated like every web mutation.
-          if (api === "unpublish") {
-            const body = (await readBody(req)) as { id?: string } | undefined;
-            const id = (body?.id ?? "").trim();
-            if (!id) return json(400, { ok: false, error: "id required" });
-            const ok = store.revokePublished(id);
-            store.audit(session.identity, "unpublish_report", { id, ok });
-            return json(ok ? 200 : 404, {
-              ok,
-              flash: ok ? "Report revoked — its link no longer works." : "No active report with that id.",
-            });
           }
 
           return json(404, { ok: false, error: "unknown endpoint" });
