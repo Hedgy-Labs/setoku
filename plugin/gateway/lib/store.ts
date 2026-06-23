@@ -62,6 +62,27 @@ export interface AuditRow {
   payload: string;
 }
 
+/**
+ * A report an agent published to the box (the "publish" surface). The agent
+ * passes self-contained HTML via the publish_report tool; we mint an opaque id
+ * and serve it under /admin/p/<id>, which is session-gated — so v0 sharing is
+ * TEAM-ONLY (a viewer must hold a box login). The body is rendered in a
+ * sandboxed iframe (opaque origin) so an injected agent's HTML can't reach the
+ * admin origin's cookie or API. `body` is omitted from list views (it can be
+ * large); fetch a single report to get it.
+ */
+export interface PublishedReport {
+  id: string;
+  title: string;
+  format: "html";
+  body: string;
+  createdBy: string;
+  createdAt: string;
+  revokedAt: string | null;
+}
+
+export type PublishedMeta = Omit<PublishedReport, "body">;
+
 /** Which self-provisioning source a log row came from (task 4.1). */
 export type ProvisioningSource = "vercel" | "render" | "slack" | "events";
 
@@ -192,6 +213,19 @@ export class KnowledgeStore {
       role TEXT NOT NULL,
       csrf TEXT NOT NULL,
       expires INTEGER NOT NULL
+    )`);
+    // Published reports (the "publish" surface). An agent calls publish_report
+    // with self-contained HTML; we store it under an opaque id and serve it at
+    // /admin/p/<id>, which is session-gated (TEAM-ONLY in v0). `revoked_at` is a
+    // soft delete — a revoked link 404s but the row (and its audit trail) stays.
+    this.db.run(`CREATE TABLE IF NOT EXISTS published (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      format TEXT NOT NULL DEFAULT 'html',
+      body TEXT NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_at TEXT
     )`);
   }
 
@@ -585,6 +619,53 @@ export class KnowledgeStore {
       )
       .get(idempotencyKey) as { n: number };
     return row.n > 0;
+  }
+
+  /* ------------------------------- published ---------------------------- */
+
+  /** Store a published report. `id` must already be a minted opaque token. */
+  createPublished(rec: {
+    id: string;
+    title: string;
+    format?: "html";
+    body: string;
+    createdBy: string;
+  }): void {
+    this.db.run(
+      "INSERT INTO published (id, title, format, body, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      [rec.id, rec.title, rec.format ?? "html", rec.body, rec.createdBy, new Date().toISOString()],
+    );
+  }
+
+  /** Fetch one published report (incl. body). Returns revoked rows too — the
+   *  caller decides how to treat `revokedAt` (the viewer 404s on it). */
+  getPublished(id: string): PublishedReport | null {
+    const row = this.db
+      .query(
+        "SELECT id, title, format, body, created_by AS createdBy, created_at AS createdAt, revoked_at AS revokedAt FROM published WHERE id = ?",
+      )
+      .get(id) as PublishedReport | null;
+    return row ?? null;
+  }
+
+  /** Published reports without bodies, newest first (the admin list page). */
+  listPublished(): PublishedMeta[] {
+    return this.db
+      .query(
+        "SELECT id, title, format, created_by AS createdBy, created_at AS createdAt, revoked_at AS revokedAt FROM published ORDER BY created_at DESC",
+      )
+      .all() as unknown as PublishedMeta[];
+  }
+
+  /** Soft-delete (revoke) a published report. Returns false if already revoked
+   *  or unknown. The row and its audit trail survive. */
+  revokePublished(id: string): boolean {
+    return (
+      this.db.run("UPDATE published SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL", [
+        new Date().toISOString(),
+        id,
+      ]).changes > 0
+    );
   }
 
   get empty(): boolean {

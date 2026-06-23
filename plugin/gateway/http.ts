@@ -615,6 +615,17 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "team" && req.method === "GET")
           return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
 
+        // published reports — TEAM-ONLY: gated behind this session check, so a
+        // shared /admin/p/<id> link only renders for someone with a box login.
+        if (api === "published" && req.method === "GET") return json(200, store.listPublished());
+        if (api === "published_get" && req.method === "GET") {
+          const id = new URL(req.url ?? "", "http://x").searchParams.get("id") ?? "";
+          const rep = store.getPublished(id);
+          if (!rep || rep.revokedAt) return json(404, { ok: false, error: "report not found or revoked" });
+          store.audit(session.identity, "published_viewed", { id });
+          return json(200, rep);
+        }
+
         // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----
         if (req.method === "POST") {
           if ((req.headers["x-csrf-token"] ?? "") !== session.csrf)
@@ -739,6 +750,20 @@ const httpServer = http.createServer(async (req, res) => {
               });
             }
             return json(400, { ok: false, error: "Unknown operation." });
+          }
+
+          // revoke a published report (the human-side kill switch, mirroring the
+          // agent's unpublish_report tool). Admin-gated like every web mutation.
+          if (api === "unpublish") {
+            const body = (await readBody(req)) as { id?: string } | undefined;
+            const id = (body?.id ?? "").trim();
+            if (!id) return json(400, { ok: false, error: "id required" });
+            const ok = store.revokePublished(id);
+            store.audit(session.identity, "unpublish_report", { id, ok });
+            return json(ok ? 200 : 404, {
+              ok,
+              flash: ok ? "Report revoked — its link no longer works." : "No active report with that id.",
+            });
           }
 
           return json(404, { ok: false, error: "unknown endpoint" });

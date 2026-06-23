@@ -100,10 +100,13 @@ describe("tool surface", () => {
         "get_schema",
         "list_corrections",
         "list_entities",
+        "list_published",
         "list_sources",
+        "publish_report",
         "report_correction",
         "resolve_correction",
         "run_query",
+        "unpublish_report",
         "upsert_context",
       ].sort(),
     );
@@ -368,5 +371,36 @@ describe("curation + knowledge store + audit", () => {
         /INSERT/i.test(r.payload.sql ?? ""),
     );
     expect(rejected).toBeTruthy();
+  });
+});
+
+describe("publish surface", () => {
+  it("publishes a report, lists it, then revokes it", async () => {
+    const pub = await call("publish_report", {
+      title: "Q2 revenue",
+      html: "<!doctype html><h1>Q2 revenue</h1><p>$225</p>",
+    });
+    expect(pub.isError).toBeFalsy();
+    expect(pub.text).toContain("TEAM-ONLY");
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    expect(id).toBeTruthy();
+
+    const listed = await call("list_published");
+    expect(listed.text).toContain("Q2 revenue");
+    expect(listed.text).toContain(id!);
+
+    const off = await call("unpublish_report", { id });
+    expect(off.isError).toBeFalsy();
+
+    // a second revoke is a no-op error (already revoked)
+    const again = await call("unpublish_report", { id });
+    expect(again.isError).toBe(true);
+  });
+
+  it("rejects an oversized report", async () => {
+    const huge = "x".repeat(2_000_001);
+    const r = await call("publish_report", { title: "too big", html: huge });
+    expect(r.isError).toBe(true);
+    expect(r.text.toLowerCase()).toContain("cap");
   });
 });
