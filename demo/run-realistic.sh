@@ -14,5 +14,5 @@ export DEMO_PROJECT=setoku-demo-realistic
 export DEMO_ENV_FILE=.env.realistic
 export DEMO_DB=stags_raw
 export DEMO_PORT=8789
-export DEMO_PUBLIC_HOST="${DEMO_PUBLIC_HOST:-realistic.51-81-222-176.sslip.io}"
+export DEMO_PUBLIC_HOST="${DEMO_PUBLIC_HOST:-stags.setoku.com}"
 exec ./boot.sh

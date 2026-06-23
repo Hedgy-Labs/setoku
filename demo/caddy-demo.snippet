@@ -12,7 +12,7 @@
 # Swap in a real hostname once DNS exists. The upstream is the demo gateway
 # container, reachable because docker-compose.edge.yml joined it to this network.
 
-stag.setoku.com, demo.51-81-222-176.sslip.io {
+stags-lite.setoku.com, demo.51-81-222-176.sslip.io {
 	encode gzip
 	handle /mcp* {
 		reverse_proxy setoku-demo-demo-server-1:8787

@@ -26,7 +26,7 @@ PROJECT="${DEMO_PROJECT:-setoku-demo}"
 ENV_FILE="${DEMO_ENV_FILE:-.env.demo}"
 DB="${DEMO_DB:-stags}"
 PORT="${DEMO_PORT:-8788}"
-PUBLIC_HOST="${DEMO_PUBLIC_HOST:-stags.setoku.com}"
+PUBLIC_HOST="${DEMO_PUBLIC_HOST:-stags-lite.setoku.com}"
 EDGE_NETWORK="${DEMO_EDGE_NETWORK:-setoku_default}"
 PG_C="${PROJECT}-demo-postgres-1"
 
