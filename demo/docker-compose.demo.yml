@@ -26,7 +26,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${DEMO_PG_PASSWORD:-demo}
-      POSTGRES_DB: stags
+      POSTGRES_DB: ${DEMO_DB:-stags}
     volumes:
       - demo_pg:/var/lib/postgresql/data
     networks:
@@ -47,7 +47,7 @@ services:
     environment:
       SETOKU_PROJECT_DIR: /demo-project
       SETOKU_DB_PATH: /data/knowledge.db
-      SETOKU_DATABASE_URL: postgres://postgres:${DEMO_PG_PASSWORD:-demo}@demo-postgres.local:5432/stags
+      SETOKU_DATABASE_URL: postgres://postgres:${DEMO_PG_PASSWORD:-demo}@demo-postgres.local:5432/${DEMO_DB:-stags}
       # Per-user MCP tokens — "token=identity,token2=identity2" (analyst: read + propose)
       SETOKU_TOKENS: ${DEMO_TOKENS:?set DEMO_TOKENS (e.g. <hex>=demo@stags) — see boot.sh}
       # Optional curator token (commit curated knowledge; cannot read a lake — there is none here)
@@ -56,7 +56,7 @@ services:
     ports:
       - "127.0.0.1:${DEMO_PORT:-8788}:8787"
     volumes:
-      - ./sports/.setoku:/demo-project/.setoku:ro
+      - ${DEMO_DATASET_DIR:-./sports}/.setoku:/demo-project/.setoku:ro
       - demo_data:/data
     networks: [demo_internal]
     depends_on:

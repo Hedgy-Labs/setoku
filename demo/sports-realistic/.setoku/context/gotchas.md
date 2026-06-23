@@ -1,0 +1,18 @@
+# Gotchas
+
+- **Money units differ by system.** `ticketing` is integer **cents** (columns ending `_cents` — divide by 100). `pos`, `sponsorship`, `hr`, `merch`, `marketing` are **dollars** (NUMERIC). Never sum across systems without converting cents → dollars first.
+- **CRM contacts are NOT unique per person.** `crm.contact` has duplicate rows for the same person (different `sfid`, slightly different email). Always dedupe by normalized email before counting fans — see [[identity_resolution]].
+- **Emails are dirty.** Mixed case, trailing/leading spaces, and `+tags`. Normalize with `lower(btrim(regexp_replace(email,'\+[^@]*@','@')))` before matching or grouping.
+- **Exclude test/internal records.** `crm.contact.is_test__c = true`; ticketing accounts whose `acct_email ILIKE '%@stags.test'` (also seen with first names like `VOID`/`TEST`). They are not real fans or sales.
+- **Ticket revenue = `status_cd IN ('SD','SC')` only.** `RF` = refunded (exclude), `XCH` = exchanged (exclude — the replacement seat is its own row). `LS`/`HD` = unsold inventory, never revenue. `SC` = scanned (attended); `SD` on a completed event = sold but not scanned (no-show).
+- **Comps are free.** `ticketing.account.acct_type_cd = 'COMP'` (and `price_paid_cents = 0`). Exclude from revenue and average-price.
+- **`pl_cd` is a CODE, not a price.** `PL1`…`PL6` are price-level codes (tiers); the actual list price is `price_list_cents`. Don't sum `pl_cd`.
+- **Secondary-market resale:** `is_resale_flg = true` means the attendee (`acct_id`) is NOT the original buyer (`orig_acct_id`). Use `acct_id` for who holds/attends, `orig_acct_id` for who first bought it.
+- **No cross-system foreign keys.** Join people across systems by normalized email; join games by `event_no`. `pos.loyalty_id` ties only ~15% of F&B sales to a fan — don't imply full attribution.
+- **Concessions exist only for completed events** (`pos.txn` is populated post-game). An upcoming event with no `pos` rows is correct.
+- **Merch is partial.** `merch.online_order` is only the team's *online* store; in-venue and retail merch is run by Fanatics and is **not in this database**. Never report it as total merchandise revenue.
+- **Gameday staff are mostly vendor-employed.** `hr.shift.worker_id` is NULL when `staffed_by = 'vendor'`, and those people are absent from `hr.worker`. Use `hr.shift` (with `pay_rate`) for gameday labor cost; `hr.worker` headcount undercounts the gameday workforce.
+- **HR comp:** `hr.comp.comp_type = 'salary'` sets `annual_amt` (hourly NULL); `'hourly'` sets `hourly_rate` (annual NULL). Don't add the two columns.
+- **`gate_attend` is NULL for upcoming events** (`ticketing.event`); use it only for completed games.
+- **Sponsorship `status`:** exclude `'proposed'` (not closed) from booked revenue. `signed`/`active`/`expired` are real contracts.
+- **Season-ticket holders (renewals):** an STH is an account holding `plan_cd IN ('FULL','HALF')` seats in a season (`ticketing.event.season_yr`). Renewal compares the same `acct_id` across consecutive seasons — see [[season_renewal_rate]].

@@ -1,14 +1,25 @@
 # Setoku sports demo
 
-A self-contained Setoku instance pointed at a **synthetic professional-baseball
-dataset** — the fictional **Riverside Stags** (not based on any real team). Use it
+Self-contained Setoku instances pointed at a **synthetic professional-baseball
+dataset** — the fictional **Riverside Stags** (not based on any real team). Use them
 to demo Setoku end-to-end to a sports-team prospect: connect Claude, ask business
 questions in plain language, see curated "tribal knowledge" steer the answers.
 
-It runs **alongside** a production Setoku stack on the same box without touching
-it — its own compose project (`setoku-demo`), network, volumes, and Postgres.
+There are **two datasets**, each a separate live instance:
 
-## Live instance
+- **`sports/` — the clean "happy path."** One tidy Postgres schema, one season. Crisp,
+  fast answers; best for the first "wow." (Live at `stags.setoku.com`.)
+- **`sports-realistic/` — the real-world shape.** What a real club's data actually looks
+  like: several **disconnected vendor systems** (one schema each), no shared keys, mixed
+  money units, 3 seasons, and real mess — duplicate CRM contacts, dirty emails, refunds,
+  secondary-market resale, vendor-staffed labor, partial merch coverage. This is where
+  Setoku's curated knowledge (identity resolution, code maps, exclusions) earns its keep.
+  (Live at `realistic.51-81-222-176.sslip.io`.)
+
+Each runs **alongside** production on the same box without touching it — its own compose
+project, network, volumes, and Postgres.
+
+## Live instance — clean demo (`sports/`)
 
 A running copy is deployed on the hedgy box, reachable at:
 
@@ -65,8 +76,40 @@ docker compose -p setoku-demo -f /opt/setoku/demo/docker-compose.demo.yml \
   up -d demo-server
 ```
 
+## Live instance — realistic demo (`sports-realistic/`)
 
-## What's in the data
+The realistic instance models a real club's data: **7 vendor systems** as separate Postgres
+schemas (`ticketing`, `crm`, `sponsorship`, `pos`, `merch`, `hr`, `marketing`), **no
+foreign keys between them**, money in **cents in ticketing but dollars everywhere else**,
+**3 seasons** of history, and deliberate mess. ~6M rows.
+
+| | URL |
+|---|---|
+| **Claude connector (MCP)** | `https://realistic.51-81-222-176.sslip.io/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8` |
+| **Admin** | https://realistic.51-81-222-176.sslip.io/admin |
+| **Health** | https://realistic.51-81-222-176.sslip.io/health |
+
+Connect it the same way (Claude.ai → Connectors → Add custom connector; token in the URL).
+This is the instance to show when a prospect asks *"but our data is a mess across a dozen
+systems"* — because it is, and Setoku still answers correctly. Good questions:
+
+- **"How many unique fans do we have?"** — naive `COUNT(*)` overcounts (CRM has duplicates);
+  Setoku dedupes by normalized email and excludes test records (~129k rows → ~98k fans).
+- **"What's our season-ticket renewal rate?"** — needs the 3-season ticketing data; ~85%.
+- **"Link our CRM to the ticketing system — how many fans can we match?"** — shows the
+  email-normalization identity resolution (no shared key); ~80% match.
+- **"What's our total ticket revenue?"** — handles cents-vs-dollars, excludes refunds /
+  exchanges / comps / test accounts.
+- **"What's our F&B per-cap, and how much do we spend on gameday labor?"** — POS is in
+  dollars; labor includes vendor staff who aren't in the HR system.
+- **"What's our total merchandise revenue?"** — Setoku flags that `merch` is only the
+  online store (most merch is Fanatics, not in the data) instead of giving a wrong total.
+
+The contrast between the two instances *is* the pitch: the clean one shows the magic; the
+realistic one shows it survives contact with real data. Admin login is the same
+(`peter` / `stags-demo-2026`) but scoped to this instance's own store.
+
+## What's in the data (clean `sports/` dataset)
 
 Eight subject areas the demo brief asked for, one season (81 home games), all tied
 together by a shared `games` table. Money is integer **cents** everywhere.
