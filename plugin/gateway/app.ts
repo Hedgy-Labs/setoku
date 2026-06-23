@@ -615,14 +615,17 @@ server.registerTool(
           );
         }
       }
-      // drift note: knowledge entities vs live tables
+      // drift note: knowledge entities vs live tables. Only meaningful against
+      // the FULL schema — when `tables` filters the result, the unlisted tables
+      // are absent by request, not drift, so skip it (avoids false "no live
+      // table" warnings on filtered get_schema calls).
       const documented = new Set(
         store
           .listDocs()
           .filter((d) => d.type === "entity" && d.meta.table)
           .map((d) => String(d.meta.table).toLowerCase()),
       );
-      if (documented.size) {
+      if (documented.size && tables === undefined) {
         const live = new Set(
           schema.map((t) => `${t.schema}.${t.name}`.toLowerCase()),
         );
@@ -634,7 +637,7 @@ server.registerTool(
             `⚠ context drift: documented entities with no live table: ${stale.join(", ")} — consider /setoku:generate.`,
           );
         }
-        if (undocumented.length && tables === undefined) {
+        if (undocumented.length) {
           lines.push(
             "",
             `note: ${undocumented.length} live tables have no context doc yet (${undocumented.slice(0, 8).join(", ")}${undocumented.length > 8 ? ", …" : ""}).`,
