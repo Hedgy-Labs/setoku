@@ -19,7 +19,7 @@ There's a public demo wired to a synthetic dataset for a fictional pro baseball 
 
 1. In **Claude.ai → Settings → Connectors → Add custom connector**, paste this as the server URL (there's no header field — the token rides in the URL):
    ```
-   https://stags.setoku.com/mcp/1097598a5d333b1e012d517e0380898f39ffea51e0830be9
+   https://stags.setoku.com/i/8cc638d87e2b6bfbbcde67ba8864cb20554f141323d50db3
    ```
 2. Ask in plain language — e.g. *"What was our ticket revenue this season, and which games sold best?"* Setoku feeds Claude the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names.
 
