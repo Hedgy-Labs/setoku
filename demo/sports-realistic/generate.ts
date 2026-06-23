@@ -26,18 +26,24 @@ import path from "node:path";
 const DB_URL =
   process.env.DATABASE_URL || process.env.SETOKU_DATABASE_URL ||
   "postgres://postgres:demo@127.0.0.1:5432/stags_raw";
-const SEED = Number(process.env.SEED ?? 4242);
-const SEASONS = (process.env.SEASONS ?? "2024,2025,2026").split(",").map((s) => Number(s.trim()));
-const AS_OF = new Date(process.env.AS_OF ?? `${SEASONS[SEASONS.length - 1]}-06-22T12:00:00Z`);
+// `??` only catches null/undefined, so an exported-but-empty env (SEED=, etc.)
+// would become Number("") = 0 → zero rows / Invalid Date. Treat empty as default.
+const numEnv = (k: string, d: number): number => {
+  const v = process.env[k];
+  return v == null || v.trim() === "" ? d : Number(v);
+};
+const SEED = numEnv("SEED", 4242);
+const SEASONS = (process.env.SEASONS?.trim() || "2024,2025,2026").split(",").map((s) => Number(s.trim()));
+const AS_OF = new Date(process.env.AS_OF?.trim() || `${SEASONS[SEASONS.length - 1]}-06-22T12:00:00Z`);
 const GAMES_PER_SEASON = 81;
-const SEATS_PER_GAME = Number(process.env.SEATS_PER_GAME ?? 10000);
+const SEATS_PER_GAME = numEnv("SEATS_PER_GAME", 10000);
 // POS volume is attendance-driven (≈ this share of scanned fans transact), so
 // per-cap (F&B revenue ÷ attendance) lands in a realistic ~$15–20 range.
-const POS_TXN_RATE = Number(process.env.POS_TXN_RATE ?? 0.6);
-const N_PEOPLE = Number(process.env.N_PEOPLE ?? 120000);
-const N_MERCH_ORDERS = Number(process.env.N_MERCH_ORDERS ?? 30000);
-const STAFF_PER_GAME = Number(process.env.STAFF_PER_GAME ?? 350);
-const N_PARTNERS = Number(process.env.N_PARTNERS ?? 70);
+const POS_TXN_RATE = numEnv("POS_TXN_RATE", 0.6);
+const N_PEOPLE = numEnv("N_PEOPLE", 120000);
+const N_MERCH_ORDERS = numEnv("N_MERCH_ORDERS", 30000);
+const STAFF_PER_GAME = numEnv("STAFF_PER_GAME", 350);
+const N_PARTNERS = numEnv("N_PARTNERS", 70);
 const CAPACITY = 38000;
 
 // ── seeded PRNG ─────────────────────────────────────────────────────────────
@@ -290,7 +296,7 @@ async function main() {
   const partners: number[] = [];
   for (let i = 1; i <= N_PARTNERS; i++) {
     partners.push(i);
-    await partnerL.push([i, `${pick(["Northstar","Meridian","Apex","Pioneer","Summit","Vertex","Beacon","Cedar","Harbor","Union","Bright","Quorum","Granite","Delta","Copper"])} ${pick(["Logistics","Bank","Auto Group","Insurance","Software","Health","Media","Foods","Energy","Partners"])}`,
+    await partnerL.push([i, `${pick(["Northstar","Meridian","Apex","Pioneer","Summit","Vertex","Beacon","Cedar","Harbor","Riverbend","Bright","Quorum","Granite","Stonegate","Copper"])} ${pick(["Logistics","Bank","Auto Group","Insurance","Software","Health","Media","Foods","Energy","Partners"])}`,
       pick(PARTNER_INDUSTRIES), pick(["agraves","mfowler","jdelgado","sboone"])]);
   }
   await partnerL.flush();

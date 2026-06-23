@@ -625,7 +625,7 @@ server.registerTool(
           .filter((d) => d.type === "entity" && d.meta.table)
           .map((d) => String(d.meta.table).toLowerCase()),
       );
-      if (documented.size && tables === undefined) {
+      if (documented.size && !tables?.length) {
         const live = new Set(
           schema.map((t) => `${t.schema}.${t.name}`.toLowerCase()),
         );

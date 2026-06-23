@@ -1,7 +1,0 @@
-{
-  "dataSource": { "kind": "postgres", "urlEnv": "SETOKU_DATABASE_URL" },
-  "allowTables": ["public.*"],
-  "denyTables": [],
-  "rowCap": 500,
-  "statementTimeoutMs": 20000
-}

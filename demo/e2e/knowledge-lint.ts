@@ -10,7 +10,6 @@
 // (selling "above" rate card) — an out-of-range ratio the heuristics flag.
 //
 //   bun run demo/e2e/knowledge-lint.ts demo/sports-realistic <mcp-url>
-//   bun run demo/e2e/knowledge-lint.ts demo/sports          <mcp-url>
 
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -39,7 +38,8 @@ function sqlBlocks(md: string): string[] {
 
 // parse the gateway's run_query text table → { cols, rows: number-or-string[][] }
 function parseTable(text: string): { error?: string; cols: string[]; rows: string[][] } {
-  if (/^run_query failed|^MCP error|error:/im.test(text)) return { error: text.split("\n")[0].slice(0, 160), cols: [], rows: [] };
+  // anchor to line start so a data cell merely containing "error" isn't misread as a failure
+  if (/^(run_query failed|MCP error|Error:)/im.test(text)) return { error: text.split("\n")[0].slice(0, 160), cols: [], rows: [] };
   const lines = text.split("\n").map((l) => l.trim());
   const endIdx = lines.findIndex((l) => /row\(s\) in /.test(l));
   // content = header + data, before the "N row(s) in Xms" footer. Handles

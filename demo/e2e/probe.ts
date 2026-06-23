@@ -6,17 +6,13 @@
 // attribution guardrails, vendor-staff undercount, retrieval misses). Prints the
 // FULL answer for each so a human can judge correctness.
 //
-//   bun run demo/e2e/probe.ts            # realistic (default)
-//   bun run demo/e2e/probe.ts lite
+//   bun run demo/e2e/probe.ts            # the realistic multi-system instance
 
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const TARGETS: Record<string, string> = {
-  realistic: process.env.DEMO_MCP_REALISTIC ?? "https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8",
-  lite: process.env.DEMO_MCP_LITE ?? "https://demo.51-81-222-176.sslip.io/mcp/c1ca64c9825bb0da86e08da8225c1498620c245575e48298",
-};
+const REALISTIC_URL = process.env.DEMO_MCP_REALISTIC ?? "https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8";
 
 // Each probe notes the TRAP — the gap it's hunting for.
 const PROBES: { ask: string; trap: string }[] = [
@@ -49,11 +45,9 @@ function ask(prompt: string, mcpUrl: string): string {
   return proc.stdout.toString().trim() || ("(empty) " + proc.stderr.toString().slice(0, 300));
 }
 
-const suite = process.argv[2] ?? "realistic";
-const url = TARGETS[suite];
 for (const [i, p] of PROBES.entries()) {
   console.log(`\n━━━━━━ PROBE ${i + 1}/${PROBES.length} ━━━━━━`);
   console.log(`Q: ${p.ask}`);
   console.log(`TRAP: ${p.trap}`);
-  console.log(`A: ${ask(p.ask, url)}`);
+  console.log(`A: ${ask(p.ask, REALISTIC_URL)}`);
 }

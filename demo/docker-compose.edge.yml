@@ -11,8 +11,9 @@
 # `setoku_default`). Only the gateway joins it — the demo Postgres stays on the
 # internal network, never reachable from the edge.
 #
-# After this, prod Caddy reaches the gateway at:  setoku-demo-demo-server-1:8787
-# Wire a hostname to it with demo/caddy-demo.snippet (boot.sh / README explain).
+# After this, prod Caddy reaches the gateway at:  <project>-demo-server-1:8787
+# (e.g. setoku-demo-realistic-demo-server-1:8787)
+# Wire a hostname to it with demo/caddy-realistic.snippet (README explains).
 
 services:
   demo-server:

@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-# Setoku REALISTIC demo — public routing. Append to the production Caddyfile and
-# reload (see caddy-demo.snippet for the inode caveat: edits need a caddy
-# --force-recreate, not just a reload, on the rsync box).
+# Setoku demo — public routing. Append to the production Caddyfile, then load it.
+# CAVEAT on the rsync box: the Caddyfile bind-mount is inode-pinned, so a plain
+# `caddy reload` does NOT pick up edits — recreate the container instead:
+#   docker compose -p setoku up -d --force-recreate --no-deps caddy
 #
-# Uses sslip.io so it works with NO DNS change. Add a real hostname to the list
-# (e.g. `raw.setoku.com, realistic.51-81-222-176.sslip.io { … }`) once a DNS A
-# record exists. Upstream is the realistic gateway container, reachable because
-# docker-compose.edge.yml joined it to this network.
+# The hostnames below front the realistic gateway. The sslip.io name works with
+# NO DNS change; stags.setoku.com is the friendly primary. Upstream is the
+# gateway container, reachable because docker-compose.edge.yml joined it here.
 
 stags.setoku.com, realistic.51-81-222-176.sslip.io {
 	encode gzip
