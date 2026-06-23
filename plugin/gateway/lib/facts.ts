@@ -415,7 +415,7 @@ function conflictReason(a: Fact, b: Fact): string | null {
   // ("divide by 100" vs "1000") from an incidental reference ("member 100" vs
   // "member 101", a year, an id) is semantic — it false-fired on real data more
   // than it helped. Numeric/semantic contradictions are found by the in-session
-  // /setoku:compact pass; the deterministic detector keeps only the
+  // /setoku:compact-knowledge pass; the deterministic detector keeps only the
   // high-precision signals above (atomic-predicate mismatch, antonym clash).
   return null;
 }
