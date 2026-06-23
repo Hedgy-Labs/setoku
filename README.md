@@ -13,6 +13,20 @@ _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer undern
 
 ---
 
+## Try it live
+
+There's a public demo wired to a synthetic dataset for a fictional pro baseball club — the **Riverside Stags** — covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, and marketing.
+
+1. In **Claude.ai → Settings → Connectors → Add custom connector**, paste this as the server URL (there's no header field — the token rides in the URL):
+   ```
+   https://stags.setoku.com/mcp/c1ca64c9825bb0da86e08da8225c1498620c245575e48298
+   ```
+2. Ask in plain language — e.g. *"What was our ticket revenue this season, and which games sold best?"* Setoku feeds Claude the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names.
+
+Full walkthrough, the `/admin` approval surface, and the data model: [`demo/README.md`](./demo/README.md).
+
+---
+
 ## What it is
 
 Setoku is a small self-hosted server that sits between your AI (Claude) and your data. It does two things:

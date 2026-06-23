@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Setoku DEMO stack — a self-contained, throwaway Setoku instance pointed at the
+# synthetic "Riverside Stags" sports dataset. Runs ALONGSIDE a production Setoku
+# stack on the same box without touching it: its own project name, network,
+# volumes, and Postgres. The gateway reuses the already-built `setoku-server`
+# image (override with DEMO_IMAGE).
+#
+# Local / standalone:
+#   docker compose -p setoku-demo -f docker-compose.demo.yml --env-file .env.demo up -d
+# On a box that also runs production (so prod Caddy can front it), add the edge
+# overlay:  -f docker-compose.edge.yml   (see boot.sh, which wires both).
+#
+# The gateway is published on 127.0.0.1:${DEMO_PORT} for local testing; public
+# access goes through the production Caddy (docker-compose.edge.yml).
+
+name: setoku-demo
+
+services:
+  # Business Postgres holding the synthetic sports data (the "live" DB the
+  # analyst queries). Internal network only. The `.local` alias matters: the
+  # gateway's db.ts forces TLS for any non-local host, and this container speaks
+  # plaintext — a `.local` hostname makes db.ts skip TLS.
+  demo-postgres:
+    image: pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
+    restart: unless-stopped
+    # Docker defaults a container's /dev/shm to 64MB; parallel hash joins across
+    # the multi-system realistic dataset (e.g. pos.txn ⋈ ticketing.account)
+    # exhaust it ("could not resize shared memory segment"). Give it room.
+    shm_size: 512mb
+    environment:
+      POSTGRES_PASSWORD: ${DEMO_PG_PASSWORD:-demo}
+      POSTGRES_DB: ${DEMO_DB:-stags}
+    volumes:
+      - demo_pg:/var/lib/postgresql/data
+    networks:
+      demo_internal:
+        aliases: [demo-postgres.local]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${DEMO_DB:-stags}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # The Setoku gateway (same image as production), pointed at the demo Postgres
+  # and the sports knowledge seed. A separate /data volume keeps its knowledge
+  # store isolated from production.
+  demo-server:
+    image: ${DEMO_IMAGE:-setoku-server}
+    restart: unless-stopped
+    environment:
+      SETOKU_PROJECT_DIR: /demo-project
+      SETOKU_DB_PATH: /data/knowledge.db
+      SETOKU_DATABASE_URL: postgres://postgres:${DEMO_PG_PASSWORD:-demo}@demo-postgres.local:5432/${DEMO_DB:-stags}
+      # Per-user MCP tokens — "token=identity,token2=identity2" (analyst: read + propose)
+      SETOKU_TOKENS: ${DEMO_TOKENS:?set DEMO_TOKENS (e.g. <hex>=demo@stags) — see boot.sh}
+      # Optional curator token (commit curated knowledge; cannot read a lake — there is none here)
+      SETOKU_CURATOR_TOKENS: ${DEMO_CURATOR_TOKENS:-}
+      SETOKU_PUBLIC_URL: ${DEMO_PUBLIC_URL:-http://localhost:8788}
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-8788}:8787"
+    volumes:
+      - ${DEMO_DATASET_DIR:-./sports}/.setoku:/demo-project/.setoku:ro
+      - demo_data:/data
+    networks: [demo_internal]
+    depends_on:
+      demo-postgres:
+        condition: service_healthy
+
+networks:
+  demo_internal:
+
+volumes:
+  demo_pg:
+  demo_data:
