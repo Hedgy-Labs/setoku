@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Edge overlay — attaches the demo gateway to the PRODUCTION Caddy's network so
+# the existing public Caddy can reverse-proxy a demo hostname to it. Apply on a
+# box that already runs a production Setoku stack:
+#
+#   docker compose -p setoku-demo \
+#     -f docker-compose.demo.yml -f docker-compose.edge.yml --env-file .env.demo up -d
+#
+# DEMO_EDGE_NETWORK is the production stack's docker network (default
+# `setoku_default`). Only the gateway joins it — the demo Postgres stays on the
+# internal network, never reachable from the edge.
+#
+# After this, prod Caddy reaches the gateway at:  setoku-demo-demo-server-1:8787
+# Wire a hostname to it with demo/caddy-demo.snippet (boot.sh / README explain).
+
+services:
+  demo-server:
+    networks:
+      demo_internal: {}
+      edge: {}
+
+networks:
+  edge:
+    external: true
+    name: ${DEMO_EDGE_NETWORK:-setoku_default}
