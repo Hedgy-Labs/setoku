@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // ADVERSARIAL probe — not pass/fail. Asks the hard questions most likely to
-// expose gaps where Setoku gives a wrong or weak answer on the realistic
+// expose gaps where Setoku gives a wrong or weak answer on the Stags
 // multi-system data (mixed units, identity resolution, missing data, no-
 // attribution guardrails, vendor-staff undercount, retrieval misses). Prints the
 // FULL answer for each so a human can judge correctness.
 //
-//   bun run demo/e2e/probe.ts            # the realistic multi-system instance
+//   bun run demo/e2e/probe.ts            # the Stags multi-system instance
 
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const REALISTIC_URL = process.env.DEMO_MCP_REALISTIC ?? "https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8";
+const MCP_URL = process.env.DEMO_MCP_URL ?? "https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8";
 
 // Each probe notes the TRAP — the gap it's hunting for.
 const PROBES: { ask: string; trap: string }[] = [
@@ -49,5 +49,5 @@ for (const [i, p] of PROBES.entries()) {
   console.log(`\n━━━━━━ PROBE ${i + 1}/${PROBES.length} ━━━━━━`);
   console.log(`Q: ${p.ask}`);
   console.log(`TRAP: ${p.trap}`);
-  console.log(`A: ${ask(p.ask, REALISTIC_URL)}`);
+  console.log(`A: ${ask(p.ask, MCP_URL)}`);
 }

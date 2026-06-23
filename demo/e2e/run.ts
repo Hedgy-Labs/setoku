@@ -15,23 +15,19 @@
 //
 // Requires: `claude` CLI logged into a Claude subscription (run `claude` once to
 // auth). The runner strips ANTHROPIC_API_KEY so it can ONLY use the subscription.
-// Override the target with env DEMO_MCP_REALISTIC.
+// Override the target with env DEMO_MCP_URL.
 
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const TARGETS: Record<string, string> = {
-  realistic:
-    process.env.DEMO_MCP_REALISTIC ??
-    "https://realistic.51-81-222-176.sslip.io/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8",
-};
+const MCP_URL = process.env.DEMO_MCP_URL ?? "https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8";
 
 type Check = { primary: RegExp; note: string; mustNot?: RegExp };
 type Q = { ask: string; checks: Check[] };
 
-// The realistic, multi-system dataset — the answers that require curated knowledge.
-const REALISTIC: Q[] = [
+// Golden questions whose right answer requires the curated knowledge.
+const QUESTIONS: Q[] = [
   {
     ask: "How many unique fans do we have in total? Give me the number.",
     checks: [
@@ -78,8 +74,6 @@ const REALISTIC: Q[] = [
   },
 ];
 
-const SUITES: Record<string, Q[]> = { realistic: REALISTIC };
-
 function askClaude(prompt: string, mcpUrl: string): string {
   const dir = mkdtempSync(join(tmpdir(), "setoku-e2e-"));
   const cfg = join(dir, "mcp.json");
@@ -112,37 +106,28 @@ function askClaude(prompt: string, mcpUrl: string): string {
 }
 
 async function main() {
-  const which = process.argv[2];
-  const suites = which ? [which] : ["realistic"];
-  let total = 0, passed = 0;
+  let passed = 0;
   const fails: string[] = [];
-
-  for (const suite of suites) {
-    const qs = SUITES[suite];
-    if (!qs) { console.error(`unknown suite "${suite}" (realistic)`); process.exit(2); }
-    console.log(`\n══════ suite: ${suite}  (${TARGETS[suite].replace(/\/mcp\/.*/, "/mcp/****")}) ══════`);
-    for (const q of qs) {
-      total++;
-      process.stdout.write(`• ${q.ask}\n`);
-      let answer = "", ok = false, detail = "";
-      for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
-        try {
-          answer = askClaude(q.ask, TARGETS[suite]);
-        } catch (e) {
-          detail = `error: ${(e as Error).message}`;
-          continue;
-        }
-        const a = answer.replace(/\s+/g, " ");
-        const failed = q.checks.filter((c) => !c.primary.test(a) || (c.mustNot && c.mustNot.test(a)));
-        ok = failed.length === 0;
-        detail = ok ? "" : "missing: " + failed.map((c) => c.note).join("; ");
+  console.log(`\n══════ ${QUESTIONS.length} questions  (${MCP_URL.replace(/\/mcp\/.*/, "/mcp/****")}) ══════`);
+  for (const q of QUESTIONS) {
+    process.stdout.write(`• ${q.ask}\n`);
+    let answer = "", ok = false, detail = "";
+    for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+      try {
+        answer = askClaude(q.ask, MCP_URL);
+      } catch (e) {
+        detail = `error: ${(e as Error).message}`;
+        continue;
       }
-      if (ok) { passed++; console.log(`  ✓ ${answer.replace(/\s+/g, " ").slice(0, 160)}`); }
-      else { fails.push(`[${suite}] ${q.ask} — ${detail}`); console.log(`  ✗ ${detail}\n    got: ${answer.replace(/\s+/g, " ").slice(0, 220)}`); }
+      const a = answer.replace(/\s+/g, " ");
+      const failed = q.checks.filter((c) => !c.primary.test(a) || (c.mustNot && c.mustNot.test(a)));
+      ok = failed.length === 0;
+      detail = ok ? "" : "missing: " + failed.map((c) => c.note).join("; ");
     }
+    if (ok) { passed++; console.log(`  ✓ ${answer.replace(/\s+/g, " ").slice(0, 160)}`); }
+    else { fails.push(`${q.ask} — ${detail}`); console.log(`  ✗ ${detail}\n    got: ${answer.replace(/\s+/g, " ").slice(0, 220)}`); }
   }
-
-  console.log(`\n════════ ${passed}/${total} passed ════════`);
+  console.log(`\n════════ ${passed}/${QUESTIONS.length} passed ════════`);
   if (fails.length) { console.log(fails.map((f) => "  ✗ " + f).join("\n")); process.exit(1); }
 }
 

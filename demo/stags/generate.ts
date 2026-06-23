@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// REALISTIC synthetic-data generator for the Setoku sports demo. Same fictional
-// club, but modeled the way real pro-sports data actually lands: several
+// Synthetic-data generator for the Setoku Stags sports demo — modeled the way
+// real pro-sports data actually lands: several
 // disconnected vendor systems (one Postgres schema each), no cross-system keys,
 // mixed money units, 3 seasons of depth, and deliberate real-world mess —
 // duplicate CRM contacts, dirty emails, refunds/exchanges, secondary-market
@@ -25,7 +25,7 @@ import path from "node:path";
 // ── config ────────────────────────────────────────────────────────────────
 const DB_URL =
   process.env.DATABASE_URL || process.env.SETOKU_DATABASE_URL ||
-  "postgres://postgres:demo@127.0.0.1:5432/stags_raw";
+  "postgres://postgres:demo@127.0.0.1:5432/stags";
 // `??` only catches null/undefined, so an exported-but-empty env (SEED=, etc.)
 // would become Number("") = 0 → zero rows / Invalid Date. Treat empty as default.
 const numEnv = (k: string, d: number): number => {
@@ -119,7 +119,7 @@ type Person = { email: string; fname: string; lname: string; city: string; st: s
 async function main() {
   const client = new Client({ connectionString: DB_URL });
   await client.connect();
-  console.log(`→ connected; seeding REALISTIC (SEED=${SEED}, seasons=${SEASONS.join("/")}, seats/game=${SEATS_PER_GAME})`);
+  console.log(`→ connected; seeding (SEED=${SEED}, seasons=${SEASONS.join("/")}, seats/game=${SEATS_PER_GAME})`);
   await client.query(fs.readFileSync(path.join(import.meta.dir, "schema.sql"), "utf8"));
   console.log("→ schema applied (7 vendor schemas)");
 

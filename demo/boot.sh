@@ -2,15 +2,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Boot (or re-seed) the Setoku demo on a box. Idempotent: safe to re-run.
-# Defaults to the realistic multi-system dataset (the primary demo).
+# Defaults to the Stags multi-system dataset (the only demo).
 #
-#   ./boot.sh                       # the realistic demo (sports-realistic)
+#   ./boot.sh                       # the Stags demo
 #
 # Parameterize a different dataset/instance with env vars (defaults shown):
-#   DEMO_DATASET       dir under demo/ holding .setoku + schema.sql + generate.ts   (sports-realistic)
-#   DEMO_PROJECT       docker compose project name (isolates containers/volumes)    (setoku-demo-realistic)
-#   DEMO_ENV_FILE      secrets/token file                                           (.env.realistic)
-#   DEMO_DB            Postgres database name                                        (stags_raw)
+#   DEMO_DATASET       dir under demo/ holding .setoku + schema.sql + generate.ts   (stags)
+#   DEMO_PROJECT       docker compose project name (isolates containers/volumes)    (setoku-stags)
+#   DEMO_ENV_FILE      secrets/token file                                           (.env.stags)
+#   DEMO_DB            Postgres database name                                        (stags)
 #   DEMO_PORT          localhost port for the gateway                               (8789)
 #   DEMO_PUBLIC_HOST   hostname Caddy will front it on                              (stags.setoku.com)
 #   DEMO_RESEED=0      skip data regeneration
@@ -20,10 +20,10 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-DATASET="${DEMO_DATASET:-sports-realistic}"
-PROJECT="${DEMO_PROJECT:-setoku-demo-realistic}"
-ENV_FILE="${DEMO_ENV_FILE:-.env.realistic}"
-DB="${DEMO_DB:-stags_raw}"
+DATASET="${DEMO_DATASET:-stags}"
+PROJECT="${DEMO_PROJECT:-setoku-stags}"
+ENV_FILE="${DEMO_ENV_FILE:-.env.stags}"
+DB="${DEMO_DB:-stags}"
 PORT="${DEMO_PORT:-8789}"
 PUBLIC_HOST="${DEMO_PUBLIC_HOST:-stags.setoku.com}"
 EDGE_NETWORK="${DEMO_EDGE_NETWORK:-setoku_default}"

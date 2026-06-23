@@ -1,6 +1,6 @@
 -- SPDX-License-Identifier: Apache-2.0
--- Setoku demo — REALISTIC variant. Same fictional club (the "Riverside Stags"),
--- but modeled the way a real pro-sports org's data actually lands: NOT one tidy
+-- Setoku demo — the fictional "Riverside Stags" club, modeled the way a real
+-- pro-sports org's data actually lands: NOT one tidy
 -- schema, but several disconnected vendor systems, each in its own Postgres
 -- schema, with its own naming, its own ID space, mixed money units, multi-season
 -- depth, and real-world mess (duplicate CRM contacts, dirty emails, refunds,

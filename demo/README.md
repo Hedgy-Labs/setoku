@@ -24,11 +24,11 @@ Deployed on the hedgy box:
 | **Admin / approval surface** | https://stags.setoku.com/admin |
 | **Health** | https://stags.setoku.com/health |
 
-(`realistic.51-81-222-176.sslip.io` serves the same endpoints — a stable alias.)
+(`stags.51-81-222-176.sslip.io` serves the same endpoints — a stable alias.)
 
 That token is a shareable bearer credential for the demo. It only grants read +
 propose-only access to **synthetic** data (no real PII), so it's fine to hand out;
-rotate it anytime by editing `DEMO_TOKENS` in `/opt/setoku/demo/.env.realistic` and
+rotate it anytime by editing `DEMO_TOKENS` in `/opt/setoku/demo/.env.stags` and
 restarting the gateway, or mint per-person tokens (see "Inviting people" below).
 
 ### Connect Claude (the prospect experience)
@@ -60,7 +60,7 @@ things the way the business does instead of guessing from column names.
 
 - **URL:** https://stags.setoku.com/admin  ·  **Username:** `peter`  ·  **Password:** `stags-demo-2026`
 - Demo credentials over synthetic data. Rotate on the box:
-  `docker exec -it -e SETOKU_NEW_PASSWORD='…' setoku-demo-realistic-demo-server-1 bun gateway/admin-cli.ts set-password peter`.
+  `docker exec -it -e SETOKU_NEW_PASSWORD='…' setoku-stags-demo-server-1 bun gateway/admin-cli.ts set-password peter`.
 - Demo flow to show a prospect: ask a question → correct a definition in chat
   (`report_correction`) → it lands **pending** → approve it in `/admin` → the next answer uses it.
 
@@ -69,10 +69,10 @@ things the way the business does instead of guessing from column names.
 ```bash
 # on the box
 docker exec -e SETOKU_TOKENS_FILE=/data/teammates.json \
-  setoku-demo-realistic-demo-server-1 bun gateway/admin-cli.ts add-teammate alice@example.com
+  setoku-stags-demo-server-1 bun gateway/admin-cli.ts add-teammate alice@example.com
 # then restart the gateway so the new token loads:
-docker compose -p setoku-demo-realistic -f /opt/setoku/demo/docker-compose.demo.yml \
-  -f /opt/setoku/demo/docker-compose.edge.yml --env-file /opt/setoku/demo/.env.realistic \
+docker compose -p setoku-stags -f /opt/setoku/demo/docker-compose.demo.yml \
+  -f /opt/setoku/demo/docker-compose.edge.yml --env-file /opt/setoku/demo/.env.stags \
   up -d demo-server
 ```
 
@@ -91,7 +91,7 @@ There are **no foreign keys between schemas**; the shared keys are `event_no` (g
 | `hr` | Workday/ADP-style | workers, comp, gameday shifts (mostly vendor-staffed) | dollars |
 | `marketing` | ad-platform exports | spend & delivery by platform (no sales attribution) | dollars |
 
-The curated knowledge (`sports-realistic/.setoku/context/`) ships entity docs, canonical
+The curated knowledge (`stags/.setoku/context/`) ships entity docs, canonical
 metric SQL, an identity-resolution recipe, and the gotchas (mixed units, dedupe, code maps,
 coverage caveats) — so `find_context` has something real to return.
 
@@ -101,19 +101,19 @@ The box already runs production Setoku and has the `setoku-server` image built, 
 reuses it. From `/opt/setoku/demo`:
 
 ```bash
-./boot.sh            # first run generates .env.realistic (tokens + PG password), seeds, starts the gateway
+./boot.sh            # first run generates .env.stags (tokens + PG password), seeds, starts the gateway
 ```
 
 It starts a demo Postgres, seeds the data (deterministic — same `SEED` ⇒ identical data),
 and starts the gateway on `127.0.0.1:8789`, auto-joining the production Caddy network if
 present. Re-seed in place anytime by re-running `./boot.sh` (schema drops and recreates).
 
-Public routing (one deliberate step): append `caddy-realistic.snippet` to
+Public routing (one deliberate step): append `caddy-stags.snippet` to
 `/opt/setoku/Caddyfile`, then — because the Caddyfile bind-mount is inode-pinned — recreate
 (not reload) Caddy:
 
 ```bash
-cat caddy-realistic.snippet >> /opt/setoku/Caddyfile
+cat caddy-stags.snippet >> /opt/setoku/Caddyfile
 docker compose -p setoku up -d --force-recreate --no-deps caddy
 ```
 
@@ -138,12 +138,12 @@ bun run demo/e2e/probe.ts    # adversarial probe — full answers, no pass/fail,
 
 `test:demo-e2e` and the probe spend real subscription turns and need a logged-in account, so
 they're **not** in the pre-push gate — run them before a demo or after changing the dataset or
-its knowledge. Override the target with `DEMO_MCP_REALISTIC`.
+its knowledge. Override the target with `DEMO_MCP_URL`.
 
 ## Tear down
 
 ```bash
-docker compose -p setoku-demo-realistic -f docker-compose.demo.yml -f docker-compose.edge.yml down -v
+docker compose -p setoku-stags -f docker-compose.demo.yml -f docker-compose.edge.yml down -v
 # then remove the demo block from /opt/setoku/Caddyfile and recreate caddy
 ```
 
