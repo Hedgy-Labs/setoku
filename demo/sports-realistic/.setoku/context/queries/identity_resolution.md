@@ -45,10 +45,12 @@ that matches nothing. So **most F&B spend cannot be attributed to a fan** — st
 limitation rather than implying full coverage.
 
 ```sql
-SELECT count(*) FILTER (WHERE t.loyalty_id ~ '^[0-9]+$'
-                         AND a.acct_id IS NOT NULL) AS pos_txns_linked_to_account,
-       count(*) AS pos_txns_total
+-- Filter to NUMERIC loyalty ids FIRST (most are NULL or 'APP######'), then match
+-- on text so the integer cast never errors and the join stays small/fast. Total
+-- txn count comes from a cheap subquery rather than a 800k-row LEFT JOIN.
+SELECT (SELECT count(*) FROM pos.txn)             AS pos_txns_total,
+       count(*)                                   AS pos_txns_linked_to_account
 FROM pos.txn t
-LEFT JOIN ticketing.account a
-  ON t.loyalty_id ~ '^[0-9]+$' AND a.acct_id = t.loyalty_id::bigint;
+JOIN ticketing.account a ON a.acct_id::text = t.loyalty_id
+WHERE t.loyalty_id ~ '^[0-9]+$';
 ```

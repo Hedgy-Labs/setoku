@@ -24,6 +24,10 @@ services:
   demo-postgres:
     image: pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
     restart: unless-stopped
+    # Docker defaults a container's /dev/shm to 64MB; parallel hash joins across
+    # the multi-system realistic dataset (e.g. pos.txn ⋈ ticketing.account)
+    # exhaust it ("could not resize shared memory segment"). Give it room.
+    shm_size: 512mb
     environment:
       POSTGRES_PASSWORD: ${DEMO_PG_PASSWORD:-demo}
       POSTGRES_DB: ${DEMO_DB:-stags}

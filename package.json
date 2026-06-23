@@ -15,7 +15,8 @@
     "build:admin": "bun run build:admin-css && bun run build:admin-js",
     "dev:admin": "bun plugin/gateway/web/dev.ts",
     "deploy": "bash scripts/deploy.sh",
-    "test:demo-e2e": "bun run demo/e2e/run.ts"
+    "test:demo-e2e": "bun run demo/e2e/run.ts",
+    "test:knowledge-lint": "bun run demo/e2e/knowledge-lint.ts demo/sports-realistic"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

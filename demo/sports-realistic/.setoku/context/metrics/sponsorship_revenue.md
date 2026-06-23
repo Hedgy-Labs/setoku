@@ -39,8 +39,10 @@ SELECT
   1 - SUM(allocated_value) / NULLIF(SUM(rate_card),0) AS avg_discount_off_rate_card
 FROM sponsorship.deal_asset da
 JOIN sponsorship.deal d USING (deal_id)
-WHERE d.status IN ('signed','active','expired');   -- closed deals only
+WHERE d.status IN ('signed','active','expired');
 ```
+
+(Closed deals only — `signed`/`active`/`expired`, never `proposed`.)
 
 Expect sold value to sit a bit **below** rate card (a single-digit-to-~25% discount),
 never above it.
