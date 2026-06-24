@@ -177,6 +177,13 @@ bindings. The `frontend-design` skill makes the template sharp.
   escalation risk — an injection-driven **public** exfil — is closed by reusing
   the report rule verbatim: **the agent can only publish team-only; flipping to
   public is a human click in `/admin`** (the agent holds no web session).
+- **Renders run under the gateway role, not a session.** Panel re-execution
+  carries no `denyLakeRead` — the membrane is enforced at *authorship* (a curator
+  session can't publish a lake-backed panel), not at render. So a public
+  lake-backed dashboard does stream fresh lake rows to anyone with the link, but
+  that is the publisher's explicit, human-promoted choice — rendering involves no
+  agent, so it can't couple write-capability with untrusted text (which is what
+  I2/I9 actually governs).
 - **Security bonus.** Because data is injected, not fetched, the frame needs no
   network, so we serve it under `default-src 'none'; style-src 'unsafe-inline';
   script-src 'unsafe-inline'; img-src data:` + `sandbox allow-scripts`. That

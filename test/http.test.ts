@@ -755,9 +755,11 @@ describe("live dashboards (end-to-end render path)", () => {
     const boss = await session("boss", "s3cret-pass");
     const dd = (await (
       await fetch(`${BASE}/admin/api/dashboard_data?id=${id}`, { headers: { cookie: boss.cookie } })
-    ).json()) as { panels: { sql?: string; metric: unknown; rowCount: number }[] };
+    ).json()) as { createdBy?: string; panels: { sql?: string; metric: { body?: string } | null; rowCount: number }[] };
     expect(dd.panels[0].sql).toContain("count(*)");
     expect(dd.panels[0].metric).not.toBeNull(); // "revenue" metric resolved
+    expect(dd.panels[0].metric?.body).toBeTruthy(); // team sees the canonical metric SQL
+    expect(dd.createdBy).toBeTruthy(); // and the author
     expect(dd.panels[0].rowCount).toBe(1);
 
     // 3. The sandboxed frame carries the injected data + the no-network CSP.
@@ -787,13 +789,19 @@ describe("live dashboards (end-to-end render path)", () => {
     });
     expect(promote.status).toBe(200);
 
-    // 6. Public provenance OMITS raw SQL (it would leak schema); the public frame
-    //    still injects data; the public page is the trusted shell (frames it).
+    // 6. Public provenance OMITS schema-revealing fields — raw SQL, the metric
+    //    BODY (which is the canonical SQL), and the author — but still shows
+    //    methodology (metric name + summary). The public frame injects data; the
+    //    public page is the trusted shell (frames it).
     const pdata = (await (await fetch(`${BASE}/p/${id}/data`)).json()) as {
-      panels: { sql?: string; metric: unknown }[];
+      createdBy?: string;
+      panels: { sql?: string; metric: { body?: string; summary?: string } | null }[];
     };
     expect(pdata.panels[0].sql).toBeUndefined();
+    expect(pdata.createdBy).toBeUndefined(); // author identity not leaked publicly
     expect(pdata.panels[0].metric).not.toBeNull(); // methodology IS shown publicly
+    expect(pdata.panels[0].metric?.summary).toBeTruthy();
+    expect(pdata.panels[0].metric?.body).toBeUndefined(); // but NOT the canonical SQL body
     const pframe = await (await fetch(`${BASE}/p/${id}/frame`)).text();
     expect(pframe).toContain("window.__SETOKU__");
     const shell = await (await fetch(`${BASE}/p/${id}`)).text();

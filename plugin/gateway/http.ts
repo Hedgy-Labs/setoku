@@ -562,6 +562,12 @@ function jsonForScript(value: unknown): string {
     .replaceAll("\u2029", "\\u2029");
 }
 
+// Ceiling on the injected data blob. The per-query rowCap bounds one panel, but
+// MAX_PANELS panels of wide rows could still blow past the ~2MB a single report
+// document used to respect — cap the whole payload and drop the biggest panels'
+// rows (with an explanatory panel error) rather than serve a multi-MB frame.
+const MAX_FRAME_DATA_BYTES = 4_000_000;
+
 /** Assemble the sandboxed frame document: our skeleton + injected panel data +
  *  the agent's template fragment. Legacy zero-panel reports are full documents,
  *  served as-is. */
@@ -575,59 +581,81 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[]): string {
         p.key,
         {
           columns: p.columns,
-          rows: p.rows,
+          rows: p.rows as unknown[],
           rowCount: p.rowCount,
           computedAt: p.computedAt,
-          error: p.error,
+          error: p.error as string | null,
           refreshError: p.refreshError ?? null,
         },
       ]),
     ),
   };
+  let serialized = jsonForScript(data);
+  if (Buffer.byteLength(serialized) > MAX_FRAME_DATA_BYTES) {
+    // Drop rows from the heaviest panels first until under the cap.
+    const heaviest = Object.values(data.panels).sort(
+      (a, b) => JSON.stringify(b.rows).length - JSON.stringify(a.rows).length,
+    );
+    for (const panel of heaviest) {
+      panel.error = panel.error ?? `result too large to embed (${panel.rowCount} rows) — aggregate in the panel query`;
+      panel.rows = [];
+      serialized = jsonForScript(data);
+      if (Buffer.byteLength(serialized) <= MAX_FRAME_DATA_BYTES) break;
+    }
+  }
   return (
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `<script>window.__SETOKU__=${jsonForScript(data)};</script>` +
+    `<script>window.__SETOKU__=${serialized};</script>` +
     `</head><body>${dash.body}</body></html>`
   );
 }
 
-/** Provenance JSON for the shell's "how is this calculated" drawer. `includeSql`
- *  is TRUE only on the authenticated team surface — public dashboards never leak
- *  raw SQL (it would expose schema/table names); they show the curated metric
- *  definition + methodology instead. */
+/** Provenance JSON for the shell's "how is this calculated" drawer. `team` is
+ *  TRUE only on the authenticated team surface. The public surface must NOT leak
+ *  schema (raw `sql`, the metric BODY which is the canonical SQL, the author's
+ *  identity, or a raw DB error that may name an env var) — it shows methodology
+ *  only: the metric name + summary, and a generic "unavailable" on failure. */
 function dashboardProvenance(
   knowledge: KnowledgeStore,
   meta: PublishedMeta,
   panels: RenderedPanel[],
-  opts: { includeSql: boolean },
+  opts: { team: boolean },
 ): Record<string, unknown> {
   const byKey = new Map(panels.map((p) => [p.key, p]));
+  const publicError = (e: string | null | undefined): string | null =>
+    e ? (opts.team ? e : "data temporarily unavailable") : null;
   return {
     id: meta.id,
     title: meta.title,
     format: meta.format,
     visibility: meta.visibility,
     refreshSeconds: meta.refreshSeconds,
-    createdBy: meta.createdBy,
+    ...(opts.team ? { createdBy: meta.createdBy } : {}),
     createdAt: meta.createdAt,
     archivedAt: meta.archivedAt,
     updatedAt: newestComputedAt(panels),
     panels: (meta.panels ?? []).map((p) => {
       const r = byKey.get(p.key);
       const doc = p.metricId ? knowledge.getDoc("metric", String(p.metricId)) : null;
+      // The metric BODY is the canonical SQL — team-only, like raw `sql`.
+      const metric = doc
+        ? opts.team
+          ? { name: doc.name, summary: String(doc.meta.summary ?? ""), body: doc.body }
+          : { name: doc.name, summary: String(doc.meta.summary ?? "") }
+        : null;
       return {
         key: p.key,
         title: p.title ?? null,
         dialect: p.dialect,
         metricId: p.metricId ?? null,
-        metric: doc ? { name: doc.name, summary: String(doc.meta.summary ?? ""), body: doc.body } : null,
-        ...(opts.includeSql ? { sql: p.sql } : {}),
+        metric,
+        ...(opts.team ? { sql: p.sql } : {}),
         columns: r?.columns ?? [],
         rowCount: r?.rowCount ?? 0,
         computedAt: r?.computedAt ?? null,
-        error: r?.error ?? null,
-        refreshError: r?.refreshError ?? null,
+        error: publicError(r?.error),
+        refreshError: publicError(r?.refreshError),
       };
     }),
   };
@@ -697,7 +725,8 @@ function publicDashboardShell(opts: {
   function reload(){ frame.src=CFG.frame+'?t='+Date.now(); }
   function refresh(){
     fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
-      stamp.textContent='updated '+rel(d.updatedAt)+' · refreshes every '+Math.round((d.refreshSeconds||CFG.refresh)/60*10)/10+'m';
+      var secs=d.refreshSeconds||CFG.refresh;
+      stamp.textContent='updated '+rel(d.updatedAt)+' · refreshes every '+(secs<60?secs+'s':Math.round(secs/60)+'m');
       prov.innerHTML=(d.panels||[]).map(function(p){
         var lines=[];
         lines.push('<p>'+esc(p.dialect)+(p.metricId?' · metric: '+esc(p.metricId):'')+' · '+(p.error?'<span class="err">error: '+esc(p.error)+'</span>':esc(p.rowCount)+' row(s)')+(p.computedAt?' · '+rel(p.computedAt):'')+'</p>');
@@ -774,7 +803,7 @@ const httpServer = http.createServer(async (req, res) => {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(JSON.stringify(dashboardProvenance(store, meta, panels, { includeSql: false })));
+        res.end(JSON.stringify(dashboardProvenance(store, meta, panels, { team: false })));
         return;
       }
 
@@ -965,18 +994,23 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "published" && req.method === "GET") return json(200, store.listPublished());
         // Provenance + rendered panel metadata for the team viewer's drawer.
         // Includes raw SQL (this surface is authenticated). The rows themselves
-        // arrive via the sandboxed /admin/frame/<id>; ?force=1 bypasses the cache.
+        // arrive via the sandboxed /admin/frame/<id>.
         if (api === "dashboard_data" && req.method === "GET") {
           const url = new URL(req.url ?? "", "http://x");
           const id = url.searchParams.get("id") ?? "";
-          const force = url.searchParams.get("force") === "1";
           const meta = store.getPublishedMeta(id);
           if (!meta || meta.archivedAt) return json(404, { ok: false, error: "dashboard not found or archived" });
+          // ?force=1 bypasses the cache and re-runs every panel — restrict it to
+          // the author or an admin so a member (or a stale tab, or a credentialed
+          // cross-site GET) can't hammer the prod DB the cache exists to protect.
+          const force =
+            url.searchParams.get("force") === "1" &&
+            (meta.createdBy === session.identity || canApprove(session.role));
           const rep = store.getPublished(id);
           if (!rep) return json(404, { ok: false, error: "dashboard not found or archived" });
           const panels = await renderDashboard(store, projectDir, rep, { force });
           store.audit(session.identity, force ? "dashboard_refreshed" : "dashboard_viewed", { id });
-          return json(200, dashboardProvenance(store, meta, panels, { includeSql: true }));
+          return json(200, dashboardProvenance(store, meta, panels, { team: true }));
         }
 
         // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----

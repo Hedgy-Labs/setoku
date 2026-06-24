@@ -22,10 +22,17 @@ export const MIN_REFRESH_SECONDS = 30;
 /** Cap on panels per dashboard — keeps one view's fan-out bounded. */
 export const MAX_PANELS = 12;
 
+// One membrane gate, shared by run_query and dashboard panel execution (I2/I9):
+// a session that can commit curated knowledge must not read the untrusted bulk
+// text in the lake. Reads cleanly for either caller.
 export const LAKE_MEMBRANE_ERROR =
-  "This is a curator session — a panel on the clickhouse dialect (the lake) is blocked here so a " +
-  "session that can commit curated knowledge can't ingest untrusted bulk text (the I2/I9 membrane). " +
-  "Publish lake-backed dashboards from an analyst connector.";
+  "This is a curator session — reading the lake (clickhouse dialect) is disabled here so a session " +
+  "that can commit curated knowledge can't ingest untrusted bulk text (the I2/I9 membrane). Use an " +
+  "analyst connector to query the lake.";
+
+/** Errored cache is retried sooner than a successful one — a transient DB blip
+ *  shouldn't pin an error on screen for the whole refresh TTL. */
+const ERROR_TTL_MS = 30_000;
 
 /** Execute one panel's saved query through the governed read path. Throws on a
  *  curator session reading the lake, an unconfigured source, or a query error. */
@@ -68,66 +75,84 @@ function ttlMs(dash: { refreshSeconds: number | null }): number {
   return s * 1000;
 }
 
+type RenderInput = PublishedReport | (Omit<PublishedReport, "body"> & { body?: string });
+
+// In-flight render coalescing. A single dashboard view hits two endpoints (the
+// sandboxed /frame for rows + /data for provenance), and a popular public link
+// fans many viewers at one moment; without this each would independently re-run
+// every panel on a cold/expired cache. Concurrent NON-force renders of the same
+// dashboard share one execution; force renders are never shared.
+const inFlight = new Map<string, Promise<RenderedPanel[]>>();
+
 /**
  * Render every panel of a dashboard, serving cached rows within the refresh TTL
  * and re-running stale ones. `force` bypasses the cache (manual refresh). A run
  * error keeps the last good rows when there are any (flagged via refreshError),
- * otherwise it surfaces as a hard panel error.
+ * otherwise it surfaces as a hard panel error. Panels run concurrently, and
+ * concurrent renders of the same dashboard are coalesced.
  */
-export async function renderDashboard(
+export function renderDashboard(
   store: KnowledgeStore,
   projectDir: string,
-  dash: PublishedReport | (Omit<PublishedReport, "body"> & { body?: string }),
+  dash: RenderInput,
   opts: { force?: boolean; denyLakeRead?: boolean; now?: number } = {},
 ): Promise<RenderedPanel[]> {
+  if (!(dash.panels ?? []).length) return Promise.resolve([]);
+  const key = `${dash.id}:${opts.force ? 1 : 0}`;
+  const existing = inFlight.get(key);
+  if (existing) return existing;
+  const p = renderUncoalesced(store, projectDir, dash, opts).finally(() => inFlight.delete(key));
+  inFlight.set(key, p);
+  return p;
+}
+
+async function renderUncoalesced(
+  store: KnowledgeStore,
+  projectDir: string,
+  dash: RenderInput,
+  opts: { force?: boolean; denyLakeRead?: boolean; now?: number },
+): Promise<RenderedPanel[]> {
   const panels = dash.panels ?? [];
-  if (!panels.length) return [];
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
   const now = opts.now ?? Date.now();
   const limit = ttlMs(dash);
 
-  const out: RenderedPanel[] = [];
-  for (const panel of panels) {
-    const base = { key: panel.key, title: panel.title, dialect: panel.dialect, metricId: panel.metricId ?? null };
-    const cached = store.getPanelCache(dash.id, panel.key);
-    const fresh =
-      !opts.force && cached != null && now - Date.parse(cached.computedAt) < limit;
-    if (fresh && cached) {
-      out.push({ ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: cached.error });
-      continue;
-    }
-    if (!config) {
-      // Config gone (env/DB unconfigured) — surface it without throwing the whole render.
-      const msg = cfg.ok ? "no config" : cfg.error;
-      if (cached && !cached.error) {
-        out.push({ ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg });
-      } else {
-        out.push({ ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: msg });
+  // Independent panels run concurrently — total latency is the slowest query,
+  // not the sum (Promise.all preserves order).
+  return Promise.all(
+    panels.map(async (panel): Promise<RenderedPanel> => {
+      const base = { key: panel.key, title: panel.title, dialect: panel.dialect, metricId: panel.metricId ?? null };
+      const cached = store.getPanelCache(dash.id, panel.key);
+      // An errored cache row is retried sooner than the full refresh TTL.
+      const cacheLimit = cached?.error ? Math.min(ERROR_TTL_MS, limit) : limit;
+      const fresh = !opts.force && cached != null && now - Date.parse(cached.computedAt) < cacheLimit;
+      if (fresh && cached) {
+        return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: cached.error };
       }
-      continue;
-    }
-    try {
-      const r = await runPanel(projectDir, config, panel, { denyLakeRead: opts.denyLakeRead });
-      const computedAt = store.putPanelCache(dash.id, panel.key, {
-        columns: r.columns,
-        rows: r.rows,
-        rowCount: r.rowCount,
-        error: null,
-      });
-      out.push({ ...base, columns: r.columns, rows: r.rows, rowCount: r.rowCount, computedAt, error: null });
-    } catch (e) {
-      const msg = (e as Error).message;
-      if (cached && !cached.error) {
-        // Keep showing the last good data; flag the failed refresh.
-        out.push({ ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg });
-      } else {
+      if (!config) {
+        // Config gone (env/DB unconfigured) — surface it without failing the whole render.
+        const msg = cfg.ok ? "no config" : cfg.error;
+        if (cached && !cached.error) {
+          return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
+        }
+        return { ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: msg };
+      }
+      try {
+        const r = await runPanel(projectDir, config, panel, { denyLakeRead: opts.denyLakeRead });
+        const computedAt = store.putPanelCache(dash.id, panel.key, { columns: r.columns, rows: r.rows, rowCount: r.rowCount, error: null });
+        return { ...base, columns: r.columns, rows: r.rows, rowCount: r.rowCount, computedAt, error: null };
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (cached && !cached.error) {
+          // Keep showing the last good data; flag the failed refresh.
+          return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
+        }
         const computedAt = store.putPanelCache(dash.id, panel.key, { columns: [], rows: [], rowCount: 0, error: msg });
-        out.push({ ...base, columns: [], rows: [], rowCount: 0, computedAt, error: msg });
+        return { ...base, columns: [], rows: [], rowCount: 0, computedAt, error: msg };
       }
-    }
-  }
-  return out;
+    }),
+  );
 }
 
 /** The freshest "computed at" across panels (for the shell's "updated N ago"). */

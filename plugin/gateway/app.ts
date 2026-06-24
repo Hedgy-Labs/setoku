@@ -15,7 +15,7 @@ import {
   resolveLakeUrl,
   type SetokuConfig,
 } from "./lib/config";
-import { diagnoseNoTables, introspectSchema, runReadOnlyQuery } from "./lib/db";
+import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type DashboardPanel, type DocType } from "./lib/store";
@@ -800,19 +800,14 @@ server.registerTool(
       sql && sql.length > 2000 ? sql.slice(0, 2000) + "…" : sql;
     try {
       const config = requireConfig();
-      let result;
-      if ((dialect ?? "postgres") === "clickhouse") {
-        if (denyLakeRead)
-          throw new Error(
-            "This is a curator session — reading the lake (clickhouse dialect) is disabled here so a session that can commit curated knowledge can't ingest untrusted bulk text (the I2/I9 membrane). Use an analyst connector to query the lake.",
-          );
-        const lake = resolveLakeUrl(projectDir, config);
-        if (!lake.ok) throw new Error(lake.error);
-        result = await runLakeQuery(lake.url, sql, config);
-      } else {
-        const url = requireDb(config);
-        result = await runReadOnlyQuery(url, sql, config);
-      }
+      // Route + enforce the lake membrane (I2/I9) through the SAME helper the
+      // dashboard panels use, so there is one gate, not two divergent copies.
+      const result = await runPanel(
+        projectDir,
+        config,
+        { key: "run_query", sql, dialect: dialect ?? "postgres" },
+        { denyLakeRead },
+      );
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
         dialect: dialect ?? "postgres",
