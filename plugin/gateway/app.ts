@@ -19,7 +19,7 @@ import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type DashboardPanel, type DocType } from "./lib/store";
-import { MAX_PANELS, MIN_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/dashboards";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/dashboards";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
@@ -1005,7 +1005,10 @@ server.registerTool(
 
     const id = mintShareId();
     const refresh = normalized.length
-      ? Math.max(MIN_REFRESH_SECONDS, Math.round(refreshSeconds ?? DEFAULT_REFRESH_SECONDS))
+      ? Math.min(
+          MAX_REFRESH_SECONDS,
+          Math.max(MIN_REFRESH_SECONDS, Math.round(refreshSeconds ?? DEFAULT_REFRESH_SECONDS)),
+        )
       : null;
     store.createPublished({
       id,

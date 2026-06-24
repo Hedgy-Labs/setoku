@@ -19,8 +19,14 @@ import type { DashboardPanel, KnowledgeStore, PublishedReport } from "./store";
 export const DEFAULT_REFRESH_SECONDS = 300;
 /** Floor on refresh TTL — guards the DB from a too-eager dashboard. */
 export const MIN_REFRESH_SECONDS = 30;
+/** Ceiling on refresh TTL — a "live" link that never refreshes isn't live; cap
+ *  it so cached data can't silently go stale for days behind a fresh-looking UI. */
+export const MAX_REFRESH_SECONDS = 86_400;
 /** Cap on panels per dashboard — keeps one view's fan-out bounded. */
 export const MAX_PANELS = 12;
+/** Ceiling on the serialized panel-rows payload handed to one render. Bounds the
+ *  injected frame document + the cached/served JSON regardless of rowCap × panels. */
+export const MAX_RENDER_ROW_BYTES = 3_500_000;
 
 // One membrane gate, shared by run_query and dashboard panel execution (I2/I9):
 // a session that can commit curated knowledge must not read the untrusted bulk
@@ -98,7 +104,9 @@ export function renderDashboard(
   opts: { force?: boolean; denyLakeRead?: boolean; now?: number } = {},
 ): Promise<RenderedPanel[]> {
   if (!(dash.panels ?? []).length) return Promise.resolve([]);
-  const key = `${dash.id}:${opts.force ? 1 : 0}`;
+  // Key includes denyLakeRead so two callers in different membrane modes never
+  // share one execution (latent today, but the result depends on it).
+  const key = `${dash.id}:${opts.force ? 1 : 0}:${opts.denyLakeRead ? 1 : 0}`;
   const existing = inFlight.get(key);
   if (existing) return existing;
   const p = renderUncoalesced(store, projectDir, dash, opts).finally(() => inFlight.delete(key));
@@ -117,42 +125,74 @@ async function renderUncoalesced(
   const config = cfg.ok ? cfg.config : null;
   const now = opts.now ?? Date.now();
   const limit = ttlMs(dash);
+  // How long we'll keep serving last-good rows while refreshes fail before we
+  // stop masking it and surface a hard error — a permanently-broken query (a
+  // dropped column) must not show trustworthy-looking numbers forever.
+  const staleCeiling = Math.max(limit * 4, 30 * 60_000);
 
   // Independent panels run concurrently — total latency is the slowest query,
-  // not the sum (Promise.all preserves order).
-  return Promise.all(
+  // not the sum (Promise.all preserves order). Every branch is wrapped so a
+  // panel (incl. a cache-I/O hiccup) can NEVER reject the shared coalesced
+  // promise and fan a 500 out to every concurrent viewer of this dashboard.
+  const rendered = await Promise.all(
     panels.map(async (panel): Promise<RenderedPanel> => {
       const base = { key: panel.key, title: panel.title, dialect: panel.dialect, metricId: panel.metricId ?? null };
-      const cached = store.getPanelCache(dash.id, panel.key);
-      // An errored cache row is retried sooner than the full refresh TTL.
-      const cacheLimit = cached?.error ? Math.min(ERROR_TTL_MS, limit) : limit;
-      const fresh = !opts.force && cached != null && now - Date.parse(cached.computedAt) < cacheLimit;
-      if (fresh && cached) {
-        return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: cached.error };
-      }
-      if (!config) {
-        // Config gone (env/DB unconfigured) — surface it without failing the whole render.
-        const msg = cfg.ok ? "no config" : cfg.error;
-        if (cached && !cached.error) {
-          return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
-        }
-        return { ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: msg };
-      }
       try {
-        const r = await runPanel(projectDir, config, panel, { denyLakeRead: opts.denyLakeRead });
-        const computedAt = store.putPanelCache(dash.id, panel.key, { columns: r.columns, rows: r.rows, rowCount: r.rowCount, error: null });
-        return { ...base, columns: r.columns, rows: r.rows, rowCount: r.rowCount, computedAt, error: null };
-      } catch (e) {
-        const msg = (e as Error).message;
-        if (cached && !cached.error) {
-          // Keep showing the last good data; flag the failed refresh.
-          return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
+        const cached = store.getPanelCache(dash.id, panel.key);
+        // An errored cache row is retried sooner than the full refresh TTL.
+        const cacheLimit = cached?.error ? Math.min(ERROR_TTL_MS, limit) : limit;
+        const fresh = !opts.force && cached != null && now - Date.parse(cached.computedAt) < cacheLimit;
+        if (fresh && cached) {
+          return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: cached.error };
         }
-        const computedAt = store.putPanelCache(dash.id, panel.key, { columns: [], rows: [], rowCount: 0, error: msg });
-        return { ...base, columns: [], rows: [], rowCount: 0, computedAt, error: msg };
+        // Keep last-good rows on a failed refresh ONLY while they're within the
+        // stale ceiling; past that, the masked failure becomes a hard error.
+        const keepLastGood = cached != null && !cached.error && now - Date.parse(cached.computedAt) < staleCeiling;
+        if (!config) {
+          const msg = cfg.ok ? "no config" : cfg.error;
+          if (keepLastGood && cached)
+            return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
+          return { ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: msg };
+        }
+        try {
+          const r = await runPanel(projectDir, config, panel, { denyLakeRead: opts.denyLakeRead });
+          const computedAt = store.putPanelCache(dash.id, panel.key, { columns: r.columns, rows: r.rows, rowCount: r.rowCount, error: null });
+          return { ...base, columns: r.columns, rows: r.rows, rowCount: r.rowCount, computedAt, error: null };
+        } catch (e) {
+          const msg = (e as Error).message;
+          if (keepLastGood && cached)
+            return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
+          const computedAt = store.putPanelCache(dash.id, panel.key, { columns: [], rows: [], rowCount: 0, error: msg });
+          return { ...base, columns: [], rows: [], rowCount: 0, computedAt, error: msg };
+        }
+      } catch (e) {
+        // Last resort (e.g. cache read/write threw) — isolate to this panel.
+        return { ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: (e as Error).message };
       }
     }),
   );
+  capRenderBytes(rendered);
+  return rendered;
+}
+
+/**
+ * Bound the serialized panel-rows payload so the injected frame and the cached
+ * JSON can't balloon past MAX_RENDER_ROW_BYTES (rowCap × MAX_PANELS could). Drop
+ * the heaviest panels' rows first and mark them errored — applied to the shared
+ * RenderedPanel[] so the frame AND the provenance drawer agree. Sizes are
+ * computed once (no re-serialization per comparison).
+ */
+function capRenderBytes(panels: RenderedPanel[]): void {
+  const sizes = panels.map((p) => JSON.stringify(p.rows).length);
+  let total = sizes.reduce((a, b) => a + b, 0);
+  if (total <= MAX_RENDER_ROW_BYTES) return;
+  for (const i of panels.map((_, i) => i).sort((a, b) => sizes[b] - sizes[a])) {
+    if (total <= MAX_RENDER_ROW_BYTES) break;
+    total -= sizes[i];
+    panels[i].error = panels[i].error ?? `result too large to render (${panels[i].rowCount} rows) — aggregate in the panel query`;
+    panels[i].rows = [];
+    panels[i].columns = [];
+  }
 }
 
 /** The freshest "computed at" across panels (for the shell's "updated N ago"). */

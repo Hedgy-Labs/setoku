@@ -562,17 +562,16 @@ function jsonForScript(value: unknown): string {
     .replaceAll("\u2029", "\\u2029");
 }
 
-// Ceiling on the injected data blob. The per-query rowCap bounds one panel, but
-// MAX_PANELS panels of wide rows could still blow past the ~2MB a single report
-// document used to respect — cap the whole payload and drop the biggest panels'
-// rows (with an explanatory panel error) rather than serve a multi-MB frame.
-const MAX_FRAME_DATA_BYTES = 4_000_000;
-
 /** Assemble the sandboxed frame document: our skeleton + injected panel data +
  *  the agent's template fragment. Legacy zero-panel reports are full documents,
- *  served as-is. */
-function frameDocument(dash: PublishedReport, panels: RenderedPanel[]): string {
+ *  served as-is. The payload is already byte-bounded by renderDashboard's
+ *  capRenderBytes (shared with the provenance drawer so the two agree). `team`
+ *  gates raw error text: a public frame must NOT inject a raw DB error (it can
+ *  name tables/columns/env vars) — same scrub the public /data path applies. */
+function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { team: boolean }): string {
   if (!panels.length) return dash.body;
+  const scrub = (e: string | null | undefined): string | null =>
+    e ? (opts.team ? e : "data temporarily unavailable") : null;
   const data = {
     title: dash.title,
     refreshSeconds: dash.refreshSeconds,
@@ -584,29 +583,16 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[]): string {
           rows: p.rows as unknown[],
           rowCount: p.rowCount,
           computedAt: p.computedAt,
-          error: p.error as string | null,
-          refreshError: p.refreshError ?? null,
+          error: scrub(p.error),
+          refreshError: scrub(p.refreshError),
         },
       ]),
     ),
   };
-  let serialized = jsonForScript(data);
-  if (Buffer.byteLength(serialized) > MAX_FRAME_DATA_BYTES) {
-    // Drop rows from the heaviest panels first until under the cap.
-    const heaviest = Object.values(data.panels).sort(
-      (a, b) => JSON.stringify(b.rows).length - JSON.stringify(a.rows).length,
-    );
-    for (const panel of heaviest) {
-      panel.error = panel.error ?? `result too large to embed (${panel.rowCount} rows) — aggregate in the panel query`;
-      panel.rows = [];
-      serialized = jsonForScript(data);
-      if (Buffer.byteLength(serialized) <= MAX_FRAME_DATA_BYTES) break;
-    }
-  }
   return (
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `<script>window.__SETOKU__=${serialized};</script>` +
+    `<script>window.__SETOKU__=${jsonForScript(data)};</script>` +
     `</head><body>${dash.body}</body></html>`
   );
 }
@@ -791,12 +777,16 @@ const httpServer = http.createServer(async (req, res) => {
       if (!meta || meta.archivedAt || meta.visibility !== "public") return notFound();
       const isDashboard = meta.format === "dashboard" && (meta.panels?.length ?? 0) > 0;
 
+      // The /frame and /data subpaths exist only for live dashboards (the shell
+      // polls them); a legacy report is served whole at /p/<id>. Don't expose
+      // them for non-dashboards.
+      if ((sub === "data" || sub === "frame") && !isDashboard) return notFound();
+
       // /p/<id>/data — provenance JSON for the shell's drawer. NO raw SQL on the
       // public surface (it would leak schema); methodology + metric defs only.
+      // Renders from `meta` (no body read — this is a credential-free hot path).
       if (sub === "data") {
-        const rep = store.getPublished(id);
-        if (!rep) return notFound();
-        const panels = await renderDashboard(store, projectDir, rep);
+        const panels = await renderDashboard(store, projectDir, meta);
         store.audit("public", "dashboard_data_public", { id });
         res.writeHead(200, {
           "content-type": "application/json",
@@ -811,7 +801,7 @@ const httpServer = http.createServer(async (req, res) => {
       if (sub === "frame") {
         const rep = store.getPublished(id);
         if (!rep) return notFound();
-        const panels = isDashboard ? await renderDashboard(store, projectDir, rep) : [];
+        const panels = await renderDashboard(store, projectDir, rep);
         store.audit("public", "dashboard_frame_public", { id });
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
@@ -819,7 +809,7 @@ const httpServer = http.createServer(async (req, res) => {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(frameDocument(rep, panels));
+        res.end(frameDocument(rep, panels, { team: false }));
         return;
       }
 
@@ -904,18 +894,19 @@ const httpServer = http.createServer(async (req, res) => {
           res.end("not found\n");
           return;
         }
-        const panels =
-          rep.format === "dashboard" && (rep.panels?.length ?? 0) > 0
-            ? await renderDashboard(store, projectDir, rep)
-            : [];
+        const isDash = rep.format === "dashboard" && (rep.panels?.length ?? 0) > 0;
+        const panels = isDash ? await renderDashboard(store, projectDir, rep) : [];
         store.audit(session.identity, "dashboard_frame_viewed", { id });
+        // A live dashboard's template needs no network (data is injected) → strict
+        // CSP. A LEGACY report predates that contract and may inline a CDN script
+        // or remote image; keep its original sandbox-only CSP so it still renders.
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts`,
+          "content-security-policy": isDash ? `${FRAME_CSP}; sandbox allow-scripts` : "sandbox allow-scripts",
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(frameDocument(rep, panels));
+        res.end(frameDocument(rep, panels, { team: true }));
         return;
       }
 
@@ -991,7 +982,17 @@ const httpServer = http.createServer(async (req, res) => {
 
         // published dashboards/reports — TEAM-ONLY: gated behind this session
         // check, so a shared /admin/p/<id> link only renders for a box login.
-        if (api === "published" && req.method === "GET") return json(200, store.listPublished());
+        // The list UI needs only panel COUNT, not the queries — strip each panel's
+        // raw SQL so the list doesn't broadcast every dashboard's query text to all
+        // members (SQL stays team-tier, shown only in the per-dashboard drawer).
+        if (api === "published" && req.method === "GET")
+          return json(
+            200,
+            store.listPublished().map((r) => ({
+              ...r,
+              panels: r.panels ? r.panels.map((p) => ({ ...p, sql: "" })) : null,
+            })),
+          );
         // Provenance + rendered panel metadata for the team viewer's drawer.
         // Includes raw SQL (this surface is authenticated). The rows themselves
         // arrive via the sandboxed /admin/frame/<id>.
@@ -1006,9 +1007,8 @@ const httpServer = http.createServer(async (req, res) => {
           const force =
             url.searchParams.get("force") === "1" &&
             (meta.createdBy === session.identity || canApprove(session.role));
-          const rep = store.getPublished(id);
-          if (!rep) return json(404, { ok: false, error: "dashboard not found or archived" });
-          const panels = await renderDashboard(store, projectDir, rep, { force });
+          // Renders from `meta` — provenance + frame don't need the report body.
+          const panels = await renderDashboard(store, projectDir, meta, { force });
           store.audit(session.identity, force ? "dashboard_refreshed" : "dashboard_viewed", { id });
           return json(200, dashboardProvenance(store, meta, panels, { team: true }));
         }

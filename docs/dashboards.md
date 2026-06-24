@@ -140,9 +140,21 @@ Two audiences, two surfaces:
    or iterate a published board.
 
 **Public dashboards never expose raw SQL** (it would leak schema/table names).
-The public `/p/<id>/data` endpoint omits `sql`; it shows methodology — the panel
-title and, when present, the curated metric definition. Raw SQL lives only on
-the authenticated team surface.
+The public `/p/<id>/data` endpoint omits `sql` and the metric *body* (also
+canonical SQL); it shows methodology — the panel title and the curated metric
+name + summary. Raw SQL and the author identity live only on the authenticated
+team surface. The same scrub applies to **error text**: a raw DB error can name
+tables/columns/env-vars, so on every public surface (both `/data` *and* the
+injected frame) a panel error is replaced with a generic "data temporarily
+unavailable" — the detail is team-only.
+
+**Payload + freshness bounds.** The served panel rows are byte-capped once in
+`renderDashboard` (shared by the frame and the drawer, so they always agree —
+heaviest panels' rows are dropped and marked errored past the cap).
+`refreshSeconds` is clamped to `[30s, 1d]` so a "live" link can't silently serve
+day-old data behind a fresh-looking UI, and a panel whose refresh keeps failing
+stops masking the last-good rows past a staleness ceiling (it surfaces a hard
+error rather than presenting numbers the query can no longer produce).
 
 ## Tool surface
 

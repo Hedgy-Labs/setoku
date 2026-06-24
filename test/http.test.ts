@@ -818,4 +818,46 @@ describe("live dashboards (end-to-end render path)", () => {
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404);
     expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(404);
   }, 20_000);
+
+  it("clamps an absurd refresh, strips SQL from the list, and 404s subpaths for legacy reports", async () => {
+    const alice = await connect("tok-alice");
+    // huge refreshSeconds must be clamped (a 'live' link that never refreshes isn't)
+    const big = await call(alice, "publish_dashboard", {
+      title: "clamp test",
+      html: "<div id=x></div>",
+      refreshSeconds: 10_000_000,
+      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+    });
+    const bigId = (big.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    // a legacy zero-panel report (static)
+    const legacy = await call(alice, "publish_dashboard", { title: "legacy", html: "<!doctype html><h1>hi</h1>" });
+    const legId = (legacy.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    await alice.close();
+
+    const boss = await session("boss", "s3cret-pass");
+
+    // #9 clamp: 10M seconds → MAX_REFRESH_SECONDS (86400)
+    const dd = (await (
+      await fetch(`${BASE}/admin/api/dashboard_data?id=${bigId}`, { headers: { cookie: boss.cookie } })
+    ).json()) as { refreshSeconds: number };
+    expect(dd.refreshSeconds).toBe(86400);
+
+    // #11: the list endpoint must NOT broadcast panel SQL to members
+    const list = (await (
+      await fetch(`${BASE}/admin/api/published`, { headers: { cookie: boss.cookie } })
+    ).json()) as { id: string; panels: { sql: string }[] | null }[];
+    const row = list.find((r) => r.id === bigId)!;
+    expect(row.panels?.length).toBe(1); // count still available for the UI
+    expect(row.panels?.[0].sql).toBe(""); // but SQL stripped
+
+    // #7: legacy report is served only at /p/<id>; the dashboard subpaths 404
+    await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id: legId, visibility: "public" }),
+    });
+    expect((await fetch(`${BASE}/p/${legId}`)).status).toBe(200);
+    expect((await fetch(`${BASE}/p/${legId}/frame`)).status).toBe(404);
+    expect((await fetch(`${BASE}/p/${legId}/data`)).status).toBe(404);
+  }, 20_000);
 });
