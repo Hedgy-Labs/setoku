@@ -74,6 +74,59 @@ claude mcp add --transport http setoku https://<your-host>/mcp \
 
 Skills reach Cowork/Claude Code via the org plugin (`Hedgy-Labs/setoku`); without the plugin, tool descriptions carry enough workflow guidance for a degraded-but-sane experience.
 
+## 5. Curator workflow (auto-draft + drift canary, with a human bless)
+
+Keeping curated knowledge healthy is **three jobs around one human click**. The design principle: *automate the drafting, keep the bless a password-gated human click* — committing untrusted-derived knowledge must stay a person on `/admin` (I2/I9), but everything up to that click is automated.
+
+| Job | Token / actor | What it does | Where it runs |
+| --- | --- | --- | --- |
+| **Drift canary** | none (model-free) | runs each metric's canonical SQL against the live DB, files anything broken/out-of-bounds as a pending correction | **on the box** (`docker compose exec`) |
+| **Auto-draft + triage** | **janitor** token (draft + reject only) | drafts each pending correction into a finished doc-edit, lints it, flags dupes/contradictions, auto-rejects *objective* junk — commits nothing | **wherever Claude is authed** (not the VPS) |
+| **`generate`** | **curator** token (commit; lake-blocked) | re-derives context from the company's own code/schema on a new `main` commit | the curation runner (needs a repo checkout) |
+| **The bless** | a human (username+password) | Approve/Edit/Reject the finished cards | `/admin` |
+
+### One-time setup
+
+1. **Mint the tokens** on the box (printed once; append to `.env`, restart):
+
+   ```bash
+   docker compose exec server bun gateway/admin-cli.ts create-curator-token curator@co.com
+   docker compose exec server bun gateway/admin-cli.ts create-janitor-token janitor@co.com
+   # → append to SETOKU_CURATOR_TOKENS / SETOKU_JANITOR_TOKENS in /opt/setoku/.env, then:
+   docker compose up -d server
+   ```
+
+   The **curator** token can commit (`upsert_context`/`resolve_correction`) but can't read the lake. The **janitor** token can *only* draft + reject — both grant zero authority — so it can read untrusted pending content without ever committing. They never coexist on one session.
+
+2. **Env file for the curation runner** (the machine that has Claude Code authenticated — a workstation, CI, or a small always-on box; **not** the VPS, which runs only containers). Keep it uncommitted, e.g. `/etc/setoku/curate.env`:
+
+   ```sh
+   SETOKU_MCP_URL=https://setoku.yourco.com/mcp
+   SETOKU_CURATOR_TOKEN=<the curator token>
+   SETOKU_JANITOR_TOKEN=<the janitor token>
+   SETOKU_REPO_DIR=/path/to/business-repo-checkout   # generate reads the code here
+   # SETOKU_GENERATE_PULL=1                           # pull --ff-only before checking for new commits
+   ```
+
+   The runner also needs Claude authenticated — a persisted claude.ai subscription login, or `ANTHROPIC_API_KEY` in the env.
+
+### Schedule it (cron)
+
+```cron
+# on the box — deterministic drift canary, daily
+23 5 * * *  cd /opt/setoku && deploy/monitor/knowledge-canary.sh >> /var/log/setoku/canary.log 2>&1
+
+# on the curation runner — generate (gated) + auto-draft/triage, hourly
+0 * * * *  cd /path/to/business-repo && set -a && . /etc/setoku/curate.env && set +a \
+           && /opt/setoku/deploy/monitor/curate-cron.sh >> /var/log/setoku/curate.log 2>&1
+```
+
+`curate-cron.sh` runs two **isolated** Claude sessions — one per token, each pinned with `--mcp-config <its token> --strict-mcp-config`, so neither session ever holds the other's token. **`generate` self-gates:** it runs only when `SETOKU_REPO_DIR` is on `main` *and* `HEAD` has advanced since the last successful run (marker in `.git/setoku-generate.sha`, advanced only on success) — so it's a no-op between code changes and never rewrites curated knowledge from an unreviewed branch. The triage pass runs every time.
+
+The net loop: canary + generate + triage turn every pending item into a linted, flagged, ready-to-commit card → a human opens `/admin` and clicks down a short list.
+
+`deploy.sh` also runs the lint once after each deploy as a **warn-only** step (it never blocks a ship). See [`deploy/backup/cron.example`](./backup/cron.example) for the full crontab.
+
 ## Notes
 
 - **Analyst tokens are propose-only (I2/I9).** They get the read tools +
@@ -83,7 +136,10 @@ Skills reach Cowork/Claude Code via the org plugin (`Hedgy-Labs/setoku`); withou
   be able to commit knowledge. Curation/generation uses a separate **curator
   token** (`SETOKU_CURATOR_TOKENS`, minted with `admin-cli create-curator-token`)
   that can write but is blocked from reading the lake; team-proposed knowledge is
-  accepted on the web approval surface.
+  accepted on the web approval surface. A third **janitor token**
+  (`SETOKU_JANITOR_TOKENS`, minted with `admin-cli create-janitor-token`) holds
+  *only* draft + reject — both granting zero authority — and powers the curation
+  cron (§5); it can never commit or accept.
 - Every call is audited with the token's identity (SQLite `audit` table on the volume).
 - One gateway (this box); `.setoku/` in the repo remains the seed/interchange format.
 - Rotate a user: change `SETOKU_TOKENS`, restart (fast). Token loss = read access to allowed tables — scope the DB role accordingly.

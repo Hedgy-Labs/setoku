@@ -6,7 +6,7 @@ import { Brand } from "./components/Brand";
 import { cn } from "./cn";
 
 const TABS: { to: string; label: string }[] = [
-  { to: "/", label: "Pending" },
+  { to: "/", label: "Cockpit" },
   { to: "/knowledge", label: "Knowledge" },
   { to: "/sources", label: "Sources" },
   { to: "/team", label: "Team" },

@@ -51,6 +51,24 @@ export interface GatewayDeps {
    * inverse: they read the lake but hold no write tool.
    */
   denyLakeRead: boolean;
+  /**
+   * Expose `draft_correction` — a DRAFT-ONLY capability (curation-cockpit piece
+   * B). It writes a drafted doc-edit + advisory flags onto a pending correction
+   * but touches NO curated doc: a draft grants zero authority. This is the
+   * auto-draft janitor's only write. Crucially it is NOT `upsert_context`: even
+   * though the drafting agent reads untrusted pending content, the worst it can
+   * do is propose a draft a human must still bless. Granted to the janitor
+   * token, never the analyst (no write at all) or the curator (commits directly).
+   */
+  canDraft?: boolean;
+  /**
+   * Expose `reject_correction` — a REJECT-ONLY capability (curation-cockpit piece
+   * C). It resolves a pending correction to `rejected` and nothing else: removing
+   * from the queue grants no authority (unlike accept, which commits knowledge —
+   * deliberately NOT an MCP tool). Splitting reject out of the accept-or-reject
+   * space is the whole safety argument; the janitor holds this, never accept.
+   */
+  canReject?: boolean;
 }
 
 export function buildServer({
@@ -59,6 +77,8 @@ export function buildServer({
   user,
   canWrite,
   denyLakeRead,
+  canDraft = false,
+  canReject = false,
 }: GatewayDeps): McpServer {
 const server = new McpServer({ name: "setoku", version: VERSION });
 
@@ -459,6 +479,87 @@ server.registerTool(
   },
 );
 } // end canWrite
+
+// Draft-only capability (curation-cockpit piece B). Registered ONLY for the
+// auto-draft janitor token. It writes a DRAFT onto a pending correction —
+// never a curated doc — so even though the drafting agent reads untrusted
+// pending content, it holds no tool that commits authority (the membrane).
+if (canDraft) {
+server.registerTool(
+  "draft_correction",
+  {
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    title: "Attach a drafted doc-edit to a pending correction (auto-draft)",
+    description:
+      "Writes a DRAFT — the exact upsert payload approving the correction would commit — plus advisory FLAGS " +
+      "onto a pending correction, so the human curator reviews a finished change instead of a raw note. This " +
+      "COMMITS NOTHING to curated knowledge and does not resolve the correction; a draft grants no authority. " +
+      "Workflow (the auto-draft job): read the correction + its related doc (get_metric/describe_entity) + " +
+      "get_schema, produce the doc-edit, lint the drafted SQL with run_query, then call this with the draft and " +
+      "the flags you found (e.g. \"lint\" if the SQL ran clean, \"dupe\"/\"contradiction\" if it clashes with " +
+      "existing knowledge). The accept stays a human click on /admin.",
+    inputSchema: {
+      id: z.number().int().describe("The pending correction id to draft"),
+      type: z.enum(["entity", "metric", "query", "overview", "gotcha"]),
+      name: z.string().describe("Doc name the draft would upsert (entity/metric name, or gotcha slug)"),
+      body: z.string().describe("The full drafted doc body (for a metric, the canonical SQL)"),
+      meta: z
+        .record(z.union([z.string(), z.array(z.string())]))
+        .optional()
+        .describe("Frontmatter fields: table, summary, keywords, relates_to, expect, unit"),
+      flags: z
+        .array(z.string())
+        .optional()
+        .describe('Advisory flags: "lint" (SQL ran clean), "dupe", "contradiction", "provenance"'),
+    },
+  },
+  async ({ id, type, name, body, meta, flags }) => {
+    const corr = store.getCorrection(id);
+    if (!corr) return errorText(`No correction #${id}.`);
+    if (corr.status !== "pending") return errorText(`#${id} is ${corr.status}, not pending — cannot draft.`);
+    const ok = store.draftCorrection(id, { type, name, body, meta: meta ?? {} }, flags ?? [], user);
+    store.audit(user, "draft_correction", { id, type, name, flags: flags ?? [] });
+    return ok
+      ? text(`Drafted [${type}] ${name} onto correction #${id} (flags: ${(flags ?? []).join(", ") || "none"}). Commits nothing — a human approves it on /admin.`)
+      : errorText(`Could not draft #${id} (already resolved?).`);
+  },
+);
+} // end canDraft
+
+// Reject-only capability (curation-cockpit piece C). The one load-bearing auth
+// addition: it can ONLY move a pending correction to rejected — never accept,
+// never commit. The reject is soft (the row is kept), audited, and marked
+// rejected_by_bot so the cockpit can surface and reverse it, making a janitor
+// that suppresses good proposals detectable and undoable.
+if (canReject) {
+server.registerTool(
+  "reject_correction",
+  {
+    annotations: { readOnlyHint: false, destructiveHint: false },
+    title: "Auto-reject a pending correction (janitor, reject-only)",
+    description:
+      "Rejects a pending correction — queue status only, grants ZERO knowledge authority. Use ONLY for items " +
+      "that fail OBJECTIVE checks: drafted SQL errors, references a denied table, malformed, an exact duplicate " +
+      "of existing curated knowledge, or contradicts a TRUSTED source (the code/schema). LEAVE anything " +
+      "semantic or uncertain pending for a human. The reject is soft and reversible (a human can un-reject it " +
+      "on /admin), and audited — so over-aggressive rejection is visible. Always pass a concrete `reason`.",
+    inputSchema: {
+      id: z.number().int(),
+      reason: z.string().describe("Why it failed an objective check (recorded + shown in the cockpit)"),
+    },
+  },
+  async ({ id, reason }) => {
+    const corr = store.getCorrection(id);
+    if (!corr) return errorText(`No correction #${id}.`);
+    if (corr.status !== "pending") return errorText(`#${id} is ${corr.status}, not pending.`);
+    const ok = store.rejectCorrection(id, reason, user, true);
+    store.audit(user, "reject_correction", { id, reason, byBot: true });
+    return ok
+      ? text(`Rejected pending correction #${id} (soft + reversible): ${reason}. A human can un-reject it on /admin.`)
+      : errorText(`Could not reject #${id} (already resolved?).`);
+  },
+);
+} // end canReject
 
 /* -------------------------------- data tools ------------------------------- */
 

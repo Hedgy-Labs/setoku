@@ -55,6 +55,7 @@ function usage(): never {
       "  admin-cli list-users\n" +
       "  admin-cli add-teammate <identity>          (mint an analyst connector for a teammate)\n" +
       "  admin-cli create-curator-token <identity>\n" +
+      "  admin-cli create-janitor-token <identity>  (mint an auto-draft/reject token for the curation cron)\n" +
       "(password via SETOKU_NEW_PASSWORD env, else interactive prompt)",
   );
   process.exit(2);
@@ -164,6 +165,26 @@ async function main() {
       `   claude mcp add --scope user --transport http setoku-curator https://${dom}/mcp --header "Authorization: Bearer ${token}"`,
     );
     console.log("\nThis token can commit curated knowledge (upsert_context/resolve_correction) but cannot read the lake.");
+    return;
+  }
+
+  if (cmd === "create-janitor-token") {
+    // Mint a janitor token (auto-draft + auto-reject the corrections queue).
+    // Draft + reject ONLY — both grant zero authority — so it can never commit
+    // or accept. Lives in SETOKU_JANITOR_TOKENS on the box; printed once.
+    const identity = username;
+    if (!identity) usage();
+    const token = randomToken();
+    store.audit("admin-cli", "janitor_token_created", { identity });
+    const dom = process.env.SETOKU_DOMAIN ?? "<your-domain>";
+    console.log(`janitor token for ${identity} (shown once):\n`);
+    console.log(`  ${token}=${identity}\n`);
+    console.log("1. Append it to SETOKU_JANITOR_TOKENS in /opt/setoku/.env (comma-separated), then restart the server.");
+    console.log("2. On the curation runner ONLY (where the cron / curate-cron.sh runs), use it for the janitor connector:");
+    console.log(
+      `   claude mcp add --scope user --transport http setoku-janitor https://${dom}/mcp --header "Authorization: Bearer ${token}"`,
+    );
+    console.log("\nThis token can only draft (draft_correction) and reject (reject_correction) — it can never commit or accept knowledge.");
     return;
   }
 

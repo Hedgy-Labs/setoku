@@ -93,7 +93,7 @@ The deterministic detectors (`compact()` over the extracted facts) catch
 structural + lexical signals and feed the `/admin/knowledge` health bar. But
 compaction itself — deciding *which* fact is right, merging two into one good
 fact, rewriting verbose into concise — is judgment, so it runs **in a curator
-session** via [`/setoku:compact`](../plugin/skills/compact/SKILL.md), not as a
+session** via [`/setoku:compact-knowledge`](../plugin/skills/compact-knowledge/SKILL.md), not as a
 server-side job (I8). The human curator commits the result through the membrane
 (I9); nothing auto-edits curated knowledge.
 

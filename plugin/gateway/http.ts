@@ -15,6 +15,9 @@
  *   SETOKU_CURATOR_TOKENS — curator tokens (can commit curated knowledge, but are
  *                           blocked from reading the lake): same "tok=identity" shape.
  *                           For /setoku:generate + /setoku:curate; keep off analyst machines.
+ *   SETOKU_JANITOR_TOKENS — janitor tokens (auto-draft/auto-reject job): draft + reject
+ *                           ONLY, both granting zero authority — never upsert/accept.
+ *                           Same "tok=identity" shape; for the cockpit's drafting cadence.
  *   SETOKU_TOKENS_FILE    — optional JSON file { "token": "identity", ... } (merged, analyst)
  *   SETOKU_HTTP_PORT    — default 8787
  *   <dataSource.urlEnv> — the Postgres URL env var named in config.json
@@ -26,10 +29,16 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 
 import { buildServer } from "./app";
 import { loadConfig, resolveProjectDir } from "./lib/config";
-import { KnowledgeStore, defaultDbPath, seedFromFiles } from "./lib/store";
+import {
+  KnowledgeStore,
+  defaultDbPath,
+  seedFromFiles,
+  type CorrectionDraft,
+} from "./lib/store";
 import {
   type Invite,
   applyApprovalAction,
+  defaultDraft,
   SessionStore,
   sessionIdFromCookie,
   sessionSetCookie,
@@ -100,22 +109,31 @@ interface TokenInfo {
   identity: string;
   /** curator tokens may commit curated knowledge but cannot read the lake. */
   curator: boolean;
+  /**
+   * Janitor tokens (the auto-draft/auto-reject job, curation-cockpit B/C). They
+   * hold ONLY draft + reject capabilities — both of which grant zero knowledge
+   * authority — never `upsert_context` or any accept path. So even though the
+   * janitor reads untrusted pending content, it cannot commit; the human /admin
+   * click remains the only door into curated context (the membrane, I2/I9).
+   */
+  janitor?: boolean;
 }
 
 function loadTokens(): Map<string, TokenInfo> {
   const tokens = new Map<string, TokenInfo>();
-  const add = (spec: string | undefined, curator: boolean): void => {
+  const add = (spec: string | undefined, info: Omit<TokenInfo, "identity">): void => {
     for (const pair of (spec ?? "").split(",")) {
       const i = pair.indexOf("=");
       if (i > 0)
         tokens.set(pair.slice(0, i).trim(), {
           identity: pair.slice(i + 1).trim(),
-          curator,
+          ...info,
         });
     }
   };
-  add(process.env.SETOKU_TOKENS, false);
-  add(process.env.SETOKU_CURATOR_TOKENS, true);
+  add(process.env.SETOKU_TOKENS, { curator: false });
+  add(process.env.SETOKU_CURATOR_TOKENS, { curator: true });
+  add(process.env.SETOKU_JANITOR_TOKENS, { curator: false, janitor: true });
   const file = process.env.SETOKU_TOKENS_FILE;
   if (file && fs.existsSync(file)) {
     for (const [token, identity] of Object.entries(
@@ -245,6 +263,29 @@ function identityFor(req: http.IncomingMessage): TokenInfo | null {
   const pathTok = (req.url ?? "").match(/^\/mcp\/([^/?]+)/);
   if (pathTok) return tokens.get(decodeURIComponent(pathTok[1])) ?? null;
   return null;
+}
+
+const DOC_TYPES = ["entity", "metric", "query", "overview", "gotcha"] as const;
+
+/**
+ * Validate a draft payload from the cockpit's Edit-then-approve flow. A draft is
+ * advisory until committed by the human accept, but we still shape-check it (a
+ * malformed draft would commit a junk doc). Returns undefined for absent input
+ * (accept then uses the persisted/default draft); null when present-but-invalid.
+ */
+function parseDraft(raw: unknown): CorrectionDraft | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const d = raw as Record<string, unknown>;
+  const type = d.type;
+  const name = typeof d.name === "string" ? d.name.trim() : "";
+  const body = typeof d.body === "string" ? d.body : "";
+  if (!DOC_TYPES.includes(type as (typeof DOC_TYPES)[number]) || !name || !body)
+    return undefined;
+  const meta =
+    d.meta && typeof d.meta === "object" && !Array.isArray(d.meta)
+      ? (d.meta as Record<string, string | string[]>)
+      : {};
+  return { type: type as CorrectionDraft["type"], name, body, meta };
 }
 
 function readBody(req: http.IncomingMessage): Promise<unknown> {
@@ -635,7 +676,18 @@ const httpServer = http.createServer(async (req, res) => {
           return json(200, { identity: session.identity, role: session.role, csrf: session.csrf });
 
         // read endpoints — any signed-in user (members included) may view
-        if (api === "pending" && req.method === "GET") return json(200, store.listCorrections("pending"));
+        // pending list for the cockpit: each item carries the best-available
+        // DRAFT (persisted auto-draft, else the synthesized gotcha default) so a
+        // review card can render a finished, editable change. Advisory only.
+        if (api === "pending" && req.method === "GET")
+          return json(
+            200,
+            store.listCorrections("pending").map((c) => ({ ...c, draft: defaultDraft(c) })),
+          );
+        // bot-rejected items the cockpit can review + un-reject (piece C: soft,
+        // reversible, audited — a janitor suppressing good proposals is undoable).
+        if (api === "rejected" && req.method === "GET")
+          return json(200, store.listCorrections("rejected"));
         if (api === "knowledge" && req.method === "GET") return json(200, store.listDocs());
         if (api === "knowledge_view" && req.method === "GET")
           return json(
@@ -732,16 +784,37 @@ const httpServer = http.createServer(async (req, res) => {
             return { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted };
           };
 
-          // approve/reject — the membrane's human side (I9). Folds an accepted
-          // gotcha into curated context; everything else is recorded for a curator.
+          // approve/reject — the membrane's human side (I9). On accept, commits
+          // the DRAFTED doc-edit (the cockpit edit if supplied, else the persisted/
+          // default draft) into curated context for ALL kinds (cockpit piece A.1).
           if (api === "resolve") {
-            const body = (await readBody(req)) as { id?: number; action?: string; reason?: string } | undefined;
+            const body = (await readBody(req)) as
+              | { id?: number; action?: string; reason?: string; draft?: unknown }
+              | undefined;
             const id = Number(body?.id);
             const action = body?.action;
             if (!Number.isInteger(id) || (action !== "accepted" && action !== "rejected"))
               return json(400, { ok: false, error: "invalid action" });
-            const flash = applyApprovalAction(store, session.identity, { id, action, reason: body?.reason });
+            const draft = parseDraft(body?.draft);
+            if (action === "accepted" && body?.draft !== undefined && !draft)
+              return json(400, { ok: false, error: "invalid draft (need type, name, body)" });
+            const flash = applyApprovalAction(store, session.identity, {
+              id,
+              action,
+              draft,
+              reason: body?.reason,
+            });
             return json(200, { ok: true, flash });
+          }
+
+          // un-reject a (typically bot-)rejected item back to pending — the
+          // reversal that makes janitor auto-rejects safe (piece C).
+          if (api === "unreject") {
+            const body = (await readBody(req)) as { id?: number } | undefined;
+            const id = Number(body?.id);
+            if (!Number.isInteger(id)) return json(400, { ok: false, error: "invalid id" });
+            const ok = store.unrejectCorrection(id, session.identity);
+            return json(200, { ok, flash: ok ? `#${id} restored to pending.` : `#${id} was not rejected.` });
           }
 
           // invite a teammate — mint a read-only analyst connector (+ a member
@@ -873,6 +946,10 @@ const httpServer = http.createServer(async (req, res) => {
       user: auth.identity,
       canWrite: auth.curator,
       denyLakeRead: auth.curator,
+      // the janitor holds draft + reject only — both grant zero authority — so it
+      // can read untrusted pending content without ever committing knowledge.
+      canDraft: auth.janitor === true,
+      canReject: auth.janitor === true,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
