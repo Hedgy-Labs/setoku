@@ -100,12 +100,8 @@ export function DashboardView() {
         <h1 className="flex-1 truncate text-lg font-semibold tracking-tight">{data?.title ?? "Dashboard"}</h1>
         {isDashboard ? <Badge tone="ok">live</Badge> : null}
         {data ? <Badge tone={visibility === "public" ? "ok" : "idle"}>{visibility}</Badge> : null}
-        {isDashboard ? (
-          <button className="btn-ghost text-sm" onClick={() => void refresh(true)}>
-            Refresh
-          </button>
-        ) : null}
         <Menu label="Dashboard actions">
+          {isDashboard ? <MenuItem onSelect={() => void refresh(true)}>Refresh data</MenuItem> : null}
           <MenuItem onSelect={() => void copy()}>Copy link</MenuItem>
           {data && !data.archivedAt && (isAdmin || mine) ? (
             <MenuItem
