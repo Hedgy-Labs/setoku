@@ -12,8 +12,8 @@
 # internal network, never reachable from the edge.
 #
 # After this, prod Caddy reaches the gateway at:  <project>-demo-server-1:8787
-# (e.g. setoku-stags-demo-server-1:8787)
-# Wire a hostname to it with demo/caddy-stags.snippet (README explains).
+# (e.g. setoku-bulldogs-demo-server-1:8787)
+# Wire a hostname to it with demo/caddy-bulldogs.snippet (README explains).
 
 services:
   demo-server:

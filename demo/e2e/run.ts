@@ -21,7 +21,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const MCP_URL = process.env.DEMO_MCP_URL ?? "https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8";
+const MCP_URL = process.env.DEMO_MCP_URL ?? "https://demo.setoku.com/mcp/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9";
 
 type Check = { primary: RegExp; note: string; mustNot?: RegExp };
 type Q = { ask: string; checks: Check[] };
@@ -42,7 +42,7 @@ const QUESTIONS: Q[] = [
   },
   {
     ask: "What was our total ticket revenue in the most recent completed season?",
-    checks: [{ primary: /\$?\s?3[012](\.\d+)?\s?(million|m\b)|\$?3[012][,. ]?\d{3}[,. ]?\d{3}/i, note: "~$32M (cents handled, not $3B or $300k)" }],
+    checks: [{ primary: /\$?\s?6[5-9](\.\d+)?\s?(million|m\b)|\$?6[5-9][,. ]?\d{3}[,. ]?\d{3}/i, note: "~$67M (cents handled, not $6.7B or $670k)" }],
   },
   {
     ask: "What is our total merchandise revenue?",
@@ -60,13 +60,21 @@ const QUESTIONS: Q[] = [
   },
   {
     ask: "What was our total game-day revenue last completed season — ticket sales plus food & beverage as one number?",
-    // primary requires the ~$41M figure, which a $4B cents-error answer can't
+    // primary requires the ~$93M figure, which a $9B cents-error answer can't
     // match — so no need to ban "billion" (a correct answer may name the trap).
-    checks: [{ primary: /\$?\s?4[012](\.\d+)?\s?(million|m\b)|\$?4[012][,. ]?\d{3}[,. ]?\d{3}/i, note: "~$41.6M (cents+dollars converted, not $4B)" }],
+    checks: [{ primary: /\$?\s?9[0-5](\.\d+)?\s?(million|m\b)|\$?9[0-5][,. ]?\d{3}[,. ]?\d{3}/i, note: "~$93M (cents+dollars converted, not $9B)" }],
   },
   {
-    ask: "What was our TV broadcast and parking revenue last season?",
-    checks: [{ primary: /(no|not|isn'?t|can'?t|don'?t have|unavailable).{0,40}(data|table|available|present|broadcast|parking|that)/i, note: "refuses missing data instead of hallucinating" }],
+    ask: "What was our parking revenue last season?",
+    checks: [{ primary: /(no|not|isn'?t|can'?t|don'?t have|unavailable).{0,40}(data|table|available|present|parking|that)/i, note: "refuses missing data (parking isn't modeled) instead of hallucinating" }],
+  },
+  {
+    ask: "How much do we make from media / broadcast rights per season?",
+    checks: [{ primary: /\$?\s?(8[5-9]|9[0-9])(\.\d+)?\s?(million|m\b)|\$?\s?(8[5-9]|9[0-9])[,. ]?\d{3}[,. ]?\d{3}/i, note: "~$86–95M/season from media.rights_deal (the biggest line)" }],
+  },
+  {
+    ask: "What's our total annual revenue, across every source?",
+    checks: [{ primary: /\$?\s?(18[0-9]|19[0-9]|20[0-5])(\.\d+)?\s?(million|m\b)|\$?\s?(18[0-9]|19[0-9]|20[0-5])[,. ]?\d{3}[,. ]?\d{3}/i, note: "~$180–200M (media + tickets + F&B + sponsorship + merch, units reconciled)" }],
   },
   {
     ask: "Which marketing channel drove the most ticket sales last season?",

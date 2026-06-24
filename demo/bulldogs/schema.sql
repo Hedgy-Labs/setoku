@@ -1,5 +1,5 @@
 -- SPDX-License-Identifier: Apache-2.0
--- Setoku demo — the fictional "Riverside Stags" club, modeled the way a real
+-- Setoku demo — the fictional "Bonita Bulldogs" club, modeled the way a real
 -- pro-sports org's data actually lands: NOT one tidy
 -- schema, but several disconnected vendor systems, each in its own Postgres
 -- schema, with its own naming, its own ID space, mixed money units, multi-season
@@ -10,7 +10,7 @@
 -- exactly the tribal knowledge the curated context encodes.
 --
 -- Money units differ BY SYSTEM (this is real and a deliberate gotcha):
---   ticketing → integer CENTS      pos/sponsorship/hr/merch/marketing → NUMERIC dollars
+--   ticketing → integer CENTS      pos/sponsorship/hr/merch/marketing/media → NUMERIC dollars
 --
 -- Loaded by generate.ts. Safe to re-run: drops and recreates every schema.
 
@@ -21,6 +21,8 @@ DROP SCHEMA IF EXISTS pos         CASCADE;
 DROP SCHEMA IF EXISTS merch       CASCADE;
 DROP SCHEMA IF EXISTS hr          CASCADE;
 DROP SCHEMA IF EXISTS marketing   CASCADE;
+DROP SCHEMA IF EXISTS ops         CASCADE;
+DROP SCHEMA IF EXISTS media       CASCADE;
 
 CREATE SCHEMA ticketing;
 CREATE SCHEMA crm;
@@ -29,20 +31,33 @@ CREATE SCHEMA pos;
 CREATE SCHEMA merch;
 CREATE SCHEMA hr;
 CREATE SCHEMA marketing;
+CREATE SCHEMA ops;
+CREATE SCHEMA media;
 
 -- ════════════════════════════════════════════════════════════════════════════
 -- ticketing  — ticketing system export (Archtics/Tickets.com-flavored: codes,
 --              cryptic names, money in CENTS). The system of record for seats.
 -- ════════════════════════════════════════════════════════════════════════════
+-- League dimension: the 29 opponents the Bulldogs face (30 teams total). event
+-- rows carry a 3-letter opponent_cd; join here for the full name/city.
+CREATE TABLE ticketing.team (
+  team_cd    TEXT PRIMARY KEY,           -- 3-letter code used in ticketing.event.opponent_cd
+  team_name  TEXT NOT NULL,
+  city       TEXT NOT NULL
+);
+
 CREATE TABLE ticketing.event (
-  event_no     INTEGER PRIMARY KEY,
-  season_yr    INTEGER NOT NULL,
-  event_dt     DATE    NOT NULL,
-  opponent_cd  TEXT    NOT NULL,        -- 3-letter opponent code
-  day_night    TEXT    NOT NULL,
-  promo_flg    BOOLEAN NOT NULL,
-  promo_desc   TEXT,
-  gate_attend  INTEGER                  -- turnstile (scanned) count; NULL for future events
+  event_no      INTEGER PRIMARY KEY,
+  season_yr     INTEGER NOT NULL,
+  event_dt      DATE    NOT NULL,
+  first_pitch   TIMESTAMPTZ NOT NULL,   -- scheduled start time (game time), not just the date
+  opponent_cd   TEXT    NOT NULL,        -- 3-letter opponent code (29 league opponents)
+  day_night     TEXT    NOT NULL,
+  promo_flg     BOOLEAN NOT NULL,        -- giveaway/theme night (bobblehead, fireworks, …)
+  promo_desc    TEXT,
+  price_promo_cd TEXT,                   -- ticket-PRICE promotion (NULL=standard); see knowledge
+  fnb_promo_cd  TEXT,                    -- concession-PRICE promotion (NULL=standard); see knowledge
+  gate_attend   INTEGER                  -- turnstile (scanned) count; NULL for future events
 );
 
 CREATE TABLE ticketing.account (
@@ -74,6 +89,7 @@ CREATE TABLE ticketing.seat_txn (
   status_cd       TEXT NOT NULL,       -- HD hold | LS listed | SD sold | SC scanned | RF refunded | XCH exchanged
   is_resale_flg   BOOLEAN NOT NULL DEFAULT false,  -- resold on secondary market
   orig_acct_id    BIGINT,             -- original buyer when resold (attendee != orig buyer)
+  scan_ts         TIMESTAMPTZ,        -- gate scan-in time; set only when status_cd='SC' (else NULL)
   upd_dt          TIMESTAMPTZ NOT NULL,
   upd_by          TEXT
 );
@@ -94,6 +110,8 @@ CREATE TABLE crm.contact (
   mailing_state TEXT,
   do_not_email  BOOLEAN NOT NULL DEFAULT false,
   lead_source   TEXT,                  -- often NULL
+  cs_notes      TEXT,                  -- free-text notes typed by a service rep (messy: typos,
+                                       --   lowercase, run-ons); experience + preferences. Mostly NULL.
   is_test__c    BOOLEAN NOT NULL DEFAULT false,
   created_date  TIMESTAMPTZ NOT NULL
 );
@@ -234,3 +252,41 @@ CREATE TABLE marketing.ad_spend (
   end_dt      DATE NOT NULL
 );
 CREATE INDEX ix_adspend_season ON marketing.ad_spend(season_yr);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- ops  — gameday incident log (incident-management vendor, "24/7 Software"-style).
+--        One row per logged incident during a game. Completed events only. Money
+--        is not involved here. Links to a game via event_no (no FK across systems).
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE TABLE ops.incident (
+  incident_id   BIGINT PRIMARY KEY,
+  event_no      INTEGER NOT NULL,        -- matches ticketing.event.event_no (no FK across systems)
+  reported_ts   TIMESTAMPTZ NOT NULL,
+  incident_type TEXT NOT NULL,           -- cleanup | missing_child | missing_item | security_breach
+                                         --   | fan_ejection | medical | lost_and_found | weather_delay
+  severity      TEXT NOT NULL,           -- low | medium | high
+  zone          TEXT,                    -- stadium zone/section where it occurred
+  status        TEXT NOT NULL,           -- open | resolved
+  reported_by   TEXT,                    -- ops/security role that logged it
+  resolved_ts   TIMESTAMPTZ,             -- NULL while open
+  notes         TEXT                     -- short free-text description (messy)
+);
+CREATE INDEX ix_incident_event ON ops.incident(event_no);
+CREATE INDEX ix_incident_type  ON ops.incident(incident_type);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- media  — broadcast/media-rights contracts (the club's biggest revenue line).
+--          Annual rights fees from national, regional (RSN), streaming, and radio
+--          partners. NOT per-game — one row per rights deal per season. Dollars.
+-- ════════════════════════════════════════════════════════════════════════════
+CREATE TABLE media.rights_deal (
+  deal_id       INTEGER PRIMARY KEY,
+  rightsholder  TEXT NOT NULL,           -- the broadcaster/platform
+  rights_type   TEXT NOT NULL,           -- national | regional | streaming | radio
+  season_yr     INTEGER NOT NULL,
+  annual_value  NUMERIC(14,2) NOT NULL,  -- annual rights fee in DOLLARS
+  status        TEXT NOT NULL,           -- active | expired
+  start_dt      DATE NOT NULL,
+  end_dt        DATE NOT NULL
+);
+CREATE INDEX ix_rights_season ON media.rights_deal(season_yr);

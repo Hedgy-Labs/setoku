@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // ADVERSARIAL probe — not pass/fail. Asks the hard questions most likely to
-// expose gaps where Setoku gives a wrong or weak answer on the Stags
+// expose gaps where Setoku gives a wrong or weak answer on the Bulldogs
 // multi-system data (mixed units, identity resolution, missing data, no-
 // attribution guardrails, vendor-staff undercount, retrieval misses). Prints the
 // FULL answer for each so a human can judge correctness.
 //
-//   bun run demo/e2e/probe.ts            # the Stags multi-system instance
+//   bun run demo/e2e/probe.ts            # the Bulldogs multi-system instance
 
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const MCP_URL = process.env.DEMO_MCP_URL ?? "https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8";
+const MCP_URL = process.env.DEMO_MCP_URL ?? "https://demo.setoku.com/mcp/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9";
 
 // Each probe notes the TRAP — the gap it's hunting for.
 const PROBES: { ask: string; trap: string }[] = [
@@ -20,7 +20,9 @@ const PROBES: { ask: string; trap: string }[] = [
   { ask: "Who are our top 10 fans by total spend across tickets and concessions?", trap: "IDENTITY: POS loyalty_id only ~15% populated — most F&B can't tie to a fan. Should caveat, not fabricate a clean ranking." },
   { ask: "What's our total merchandise revenue across all channels?", trap: "COVERAGE: merch is online-only (Fanatics not in data) AND find_context mis-routed this to ticket_revenue earlier." },
   { ask: "Which marketing channel drove the most ticket sales last season?", trap: "NO ATTRIBUTION: marketing.ad_spend has no link to sales. Should refuse to claim causation, not invent it." },
-  { ask: "What was our TV broadcast and parking revenue last season?", trap: "MISSING DATA: neither exists. Should say not available, not hallucinate." },
+  { ask: "What was our parking and merchandising-retail revenue last season?", trap: "MISSING DATA: parking isn't modeled, retail merch is Fanatics (absent). Should say not available, not hallucinate." },
+  { ask: "What's our total annual revenue, and how much of it is media rights?", trap: "CROSS-SYSTEM + UNITS: must combine ticketing (cents) + F&B + sponsorship + merch + media (dollars) → ~$180–200M, media ~$90M. Easy to drop the media line or botch cents." },
+  { ask: "How many gameday incidents did we log last season, and which type was most common?", trap: "NEW SYSTEM: ops.incident, completed games only; cleanup should top the list. Don't conflate with hr or pos." },
   { ask: "What's our total gameday staff headcount per game?", trap: "VENDOR UNDERCOUNT: hr.worker omits vendor staff; must count hr.shift, not hr.worker." },
   { ask: "How many tickets were resold on the secondary market, and who actually attended vs originally bought them?", trap: "RESALE: needs is_resale_flg + orig_acct_id vs acct_id semantics." },
   { ask: "What's our net ticket revenue after refunds and exchanges?", trap: "STATUS: RF excluded; XCH replacement is a separate row — easy to double-count or net wrong." },

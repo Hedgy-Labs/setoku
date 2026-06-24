@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+# Setoku demo — public routing. Append to the production Caddyfile, then load it.
+# CAVEAT on the rsync box: the Caddyfile bind-mount is inode-pinned, so a plain
+# `caddy reload` does NOT pick up edits — recreate the container instead:
+#   docker compose -p setoku up -d --force-recreate --no-deps caddy
+#
+# The hostnames below front the Bulldogs gateway. The sslip.io name works with
+# NO DNS change; demo.setoku.com is the friendly primary (needs an A record →
+# the box). Upstream is the gateway container, reachable because
+# docker-compose.edge.yml joined it here.
+#
+# stags.setoku.com / stags.<ip>.sslip.io are BACK-COMPAT aliases for the former
+# "Riverside Stags" demo, kept so previously-shared MCP connectors and installer
+# links keep resolving to this same gateway (a direct proxy, not a redirect —
+# MCP clients POST and don't reliably follow 30x). The old analyst/installer
+# tokens are also re-added to DEMO_TOKENS on the box so those links still auth.
+
+demo.setoku.com, demo.51-81-222-176.sslip.io, stags.setoku.com, stags.51-81-222-176.sslip.io {
+	encode gzip
+	handle /mcp* {
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
+	}
+	handle /i/* {
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
+	}
+	handle /admin* {
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
+	}
+	# public reports — credential-free /p/<id> links (server serves only those an
+	# admin promoted to public). Without this the catch-all 404s public demo links.
+	handle /p/* {
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
+	}
+	handle /health* {
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
+	}
+	handle {
+		respond "setoku demo (bulldogs)" 404
+	}
+}

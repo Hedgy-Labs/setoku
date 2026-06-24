@@ -17,17 +17,17 @@ _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer undern
 
 ## Try it live
 
-There's a public demo wired to a synthetic dataset for a fictional pro baseball club — the **Riverside Stags** — covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, and marketing.
+There's a public demo wired to a synthetic dataset for a fictional pro baseball club — the **Bonita Bulldogs** — covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, marketing, gameday incidents, and broadcast media rights.
 
 1. In **Claude.ai → Settings → Connectors → Add custom connector**, paste this as the server URL (there's no header field — the token rides in the URL):
    ```
-   https://stags.setoku.com/i/8cc638d87e2b6bfbbcde67ba8864cb20554f141323d50db3
+   https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9
    ```
 2. Ask in plain language. Setoku feeds Claude the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names. Try:
    - *"How many unique fans do we have?"* — the CRM has duplicates and test records; Setoku dedupes by normalized email instead of a naive `COUNT(*)`.
    - *"What was our ticket revenue this season, and which games sold best?"* — handles cents-vs-dollars and excludes refunds, exchanges, and comps.
    - *"What's our season-ticket renewal rate?"* — spans three seasons of ticketing history.
-   - *"Link our CRM to the ticketing system — how many fans can we match?"* — identity resolution across systems with no shared key.
+   - *"What's our total annual revenue, and how much of it is media rights?"* — combines five systems with reconciled units (~$180–200M; media rights ~$90M, the biggest line).
    - *"What's our total merchandise revenue?"* — Setoku flags that the data is online-only (most merch is Fanatics, not here) instead of returning a wrong total.
 
 Full walkthrough, the `/admin` approval surface, and the data model: [`demo/README.md`](./demo/README.md).

@@ -9,16 +9,16 @@
 // the doc's SQL was valid but the data made `1 - allocated/rate_card` negative
 // (selling "above" rate card) — an out-of-range ratio the heuristics flag.
 //
-//   bun run demo/e2e/knowledge-lint.ts demo/stags <mcp-url>
+//   bun run demo/e2e/knowledge-lint.ts demo/bulldogs <mcp-url>
 
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
-const datasetDir = process.argv[2] ?? "demo/stags";
+const datasetDir = process.argv[2] ?? "demo/bulldogs";
 const mcpUrl = process.argv[3] ?? process.env.DEMO_MCP_URL ??
-  "https://stags.setoku.com/mcp/28e53fdf11bd086f665064beea5f7d0f6c59292183af96d8";
+  "https://demo.setoku.com/mcp/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9";
 
 // value sanity heuristics keyed on the OUTPUT column name (model-free).
 const HEURISTICS: { match: RegExp; bad: (n: number) => boolean; why: string }[] = [

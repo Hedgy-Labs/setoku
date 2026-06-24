@@ -1,7 +1,7 @@
 # Setoku sports demo
 
 A self-contained Setoku instance pointed at a **synthetic professional-baseball
-dataset** — the fictional **Riverside Stags** (not based on any real team). Use it
+dataset** — the fictional **Bonita Bulldogs** (not based on any real team). Use it
 to demo Setoku end-to-end to a sports-team prospect: connect Claude, ask business
 questions in plain language, watch curated "tribal knowledge" steer the answers.
 
@@ -9,7 +9,8 @@ It models what a real club's data **actually** looks like: several **disconnecte
 vendor systems** (one Postgres schema each), **no foreign keys between them**, mixed
 money units (cents in ticketing, dollars everywhere else), **3 seasons** of history,
 and real mess — duplicate CRM contacts, dirty emails, refunds/exchanges,
-secondary-market resale, vendor-staffed labor, partial (online-only) merch. ~6M rows.
+secondary-market resale, vendor-staffed labor, partial (online-only) merch, a gameday incident
+log, and broadcast media-rights contracts. ~13M rows.
 This is where Setoku's curated knowledge (identity resolution, code maps, exclusions,
 coverage caveats) earns its keep. It runs **alongside** production on the same box
 without touching it — its own compose project, network, volumes, and Postgres.
@@ -20,15 +21,15 @@ Deployed on the hedgy box:
 
 | | URL |
 |---|---|
-| **Claude connector (MCP)** | `https://stags.setoku.com/mcp/1097598a5d333b1e012d517e0380898f39ffea51e0830be9` |
-| **Admin / approval surface** | https://stags.setoku.com/admin |
-| **Health** | https://stags.setoku.com/health |
+| **Claude connector (MCP)** | `https://demo.setoku.com/mcp/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9` |
+| **Admin / approval surface** | https://demo.setoku.com/admin |
+| **Health** | https://demo.setoku.com/health |
 
-(`stags.51-81-222-176.sslip.io` serves the same endpoints — a stable alias.)
+(`demo.51-81-222-176.sslip.io` serves the same endpoints — a stable alias.)
 
 That token is a shareable bearer credential for the demo. It only grants read +
 propose-only access to **synthetic** data (no real PII), so it's fine to hand out;
-rotate it anytime by editing `DEMO_TOKENS` in `/opt/setoku/demo/.env.stags` and
+rotate it anytime by editing `DEMO_TOKENS` in `/opt/setoku/demo/.env.bulldogs` and
 restarting the gateway, or mint per-person tokens (see "Inviting people" below).
 
 ### Connect Claude (the prospect experience)
@@ -44,11 +45,15 @@ restarting the gateway, or mint per-person tokens (see "Inviting people" below).
    - **"Link our CRM to the ticketing system — how many fans can we match?"** — email-normalization
      identity resolution (no shared key); ~80% match.
    - **"What's our total ticket revenue?"** — handles cents-vs-dollars, excludes refunds /
-     exchanges / comps / test accounts.
+     exchanges / comps / test accounts (~$67M/completed season).
+   - **"What's our total annual revenue, and how much is media rights?"** — combines five
+     systems with reconciled units (~$180–200M total; media rights ~$90M, the biggest line).
    - **"F&B per-cap, and how much do we spend on gameday labor?"** — POS is in dollars; labor
      includes vendor staff who aren't in the HR system.
    - **"What's our total merchandise revenue?"** — Setoku flags that `merch` is only the online
      store (most merch is Fanatics, not in the data) instead of giving a wrong total.
+   - **"How many gameday incidents did we log last season, by type?"** — the `ops` system; cleanups
+     and lost-and-found dominate, ejections/medical mid-pack, security breaches rare.
 
 `find_context` runs first and feeds Claude the curated definitions + gotchas, so it computes
 things the way the business does instead of guessing from column names.
@@ -58,9 +63,9 @@ things the way the business does instead of guessing from column names.
 `/admin` is the human approval surface — where pending knowledge (an analyst's
 `report_correction`) gets promoted into curated context, outside the agent loop.
 
-- **URL:** https://stags.setoku.com/admin  ·  **Username:** `peter`  ·  **Password:** `stags-demo-2026`
+- **URL:** https://demo.setoku.com/admin  ·  **Username:** `peter`  ·  **Password:** `bulldogs-demo-2026`
 - Demo credentials over synthetic data. Rotate on the box:
-  `docker exec -it -e SETOKU_NEW_PASSWORD='…' setoku-stags-demo-server-1 bun gateway/admin-cli.ts set-password peter`.
+  `docker exec -it -e SETOKU_NEW_PASSWORD='…' setoku-bulldogs-demo-server-1 bun gateway/admin-cli.ts set-password peter`.
 - Demo flow to show a prospect: ask a question → correct a definition in chat
   (`report_correction`) → it lands **pending** → approve it in `/admin` → the next answer uses it.
 
@@ -69,29 +74,34 @@ things the way the business does instead of guessing from column names.
 ```bash
 # on the box
 docker exec -e SETOKU_TOKENS_FILE=/data/teammates.json \
-  setoku-stags-demo-server-1 bun gateway/admin-cli.ts add-teammate alice@example.com
+  setoku-bulldogs-demo-server-1 bun gateway/admin-cli.ts add-teammate alice@example.com
 # then restart the gateway so the new token loads:
-docker compose -p setoku-stags -f /opt/setoku/demo/docker-compose.demo.yml \
-  -f /opt/setoku/demo/docker-compose.edge.yml --env-file /opt/setoku/demo/.env.stags \
+docker compose -p setoku-bulldogs -f /opt/setoku/demo/docker-compose.demo.yml \
+  -f /opt/setoku/demo/docker-compose.edge.yml --env-file /opt/setoku/demo/.env.bulldogs \
   up -d demo-server
 ```
 
-## The data model — 7 vendor systems (Postgres schemas)
+## The data model — 9 vendor systems (Postgres schemas)
 
 There are **no foreign keys between schemas**; the shared keys are `event_no` (games) and a
 **normalized email** for people. Money is **cents in `ticketing`, dollars everywhere else**.
 
 | Schema | Vendor-style system | Holds | Money |
 |---|---|---|---|
-| `ticketing` | Archtics/Tickets.com-style | events, accounts, the seat manifest & sales ledger | cents |
-| `crm` | Salesforce-style | marketing contacts (has duplicates) | — |
+| `ticketing` | Archtics/Tickets.com-style | teams, events (start time + promo pricing), accounts, seat manifest & sales ledger (with scan-in times) | cents |
+| `crm` | Salesforce-style | marketing contacts (duplicates; messy `cs_notes`) | — |
 | `sponsorship` | KORE-style | partners, contracted deals, deal assets | dollars |
-| `pos` | concessions point-of-sale | F&B transactions + line items | dollars |
+| `pos` | concessions point-of-sale | F&B transactions + line items (promo pricing on some games) | dollars |
 | `merch` | team online store feed | online merch orders only (**partial** — Fanatics not here) | dollars |
 | `hr` | Workday/ADP-style | workers, comp, gameday shifts (mostly vendor-staffed) | dollars |
 | `marketing` | ad-platform exports | spend & delivery by platform (no sales attribution) | dollars |
+| `ops` | incident-management system | gameday incident log (cleanups, ejections, medical, …) | — |
+| `media` | broadcast/media-rights contracts | annual rights fees (RSN, national, streaming, radio) — the **biggest** revenue line | dollars |
 
-The curated knowledge (`stags/.setoku/context/`) ships entity docs, canonical
+The club plays in a 30-team league (`ticketing.team` holds the 29 opponents; ~22 appear per season).
+Total annual revenue lands ~$180–200M, of which media rights are ~$90M.
+
+The curated knowledge (`bulldogs/.setoku/context/`) ships entity docs, canonical
 metric SQL, an identity-resolution recipe, and the gotchas (mixed units, dedupe, code maps,
 coverage caveats) — so `find_context` has something real to return.
 
@@ -101,28 +111,29 @@ The box already runs production Setoku and has the `setoku-server` image built, 
 reuses it. From `/opt/setoku/demo`:
 
 ```bash
-./boot.sh            # first run generates .env.stags (tokens + PG password), seeds, starts the gateway
+./boot.sh            # first run generates .env.bulldogs (tokens + PG password), seeds, starts the gateway
 ```
 
 It starts a demo Postgres, seeds the data (deterministic — same `SEED` ⇒ identical data),
 and starts the gateway on `127.0.0.1:8789`, auto-joining the production Caddy network if
 present. Re-seed in place anytime by re-running `./boot.sh` (schema drops and recreates).
 
-Public routing (one deliberate step): append `caddy-stags.snippet` to
+Public routing (one deliberate step): append `caddy-bulldogs.snippet` to
 `/opt/setoku/Caddyfile`, then — because the Caddyfile bind-mount is inode-pinned — recreate
 (not reload) Caddy:
 
 ```bash
-cat caddy-stags.snippet >> /opt/setoku/Caddyfile
+cat caddy-bulldogs.snippet >> /opt/setoku/Caddyfile
 docker compose -p setoku up -d --force-recreate --no-deps caddy
 ```
 
 ### Scale
 
-`DEMO_SEATS_PER_GAME` controls volume (default 10000 ≈ 2.4M seat rows across 3 seasons; the
-F&B/attendance figures derive from it). Push toward a full MLB house with
-`DEMO_SEATS_PER_GAME=38000` (~9M seat rows, ~30-min reseed). The box has the headroom; query
-latency stays sub-second-to-~1s.
+`DEMO_SEATS_PER_GAME` controls volume (default **26000** ≈ 6.3M seat rows across 3 seasons,
+~3–4 min reseed; sized so attendance is a realistic mid-market gate ~16.5k/game and total revenue
+lands ~$180–200M/season). The F&B/attendance figures derive from it. Drop it (e.g. `=10000`) for a
+faster, lighter reseed, or push toward a full MLB house with `DEMO_SEATS_PER_GAME=38000`. The box
+has the headroom; query latency stays sub-second-to-~1s.
 
 ## Tests (subscription-driven — no API keys)
 
@@ -143,7 +154,7 @@ its knowledge. Override the target with `DEMO_MCP_URL`.
 ## Tear down
 
 ```bash
-docker compose -p setoku-stags -f docker-compose.demo.yml -f docker-compose.edge.yml down -v
+docker compose -p setoku-bulldogs -f docker-compose.demo.yml -f docker-compose.edge.yml down -v
 # then remove the demo block from /opt/setoku/Caddyfile and recreate caddy
 ```
 

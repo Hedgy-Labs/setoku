@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Setoku DEMO stack — a self-contained, throwaway Setoku instance pointed at the
-# synthetic "Riverside Stags" sports dataset. Runs ALONGSIDE a production Setoku
+# synthetic "Bonita Bulldogs" sports dataset. Runs ALONGSIDE a production Setoku
 # stack on the same box without touching it: its own project name, network,
 # volumes, and Postgres. The gateway reuses the already-built `setoku-server`
 # image (override with DEMO_IMAGE).
@@ -30,14 +30,14 @@ services:
     shm_size: 512mb
     environment:
       POSTGRES_PASSWORD: ${DEMO_PG_PASSWORD:-demo}
-      POSTGRES_DB: ${DEMO_DB:-stags}
+      POSTGRES_DB: ${DEMO_DB:-bulldogs}
     volumes:
       - demo_pg:/var/lib/postgresql/data
     networks:
       demo_internal:
         aliases: [demo-postgres.local]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d ${DEMO_DB:-stags}"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d ${DEMO_DB:-bulldogs}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -51,16 +51,16 @@ services:
     environment:
       SETOKU_PROJECT_DIR: /demo-project
       SETOKU_DB_PATH: /data/knowledge.db
-      SETOKU_DATABASE_URL: postgres://postgres:${DEMO_PG_PASSWORD:-demo}@demo-postgres.local:5432/${DEMO_DB:-stags}
+      SETOKU_DATABASE_URL: postgres://postgres:${DEMO_PG_PASSWORD:-demo}@demo-postgres.local:5432/${DEMO_DB:-bulldogs}
       # Per-user MCP tokens — "token=identity,token2=identity2" (analyst: read + propose)
-      SETOKU_TOKENS: ${DEMO_TOKENS:?set DEMO_TOKENS (e.g. <hex>=demo@stags) — see boot.sh}
+      SETOKU_TOKENS: ${DEMO_TOKENS:?set DEMO_TOKENS (e.g. <hex>=demo@bulldogs) — see boot.sh}
       # Optional curator token (commit curated knowledge; cannot read a lake — there is none here)
       SETOKU_CURATOR_TOKENS: ${DEMO_CURATOR_TOKENS:-}
       SETOKU_PUBLIC_URL: ${DEMO_PUBLIC_URL:-http://localhost:8788}
     ports:
       - "127.0.0.1:${DEMO_PORT:-8788}:8787"
     volumes:
-      - ${DEMO_DATASET_DIR:-./sports}/.setoku:/demo-project/.setoku:ro
+      - ${DEMO_DATASET_DIR:-./bulldogs}/.setoku:/demo-project/.setoku:ro
       - demo_data:/data
     networks: [demo_internal]
     depends_on:
