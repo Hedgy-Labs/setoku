@@ -78,6 +78,11 @@
 	handle /admin* {
 		reverse_proxy server:8787
 	}
+	# public reports — credential-free /p/<id> links (the server serves ONLY
+	# reports an admin promoted to public; everything else 404s).
+	handle /p/* {
+		reverse_proxy server:8787
+	}
 	handle /health* {
 		reverse_proxy server:8787
 	}

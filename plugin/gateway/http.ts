@@ -569,6 +569,42 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(installerScript(token, info.identity, baseUrl));
       return;
     }
+    // ---- public report surface — /p/<id>, credential-free ----
+    // Serves ONLY reports an admin has promoted to "public"; a team report or a
+    // bad id 404s, so this path never leaks a session-gated report's content or
+    // existence. The body is served under a CSP `sandbox` (no allow-same-origin)
+    // so its scripts run in an opaque origin and can't reach the box's cookie or
+    // /admin API even though it's the same host.
+    if (req.url?.startsWith("/p/")) {
+      const id = decodeURIComponent(req.url.slice(3).split("?")[0]);
+      // Gate on metadata first so a guessed/archived/team id 404s WITHOUT reading
+      // the up-to-2MB body (this path is credential-free and cheap to hammer).
+      const meta = store.getPublishedMeta(id);
+      if (!meta || meta.archivedAt || meta.visibility !== "public") {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not found\n");
+        return;
+      }
+      const rep = store.getPublished(id);
+      if (!rep) {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not found\n");
+        return;
+      }
+      store.audit("public", "published_viewed_public", { id });
+      // CSP `sandbox allow-scripts` (and nothing else) runs the agent-authored
+      // HTML in an opaque origin AND withholds popups / top-navigation — so a
+      // public report can't open a popup or redirect the top window to a
+      // phishing page, only render and run its own inline scripts in isolation.
+      res.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": "sandbox allow-scripts",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+      });
+      res.end(rep.body);
+      return;
+    }
     // ---- web approval surface — React SPA + JSON API ----
     // Auth is a session COOKIE, not a token in the URL: every /admin route is safe
     // to share. The SPA shell and its assets are public (no secrets); the JSON API
@@ -667,10 +703,71 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "team" && req.method === "GET")
           return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
 
+        // published reports — TEAM-ONLY: gated behind this session check, so a
+        // shared /admin/p/<id> link only renders for someone with a box login.
+        if (api === "published" && req.method === "GET") return json(200, store.listPublished());
+        if (api === "published_get" && req.method === "GET") {
+          const id = new URL(req.url ?? "", "http://x").searchParams.get("id") ?? "";
+          const rep = store.getPublished(id);
+          if (!rep || rep.archivedAt) return json(404, { ok: false, error: "report not found or archived" });
+          store.audit(session.identity, "published_viewed", { id });
+          return json(200, rep);
+        }
+
         // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----
         if (req.method === "POST") {
           if ((req.headers["x-csrf-token"] ?? "") !== session.csrf)
             return json(403, { ok: false, error: "bad csrf token" });
+
+          // Author-or-admin gate for a per-report mutation (archive, visibility):
+          // 404 if missing/archived, 403 unless the caller authored it or is an
+          // admin. Returns false having ALREADY sent the response, so the handler
+          // returns immediately. These two are allowed before the blanket admin
+          // gate below (a member can manage their own report); every OTHER
+          // mutation stays admin-only. The agent never reaches here — it has no
+          // web session — so promotion-to-public is always a human decision.
+          const mayMutateReport = (id: string): boolean => {
+            const rep = id ? store.getPublishedMeta(id) : null;
+            if (!rep || rep.archivedAt) {
+              json(404, { ok: false, error: "No active report with that id." });
+              return false;
+            }
+            if (rep.createdBy !== session.identity && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              json(403, { ok: false, error: "Only the report's author or an admin can manage it." });
+              return false;
+            }
+            return true;
+          };
+
+          if (api === "archive") {
+            const body = (await readBody(req)) as { id?: string } | undefined;
+            const id = (body?.id ?? "").trim();
+            if (!mayMutateReport(id)) return;
+            const ok = store.archivePublished(id);
+            store.audit(session.identity, "unpublish_report", { id, ok });
+            return json(200, { ok, flash: "Report archived — its link no longer works." });
+          }
+
+          if (api === "set_visibility") {
+            const body = (await readBody(req)) as { id?: string; visibility?: string } | undefined;
+            const id = (body?.id ?? "").trim();
+            const visibility = body?.visibility;
+            if (visibility !== "team" && visibility !== "public")
+              return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
+            if (!mayMutateReport(id)) return;
+            const ok = store.setReportVisibility(id, visibility);
+            store.audit(session.identity, "report_visibility_set", { id, visibility, ok });
+            return json(ok ? 200 : 404, {
+              ok,
+              flash: ok
+                ? visibility === "public"
+                  ? "Report is now PUBLIC — anyone with the /p link can open it, no login required."
+                  : "Report is now team-only."
+                : "No active report with that id.",
+            });
+          }
+
           if (!canApprove(session.role)) {
             store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
             return json(403, { ok: false, error: "not authorized" });

@@ -112,6 +112,23 @@ export interface AuditRow {
   payload: string;
 }
 
+export type ReportVisibility = "team" | "public";
+
+/** A report published to the box. `body` is present only on a single-report
+ *  fetch; the list omits it. Mirrors lib/store.ts. */
+export interface PublishedMeta {
+  id: string;
+  title: string;
+  format: "html";
+  visibility: ReportVisibility;
+  createdBy: string;
+  createdAt: string;
+  archivedAt: string | null;
+}
+export interface PublishedReport extends PublishedMeta {
+  body: string;
+}
+
 export interface SourceTable {
   source: string;
   rows: number | null;
