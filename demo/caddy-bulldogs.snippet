@@ -5,10 +5,17 @@
 #   docker compose -p setoku up -d --force-recreate --no-deps caddy
 #
 # The hostnames below front the Bulldogs gateway. The sslip.io name works with
-# NO DNS change; demo.setoku.com is the friendly primary. Upstream is the
-# gateway container, reachable because docker-compose.edge.yml joined it here.
+# NO DNS change; demo.setoku.com is the friendly primary (needs an A record →
+# the box). Upstream is the gateway container, reachable because
+# docker-compose.edge.yml joined it here.
+#
+# stags.setoku.com / stags.<ip>.sslip.io are BACK-COMPAT aliases for the former
+# "Riverside Stags" demo, kept so previously-shared MCP connectors and installer
+# links keep resolving to this same gateway (a direct proxy, not a redirect —
+# MCP clients POST and don't reliably follow 30x). The old analyst/installer
+# tokens are also re-added to DEMO_TOKENS on the box so those links still auth.
 
-demo.setoku.com, demo.51-81-222-176.sslip.io {
+demo.setoku.com, demo.51-81-222-176.sslip.io, stags.setoku.com, stags.51-81-222-176.sslip.io {
 	encode gzip
 	handle /mcp* {
 		reverse_proxy setoku-bulldogs-demo-server-1:8787
