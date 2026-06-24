@@ -21,7 +21,7 @@ There's a public demo wired to a synthetic dataset for a fictional pro baseball 
 
 1. In **Claude.ai → Settings → Connectors → Add custom connector**, paste this as the server URL (there's no header field — the token rides in the URL):
    ```
-   https://demo.setoku.com/i/8cc638d87e2b6bfbbcde67ba8864cb20554f141323d50db3
+   https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9
    ```
 2. Ask in plain language. Setoku feeds Claude the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names. Try:
    - *"How many unique fans do we have?"* — the CRM has duplicates and test records; Setoku dedupes by normalized email instead of a naive `COUNT(*)`.
