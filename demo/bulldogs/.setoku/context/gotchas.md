@@ -1,9 +1,9 @@
 # Gotchas
 
-- **Money units differ by system.** `ticketing` is integer **cents** (columns ending `_cents` — divide by 100). `pos`, `sponsorship`, `hr`, `merch`, `marketing` are **dollars** (NUMERIC). Never sum across systems without converting cents → dollars first.
+- **Money units differ by system.** `ticketing` is integer **cents** (columns ending `_cents` — divide by 100). `pos`, `sponsorship`, `hr`, `merch`, `marketing`, `media` are **dollars** (NUMERIC). Never sum across systems without converting cents → dollars first.
 - **CRM contacts are NOT unique per person.** `crm.contact` has duplicate rows for the same person (different `sfid`, slightly different email). Always dedupe by normalized email before counting fans — see [[identity_resolution]].
 - **Emails are dirty.** Mixed case, trailing/leading spaces, and `+tags`. Normalize with `lower(btrim(regexp_replace(email,'\+[^@]*@','@')))` before matching or grouping.
-- **Exclude test/internal records.** `crm.contact.is_test__c = true`; ticketing accounts whose `acct_email ILIKE '%@stags.test'` (also seen with first names like `VOID`/`TEST`). They are not real fans or sales.
+- **Exclude test/internal records.** `crm.contact.is_test__c = true`; ticketing accounts whose `acct_email ILIKE '%@bonita.test'` (also seen with first names like `VOID`/`TEST`). They are not real fans or sales.
 - **Ticket revenue = `status_cd IN ('SD','SC')` only.** `RF` = refunded (exclude), `XCH` = exchanged (exclude — the replacement seat is its own row). `LS`/`HD` = unsold inventory, never revenue. `SC` = scanned (attended); `SD` on a completed event = sold but not scanned (no-show).
 - **Comps are free.** `ticketing.account.acct_type_cd = 'COMP'` (and `price_paid_cents = 0`). Exclude from revenue and average-price.
 - **`pl_cd` is a CODE, not a price.** `PL1`…`PL6` are price-level codes (tiers); the actual list price is `price_list_cents`. Don't sum `pl_cd`.
@@ -16,3 +16,10 @@
 - **`gate_attend` is NULL for upcoming events** (`ticketing.event`); use it only for completed games.
 - **Sponsorship `status`:** exclude `'proposed'` (not closed) from booked revenue. `signed`/`active`/`expired` are real contracts.
 - **Season-ticket holders (renewals):** an STH is an account holding `plan_cd IN ('FULL','HALF')` seats in a season (`ticketing.event.season_yr`). Renewal compares the same `acct_id` across consecutive seasons — see [[season_renewal_rate]].
+- **Media rights ≠ per-game.** `media.rights_deal.annual_value` is a **per-season** fee (dollars) per rights package. It's the club's biggest revenue line (~$90M/yr) — sum `annual_value` by `season_yr`, never multiply by games or attendance. See [[media_rights_revenue]].
+- **Total revenue spans systems and units.** Adding ticketing (cents → dollars) + F&B + sponsorship + merch + media gets you ~$180–200M/season. See [[total_revenue]].
+- **Promotional pricing is baked into the paid price.** `ticketing.event.price_promo_cd` (e.g. `WKND_FAMILY`, `TWILIGHT`) means discounted tickets — `price_paid_cents` already reflects the discount (`price_list_cents` is the undiscounted list). `fnb_promo_cd` (e.g. `DOLLAR_DOG`, `FIVE_DOLLAR_BEER`) means `pos.txn_item.unit_price` is already discounted for that game (but `unit_cost` is unchanged → thinner margin). Don't double-discount.
+- **Two different "promo" columns.** `promo_flg`/`promo_desc` = a giveaway/theme night (bobblehead, fireworks) — NOT a price cut. `price_promo_cd`/`fnb_promo_cd` = actual promotional **pricing**. They're independent.
+- **Opponent code → name** lives in `ticketing.team` (`team_cd`). `ticketing.event.opponent_cd` is a 3-letter code; join to `ticketing.team` for the full name. ~22 of 29 opponents appear each season.
+- **`scan_ts` only exists for scanned seats.** `ticketing.seat_txn.scan_ts` is the gate scan-in time and is set **only** when `status_cd='SC'` (NULL otherwise). Use `ticketing.event.first_pitch` for the scheduled start time (the date alone is `event_dt`).
+- **Gameday incidents (`ops.incident`)** exist for **completed games only**. `status` is `open`/`resolved`; `resolved_ts` is NULL while open. It's an operations log — there's no money in it. `incident_type` ∈ {cleanup, lost_and_found, fan_ejection, medical, missing_item, weather_delay, security_breach, missing_child}.

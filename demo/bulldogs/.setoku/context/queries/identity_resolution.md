@@ -31,7 +31,7 @@ WITH norm_crm AS (
 norm_acct AS (
   SELECT acct_id, lower(btrim(regexp_replace(acct_email,'\+[^@]*@','@'))) AS nemail
   FROM ticketing.account
-  WHERE acct_email IS NOT NULL AND acct_email NOT ILIKE '%@stags.test'
+  WHERE acct_email IS NOT NULL AND acct_email NOT ILIKE '%@bonita.test'
 )
 SELECT count(*) AS ticketing_accounts_matched_in_crm
 FROM norm_acct a JOIN norm_crm c USING (nemail);

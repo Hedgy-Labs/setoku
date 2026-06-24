@@ -1,6 +1,6 @@
 {
   "dataSource": { "kind": "postgres", "urlEnv": "SETOKU_DATABASE_URL" },
-  "allowTables": ["ticketing.*", "crm.*", "sponsorship.*", "pos.*", "merch.*", "hr.*", "marketing.*"],
+  "allowTables": ["ticketing.*", "crm.*", "sponsorship.*", "pos.*", "merch.*", "hr.*", "marketing.*", "ops.*", "media.*"],
   "denyTables": [],
   "rowCap": 500,
   "statementTimeoutMs": 30000
