@@ -96,17 +96,18 @@ describe("tool surface", () => {
       [
         "describe_entity",
         "find_context",
+        "get_dashboard",
         "get_metric",
         "get_schema",
         "list_corrections",
+        "list_dashboards",
         "list_entities",
-        "list_published",
         "list_sources",
-        "publish_report",
+        "publish_dashboard",
         "report_correction",
         "resolve_correction",
         "run_query",
-        "unpublish_report",
+        "unpublish_dashboard",
         "upsert_context",
       ].sort(),
     );
@@ -374,32 +375,85 @@ describe("curation + knowledge store + audit", () => {
   });
 });
 
-describe("publish surface", () => {
-  it("publishes a report, lists it, then revokes it", async () => {
-    const pub = await call("publish_report", {
+describe("dashboard surface", () => {
+  it("publishes a live dashboard (dry-runs the panel), inspects it, lists it, then revokes it", async () => {
+    const pub = await call("publish_dashboard", {
+      title: "Paid orders",
+      html: '<div id="n"></div><script>document.getElementById("n").textContent=window.__SETOKU__.panels.paid.rows[0].n</script>',
+      panels: [
+        {
+          key: "paid",
+          title: "Paid order count",
+          sql: "SELECT count(*) AS n FROM orders WHERE status = 'paid'",
+          dialect: "postgres",
+          metricId: "revenue",
+        },
+      ],
+      refreshSeconds: 60,
+    });
+    expect(pub.isError).toBeFalsy();
+    expect(pub.text).toContain("TEAM-ONLY");
+    expect(pub.text).toContain("1 live panel"); // dry-ran + reported
+    expect(pub.text).not.toContain("no curated metric"); // "revenue" exists in the fixture
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    expect(id).toBeTruthy();
+
+    // get_dashboard surfaces how it's calculated: the SQL + the last run
+    const got = await call("get_dashboard", { id });
+    expect(got.isError).toBeFalsy();
+    expect(got.text).toContain("count(*)");
+    expect(got.text).toContain("metric:revenue");
+    expect(got.text).toMatch(/1 row\(s\)/); // seeded from the publish dry-run
+
+    const listed = await call("list_dashboards");
+    expect(listed.text).toContain("Paid orders");
+    expect(listed.text).toContain("1 panel");
+    expect(listed.text).toContain(id!);
+
+    const off = await call("unpublish_dashboard", { id });
+    expect(off.isError).toBeFalsy();
+    // a second revoke is a no-op error (already archived)
+    const again = await call("unpublish_dashboard", { id });
+    expect(again.isError).toBe(true);
+  });
+
+  it("rejects a dashboard whose panel query is broken (dry-run gate)", async () => {
+    const r = await call("publish_dashboard", {
+      title: "broken",
+      html: "<div></div>",
+      panels: [{ key: "x", sql: "SELECT * FROM no_such_table_here", dialect: "postgres" }],
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('Panel "x" failed to run');
+  });
+
+  it("blocks a curator session from authoring a lake-backed panel (I2/I9 membrane)", async () => {
+    const r = await call("publish_dashboard", {
+      title: "lake panel",
+      html: "<div></div>",
+      panels: [{ key: "logs", sql: "SELECT count() AS n FROM logs_vercel", dialect: "clickhouse" }],
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text.toLowerCase()).toContain("membrane");
+  });
+
+  it("still publishes a static (zero-panel) report for back-compat", async () => {
+    const pub = await call("publish_dashboard", {
       title: "Q2 revenue",
       html: "<!doctype html><h1>Q2 revenue</h1><p>$225</p>",
     });
     expect(pub.isError).toBeFalsy();
-    expect(pub.text).toContain("TEAM-ONLY");
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     expect(id).toBeTruthy();
-
-    const listed = await call("list_published");
+    const listed = await call("list_dashboards");
     expect(listed.text).toContain("Q2 revenue");
-    expect(listed.text).toContain(id!);
-
-    const off = await call("unpublish_report", { id });
-    expect(off.isError).toBeFalsy();
-
-    // a second revoke is a no-op error (already revoked)
-    const again = await call("unpublish_report", { id });
-    expect(again.isError).toBe(true);
+    expect(listed.text).toContain("static");
+    await call("unpublish_dashboard", { id });
   });
 
-  it("rejects an oversized report", async () => {
+  it("rejects an oversized template", async () => {
     const huge = "x".repeat(2_000_001);
-    const r = await call("publish_report", { title: "too big", html: huge });
+    const r = await call("publish_dashboard", { title: "too big", html: huge });
     expect(r.isError).toBe(true);
     expect(r.text.toLowerCase()).toContain("cap");
   });

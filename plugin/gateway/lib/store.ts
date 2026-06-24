@@ -100,11 +100,34 @@ export interface AuditRow {
  */
 export type ReportVisibility = "team" | "public";
 
+/** What dialect a panel's saved query runs against (mirrors run_query). */
+export type PanelDialect = "postgres" | "clickhouse";
+
+/**
+ * One live data binding on a dashboard. `sql` is the executable binding (a
+ * validated read-only statement); `metricId` is provenance-only — it links the
+ * panel to a curated metric doc so the "how is this calculated" drawer can show
+ * the team's verified definition. We never re-parse SQL out of a metric body.
+ */
+export interface DashboardPanel {
+  key: string;
+  title?: string;
+  sql: string;
+  dialect: PanelDialect;
+  metricId?: string | null;
+}
+
 export interface PublishedReport {
   id: string;
   title: string;
-  format: "html";
+  /** "html" = a frozen, self-contained report (legacy / zero-panel). "dashboard"
+   *  = a template whose panels the box re-runs live. */
+  format: "html" | "dashboard";
   body: string;
+  /** Live data bindings; null/[] for a frozen report. */
+  panels: DashboardPanel[] | null;
+  /** TTL (seconds) for cached panel data; null on frozen reports. */
+  refreshSeconds: number | null;
   /** "team" = session-gated (default); "public" = served credential-free at
    *  /p/<id>. Promotion to public is a human (admin) action — never the agent. */
   visibility: ReportVisibility;
@@ -115,6 +138,37 @@ export interface PublishedReport {
 }
 
 export type PublishedMeta = Omit<PublishedReport, "body">;
+
+/** One panel's last-executed result, cached for the dashboard's refresh TTL. */
+export interface PanelCacheRow {
+  columns: string[];
+  rows: Record<string, unknown>[];
+  rowCount: number;
+  computedAt: string;
+  error: string | null;
+}
+
+/** Parse the stored panels JSON; tolerates null/garbage (legacy rows). */
+function parsePanels(json: string | null): DashboardPanel[] | null {
+  if (!json) return null;
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? (v as DashboardPanel[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a stored JSON array column, defaulting to []. */
+function parseJsonArray(json: string | null): unknown[] {
+  if (!json) return [];
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
 
 /** Which self-provisioning source a log row came from (task 4.1). */
 export type ProvisioningSource = "vercel" | "render" | "slack" | "events";
@@ -279,9 +333,25 @@ export class KnowledgeStore {
       archived_at TEXT
     )`);
     // Brought the table forward in-place for boxes created before visibility /
-    // the revoked→archived rename landed (idempotent — see ensureColumn).
+    // the revoked→archived rename / live dashboards landed (idempotent). A
+    // pre-dashboard row stays format='html' with panels NULL and keeps rendering.
     this.ensureColumn("published", "visibility", "TEXT NOT NULL DEFAULT 'team'");
     this.ensureColumn("published", "archived_at", "TEXT");
+    this.ensureColumn("published", "panels", "TEXT");
+    this.ensureColumn("published", "refresh_seconds", "INTEGER");
+    // Per-panel result cache. A dashboard view serves cached rows within the
+    // dashboard's refresh TTL and re-runs the query when stale — bounding DB load
+    // on a hammered public link and giving an honest "updated N ago" stamp.
+    this.db.run(`CREATE TABLE IF NOT EXISTS dashboard_cache (
+      dashboard_id TEXT NOT NULL,
+      panel_key TEXT NOT NULL,
+      columns TEXT NOT NULL DEFAULT '[]',
+      rows TEXT NOT NULL DEFAULT '[]',
+      row_count INTEGER NOT NULL DEFAULT 0,
+      computed_at TEXT NOT NULL,
+      error TEXT,
+      PRIMARY KEY (dashboard_id, panel_key)
+    )`);
   }
 
   /* ------------------------------- docs ------------------------------- */
@@ -754,31 +824,44 @@ export class KnowledgeStore {
 
   /* ------------------------------- published ---------------------------- */
 
-  /** Store a published report. `id` must already be a minted opaque token.
-   *  Visibility defaults to "team" — the agent never publishes public. */
+  /** Store a published report or dashboard. `id` must already be a minted opaque
+   *  token. Visibility defaults to "team" — the agent never publishes public. */
   createPublished(rec: {
     id: string;
     title: string;
-    format?: "html";
+    format?: "html" | "dashboard";
     body: string;
+    panels?: DashboardPanel[] | null;
+    refreshSeconds?: number | null;
     visibility?: ReportVisibility;
     createdBy: string;
   }): void {
+    const panels = rec.panels && rec.panels.length ? JSON.stringify(rec.panels) : null;
     this.db.run(
-      "INSERT INTO published (id, title, format, body, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [rec.id, rec.title, rec.format ?? "html", rec.body, rec.visibility ?? "team", rec.createdBy, new Date().toISOString()],
+      "INSERT INTO published (id, title, format, body, panels, refresh_seconds, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [
+        rec.id,
+        rec.title,
+        rec.format ?? (panels ? "dashboard" : "html"),
+        rec.body,
+        panels,
+        rec.refreshSeconds ?? null,
+        rec.visibility ?? "team",
+        rec.createdBy,
+        new Date().toISOString(),
+      ],
     );
   }
 
-  /** Fetch one published report (incl. body). Returns archived rows too — the
-   *  caller decides how to treat `archivedAt` (the viewer 404s on it). */
+  /** Fetch one published report/dashboard (incl. body + panels). Returns archived
+   *  rows too — the caller decides how to treat `archivedAt` (the viewer 404s). */
   getPublished(id: string): PublishedReport | null {
     const row = this.db
       .query(
-        "SELECT id, title, format, body, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+        "SELECT id, title, format, body, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
       )
-      .get(id) as PublishedReport | null;
-    return row ?? null;
+      .get(id) as (Omit<PublishedReport, "panels"> & { panels: string | null }) | null;
+    return row ? { ...row, panels: parsePanels(row.panels) } : null;
   }
 
   /** One report's metadata WITHOUT its (up-to-2MB) body — for cheap 404/policy
@@ -786,30 +869,80 @@ export class KnowledgeStore {
   getPublishedMeta(id: string): PublishedMeta | null {
     const row = this.db
       .query(
-        "SELECT id, title, format, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+        "SELECT id, title, format, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
       )
-      .get(id) as PublishedMeta | null;
-    return row ?? null;
+      .get(id) as (Omit<PublishedMeta, "panels"> & { panels: string | null }) | null;
+    return row ? { ...row, panels: parsePanels(row.panels) } : null;
   }
 
-  /** Published reports without bodies, newest first (the admin list page). */
+  /** Published reports/dashboards without bodies, newest first (admin list). */
   listPublished(): PublishedMeta[] {
-    return this.db
+    const rows = this.db
       .query(
-        "SELECT id, title, format, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published ORDER BY created_at DESC",
+        "SELECT id, title, format, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published ORDER BY created_at DESC",
       )
-      .all() as unknown as PublishedMeta[];
+      .all() as unknown as (Omit<PublishedMeta, "panels"> & { panels: string | null })[];
+    return rows.map((r) => ({ ...r, panels: parsePanels(r.panels) }));
   }
 
-  /** Soft-delete (archive) a published report. Returns false if already archived
-   *  or unknown. The row and its audit trail survive. */
+  /** Soft-delete (archive) a published report/dashboard. Returns false if already
+   *  archived or unknown. The row + audit trail survive; cached panel data is
+   *  dropped (an archived link must stop serving live data immediately). */
   archivePublished(id: string): boolean {
-    return (
+    const archived =
       this.db.run("UPDATE published SET archived_at = ? WHERE id = ? AND archived_at IS NULL", [
         new Date().toISOString(),
         id,
-      ]).changes > 0
+      ]).changes > 0;
+    if (archived) this.db.run("DELETE FROM dashboard_cache WHERE dashboard_id = ?", [id]);
+    return archived;
+  }
+
+  /* ------------------------- dashboard panel cache ---------------------- */
+
+  /** Cached result for one panel, or null if never computed. */
+  getPanelCache(dashboardId: string, panelKey: string): PanelCacheRow | null {
+    const row = this.db
+      .query(
+        "SELECT columns, rows, row_count AS rowCount, computed_at AS computedAt, error FROM dashboard_cache WHERE dashboard_id = ? AND panel_key = ?",
+      )
+      .get(dashboardId, panelKey) as
+      | { columns: string; rows: string; rowCount: number; computedAt: string; error: string | null }
+      | null;
+    if (!row) return null;
+    return {
+      columns: parseJsonArray(row.columns) as string[],
+      rows: parseJsonArray(row.rows) as Record<string, unknown>[],
+      rowCount: row.rowCount,
+      computedAt: row.computedAt,
+      error: row.error,
+    };
+  }
+
+  /** Upsert one panel's cached result (success or error), stamped now. */
+  putPanelCache(
+    dashboardId: string,
+    panelKey: string,
+    data: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string | null },
+  ): string {
+    const computedAt = new Date().toISOString();
+    this.db.run(
+      `INSERT INTO dashboard_cache (dashboard_id, panel_key, columns, rows, row_count, computed_at, error)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(dashboard_id, panel_key) DO UPDATE SET
+         columns = excluded.columns, rows = excluded.rows, row_count = excluded.row_count,
+         computed_at = excluded.computed_at, error = excluded.error`,
+      [
+        dashboardId,
+        panelKey,
+        JSON.stringify(data.columns ?? []),
+        JSON.stringify(data.rows ?? []),
+        data.rowCount ?? 0,
+        computedAt,
+        data.error ?? null,
+      ],
     );
+    return computedAt;
   }
 
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or

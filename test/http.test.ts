@@ -710,3 +710,104 @@ describe("curation cockpit capabilities (draft-only / reject-only — the membra
     expect(after).toBe(before); // nothing was written
   });
 });
+
+describe("live dashboards (end-to-end render path)", () => {
+  async function session(username: string, password: string): Promise<{ cookie: string; csrf: string }> {
+    const r = await fetch(`${BASE}/admin/api/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const setCookie = r.headers.get("set-cookie") ?? "";
+    const body = (await r.json()) as { csrf: string };
+    return { cookie: setCookie.split(";")[0], csrf: body.csrf };
+  }
+  const countIn = (html: string): number | null => {
+    // count(*) comes back as a bigint → pg serializes it as a quoted string.
+    const m = html.match(/"n":"?(\d+)"?/);
+    return m ? Number(m[1]) : null;
+  };
+
+  it("publishes (analyst), renders fresh data, reflects DB changes, promotes to public, then archives", async () => {
+    // 1. An analyst publishes a live dashboard; the panel is dry-run at publish.
+    const alice = await connect("tok-alice");
+    const pub = await call(alice, "publish_dashboard", {
+      title: "Paid orders",
+      html: '<div id="n"></div><script>document.getElementById("n").textContent=window.__SETOKU__.panels.paid.rows[0].n</script>',
+      panels: [
+        {
+          key: "paid",
+          title: "Paid order count",
+          sql: "SELECT count(*) AS n FROM orders WHERE status = 'paid'",
+          dialect: "postgres",
+          metricId: "revenue",
+        },
+      ],
+      refreshSeconds: 30,
+    });
+    expect(pub.isError).toBe(false);
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    expect(id).toBeTruthy();
+    await alice.close();
+
+    // 2. An admin reads the provenance: SQL is present on the team surface, the
+    //    metric link resolved, and the panel actually ran (rowCount).
+    const boss = await session("boss", "s3cret-pass");
+    const dd = (await (
+      await fetch(`${BASE}/admin/api/dashboard_data?id=${id}`, { headers: { cookie: boss.cookie } })
+    ).json()) as { panels: { sql?: string; metric: unknown; rowCount: number }[] };
+    expect(dd.panels[0].sql).toContain("count(*)");
+    expect(dd.panels[0].metric).not.toBeNull(); // "revenue" metric resolved
+    expect(dd.panels[0].rowCount).toBe(1);
+
+    // 3. The sandboxed frame carries the injected data + the no-network CSP.
+    const frameRes = await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } });
+    expect(frameRes.headers.get("content-security-policy")).toContain("default-src 'none'");
+    const frame = await frameRes.text();
+    expect(frame).toContain("window.__SETOKU__");
+    const n0 = countIn(frame);
+    expect(n0).toBeGreaterThan(0);
+
+    // 4. Mutate the DB, force a refresh → the rendered data reflects the change
+    //    (this is the whole point: the data is live, not frozen at publish).
+    const pg = new PgClient({ host: PG_HOST, database: DB_NAME });
+    await pg.connect();
+    await pg.query("INSERT INTO orders (customer_id, status, total_cents) VALUES (1, 'paid', 100)");
+    await pg.end();
+    await fetch(`${BASE}/admin/api/dashboard_data?id=${id}&force=1`, { headers: { cookie: boss.cookie } });
+    const frame2 = await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).text();
+    expect(countIn(frame2)).toBe((n0 ?? 0) + 1);
+
+    // 5. Public surface is blocked until a human promotes it (membrane).
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404);
+    const promote = await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect(promote.status).toBe(200);
+
+    // 6. Public provenance OMITS raw SQL (it would leak schema); the public frame
+    //    still injects data; the public page is the trusted shell (frames it).
+    const pdata = (await (await fetch(`${BASE}/p/${id}/data`)).json()) as {
+      panels: { sql?: string; metric: unknown }[];
+    };
+    expect(pdata.panels[0].sql).toBeUndefined();
+    expect(pdata.panels[0].metric).not.toBeNull(); // methodology IS shown publicly
+    const pframe = await (await fetch(`${BASE}/p/${id}/frame`)).text();
+    expect(pframe).toContain("window.__SETOKU__");
+    const shell = await (await fetch(`${BASE}/p/${id}`)).text();
+    expect(shell).toContain("<iframe");
+    expect(shell).toContain(`/p/${id}/frame`);
+
+    // 7. Archiving 404s the link everywhere (and drops cached data).
+    const arch = await fetch(`${BASE}/admin/api/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id }),
+    });
+    expect(arch.status).toBe(200);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404);
+    expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(404);
+  }, 20_000);
+});

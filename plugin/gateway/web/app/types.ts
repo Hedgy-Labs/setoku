@@ -113,20 +113,60 @@ export interface AuditRow {
 }
 
 export type ReportVisibility = "team" | "public";
+export type PanelDialect = "postgres" | "clickhouse";
 
-/** A report published to the box. `body` is present only on a single-report
- *  fetch; the list omits it. Mirrors lib/store.ts. */
+/** A dashboard panel's data binding (mirrors lib/store.ts DashboardPanel). */
+export interface DashboardPanel {
+  key: string;
+  title?: string;
+  sql: string;
+  dialect: PanelDialect;
+  metricId?: string | null;
+}
+
+/** A dashboard/report published to the box (list metadata; no body). A "dashboard"
+ *  has live `panels`; a legacy "html" report has none. Mirrors lib/store.ts. */
 export interface PublishedMeta {
   id: string;
   title: string;
-  format: "html";
+  format: "html" | "dashboard";
+  panels: DashboardPanel[] | null;
+  refreshSeconds: number | null;
   visibility: ReportVisibility;
   createdBy: string;
   createdAt: string;
   archivedAt: string | null;
 }
-export interface PublishedReport extends PublishedMeta {
-  body: string;
+
+/** One panel as the provenance drawer / viewer sees it (server: dashboardProvenance).
+ *  `sql` is present only on the authenticated team surface. */
+export interface PanelProvenance {
+  key: string;
+  title: string | null;
+  dialect: PanelDialect;
+  metricId: string | null;
+  metric: { name: string; summary: string; body: string } | null;
+  sql?: string;
+  columns: string[];
+  rowCount: number;
+  computedAt: string | null;
+  error: string | null;
+  refreshError: string | null;
+}
+
+/** The team viewer's data: dashboard meta + freshly-rendered panel provenance.
+ *  The panel ROWS render in the sandboxed /admin/frame/<id>; this is the chrome. */
+export interface DashboardData {
+  id: string;
+  title: string;
+  format: "html" | "dashboard";
+  visibility: ReportVisibility;
+  refreshSeconds: number | null;
+  createdBy: string;
+  createdAt: string;
+  archivedAt: string | null;
+  updatedAt: string | null;
+  panels: PanelProvenance[];
 }
 
 export interface SourceTable {

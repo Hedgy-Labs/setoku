@@ -7,25 +7,25 @@ import { useAuth } from "../auth";
 import { Heading, Loading, ErrorMsg, Flash } from "../components/Page";
 import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
-import { reportShareUrl } from "../format";
+import { dashboardShareUrl } from "../format";
 import type { PublishedMeta } from "../types";
 
-export function Reports() {
+export function Dashboards() {
   const { me } = useAuth();
   const isAdmin = me?.role === "admin";
-  const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.reports(), []);
+  const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.dashboards(), []);
   const [flash, setFlash] = useState<string | null>(null);
 
   const copy = async (r: PublishedMeta) => {
     try {
-      await navigator.clipboard.writeText(reportShareUrl(r));
+      await navigator.clipboard.writeText(dashboardShareUrl(r));
       setFlash(
         r.visibility === "public"
           ? "Public link copied — anyone can open it, no login."
           : "Link copied — recipients must sign in to the box to view.",
       );
     } catch {
-      setFlash(reportShareUrl(r));
+      setFlash(dashboardShareUrl(r));
     }
   };
 
@@ -44,10 +44,11 @@ export function Reports() {
 
   return (
     <>
-      <Heading title="Reports">
-        Reports agents published to this box. <b className="text-stone-800">Team</b> links are session-gated
-        (a viewer signs in here); the author or an admin can make one <b className="text-stone-800">public</b>{" "}
-        for a credential-free link.
+      <Heading title="Dashboards">
+        Dashboards agents published to this box, backed by <b className="text-stone-800">live data</b> — the box
+        re-runs each panel's query on a refresh interval. <b className="text-stone-800">Team</b> links are
+        session-gated; the author or an admin can make one <b className="text-stone-800">public</b> for a
+        credential-free link.
       </Heading>
       {flash ? <Flash>{flash}</Flash> : null}
       {loading ? (
@@ -64,6 +65,7 @@ export function Reports() {
               active.map((r) => {
                 const mine = me?.identity === r.createdBy;
                 const canManage = isAdmin || mine;
+                const panelCount = r.panels?.length ?? 0;
                 const items: ReactNode[] = [
                   <MenuItem key="copy" onSelect={() => void copy(r)}>
                     Copy link
@@ -91,8 +93,10 @@ export function Reports() {
                       </Link>
                       <div className="mt-0.5 text-xs text-stone-500">
                         {r.createdBy} · {String(r.createdAt).slice(0, 16)}
+                        {panelCount ? ` · ${panelCount} live panel${panelCount === 1 ? "" : "s"}` : ""}
                       </div>
                     </div>
+                    {panelCount ? <Badge tone="ok">live</Badge> : <Badge tone="idle">static</Badge>}
                     <Badge tone={r.visibility === "public" ? "ok" : "idle"}>{r.visibility}</Badge>
                     <Menu label={`Actions for ${r.title}`}>{items}</Menu>
                   </div>
@@ -100,7 +104,8 @@ export function Reports() {
               })
             ) : (
               <div className="card p-8 text-center text-stone-500">
-                Nothing published yet. An agent publishes with the <code className="kbd">publish_report</code> tool.
+                Nothing published yet. An agent publishes with the{" "}
+                <code className="kbd">publish_dashboard</code> tool.
               </div>
             )}
           </div>
