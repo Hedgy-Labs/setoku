@@ -36,6 +36,14 @@ export interface NewLogin {
   tempPassword: string;
 }
 
+/** The exact upsert payload approving a correction would commit (cockpit). */
+export interface CorrectionDraft {
+  type: string;
+  name: string;
+  body: string;
+  meta: Record<string, string | string[]>;
+}
+
 export interface Correction {
   id: number;
   ts: string;
@@ -47,6 +55,15 @@ export interface Correction {
   fact: string | null;
   relatesTo: string | null;
   status: string;
+  /** The drafted doc-edit approving this would commit; null = undrafted. */
+  draft: CorrectionDraft | null;
+  /** Advisory flags: dupe, contradiction, lint, provenance. */
+  flags: string[];
+  draftedBy: string | null;
+  draftedTs: string | null;
+  /** True when the auto-reject janitor (not a human) rejected it. */
+  rejectedByBot: boolean;
+  rejectReason: string | null;
 }
 
 export interface KnowledgeMember {

@@ -6,6 +6,7 @@ import type {
   Invite,
   NewLogin,
   Correction,
+  CorrectionDraft,
   KnowledgeDoc,
   KnowledgeView,
   AuditRow,
@@ -81,8 +82,15 @@ export const api = {
     req<LoginResult>("login", { method: "POST", body: { username, password } }),
   logout: () => req<{ ok: boolean }>("logout", { method: "POST" }),
   pending: () => req<Correction[]>("pending"),
-  resolve: (id: number, action: "accepted" | "rejected", reason?: string) =>
-    req<MutationResult>("resolve", { method: "POST", body: { id, action, reason } }),
+  rejected: () => req<Correction[]>("rejected"),
+  // On accept, an optional edited draft is the doc-edit committed into context.
+  resolve: (
+    id: number,
+    action: "accepted" | "rejected",
+    reason?: string,
+    draft?: CorrectionDraft,
+  ) => req<MutationResult>("resolve", { method: "POST", body: { id, action, reason, draft } }),
+  unreject: (id: number) => req<MutationResult>("unreject", { method: "POST", body: { id } }),
   knowledge: () => req<KnowledgeDoc[]>("knowledge"),
   knowledgeView: () => req<KnowledgeView>("knowledge_view"),
   sources: () => req<SourcesData>("sources"),

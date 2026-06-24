@@ -62,6 +62,10 @@ services:
       # curator tokens (commit curated knowledge, blocked from the lake) for
       # /setoku:generate + /setoku:curate — optional; mint with admin-cli.
       SETOKU_CURATOR_TOKENS: ${SETOKU_CURATOR_TOKENS:-}
+      # janitor tokens (auto-draft/auto-reject the corrections queue) — draft +
+      # reject ONLY, both granting zero authority. Optional; powers the cockpit's
+      # drafting cadence (curation-cockpit-spec). Never accept/upsert.
+      SETOKU_JANITOR_TOKENS: ${SETOKU_JANITOR_TOKENS:-}
       SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
       SETOKU_PUBLIC_URL: https://${SETOKU_DOMAIN:-localhost}
       SETOKU_HEALTHZ_PING: ${SETOKU_HEALTHZ_PING:-}

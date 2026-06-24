@@ -5,3 +5,9 @@
 47 4 * * 0  cd /opt/setoku && deploy/backup/parquet-export.sh >> /var/log/setoku/backup.log 2>&1
 # Health + disk alerting, every 5 minutes
 */5 * * * * cd /opt/setoku && deploy/monitor/alert.sh >> /var/log/setoku/alert.log 2>&1
+# Knowledge drift canary (files drift as pending corrections → cockpit), daily 05:23 UTC
+23 5 * * *  cd /opt/setoku && deploy/monitor/knowledge-canary.sh >> /var/log/setoku/canary.log 2>&1
+# Periodic curation (generate on new main commits + draft/triage the queue) — runs
+# wherever Claude Code is authenticated (NOT the VPS). Source an env file with the
+# tokens first. Hourly is plenty; generate self-skips when main hasn't advanced.
+# 0 * * * *  cd /path/to/business-repo && set -a && . /etc/setoku/curate.env && set +a && /opt/setoku/deploy/monitor/curate-cron.sh >> /var/log/setoku/curate.log 2>&1

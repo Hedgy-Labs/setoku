@@ -79,6 +79,8 @@ beforeAll(async () => {
     SETOKU_E2E_DB_URL: DB_URL,
     SETOKU_HTTP_PORT: String(PORT),
     SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test",
+    SETOKU_CURATOR_TOKENS: "tok-curator=curator@co.test",
+    SETOKU_JANITOR_TOKENS: "tok-janitor=janitor@co.test",
     SETOKU_TOKENS_FILE: path.join(tmpRepo, "teammates.json"),
     // exercise dependency pings: the gateway pings its own /health
     SETOKU_HEALTHZ_PING: `self=http://127.0.0.1:${PORT}/health,down=http://127.0.0.1:1/nope`,
@@ -584,5 +586,127 @@ describe("tool annotations", () => {
     expect(byName["report_correction"].readOnlyHint).toBe(false);
     expect(byName["report_correction"].destructiveHint).toBe(false);
     await alice.close();
+  });
+});
+
+describe("curation cockpit capabilities (draft-only / reject-only — the membrane)", () => {
+  async function toolNames(token: string): Promise<string[]> {
+    const c = await connect(token);
+    const names = (await c.listTools()).tools.map((t) => t.name);
+    await c.close();
+    return names;
+  }
+
+  it("the janitor token holds draft + reject ONLY — never upsert_context or any accept path", async () => {
+    const names = await toolNames("tok-janitor");
+    expect(names).toContain("draft_correction");
+    expect(names).toContain("reject_correction");
+    // the load-bearing absence: no tool that COMMITS curated knowledge
+    expect(names).not.toContain("upsert_context");
+    expect(names).not.toContain("resolve_correction");
+  });
+
+  it("the analyst token has neither draft nor reject (propose-only stays the floor)", async () => {
+    const names = await toolNames("tok-alice");
+    expect(names).not.toContain("draft_correction");
+    expect(names).not.toContain("reject_correction");
+    expect(names).not.toContain("upsert_context");
+  });
+
+  it("the curator commits directly (upsert + resolve) and does NOT hold the janitor tools", async () => {
+    const names = await toolNames("tok-curator");
+    expect(names).toContain("upsert_context");
+    expect(names).toContain("resolve_correction");
+    expect(names).not.toContain("draft_correction");
+    expect(names).not.toContain("reject_correction");
+  });
+
+  it("draft_correction attaches a draft + flags but commits NO curated doc", async () => {
+    const alice = await connect("tok-alice");
+    await call(alice, "report_correction", {
+      kind: "metric",
+      fact: "revenue must net out refunds",
+      relates_to: "revenue",
+    });
+    await alice.close();
+
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(path.join(tmpRepo, "knowledge.db"));
+    const id = (db.query("SELECT id FROM corrections WHERE fact LIKE 'revenue must net%' ORDER BY id DESC").get() as { id: number }).id;
+    const docsBefore = (db.query("SELECT count(*) AS n FROM docs").get() as { n: number }).n;
+    db.close();
+
+    const janitor = await connect("tok-janitor");
+    const r = await call(janitor, "draft_correction", {
+      id,
+      type: "metric",
+      name: "revenue",
+      body: "SELECT sum(total_cents) - sum(refund_cents) FROM orders",
+      flags: ["lint"],
+    });
+    await janitor.close();
+    expect(r.isError).toBe(false);
+
+    const db2 = new Database(path.join(tmpRepo, "knowledge.db"), { readonly: true });
+    const row = db2.query("SELECT status, draft_body, flags, drafted_by FROM corrections WHERE id = ?").get(id) as {
+      status: string;
+      draft_body: string;
+      flags: string;
+      drafted_by: string;
+    };
+    const docsAfter = (db2.query("SELECT count(*) AS n FROM docs").get() as { n: number }).n;
+    db2.close();
+    expect(row.status).toBe("pending"); // drafting never resolves
+    expect(row.draft_body).toContain("refund_cents");
+    expect(JSON.parse(row.flags)).toEqual(["lint"]);
+    expect(row.drafted_by).toBe("janitor@co.test");
+    expect(docsAfter).toBe(docsBefore); // a draft commits nothing
+  });
+
+  it("reject_correction soft-rejects with rejected_by_bot set (reversible, audited)", async () => {
+    const alice = await connect("tok-alice");
+    await call(alice, "report_correction", { kind: "gotcha", fact: "objectively-broken proposal to auto-reject" });
+    await alice.close();
+
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(path.join(tmpRepo, "knowledge.db"));
+    const id = (db.query("SELECT id FROM corrections WHERE fact LIKE 'objectively-broken%' ORDER BY id DESC").get() as { id: number }).id;
+    db.close();
+
+    const janitor = await connect("tok-janitor");
+    const r = await call(janitor, "reject_correction", { id, reason: "drafted SQL references a denied table" });
+    await janitor.close();
+    expect(r.isError).toBe(false);
+
+    const db2 = new Database(path.join(tmpRepo, "knowledge.db"), { readonly: true });
+    const row = db2.query("SELECT status, rejected_by_bot, reject_reason FROM corrections WHERE id = ?").get(id) as {
+      status: string;
+      rejected_by_bot: number;
+      reject_reason: string;
+    };
+    db2.close();
+    expect(row.status).toBe("rejected");
+    expect(row.rejected_by_bot).toBe(1);
+    expect(row.reject_reason).toContain("denied table");
+  });
+
+  it("a janitor calling upsert_context fails and commits nothing (it isn't registered — the membrane)", async () => {
+    const { Database } = await import("bun:sqlite");
+    const before = (() => {
+      const db = new Database(path.join(tmpRepo, "knowledge.db"), { readonly: true });
+      const n = (db.query("SELECT count(*) AS n FROM docs WHERE name = 'membrane-probe'").get() as { n: number }).n;
+      db.close();
+      return n;
+    })();
+
+    const janitor = await connect("tok-janitor");
+    const r = await call(janitor, "upsert_context", { type: "gotcha", name: "membrane-probe", body: "should never commit" });
+    await janitor.close();
+    expect(r.isError).toBe(true); // unknown tool → error result, not a commit
+
+    const db = new Database(path.join(tmpRepo, "knowledge.db"), { readonly: true });
+    const after = (db.query("SELECT count(*) AS n FROM docs WHERE name = 'membrane-probe'").get() as { n: number }).n;
+    db.close();
+    expect(after).toBe(before); // nothing was written
   });
 });

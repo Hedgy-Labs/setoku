@@ -17,7 +17,7 @@
  * COMMIT (applyApprovalAction): the human's accept/reject decision is applied
  * here, driven by their authenticated POST — outside any agent loop (I2/I9).
  */
-import type { KnowledgeStore } from "./store";
+import type { Correction, CorrectionDraft, KnowledgeStore } from "./store";
 
 /**
  * Short, word-boundary name for a gotcha doc. Avoids the mid-word truncation of a
@@ -36,6 +36,36 @@ function gotchaDocName(relatesTo: string | null | undefined, fact: string): stri
       .slice(0, n)
       .join("-");
   return [relatesTo ? words(relatesTo, 3) : "", words(fact, 6)].filter(Boolean).join("-") || "gotcha";
+}
+
+/**
+ * The drafted doc-edit a correction would commit on accept (curation-cockpit
+ * piece A/B). Order of precedence: an explicit draft persisted on the row
+ * (auto-draft job, piece B) wins; otherwise we synthesize the obvious default —
+ * for a `gotcha` that's the long-standing fold (concise fact → a gotcha doc);
+ * for other kinds we have no model-free way to synthesize a structured doc, so
+ * there is no default draft until the auto-draft job (or a human in the cockpit)
+ * supplies one. Returns null when nothing can be drafted yet.
+ *
+ * Pure + model-free (I8) — it never commits, so it's safe to call when merely
+ * RENDERING the pending queue (the cockpit shows this as the editable draft).
+ */
+export function defaultDraft(corr: Correction): CorrectionDraft | null {
+  if (corr.draft) return corr.draft;
+  if (corr.kind === "gotcha") {
+    // store only the concise FACT as knowledge (#10, avenue 1); the supporting
+    // context stays in the corrections record, not the gotcha doc.
+    const knowledge = corr.fact?.trim() || corr.content;
+    const meta: Record<string, string | string[]> = { proposed_by: corr.user };
+    if (corr.relatesTo) meta.relates_to = corr.relatesTo;
+    return {
+      type: "gotcha",
+      name: gotchaDocName(corr.relatesTo, knowledge),
+      body: knowledge,
+      meta,
+    };
+  }
+  return null;
 }
 
 /* ------------------------------ sessions ------------------------------ */
@@ -139,53 +169,66 @@ export interface Invite {
 
 /**
  * Apply a human approve/reject decision. Returns a flash message for the API to
- * relay. The COMMIT happens here, driven by the human's authenticated POST — for
- * an accepted gotcha we fold it straight into curated context (a clean mapping);
- * other kinds are marked accepted and left for a curator session to shape into a
- * metric/entity doc (we don't synthesize structured docs from free text).
+ * relay. The COMMIT happens here, driven by the human's authenticated POST.
+ *
+ * On ACCEPT we upsert the DRAFTED doc into curated context for ALL kinds, not
+ * just gotchas (curation-cockpit piece A.1 — closes the "accept does nothing for
+ * a non-gotcha" gap). The draft is, in order of precedence: the one the human
+ * edited in the cockpit (params.draft), else the draft the auto-draft job
+ * persisted on the row, else the synthesized default (gotcha fold). If no draft
+ * exists for a non-gotcha kind, we still mark it accepted but commit nothing —
+ * the same "shape it in a curator session" message as before, until the
+ * auto-draft job fills it in. Either way the membrane holds: this commit happens
+ * only behind the human's password-gated POST (I2/I9).
  */
 export function applyApprovalAction(
   store: KnowledgeStore,
   identity: string,
-  params: { id: number; action: "accepted" | "rejected"; reason?: string },
+  params: {
+    id: number;
+    action: "accepted" | "rejected";
+    draft?: CorrectionDraft;
+    reason?: string;
+  },
 ): string {
-  const { id, action, reason } = params;
-  const pending = store.listCorrections("pending");
-  const corr = pending.find((c) => c.id === id);
-  if (!corr) return `#${id} is not pending (already resolved?).`;
+  const { id, action, draft, reason } = params;
+  const corr = store.getCorrection(id);
+  if (!corr || corr.status !== "pending") return `#${id} is not pending (already resolved?).`;
+
+  if (action === "rejected") {
+    // a human reject stays a soft, audited status change (not a bot reject)
+    const ok = store.rejectCorrection(id, reason || "", identity, false);
+    if (!ok) return `#${id} could not be resolved (already resolved?).`;
+    store.audit(identity, "approval_rejected", { id, kind: corr.kind, reason: reason || null });
+    return `#${id} rejected.`;
+  }
 
   const ok = store.resolveCorrection(id, action, identity);
   if (!ok) return `#${id} could not be resolved (already resolved?).`;
 
-  let folded = false;
-  if (action === "accepted" && corr.kind === "gotcha") {
-    // store only the concise FACT as knowledge (#10, avenue 1); the supporting
-    // context (corr.content) stays in the corrections record, not the gotcha.
-    const knowledge = corr.fact?.trim() || corr.content;
-    // attribution: `proposed_by` is who filed the correction; the doc's
-    // updated_by (= identity, the approver) records who accepted it.
-    const meta: Record<string, string> = { proposed_by: corr.user };
-    if (corr.relatesTo) meta.relates_to = corr.relatesTo;
+  // commit the drafted doc-edit (the cockpit edit wins, else persisted/default)
+  const effective = draft ?? defaultDraft(corr);
+  let committed = false;
+  if (effective) {
+    // attribution: the doc's updated_by (= identity, the approver) records who
+    // accepted it; the draft's meta.proposed_by records who originally proposed.
+    const meta: Record<string, string | string[]> = { ...(effective.meta ?? {}) };
+    if (!meta.proposed_by) meta.proposed_by = corr.user;
     store.upsertDoc(
-      {
-        type: "gotcha",
-        name: gotchaDocName(corr.relatesTo, knowledge),
-        body: knowledge,
-        meta,
-      },
+      { type: effective.type, name: effective.name, body: effective.body, meta },
       identity,
     );
-    folded = true;
+    committed = true;
   }
-  store.audit(identity, `approval_${action}`, {
+  store.audit(identity, "approval_accepted", {
     id,
     kind: corr.kind,
-    folded,
+    committed,
+    doc: committed && effective ? `${effective.type}:${effective.name}` : null,
     reason: reason || null,
   });
 
-  if (action === "rejected") return `#${id} rejected.`;
-  return folded
-    ? `#${id} approved — folded into verified context.`
-    : `#${id} approved (recorded; shape it into a doc in a curator session).`;
+  return committed && effective
+    ? `#${id} approved — committed [${effective.type}] ${effective.name} to verified context.`
+    : `#${id} approved (recorded; no draft yet — shape it into a doc in a curator session or run the auto-draft job).`;
 }

@@ -36,4 +36,15 @@ if [ -n "$DOMAIN" ]; then
   printf '   /health: '; curl -s --max-time 12 "https://${DOMAIN}/health" || echo "(no response yet — check 'docker compose logs server')"
   echo
 fi
+
+# Live-store knowledge lint (curation-cockpit-spec piece D) — WARN, never gate.
+# Runs the canonical SQL in each metric/query doc against the live business DB
+# inside the server container and bounds-checks it. A non-zero result is shown
+# but does NOT fail the deploy (drift is healed via the cockpit, not by blocking
+# a ship). The scheduled canary runs it with --file to file drift as pending
+# corrections; here we only warn.
+echo "→ knowledge-lint (warn-only)…"
+ssh "$SSH" "cd ${DIR} && docker compose exec -T server bun gateway/knowledge-lint.ts" \
+  || echo "   (lint reported issues or could not run — review above; deploy NOT blocked)"
+
 echo "✓ deployed."

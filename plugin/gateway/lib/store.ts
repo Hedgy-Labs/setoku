@@ -29,6 +29,20 @@ export interface KnowledgeDoc {
   updatedAt: string | null;
 }
 
+/**
+ * A drafted doc edit attached to a pending correction (curation cockpit). It is
+ * the EXACT `upsert` payload that approving the correction would commit — an
+ * advisory artifact only. A draft grants no authority (the membrane: drafting is
+ * free; committing is the human `/admin` click). Produced by the auto-draft job
+ * (piece B) or hand-typed in the cockpit before approval.
+ */
+export interface CorrectionDraft {
+  type: DocType;
+  name: string;
+  body: string;
+  meta: Record<string, string | string[]>;
+}
+
 export interface Correction {
   id: number;
   ts: string;
@@ -42,6 +56,19 @@ export interface Correction {
   fact: string | null;
   relatesTo: string | null;
   status: "pending" | "accepted" | "rejected";
+  /** The drafted doc-edit approving this would commit (cockpit). Null = undrafted.
+   *  Optional on the in-memory shape (test fixtures omit it); rowToCorrection
+   *  always populates it from the DB. */
+  draft?: CorrectionDraft | null;
+  /** Advisory flags from the auto-draft/lint pass: dupe, contradiction, lint, provenance. */
+  flags?: string[];
+  /** Who drafted (the draft-only janitor identity), and when. Null = undrafted. */
+  draftedBy?: string | null;
+  draftedTs?: string | null;
+  /** True when the auto-reject janitor (not a human) rejected it — soft + reversible. */
+  rejectedByBot?: boolean;
+  /** Why it was rejected (janitor reason or human reason). */
+  rejectReason?: string | null;
 }
 
 /** A local account for the web admin surface (Phase 5.1). */
@@ -147,6 +174,22 @@ export class KnowledgeStore {
     // stores migrate in place; legacy rows keep `fact` NULL and fall back to
     // `content` as the savable text.
     this.ensureColumn("corrections", "fact", "TEXT");
+    // Curation cockpit (curation-cockpit-spec, piece A/B/C). A pending correction
+    // can carry a DRAFT — the exact upsert payload approving it would commit —
+    // plus advisory FLAGS (dupe/contradiction/lint/provenance) produced by the
+    // auto-draft job. These are advisory only: a draft grants no authority, so
+    // they migrate in idempotently and never change who can commit. `rejected_by_bot`
+    // marks an auto-rejected (janitor) item so a suppression attack is auditable
+    // and the cockpit can un-reject it.
+    this.ensureColumn("corrections", "draft_type", "TEXT");
+    this.ensureColumn("corrections", "draft_name", "TEXT");
+    this.ensureColumn("corrections", "draft_body", "TEXT");
+    this.ensureColumn("corrections", "draft_meta", "TEXT");
+    this.ensureColumn("corrections", "flags", "TEXT");
+    this.ensureColumn("corrections", "drafted_by", "TEXT");
+    this.ensureColumn("corrections", "drafted_ts", "TEXT");
+    this.ensureColumn("corrections", "rejected_by_bot", "INTEGER NOT NULL DEFAULT 0");
+    this.ensureColumn("corrections", "reject_reason", "TEXT");
     this.db.run(`CREATE TABLE IF NOT EXISTS audit (
       id INTEGER PRIMARY KEY,
       ts TEXT NOT NULL,
@@ -320,10 +363,18 @@ export class KnowledgeStore {
   listCorrections(status: string = "pending"): Correction[] {
     const rows = this.db
       .query(
-        "SELECT id, ts, user, kind, content, fact, relates_to AS relatesTo, status FROM corrections WHERE status = ? ORDER BY id",
+        "SELECT * FROM corrections WHERE status = ? ORDER BY id",
       )
-      .all(status) as unknown as Correction[];
-    return rows;
+      .all(status) as Record<string, unknown>[];
+    return rows.map(rowToCorrection);
+  }
+
+  /** A single correction by id, regardless of status (cockpit / capability tools). */
+  getCorrection(id: number): Correction | null {
+    const row = this.db
+      .query("SELECT * FROM corrections WHERE id = ?")
+      .get(id) as Record<string, unknown> | null;
+    return row ? rowToCorrection(row) : null;
   }
 
   resolveCorrection(
@@ -335,6 +386,73 @@ export class KnowledgeStore {
       "UPDATE corrections SET status = ?, resolved_by = ?, resolved_ts = ? WHERE id = ? AND status = 'pending'",
       [action, user, new Date().toISOString(), id],
     );
+    return res.changes > 0;
+  }
+
+  /**
+   * Attach (or replace) a DRAFT + advisory FLAGS on a pending correction — the
+   * cockpit/auto-draft path (curation-cockpit-spec piece B). Writes NO curated
+   * doc and never changes the correction's status: a draft grants no authority.
+   * Only pending corrections can be drafted. Returns false if not pending.
+   */
+  draftCorrection(
+    id: number,
+    draft: CorrectionDraft,
+    flags: string[],
+    user: string,
+  ): boolean {
+    const res = this.db.run(
+      `UPDATE corrections
+         SET draft_type = ?, draft_name = ?, draft_body = ?, draft_meta = ?,
+             flags = ?, drafted_by = ?, drafted_ts = ?
+       WHERE id = ? AND status = 'pending'`,
+      [
+        draft.type,
+        draft.name,
+        draft.body,
+        JSON.stringify(draft.meta ?? {}),
+        JSON.stringify(flags ?? []),
+        user,
+        new Date().toISOString(),
+        id,
+      ],
+    );
+    return res.changes > 0;
+  }
+
+  /**
+   * Reject a pending correction — queue status only, grants zero authority
+   * (curation-cockpit-spec piece C). `byBot` marks an auto-reject (janitor) so a
+   * suppression attack is auditable and the cockpit can surface + reverse it.
+   * Soft: the row is kept (status='rejected'), recoverable via unrejectCorrection.
+   */
+  rejectCorrection(
+    id: number,
+    reason: string,
+    user: string,
+    byBot = false,
+  ): boolean {
+    const res = this.db.run(
+      `UPDATE corrections
+         SET status = 'rejected', resolved_by = ?, resolved_ts = ?,
+             reject_reason = ?, rejected_by_bot = ?
+       WHERE id = ? AND status = 'pending'`,
+      [user, new Date().toISOString(), reason, byBot ? 1 : 0, id],
+    );
+    return res.changes > 0;
+  }
+
+  /** Reverse a rejection back to pending (un-reject in the cockpit). Reversible
+   *  by design so a bot suppressing good proposals is undoable. */
+  unrejectCorrection(id: number, user: string): boolean {
+    const res = this.db.run(
+      `UPDATE corrections
+         SET status = 'pending', resolved_by = NULL, resolved_ts = NULL,
+             reject_reason = NULL, rejected_by_bot = 0
+       WHERE id = ? AND status = 'rejected'`,
+      [id],
+    );
+    if (res.changes > 0) this.audit(user, "unreject_correction", { id });
     return res.changes > 0;
   }
 
@@ -473,6 +591,7 @@ export class KnowledgeStore {
     const MCP_TOOLS = [
       "find_context", "get_schema", "run_query", "list_entities", "describe_entity",
       "get_metric", "list_corrections", "report_correction", "upsert_context", "resolve_correction",
+      "draft_correction", "reject_correction",
     ];
     const ph = MCP_TOOLS.map(() => "?").join(",");
     const rows = this.db
@@ -691,6 +810,43 @@ function rowToProvisioning(
     status: row.status as ProvisioningStatus,
     detail,
     actor: String(row.actor),
+  };
+}
+
+function rowToCorrection(row: Record<string, unknown>): Correction {
+  const parse = <T>(raw: unknown, fallback: T): T => {
+    if (typeof raw !== "string" || !raw) return fallback;
+    try {
+      return JSON.parse(raw) as T;
+    } catch {
+      return fallback;
+    }
+  };
+  const draftName = row.draft_name as string | null;
+  const draft: CorrectionDraft | null =
+    row.draft_type && draftName
+      ? {
+          type: row.draft_type as DocType,
+          name: String(draftName),
+          body: String(row.draft_body ?? ""),
+          meta: parse<Record<string, string | string[]>>(row.draft_meta, {}),
+        }
+      : null;
+  return {
+    id: Number(row.id),
+    ts: String(row.ts),
+    user: String(row.user),
+    kind: String(row.kind),
+    content: String(row.content ?? ""),
+    fact: (row.fact as string) ?? null,
+    relatesTo: (row.relates_to as string) ?? null,
+    status: row.status as Correction["status"],
+    draft,
+    flags: parse<string[]>(row.flags, []),
+    draftedBy: (row.drafted_by as string) ?? null,
+    draftedTs: (row.drafted_ts as string) ?? null,
+    rejectedByBot: !!row.rejected_by_bot,
+    rejectReason: (row.reject_reason as string) ?? null,
   };
 }
 
