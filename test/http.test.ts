@@ -860,4 +860,47 @@ describe("live dashboards (end-to-end render path)", () => {
     expect((await fetch(`${BASE}/p/${legId}/frame`)).status).toBe(404);
     expect((await fetch(`${BASE}/p/${legId}/data`)).status).toBe(404);
   }, 20_000);
+
+  it("update_dashboard is author-gated, edits in place, injects the chart runtime, and reverts public on panel change", async () => {
+    const alice = await connect("tok-alice");
+    const pub = await call(alice, "publish_dashboard", {
+      title: "Alice board",
+      html: "<div id=x></div>",
+      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+    });
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    await alice.close();
+
+    // a different identity cannot edit it
+    const bob = await connect("tok-bob");
+    const denied = await call(bob, "update_dashboard", { id, title: "hax" });
+    expect(denied.isError).toBe(true);
+    expect(denied.text.toLowerCase()).toContain("only the author");
+    await bob.close();
+
+    // admin promotes it to public
+    const boss = await session("boss", "s3cret-pass");
+    await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200);
+
+    // the author edits PANELS → reverts to team-only (re-approval needed)
+    const alice2 = await connect("tok-alice");
+    const upd = await call(alice2, "update_dashboard", {
+      id,
+      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders WHERE status='paid'", dialect: "postgres" }],
+    });
+    expect(upd.isError).toBe(false);
+    expect(upd.text.toLowerCase()).toContain("reverted to team");
+    await alice2.close();
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // public link gone
+
+    // the team frame serves the new code, with the chart runtime injected
+    const frame = await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).text();
+    expect(frame).toContain("window.__SETOKU__");
+    expect(frame).toContain("window.Setoku"); // tested chart helpers present
+  }, 20_000);
 });

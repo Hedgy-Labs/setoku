@@ -945,6 +945,43 @@ export class KnowledgeStore {
     return computedAt;
   }
 
+  /** Edit a published dashboard/report in place (same id/link) — author-gated
+   *  upstream. Only provided fields change; id/createdBy/createdAt/visibility are
+   *  preserved. Passing `panels` (incl. []) rewrites the panel set + format AND
+   *  clears the panel cache (the old rows no longer apply). Returns false if the
+   *  row is unknown or archived. */
+  updatePublished(
+    id: string,
+    fields: { title?: string; body?: string; panels?: DashboardPanel[]; refreshSeconds?: number | null },
+  ): boolean {
+    const sets: string[] = [];
+    const vals: (string | number | null)[] = [];
+    if (fields.title !== undefined) {
+      sets.push("title = ?");
+      vals.push(fields.title);
+    }
+    if (fields.body !== undefined) {
+      sets.push("body = ?");
+      vals.push(fields.body);
+    }
+    if (fields.panels !== undefined) {
+      const json = fields.panels.length ? JSON.stringify(fields.panels) : null;
+      sets.push("panels = ?", "format = ?");
+      vals.push(json, json ? "dashboard" : "html");
+    }
+    if (fields.refreshSeconds !== undefined) {
+      sets.push("refresh_seconds = ?");
+      vals.push(fields.refreshSeconds);
+    }
+    if (!sets.length) return true;
+    vals.push(id);
+    const changed =
+      this.db.run(`UPDATE published SET ${sets.join(", ")} WHERE id = ? AND archived_at IS NULL`, vals).changes > 0;
+    if (changed && fields.panels !== undefined)
+      this.db.run("DELETE FROM dashboard_cache WHERE dashboard_id = ?", [id]);
+    return changed;
+  }
+
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or
    *  archived report. Promoting to public is an admin action (enforced upstream). */
   setReportVisibility(id: string, visibility: ReportVisibility): boolean {

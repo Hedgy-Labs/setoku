@@ -38,6 +38,7 @@ import {
   type PublishedReport,
 } from "./lib/store";
 import { newestComputedAt, renderDashboard, type RenderedPanel } from "./lib/dashboards";
+import { DASHBOARD_RUNTIME } from "./lib/dashboard-runtime";
 import {
   type Invite,
   applyApprovalAction,
@@ -593,6 +594,9 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<script>window.__SETOKU__=${jsonForScript(data)};</script>` +
+    // Tested chart helpers (window.Setoku.*) — defined after the data, before the
+    // agent template's own <script> in <body> runs, so the template can call them.
+    `<script>${DASHBOARD_RUNTIME}</script>` +
     `</head><body>${dash.body}</body></html>`
   );
 }

@@ -166,6 +166,11 @@ Replaces `publish_report` / `list_published` / `unpublish_report`:
   the offending panel key + error, so the agent fixes it in-loop instead of
   shipping a dead panel. Seeds the cache with the dry-run results. Returns the
   team-only URL. `panels` omitted/empty ⇒ a static report (back-compat).
+- **`update_dashboard({ id, title?, html?, panels?, refreshSeconds? })`** — edit a
+  dashboard **you authored**, in place (same id/link). Only the author can edit;
+  `panels` replaces the whole set (re-validated + dry-run). Changing `panels` on a
+  *public* dashboard reverts it to team-only — the data it exposes changed, so an
+  admin must re-approve (the human public-promotion gate, I9).
 - **`list_dashboards()`** / **`unpublish_dashboard({ id })`** — unchanged
   semantics from the old list/unpublish.
 - **`get_dashboard({ id })`** — read-only inspection of panel definitions +
@@ -173,7 +178,29 @@ Replaces `publish_report` / `list_published` / `unpublish_report`:
 
 The agent already develops and eyeball-validates SQL in-session with
 `run_query`; `publish_dashboard` promotes those exact validated queries to live
-bindings. The `frontend-design` skill makes the template sharp.
+bindings.
+
+## Reliable rendering (the agent publishes blind)
+
+The agent never sees the rendered pixels, so hand-rolled SVG/CSS repeatedly broke
+the same ways — an inline `<span>` ignores `width`/`height` (blank bars), and
+Postgres numerics arrive as **strings** so chart math silently NaNs to zero. Two
+mitigations:
+
+- **Tested chart helpers** (`lib/dashboard-runtime.ts`) are injected into every
+  frame as `window.Setoku.*`: `bar`, `table`, `stat`, `line`. They coerce numeric
+  strings, size correctly (`display:block`), and render empty/error states — so
+  the agent calls a known-good primitive instead of reinventing it. Covered by
+  `test/dashboard-runtime.test.ts` via a DOM stub. Custom HTML stays the escape
+  hatch; raw data is still at `window.__SETOKU__.panels[key]`.
+- **Publish-time render lint** (`lintDashboardTemplate`) returns non-blocking
+  warnings on `publish_dashboard` / `update_dashboard`: a panel that's never
+  referenced, a `panels.X` reference to a key that doesn't exist, and a `<span>`
+  sized without `display` (the exact blank-bar bug). The agent self-corrects
+  without a render.
+
+A visual **screenshot preview** (render the frame to a PNG the agent inspects) is
+the deferred next step — it pairs with `update_dashboard` for a see-then-fix loop.
 
 ## Why this stays inside the invariants
 
