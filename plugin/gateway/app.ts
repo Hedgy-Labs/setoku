@@ -15,10 +15,11 @@ import {
   resolveLakeUrl,
   type SetokuConfig,
 } from "./lib/config";
-import { diagnoseNoTables, introspectSchema, runReadOnlyQuery } from "./lib/db";
+import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
-import { KnowledgeStore, type DocType } from "./lib/store";
+import { KnowledgeStore, type DashboardPanel, type DocType } from "./lib/store";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/dashboards";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
@@ -799,19 +800,14 @@ server.registerTool(
       sql && sql.length > 2000 ? sql.slice(0, 2000) + "…" : sql;
     try {
       const config = requireConfig();
-      let result;
-      if ((dialect ?? "postgres") === "clickhouse") {
-        if (denyLakeRead)
-          throw new Error(
-            "This is a curator session — reading the lake (clickhouse dialect) is disabled here so a session that can commit curated knowledge can't ingest untrusted bulk text (the I2/I9 membrane). Use an analyst connector to query the lake.",
-          );
-        const lake = resolveLakeUrl(projectDir, config);
-        if (!lake.ok) throw new Error(lake.error);
-        result = await runLakeQuery(lake.url, sql, config);
-      } else {
-        const url = requireDb(config);
-        result = await runReadOnlyQuery(url, sql, config);
-      }
+      // Route + enforce the lake membrane (I2/I9) through the SAME helper the
+      // dashboard panels use, so there is one gate, not two divergent copies.
+      const result = await runPanel(
+        projectDir,
+        config,
+        { key: "run_query", sql, dialect: dialect ?? "postgres" },
+        { denyLakeRead },
+      );
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
         dialect: dialect ?? "postgres",
@@ -876,96 +872,204 @@ server.registerTool(
   },
 );
 
-/* ------------------------------- publish ------------------------------- */
-// The agent publishes a self-contained report to the box and gets back a
-// shareable URL. v0 is TEAM-ONLY: the link (/admin/p/<id>) is session-gated, so
-// only people who already hold a box login can view it — that's what keeps a
-// (prompt-injectable) analyst session from turning publish into a public data-
-// exfiltration channel. The HTML is rendered in a sandboxed iframe (opaque
-// origin) so it can't reach the admin cookie/API. Available to every session
-// (it neither reads the lake nor commits curated knowledge — outside I2/I9).
+/* ------------------------------ dashboards ----------------------------- */
+// The agent publishes a DASHBOARD to the box and gets back a shareable URL. A
+// dashboard splits presentation (a frozen, agent-authored template) from data
+// (named panels, each a saved read-only query the box RE-RUNS live through the
+// governed run_query path). The template reads results off window.__SETOKU__.
+// A zero-panel dashboard is just a static report (back-compat).
+//
+// v0 is TEAM-ONLY: the link (/admin/p/<id>) is session-gated, so only people who
+// hold a box login can view it — that's what keeps a (prompt-injectable) analyst
+// session from turning publish into a public data-exfiltration channel. Promotion
+// to a public /p/<id> link is a human click in /admin, never an agent action.
+// The template runs in a sandboxed iframe under a no-network CSP (data is
+// injected, not fetched), so it can't reach the admin cookie/API or exfiltrate.
+// Available to every session (publishing neither commits curated knowledge nor,
+// for the publish itself, is gated by I2/I9 — but a curator session can't author
+// a clickhouse-dialect panel, see runPanel's membrane check).
 
-const MAX_REPORT_BYTES = 2_000_000; // ~2 MB of HTML; reports should be self-contained, not asset bundles
+const MAX_REPORT_BYTES = 2_000_000; // ~2 MB of template HTML; keep it self-contained, not an asset bundle
 
 const mintShareId = (): string =>
   Array.from(crypto.getRandomValues(new Uint8Array(12)))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-// Where a published report lives. SETOKU_PUBLIC_URL is the box's public origin
+// Where a published dashboard lives. SETOKU_PUBLIC_URL is the box's public origin
 // (also used by the installer links); without it we return the path and tell the
 // agent to prefix its box URL.
 const publishBase = (process.env.SETOKU_PUBLIC_URL ?? "").replace(/\/+$/, "");
-// Team reports live in the session-gated SPA (/admin/p/<id>); public ones serve
+// Team dashboards live in the session-gated SPA (/admin/p/<id>); public ones serve
 // credential-free at /p/<id>. The link an agent hands out follows visibility.
 const publishUrl = (id: string, visibility: "team" | "public" = "team"): string => {
   const path = visibility === "public" ? `/p/${id}` : `/admin/p/${id}`;
   return publishBase ? `${publishBase}${path}` : path;
 };
 
+const PANEL_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 server.registerTool(
-  "publish_report",
+  "publish_dashboard",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Publish a report to the box (team-shareable URL)",
+    title: "Publish a live dashboard to the box (team-shareable URL)",
     description:
-      "Publishes a self-contained HTML report (a chart, dashboard, or written-up answer you generated) to " +
-      "this Setoku box and returns a shareable URL. Use this when the user wants to SHARE a result with their " +
-      "team — not for answering in-session. Pass ONE self-contained HTML document in `html`: inline all CSS, " +
-      "and any data; for charts prefer inline SVG (scripts run sandboxed, so external/CDN scripts may be " +
-      "blocked). The link is TEAM-ONLY — viewers must sign in to the box — so it's safe to share internally but " +
-      "do not present it as public. Revoke with unpublish_report.",
+      "Publishes a dashboard backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
+      "the team as a link that stays current — not for answering in-session.\n" +
+      "Pass `html`: the presentation TEMPLATE — a self-contained HTML fragment (inline <style>/<script>, inline " +
+      "SVG for charts; NO external/CDN assets and NO network calls — data is injected, not fetched). Render from " +
+      "`window.__SETOKU__.panels[<key>]`, each `{ columns, rows, rowCount, computedAt, error }`.\n" +
+      "Pass `panels`: the data bindings. Each panel's `sql` is a read-only query the box re-runs live (same path " +
+      "as run_query — develop & validate it with run_query first, then paste it here). Set `dialect` to match " +
+      "(postgres = business DB, clickhouse = lake). Set `metricId` to the name of a curated metric when the panel " +
+      "computes one — it links the panel to the team's verified definition in the 'how is this calculated' drawer.\n" +
+      "Omit `panels` for a static report. The link is TEAM-ONLY (viewers sign in); an admin can later make it public. " +
+      "Every panel is dry-run at publish — a broken query is rejected so you fix it now. Manage with " +
+      "list_dashboards / get_dashboard / unpublish_dashboard.",
     inputSchema: {
-      title: z.string().describe("Short human title for the report (shown in the box's Published list)"),
+      title: z.string().describe("Short human title (shown in the box's Dashboards list)"),
       html: z
         .string()
-        .describe("A single self-contained HTML document (inline CSS/SVG/data; no external asset dependencies)"),
+        .describe(
+          "The presentation template: a self-contained HTML fragment that renders from window.__SETOKU__.panels[key]. No external assets, no network.",
+        ),
+      panels: z
+        .array(
+          z.object({
+            key: z.string().describe("Stable slug the template reads: window.__SETOKU__.panels[key]"),
+            title: z.string().optional().describe("Human label for the provenance drawer"),
+            sql: z.string().describe("A single read-only SELECT/WITH statement (validate with run_query first)"),
+            dialect: z
+              .enum(["postgres", "clickhouse"])
+              .optional()
+              .describe("postgres (default) = business DB; clickhouse = the lake"),
+            metricId: z
+              .string()
+              .optional()
+              .describe("Name of a curated metric this panel computes — links provenance to the verified definition"),
+          }),
+        )
+        .optional()
+        .describe("Live data bindings. Omit for a static report."),
+      refreshSeconds: z
+        .number()
+        .optional()
+        .describe(`How often the box re-runs panels (default ${DEFAULT_REFRESH_SECONDS}, min ${MIN_REFRESH_SECONDS})`),
     },
   },
-  async ({ title, html }) => {
+  async ({ title, html, panels, refreshSeconds }) => {
     const bytes = Buffer.byteLength(html, "utf8");
     if (bytes > MAX_REPORT_BYTES)
       return errorText(
-        `Report is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap. Make it self-contained ` +
-          "and trim embedded data (summarize/aggregate before publishing).",
+        `Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap. Keep it a self-contained ` +
+          "fragment; the live data arrives via panels, so don't embed bulk data in the template.",
       );
+    const list = panels ?? [];
+    if (list.length > MAX_PANELS)
+      return errorText(`Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the dashboard.`);
+    const keys = new Set<string>();
+    for (const p of list) {
+      if (!PANEL_KEY_RE.test(p.key ?? ""))
+        return errorText(`Panel key "${p.key}" must be a 1–64 char slug ([A-Za-z0-9_-]).`);
+      if (keys.has(p.key)) return errorText(`Duplicate panel key "${p.key}".`);
+      keys.add(p.key);
+      if (!p.sql?.trim()) return errorText(`Panel "${p.key}" has no sql.`);
+    }
+    const normalized: DashboardPanel[] = list.map((p) => ({
+      key: p.key,
+      title: p.title,
+      sql: p.sql,
+      dialect: p.dialect ?? "postgres",
+      metricId: p.metricId ?? null,
+    }));
+
+    let config;
+    try {
+      config = requireConfig();
+    } catch (e) {
+      return errorText((e as Error).message);
+    }
+    // Dry-run every panel through the governed path BEFORE storing, so a broken
+    // query is fixed in-loop rather than shipped as a dead panel. Seed the cache
+    // with the results so the first view is instant.
+    const seeds: { key: string; columns: string[]; rows: Record<string, unknown>[]; rowCount: number }[] = [];
+    for (const p of normalized) {
+      try {
+        const r = await runPanel(projectDir, config, p, { denyLakeRead });
+        seeds.push({ key: p.key, columns: r.columns, rows: r.rows, rowCount: r.rowCount });
+      } catch (e) {
+        return errorText(`Panel "${p.key}" failed to run: ${(e as Error).message}\nFix the query and publish again.`);
+      }
+    }
+
     const id = mintShareId();
-    store.createPublished({ id, title: title.trim() || "Untitled report", body: html, createdBy: user });
-    store.audit(user, "publish_report", { id, title, bytes });
+    const refresh = normalized.length
+      ? Math.min(
+          MAX_REFRESH_SECONDS,
+          Math.max(MIN_REFRESH_SECONDS, Math.round(refreshSeconds ?? DEFAULT_REFRESH_SECONDS)),
+        )
+      : null;
+    store.createPublished({
+      id,
+      title: title.trim() || "Untitled dashboard",
+      body: html,
+      panels: normalized,
+      refreshSeconds: refresh,
+      format: normalized.length ? "dashboard" : "html",
+      createdBy: user,
+    });
+    for (const s of seeds)
+      store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
+    store.audit(user, "publish_dashboard", { id, title, bytes, panels: normalized.length });
+
+    const missingMetrics = normalized
+      .filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId)))
+      .map((p) => p.metricId);
+    const noun = normalized.length ? "dashboard" : "report";
     return text(
       `Published "${title}" → ${publishUrl(id)}\n\n` +
+        (normalized.length
+          ? `${normalized.length} live panel(s); the box re-runs them every ${refresh}s. `
+          : "") +
         "This link is TEAM-ONLY: anyone you share it with must sign in to the box to view it. " +
         (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
-        `Revoke any time with unpublish_report("${id}").`,
+        (missingMetrics.length
+          ? `\n\nNote: no curated metric named ${missingMetrics.map((m) => `"${m}"`).join(", ")} — the provenance link will be dropped. Document it with /setoku:generate or upsert_context.`
+          : "") +
+        `\n\nManage with get_dashboard("${id}") / unpublish_dashboard("${id}"). (An admin can make this ${noun} public from /admin.)`,
     );
   },
 );
 
 server.registerTool(
-  "list_published",
+  "list_dashboards",
   {
     annotations: { readOnlyHint: true },
-    title: "List reports published to the box",
+    title: "List dashboards published to the box",
     description:
-      "Lists reports published to this box (active first), with their shareable URLs, titles, and who " +
-      "published them. Use it to find a report's link again, or its id to revoke.",
+      "Lists dashboards/reports published to this box (active first), with their shareable URLs, panel counts, " +
+      "and who published them. Use it to find a link again, or an id to inspect (get_dashboard) or revoke.",
     inputSchema: {},
   },
   async () => {
     const rows = store.listPublished();
-    store.audit(user, "list_published", { count: rows.length });
-    if (!rows.length) return text("No reports published yet. Create one with publish_report.");
+    store.audit(user, "list_dashboards", { count: rows.length });
+    if (!rows.length) return text("Nothing published yet. Create one with publish_dashboard.");
     const active = rows.filter((r) => !r.archivedAt);
     const archived = rows.filter((r) => r.archivedAt);
     const lines: string[] = [];
     if (active.length) {
       lines.push("# active");
-      for (const r of active)
+      for (const r of active) {
+        const n = r.panels?.length ?? 0;
+        const kind = n ? `${n} panel${n === 1 ? "" : "s"}` : "static";
         lines.push(
-          `- ${r.title} [${r.visibility}] — ${publishUrl(r.id, r.visibility)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`,
+          `- ${r.title} [${r.visibility}, ${kind}] — ${publishUrl(r.id, r.visibility)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`,
         );
+      }
     } else {
-      lines.push("No active reports (all archived).");
+      lines.push("No active dashboards (all archived).");
     }
     if (archived.length) {
       lines.push("", "# archived", ...archived.map((r) => `- ${r.title} (id ${r.id})`));
@@ -975,21 +1079,61 @@ server.registerTool(
 );
 
 server.registerTool(
-  "unpublish_report",
+  "get_dashboard",
+  {
+    annotations: { readOnlyHint: true },
+    title: "Inspect a dashboard's panels (how it's calculated)",
+    description:
+      "Returns a published dashboard's panel definitions — each panel's SQL, dialect, linked metric, and " +
+      "when it last ran — so you can audit or iterate how a number is computed. Read-only.",
+    inputSchema: { id: z.string().describe("The dashboard id from publish_dashboard / list_dashboards") },
+  },
+  async ({ id }) => {
+    const dash = store.getPublishedMeta(id.trim());
+    store.audit(user, "get_dashboard", { id, ok: !!dash });
+    if (!dash || dash.archivedAt)
+      return errorText(`No active dashboard "${id}" (archived or unknown). Call list_dashboards.`);
+    const lines: string[] = [
+      `# ${dash.title} [${dash.format}] — ${publishUrl(dash.id, dash.visibility)}`,
+      `by ${dash.createdBy} · ${dash.createdAt.slice(0, 16)} · visibility ${dash.visibility}` +
+        (dash.refreshSeconds ? ` · refresh ${dash.refreshSeconds}s` : ""),
+      "",
+    ];
+    const ps = dash.panels ?? [];
+    if (!ps.length) {
+      lines.push("(no live panels — a static report.)");
+    }
+    for (const p of ps) {
+      const cache = store.getPanelCache(dash.id, p.key);
+      lines.push(
+        `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${p.metricId ? ` · metric:${p.metricId}` : ""}`,
+      );
+      if (cache)
+        lines.push(
+          `last run ${cache.computedAt.slice(0, 16)} — ${cache.error ? `ERROR: ${cache.error}` : `${cache.rowCount} row(s)`}`,
+        );
+      lines.push("```sql", p.sql.trim(), "```", "");
+    }
+    return text(lines.join("\n"));
+  },
+);
+
+server.registerTool(
+  "unpublish_dashboard",
   {
     annotations: { readOnlyHint: false, destructiveHint: true },
-    title: "Archive a published report",
+    title: "Archive a published dashboard",
     description:
-      "Archives a previously published report by its id (from publish_report / list_published). The link stops " +
-      "working immediately; the record is kept for the audit trail.",
-    inputSchema: { id: z.string().describe("The report id returned by publish_report / list_published") },
+      "Archives a published dashboard/report by its id (from list_dashboards). The link stops working " +
+      "immediately and its cached data is dropped; the record is kept for the audit trail.",
+    inputSchema: { id: z.string().describe("The dashboard id from publish_dashboard / list_dashboards") },
   },
   async ({ id }) => {
     const ok = store.archivePublished(id.trim());
-    store.audit(user, "unpublish_report", { id, ok });
+    store.audit(user, "unpublish_dashboard", { id, ok });
     return ok
-      ? text(`Archived report ${id} — its link no longer works.`)
-      : errorText(`No active report with id "${id}" (already archived, or unknown id). Call list_published to check.`);
+      ? text(`Archived ${id} — its link no longer works.`)
+      : errorText(`No active dashboard with id "${id}" (already archived, or unknown id). Call list_dashboards to check.`);
   },
 );
 

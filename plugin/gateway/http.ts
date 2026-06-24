@@ -34,7 +34,10 @@ import {
   defaultDbPath,
   seedFromFiles,
   type CorrectionDraft,
+  type PublishedMeta,
+  type PublishedReport,
 } from "./lib/store";
+import { newestComputedAt, renderDashboard, type RenderedPanel } from "./lib/dashboards";
 import {
   type Invite,
   applyApprovalAction,
@@ -540,6 +543,191 @@ async function gatherSources(): Promise<SourcesData> {
   return { postgres, lake, knowledge: { docs: store.docCount, byType } };
 }
 
+// ---- live-dashboard rendering helpers ----
+// The agent-authored template runs in a sandboxed iframe under THIS CSP. Because
+// the box INJECTS the data (rather than the template fetching it), the template
+// needs no network at all — so default-src 'none' blocks every outbound request,
+// closing the exfil-via-author-JS hole a self-contained report would otherwise
+// have. Combined with the iframe `sandbox allow-scripts` (opaque origin) it can
+// neither reach the box's cookie/API nor phone home.
+const FRAME_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
+
+/** Escape a JSON string for safe inlining inside a <script> tag. */
+function jsonForScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replaceAll("\u2028", "\\u2028")
+    .replaceAll("\u2029", "\\u2029");
+}
+
+/** Assemble the sandboxed frame document: our skeleton + injected panel data +
+ *  the agent's template fragment. Legacy zero-panel reports are full documents,
+ *  served as-is. The payload is already byte-bounded by renderDashboard's
+ *  capRenderBytes (shared with the provenance drawer so the two agree). `team`
+ *  gates raw error text: a public frame must NOT inject a raw DB error (it can
+ *  name tables/columns/env vars) — same scrub the public /data path applies. */
+function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { team: boolean }): string {
+  if (!panels.length) return dash.body;
+  const scrub = (e: string | null | undefined): string | null =>
+    e ? (opts.team ? e : "data temporarily unavailable") : null;
+  const data = {
+    title: dash.title,
+    refreshSeconds: dash.refreshSeconds,
+    panels: Object.fromEntries(
+      panels.map((p) => [
+        p.key,
+        {
+          columns: p.columns,
+          rows: p.rows as unknown[],
+          rowCount: p.rowCount,
+          computedAt: p.computedAt,
+          error: scrub(p.error),
+          refreshError: scrub(p.refreshError),
+        },
+      ]),
+    ),
+  };
+  return (
+    `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
+    `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+    `<script>window.__SETOKU__=${jsonForScript(data)};</script>` +
+    `</head><body>${dash.body}</body></html>`
+  );
+}
+
+/** Provenance JSON for the shell's "how is this calculated" drawer. `team` is
+ *  TRUE only on the authenticated team surface. The public surface must NOT leak
+ *  schema (raw `sql`, the metric BODY which is the canonical SQL, the author's
+ *  identity, or a raw DB error that may name an env var) — it shows methodology
+ *  only: the metric name + summary, and a generic "unavailable" on failure. */
+function dashboardProvenance(
+  knowledge: KnowledgeStore,
+  meta: PublishedMeta,
+  panels: RenderedPanel[],
+  opts: { team: boolean },
+): Record<string, unknown> {
+  const byKey = new Map(panels.map((p) => [p.key, p]));
+  const publicError = (e: string | null | undefined): string | null =>
+    e ? (opts.team ? e : "data temporarily unavailable") : null;
+  return {
+    id: meta.id,
+    title: meta.title,
+    format: meta.format,
+    visibility: meta.visibility,
+    refreshSeconds: meta.refreshSeconds,
+    ...(opts.team ? { createdBy: meta.createdBy } : {}),
+    createdAt: meta.createdAt,
+    archivedAt: meta.archivedAt,
+    updatedAt: newestComputedAt(panels),
+    panels: (meta.panels ?? []).map((p) => {
+      const r = byKey.get(p.key);
+      const doc = p.metricId ? knowledge.getDoc("metric", String(p.metricId)) : null;
+      // The metric BODY is the canonical SQL — team-only, like raw `sql`.
+      const metric = doc
+        ? opts.team
+          ? { name: doc.name, summary: String(doc.meta.summary ?? ""), body: doc.body }
+          : { name: doc.name, summary: String(doc.meta.summary ?? "") }
+        : null;
+      return {
+        key: p.key,
+        title: p.title ?? null,
+        dialect: p.dialect,
+        metricId: p.metricId ?? null,
+        metric,
+        ...(opts.team ? { sql: p.sql } : {}),
+        columns: r?.columns ?? [],
+        rowCount: r?.rowCount ?? 0,
+        computedAt: r?.computedAt ?? null,
+        error: publicError(r?.error),
+        refreshError: publicError(r?.refreshError),
+      };
+    }),
+  };
+}
+
+/** Escape text for safe interpolation into HTML. */
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// The trusted OUTER shell (ours). It frames the sandboxed render document and
+// renders provenance OUTSIDE the sandbox, so the agent's template can't spoof or
+// hide how a number was computed. Its own CSP allows only its inline code, a
+// same-origin data fetch, and a same-origin frame — no other network.
+const SHELL_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src 'self'; img-src data:; base-uri 'none'";
+
+/** The credential-free public dashboard shell at /p/<id>. (The team surface uses
+ *  the React app, which renders the same frame + provenance.) Provenance here
+ *  shows methodology only — never raw SQL. */
+function publicDashboardShell(opts: {
+  title: string;
+  framePath: string;
+  dataPath: string;
+  refreshSeconds: number;
+}): string {
+  const title = escapeHtml(opts.title || "Dashboard");
+  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, refresh: opts.refreshSeconds });
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<style>
+  :root{color-scheme:light}
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fafaf9}
+  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:.5rem 1rem;padding:1rem 1.25rem;border-bottom:1px solid #e7e5e4}
+  h1{margin:0;font-size:1.05rem;font-weight:600}
+  .muted{color:#78716c;font-size:.8rem}
+  main{padding:1rem 1.25rem}
+  iframe{width:100%;height:70vh;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
+  details{margin-top:1rem;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
+  summary{cursor:pointer;padding:.6rem .9rem;font-weight:500;font-size:.85rem}
+  .panel{padding:.6rem .9rem;border-top:1px solid #f5f5f4}
+  .panel h3{margin:0 0 .15rem;font-size:.85rem}
+  .panel p{margin:.15rem 0;color:#57534e;font-size:.8rem;white-space:pre-wrap}
+  .err{color:#b91c1c}
+</style></head><body>
+<header><h1>${title}</h1><span class="muted" id="stamp"></span></header>
+<main>
+  <iframe id="frame" title="${title}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
+  <details><summary>How this is calculated</summary><div id="prov" class="muted" style="padding:.6rem .9rem">Loading…</div></details>
+</main>
+<script>
+(function(){
+  var CFG=${cfg};
+  var frame=document.getElementById('frame');
+  var stamp=document.getElementById('stamp');
+  var prov=document.getElementById('prov');
+  function rel(iso){ if(!iso) return ''; var s=Math.max(0,Math.round((Date.now()-Date.parse(iso))/1000));
+    if(s<60) return s+'s ago'; var m=Math.round(s/60); if(m<60) return m+'m ago';
+    var h=Math.round(m/60); return h<48? h+'h ago' : Math.round(h/24)+'d ago'; }
+  function esc(t){ var d=document.createElement('div'); d.textContent=t==null?'':String(t); return d.innerHTML; }
+  function reload(){ frame.src=CFG.frame+'?t='+Date.now(); }
+  function refresh(){
+    fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
+      var secs=d.refreshSeconds||CFG.refresh;
+      stamp.textContent='updated '+rel(d.updatedAt)+' · refreshes every '+(secs<60?secs+'s':Math.round(secs/60)+'m');
+      prov.innerHTML=(d.panels||[]).map(function(p){
+        var lines=[];
+        lines.push('<p>'+esc(p.dialect)+(p.metricId?' · metric: '+esc(p.metricId):'')+' · '+(p.error?'<span class="err">error: '+esc(p.error)+'</span>':esc(p.rowCount)+' row(s)')+(p.computedAt?' · '+rel(p.computedAt):'')+'</p>');
+        if(p.metric&&p.metric.summary) lines.push('<p>'+esc(p.metric.summary)+'</p>');
+        return '<div class="panel"><h3>'+esc(p.title||p.key)+'</h3>'+lines.join('')+'</div>';
+      }).join('')||'<p style="padding:.6rem .9rem">No panels.</p>';
+    }).catch(function(){});
+  }
+  reload(); refresh();
+  setInterval(function(){ reload(); refresh(); }, Math.max(30,CFG.refresh)*1000);
+})();
+</script>
+</body></html>`;
+}
+
 const httpServer = http.createServer(async (req, res) => {
   try {
     if (req.url === "/health") {
@@ -576,33 +764,88 @@ const httpServer = http.createServer(async (req, res) => {
     // so its scripts run in an opaque origin and can't reach the box's cookie or
     // /admin API even though it's the same host.
     if (req.url?.startsWith("/p/")) {
-      const id = decodeURIComponent(req.url.slice(3).split("?")[0]);
+      const segs = req.url.slice(3).split("?")[0].split("/").map((s) => decodeURIComponent(s));
+      const id = segs[0];
+      const sub = segs[1]; // undefined | "frame" | "data"
+      const notFound = (): void => {
+        res.writeHead(404, { "content-type": "text/plain" });
+        res.end("not found\n");
+      };
       // Gate on metadata first so a guessed/archived/team id 404s WITHOUT reading
       // the up-to-2MB body (this path is credential-free and cheap to hammer).
       const meta = store.getPublishedMeta(id);
-      if (!meta || meta.archivedAt || meta.visibility !== "public") {
-        res.writeHead(404, { "content-type": "text/plain" });
-        res.end("not found\n");
+      if (!meta || meta.archivedAt || meta.visibility !== "public") return notFound();
+      const isDashboard = meta.format === "dashboard" && (meta.panels?.length ?? 0) > 0;
+
+      // The /frame and /data subpaths exist only for live dashboards (the shell
+      // polls them); a legacy report is served whole at /p/<id>. Don't expose
+      // them for non-dashboards.
+      if ((sub === "data" || sub === "frame") && !isDashboard) return notFound();
+
+      // /p/<id>/data — provenance JSON for the shell's drawer. NO raw SQL on the
+      // public surface (it would leak schema); methodology + metric defs only.
+      // Renders from `meta` (no body read — this is a credential-free hot path).
+      if (sub === "data") {
+        const panels = await renderDashboard(store, projectDir, meta);
+        store.audit("public", "dashboard_data_public", { id });
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        });
+        res.end(JSON.stringify(dashboardProvenance(store, meta, panels, { team: false })));
         return;
       }
-      const rep = store.getPublished(id);
-      if (!rep) {
-        res.writeHead(404, { "content-type": "text/plain" });
-        res.end("not found\n");
+
+      // /p/<id>/frame — the sandboxed render document (data injected, no network).
+      if (sub === "frame") {
+        const rep = store.getPublished(id);
+        if (!rep) return notFound();
+        const panels = await renderDashboard(store, projectDir, rep);
+        store.audit("public", "dashboard_frame_public", { id });
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts`,
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        });
+        res.end(frameDocument(rep, panels, { team: false }));
         return;
       }
+
+      if (sub) return notFound(); // unknown subpath
+
       store.audit("public", "published_viewed_public", { id });
-      // CSP `sandbox allow-scripts` (and nothing else) runs the agent-authored
-      // HTML in an opaque origin AND withholds popups / top-navigation — so a
-      // public report can't open a popup or redirect the top window to a
-      // phishing page, only render and run its own inline scripts in isolation.
+      if (!isDashboard) {
+        // Legacy static report: serve the self-contained body sandboxed, as before
+        // (opaque origin, no popups/top-navigation).
+        const rep = store.getPublished(id);
+        if (!rep) return notFound();
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": "sandbox allow-scripts",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        });
+        res.end(rep.body);
+        return;
+      }
+      // Live dashboard: serve the trusted outer shell (frames /p/<id>/frame, polls
+      // /p/<id>/data). The agent template never runs in this top-level origin.
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
-        "content-security-policy": "sandbox allow-scripts",
+        "content-security-policy": SHELL_CSP,
         "x-content-type-options": "nosniff",
         "referrer-policy": "no-referrer",
       });
-      res.end(rep.body);
+      res.end(
+        publicDashboardShell({
+          title: meta.title,
+          framePath: `/p/${encodeURIComponent(id)}/frame`,
+          dataPath: `/p/${encodeURIComponent(id)}/data`,
+          refreshSeconds: meta.refreshSeconds ?? 300,
+        }),
+      );
       return;
     }
     // ---- web approval surface — React SPA + JSON API ----
@@ -630,6 +873,40 @@ const httpServer = http.createServer(async (req, res) => {
           "cache-control": "public, max-age=31536000, immutable",
         });
         res.end(ADMIN_JS);
+        return;
+      }
+
+      // ---- team dashboard frame — /admin/frame/<id>, session-gated ----
+      // The sandboxed render document for a TEAM dashboard. Requires a box
+      // session (cookie); the React viewer embeds it as the iframe src so the
+      // strict no-network CSP is a real response header, not a srcdoc guess.
+      if (reqPath.startsWith("/admin/frame/")) {
+        const session = sessions.get(sessionIdFromCookie(req.headers.cookie));
+        if (!session) {
+          res.writeHead(401, { "content-type": "text/plain" });
+          res.end("not signed in\n");
+          return;
+        }
+        const id = decodeURIComponent(reqPath.slice("/admin/frame/".length));
+        const rep = store.getPublished(id);
+        if (!rep || rep.archivedAt) {
+          res.writeHead(404, { "content-type": "text/plain" });
+          res.end("not found\n");
+          return;
+        }
+        const isDash = rep.format === "dashboard" && (rep.panels?.length ?? 0) > 0;
+        const panels = isDash ? await renderDashboard(store, projectDir, rep) : [];
+        store.audit(session.identity, "dashboard_frame_viewed", { id });
+        // A live dashboard's template needs no network (data is injected) → strict
+        // CSP. A LEGACY report predates that contract and may inline a CDN script
+        // or remote image; keep its original sandbox-only CSP so it still renders.
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": isDash ? `${FRAME_CSP}; sandbox allow-scripts` : "sandbox allow-scripts",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        });
+        res.end(frameDocument(rep, panels, { team: true }));
         return;
       }
 
@@ -703,15 +980,37 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "team" && req.method === "GET")
           return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
 
-        // published reports — TEAM-ONLY: gated behind this session check, so a
-        // shared /admin/p/<id> link only renders for someone with a box login.
-        if (api === "published" && req.method === "GET") return json(200, store.listPublished());
-        if (api === "published_get" && req.method === "GET") {
-          const id = new URL(req.url ?? "", "http://x").searchParams.get("id") ?? "";
-          const rep = store.getPublished(id);
-          if (!rep || rep.archivedAt) return json(404, { ok: false, error: "report not found or archived" });
-          store.audit(session.identity, "published_viewed", { id });
-          return json(200, rep);
+        // published dashboards/reports — TEAM-ONLY: gated behind this session
+        // check, so a shared /admin/p/<id> link only renders for a box login.
+        // The list UI needs only panel COUNT, not the queries — strip each panel's
+        // raw SQL so the list doesn't broadcast every dashboard's query text to all
+        // members (SQL stays team-tier, shown only in the per-dashboard drawer).
+        if (api === "published" && req.method === "GET")
+          return json(
+            200,
+            store.listPublished().map((r) => ({
+              ...r,
+              panels: r.panels ? r.panels.map((p) => ({ ...p, sql: "" })) : null,
+            })),
+          );
+        // Provenance + rendered panel metadata for the team viewer's drawer.
+        // Includes raw SQL (this surface is authenticated). The rows themselves
+        // arrive via the sandboxed /admin/frame/<id>.
+        if (api === "dashboard_data" && req.method === "GET") {
+          const url = new URL(req.url ?? "", "http://x");
+          const id = url.searchParams.get("id") ?? "";
+          const meta = store.getPublishedMeta(id);
+          if (!meta || meta.archivedAt) return json(404, { ok: false, error: "dashboard not found or archived" });
+          // ?force=1 bypasses the cache and re-runs every panel — restrict it to
+          // the author or an admin so a member (or a stale tab, or a credentialed
+          // cross-site GET) can't hammer the prod DB the cache exists to protect.
+          const force =
+            url.searchParams.get("force") === "1" &&
+            (meta.createdBy === session.identity || canApprove(session.role));
+          // Renders from `meta` — provenance + frame don't need the report body.
+          const panels = await renderDashboard(store, projectDir, meta, { force });
+          store.audit(session.identity, force ? "dashboard_refreshed" : "dashboard_viewed", { id });
+          return json(200, dashboardProvenance(store, meta, panels, { team: true }));
         }
 
         // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----
@@ -719,22 +1018,22 @@ const httpServer = http.createServer(async (req, res) => {
           if ((req.headers["x-csrf-token"] ?? "") !== session.csrf)
             return json(403, { ok: false, error: "bad csrf token" });
 
-          // Author-or-admin gate for a per-report mutation (archive, visibility):
+          // Author-or-admin gate for a per-dashboard mutation (archive, visibility):
           // 404 if missing/archived, 403 unless the caller authored it or is an
           // admin. Returns false having ALREADY sent the response, so the handler
           // returns immediately. These two are allowed before the blanket admin
-          // gate below (a member can manage their own report); every OTHER
+          // gate below (a member can manage their own dashboard); every OTHER
           // mutation stays admin-only. The agent never reaches here — it has no
           // web session — so promotion-to-public is always a human decision.
-          const mayMutateReport = (id: string): boolean => {
+          const mayMutateDashboard = (id: string): boolean => {
             const rep = id ? store.getPublishedMeta(id) : null;
             if (!rep || rep.archivedAt) {
-              json(404, { ok: false, error: "No active report with that id." });
+              json(404, { ok: false, error: "No active dashboard with that id." });
               return false;
             }
             if (rep.createdBy !== session.identity && !canApprove(session.role)) {
               store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
-              json(403, { ok: false, error: "Only the report's author or an admin can manage it." });
+              json(403, { ok: false, error: "Only the dashboard's author or an admin can manage it." });
               return false;
             }
             return true;
@@ -743,10 +1042,10 @@ const httpServer = http.createServer(async (req, res) => {
           if (api === "archive") {
             const body = (await readBody(req)) as { id?: string } | undefined;
             const id = (body?.id ?? "").trim();
-            if (!mayMutateReport(id)) return;
+            if (!mayMutateDashboard(id)) return;
             const ok = store.archivePublished(id);
-            store.audit(session.identity, "unpublish_report", { id, ok });
-            return json(200, { ok, flash: "Report archived — its link no longer works." });
+            store.audit(session.identity, "unpublish_dashboard", { id, ok });
+            return json(200, { ok, flash: "Archived — its link no longer works." });
           }
 
           if (api === "set_visibility") {
@@ -755,16 +1054,16 @@ const httpServer = http.createServer(async (req, res) => {
             const visibility = body?.visibility;
             if (visibility !== "team" && visibility !== "public")
               return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
-            if (!mayMutateReport(id)) return;
+            if (!mayMutateDashboard(id)) return;
             const ok = store.setReportVisibility(id, visibility);
-            store.audit(session.identity, "report_visibility_set", { id, visibility, ok });
+            store.audit(session.identity, "dashboard_visibility_set", { id, visibility, ok });
             return json(ok ? 200 : 404, {
               ok,
               flash: ok
                 ? visibility === "public"
-                  ? "Report is now PUBLIC — anyone with the /p link can open it, no login required."
-                  : "Report is now team-only."
-                : "No active report with that id.",
+                  ? "Now PUBLIC — anyone with the /p link can open it, no login required."
+                  : "Now team-only."
+                : "No active dashboard with that id.",
             });
           }
 

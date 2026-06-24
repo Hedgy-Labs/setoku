@@ -45,11 +45,11 @@ export function freshness(
 }
 
 /**
- * Absolute share link for a report. Public reports get the credential-free
- * /p/<id>; team reports the session-gated in-app /admin/p/<id>. Single source of
+ * Absolute share link for a dashboard. Public ones get the credential-free
+ * /p/<id>; team ones the session-gated in-app /admin/p/<id>. Single source of
  * truth for both the list and the viewer (server mirrors it as publishUrl).
  */
-export function reportShareUrl(r: { id: string; visibility: "team" | "public" }): string {
+export function dashboardShareUrl(r: { id: string; visibility: "team" | "public" }): string {
   return r.visibility === "public" ? `${location.origin}/p/${r.id}` : `${location.origin}/admin/p/${r.id}`;
 }
 

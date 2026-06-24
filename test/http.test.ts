@@ -710,3 +710,154 @@ describe("curation cockpit capabilities (draft-only / reject-only — the membra
     expect(after).toBe(before); // nothing was written
   });
 });
+
+describe("live dashboards (end-to-end render path)", () => {
+  async function session(username: string, password: string): Promise<{ cookie: string; csrf: string }> {
+    const r = await fetch(`${BASE}/admin/api/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+    const setCookie = r.headers.get("set-cookie") ?? "";
+    const body = (await r.json()) as { csrf: string };
+    return { cookie: setCookie.split(";")[0], csrf: body.csrf };
+  }
+  const countIn = (html: string): number | null => {
+    // count(*) comes back as a bigint → pg serializes it as a quoted string.
+    const m = html.match(/"n":"?(\d+)"?/);
+    return m ? Number(m[1]) : null;
+  };
+
+  it("publishes (analyst), renders fresh data, reflects DB changes, promotes to public, then archives", async () => {
+    // 1. An analyst publishes a live dashboard; the panel is dry-run at publish.
+    const alice = await connect("tok-alice");
+    const pub = await call(alice, "publish_dashboard", {
+      title: "Paid orders",
+      html: '<div id="n"></div><script>document.getElementById("n").textContent=window.__SETOKU__.panels.paid.rows[0].n</script>',
+      panels: [
+        {
+          key: "paid",
+          title: "Paid order count",
+          sql: "SELECT count(*) AS n FROM orders WHERE status = 'paid'",
+          dialect: "postgres",
+          metricId: "revenue",
+        },
+      ],
+      refreshSeconds: 30,
+    });
+    expect(pub.isError).toBe(false);
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    expect(id).toBeTruthy();
+    await alice.close();
+
+    // 2. An admin reads the provenance: SQL is present on the team surface, the
+    //    metric link resolved, and the panel actually ran (rowCount).
+    const boss = await session("boss", "s3cret-pass");
+    const dd = (await (
+      await fetch(`${BASE}/admin/api/dashboard_data?id=${id}`, { headers: { cookie: boss.cookie } })
+    ).json()) as { createdBy?: string; panels: { sql?: string; metric: { body?: string } | null; rowCount: number }[] };
+    expect(dd.panels[0].sql).toContain("count(*)");
+    expect(dd.panels[0].metric).not.toBeNull(); // "revenue" metric resolved
+    expect(dd.panels[0].metric?.body).toBeTruthy(); // team sees the canonical metric SQL
+    expect(dd.createdBy).toBeTruthy(); // and the author
+    expect(dd.panels[0].rowCount).toBe(1);
+
+    // 3. The sandboxed frame carries the injected data + the no-network CSP.
+    const frameRes = await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } });
+    expect(frameRes.headers.get("content-security-policy")).toContain("default-src 'none'");
+    const frame = await frameRes.text();
+    expect(frame).toContain("window.__SETOKU__");
+    const n0 = countIn(frame);
+    expect(n0).toBeGreaterThan(0);
+
+    // 4. Mutate the DB, force a refresh → the rendered data reflects the change
+    //    (this is the whole point: the data is live, not frozen at publish).
+    const pg = new PgClient({ host: PG_HOST, database: DB_NAME });
+    await pg.connect();
+    await pg.query("INSERT INTO orders (customer_id, status, total_cents) VALUES (1, 'paid', 100)");
+    await pg.end();
+    await fetch(`${BASE}/admin/api/dashboard_data?id=${id}&force=1`, { headers: { cookie: boss.cookie } });
+    const frame2 = await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).text();
+    expect(countIn(frame2)).toBe((n0 ?? 0) + 1);
+
+    // 5. Public surface is blocked until a human promotes it (membrane).
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404);
+    const promote = await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect(promote.status).toBe(200);
+
+    // 6. Public provenance OMITS schema-revealing fields — raw SQL, the metric
+    //    BODY (which is the canonical SQL), and the author — but still shows
+    //    methodology (metric name + summary). The public frame injects data; the
+    //    public page is the trusted shell (frames it).
+    const pdata = (await (await fetch(`${BASE}/p/${id}/data`)).json()) as {
+      createdBy?: string;
+      panels: { sql?: string; metric: { body?: string; summary?: string } | null }[];
+    };
+    expect(pdata.panels[0].sql).toBeUndefined();
+    expect(pdata.createdBy).toBeUndefined(); // author identity not leaked publicly
+    expect(pdata.panels[0].metric).not.toBeNull(); // methodology IS shown publicly
+    expect(pdata.panels[0].metric?.summary).toBeTruthy();
+    expect(pdata.panels[0].metric?.body).toBeUndefined(); // but NOT the canonical SQL body
+    const pframe = await (await fetch(`${BASE}/p/${id}/frame`)).text();
+    expect(pframe).toContain("window.__SETOKU__");
+    const shell = await (await fetch(`${BASE}/p/${id}`)).text();
+    expect(shell).toContain("<iframe");
+    expect(shell).toContain(`/p/${id}/frame`);
+
+    // 7. Archiving 404s the link everywhere (and drops cached data).
+    const arch = await fetch(`${BASE}/admin/api/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id }),
+    });
+    expect(arch.status).toBe(200);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404);
+    expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(404);
+  }, 20_000);
+
+  it("clamps an absurd refresh, strips SQL from the list, and 404s subpaths for legacy reports", async () => {
+    const alice = await connect("tok-alice");
+    // huge refreshSeconds must be clamped (a 'live' link that never refreshes isn't)
+    const big = await call(alice, "publish_dashboard", {
+      title: "clamp test",
+      html: "<div id=x></div>",
+      refreshSeconds: 10_000_000,
+      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+    });
+    const bigId = (big.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    // a legacy zero-panel report (static)
+    const legacy = await call(alice, "publish_dashboard", { title: "legacy", html: "<!doctype html><h1>hi</h1>" });
+    const legId = (legacy.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    await alice.close();
+
+    const boss = await session("boss", "s3cret-pass");
+
+    // #9 clamp: 10M seconds → MAX_REFRESH_SECONDS (86400)
+    const dd = (await (
+      await fetch(`${BASE}/admin/api/dashboard_data?id=${bigId}`, { headers: { cookie: boss.cookie } })
+    ).json()) as { refreshSeconds: number };
+    expect(dd.refreshSeconds).toBe(86400);
+
+    // #11: the list endpoint must NOT broadcast panel SQL to members
+    const list = (await (
+      await fetch(`${BASE}/admin/api/published`, { headers: { cookie: boss.cookie } })
+    ).json()) as { id: string; panels: { sql: string }[] | null }[];
+    const row = list.find((r) => r.id === bigId)!;
+    expect(row.panels?.length).toBe(1); // count still available for the UI
+    expect(row.panels?.[0].sql).toBe(""); // but SQL stripped
+
+    // #7: legacy report is served only at /p/<id>; the dashboard subpaths 404
+    await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id: legId, visibility: "public" }),
+    });
+    expect((await fetch(`${BASE}/p/${legId}`)).status).toBe(200);
+    expect((await fetch(`${BASE}/p/${legId}/frame`)).status).toBe(404);
+    expect((await fetch(`${BASE}/p/${legId}/data`)).status).toBe(404);
+  }, 20_000);
+});

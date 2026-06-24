@@ -14,7 +14,7 @@ import type {
   TeamData,
   Role,
   PublishedMeta,
-  PublishedReport,
+  DashboardData,
 } from "./types";
 
 let csrf = "";
@@ -102,8 +102,9 @@ export const api = {
     req<MutationResult>("invite", { method: "POST", body: { identity, rotate } }),
   users: (op: string, username: string, role?: string) =>
     req<MutationResult>("users", { method: "POST", body: { op, username, role } }),
-  reports: () => req<PublishedMeta[]>("published"),
-  report: (id: string) => req<PublishedReport>(`published_get?id=${encodeURIComponent(id)}`),
+  dashboards: () => req<PublishedMeta[]>("published"),
+  dashboardData: (id: string, force = false) =>
+    req<DashboardData>(`dashboard_data?id=${encodeURIComponent(id)}${force ? "&force=1" : ""}`),
   archive: (id: string) => req<MutationResult>("archive", { method: "POST", body: { id } }),
   setVisibility: (id: string, visibility: "team" | "public") =>
     req<MutationResult>("set_visibility", { method: "POST", body: { id, visibility } }),
