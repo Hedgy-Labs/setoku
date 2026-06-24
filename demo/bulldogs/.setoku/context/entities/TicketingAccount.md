@@ -12,6 +12,6 @@ One row per ticketing account. `acct_id` is the ticketing ID space (referenced b
 
 - **acct_type_cd**: `STH` (season-ticket holder) · `SINGLE` · `GROUP` · `PREMIUM` · `CORP` · `COMP` (free).
 - `acct_email` is **dirty** (mixed case, spaces, `+tags`) and sometimes NULL. Normalize before matching to CRM/merch — see [[identity_resolution]].
-- **Test/internal accounts**: `acct_email ILIKE '%@stags.test'` (first name often `VOID`/`TEST`). Exclude from metrics.
+- **Test/internal accounts**: `acct_email ILIKE '%@bonita.test'` (first name often `VOID`/`TEST`). Exclude from metrics.
 
 No foreign key to CRM — link via normalized email.

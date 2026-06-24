@@ -4,30 +4,30 @@
 # `caddy reload` does NOT pick up edits — recreate the container instead:
 #   docker compose -p setoku up -d --force-recreate --no-deps caddy
 #
-# The hostnames below front the Stags gateway. The sslip.io name works with
-# NO DNS change; stags.setoku.com is the friendly primary. Upstream is the
+# The hostnames below front the Bulldogs gateway. The sslip.io name works with
+# NO DNS change; demo.setoku.com is the friendly primary. Upstream is the
 # gateway container, reachable because docker-compose.edge.yml joined it here.
 
-stags.setoku.com, stags.51-81-222-176.sslip.io {
+demo.setoku.com, demo.51-81-222-176.sslip.io {
 	encode gzip
 	handle /mcp* {
-		reverse_proxy setoku-stags-demo-server-1:8787
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
 	}
 	handle /i/* {
-		reverse_proxy setoku-stags-demo-server-1:8787
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
 	}
 	handle /admin* {
-		reverse_proxy setoku-stags-demo-server-1:8787
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
 	}
 	# public reports — credential-free /p/<id> links (server serves only those an
 	# admin promoted to public). Without this the catch-all 404s public demo links.
 	handle /p/* {
-		reverse_proxy setoku-stags-demo-server-1:8787
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
 	}
 	handle /health* {
-		reverse_proxy setoku-stags-demo-server-1:8787
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
 	}
 	handle {
-		respond "setoku demo (stags)" 404
+		respond "setoku demo (bulldogs)" 404
 	}
 }

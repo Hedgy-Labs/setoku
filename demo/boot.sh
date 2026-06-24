@@ -2,17 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Boot (or re-seed) the Setoku demo on a box. Idempotent: safe to re-run.
-# Defaults to the Stags multi-system dataset (the only demo).
+# Defaults to the Bonita Bulldogs multi-system dataset (the only demo).
 #
-#   ./boot.sh                       # the Stags demo
+#   ./boot.sh                       # the Bulldogs demo
 #
 # Parameterize a different dataset/instance with env vars (defaults shown):
-#   DEMO_DATASET       dir under demo/ holding .setoku + schema.sql + generate.ts   (stags)
-#   DEMO_PROJECT       docker compose project name (isolates containers/volumes)    (setoku-stags)
-#   DEMO_ENV_FILE      secrets/token file                                           (.env.stags)
-#   DEMO_DB            Postgres database name                                        (stags)
+#   DEMO_DATASET       dir under demo/ holding .setoku + schema.sql + generate.ts   (bulldogs)
+#   DEMO_PROJECT       docker compose project name (isolates containers/volumes)    (setoku-bulldogs)
+#   DEMO_ENV_FILE      secrets/token file                                           (.env.bulldogs)
+#   DEMO_DB            Postgres database name                                        (bulldogs)
 #   DEMO_PORT          localhost port for the gateway                               (8789)
-#   DEMO_PUBLIC_HOST   hostname Caddy will front it on                              (stags.setoku.com)
+#   DEMO_PUBLIC_HOST   hostname Caddy will front it on                              (demo.setoku.com)
 #   DEMO_RESEED=0      skip data regeneration
 #   DEMO_SEATS_PER_GAME / DEMO_SEASON_YEAR / DEMO_GEN_ENV  extra generator knobs
 #
@@ -20,12 +20,12 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-DATASET="${DEMO_DATASET:-stags}"
-PROJECT="${DEMO_PROJECT:-setoku-stags}"
-ENV_FILE="${DEMO_ENV_FILE:-.env.stags}"
-DB="${DEMO_DB:-stags}"
+DATASET="${DEMO_DATASET:-bulldogs}"
+PROJECT="${DEMO_PROJECT:-setoku-bulldogs}"
+ENV_FILE="${DEMO_ENV_FILE:-.env.bulldogs}"
+DB="${DEMO_DB:-bulldogs}"
 PORT="${DEMO_PORT:-8789}"
-PUBLIC_HOST="${DEMO_PUBLIC_HOST:-stags.setoku.com}"
+PUBLIC_HOST="${DEMO_PUBLIC_HOST:-demo.setoku.com}"
 EDGE_NETWORK="${DEMO_EDGE_NETWORK:-setoku_default}"
 PG_C="${PROJECT}-demo-postgres-1"
 
@@ -44,8 +44,8 @@ if [ ! -f "$ENV_FILE" ]; then
   umask 077
   cat > "$ENV_FILE" <<EOF
 DEMO_PG_PASSWORD=$(openssl rand -hex 12)
-DEMO_TOKENS=$(openssl rand -hex 24)=demo@riverside-stags.example
-DEMO_CURATOR_TOKENS=$(openssl rand -hex 24)=curator@riverside-stags.example
+DEMO_TOKENS=$(openssl rand -hex 24)=demo@bonita-bulldogs.example
+DEMO_CURATOR_TOKENS=$(openssl rand -hex 24)=curator@bonita-bulldogs.example
 DEMO_PUBLIC_URL=https://$PUBLIC_HOST
 DEMO_EDGE_NETWORK=$EDGE_NETWORK
 DEMO_DATASET_DIR=./$DATASET

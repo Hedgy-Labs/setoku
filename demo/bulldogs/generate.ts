@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
-// Synthetic-data generator for the Setoku Stags sports demo — modeled the way
-// real pro-sports data actually lands: several
+// Synthetic-data generator for the Setoku Bonita Bulldogs sports demo — modeled
+// the way real pro-sports data actually lands: several
 // disconnected vendor systems (one Postgres schema each), no cross-system keys,
 // mixed money units, 3 seasons of depth, and deliberate real-world mess —
 // duplicate CRM contacts, dirty emails, refunds/exchanges, secondary-market
@@ -13,8 +13,8 @@
 //
 //   DATABASE_URL=postgres://...  bun generate.ts
 //
-// Scale knobs (env): SEED, SEASONS (csv), AS_OF, SEATS_PER_GAME (3500),
-//   POS_TXN_PER_GAME (1500), N_PEOPLE (120000), N_MERCH_ORDERS (30000),
+// Scale knobs (env): SEED, SEASONS (csv), AS_OF, SEATS_PER_GAME (26000),
+//   POS_TXN_RATE (0.6), N_PEOPLE (120000), N_MERCH_ORDERS (30000),
 //   STAFF_PER_GAME (350), N_PARTNERS (70).
 
 import pgPkg from "pg";
@@ -25,7 +25,7 @@ import path from "node:path";
 // ── config ────────────────────────────────────────────────────────────────
 const DB_URL =
   process.env.DATABASE_URL || process.env.SETOKU_DATABASE_URL ||
-  "postgres://postgres:demo@127.0.0.1:5432/stags";
+  "postgres://postgres:demo@127.0.0.1:5432/bulldogs";
 // `??` only catches null/undefined, so an exported-but-empty env (SEED=, etc.)
 // would become Number("") = 0 → zero rows / Invalid Date. Treat empty as default.
 const numEnv = (k: string, d: number): number => {
@@ -36,7 +36,10 @@ const SEED = numEnv("SEED", 4242);
 const SEASONS = (process.env.SEASONS?.trim() || "2024,2025,2026").split(",").map((s) => Number(s.trim()));
 const AS_OF = new Date(process.env.AS_OF?.trim() || `${SEASONS[SEASONS.length - 1]}-06-22T12:00:00Z`);
 const GAMES_PER_SEASON = 81;
-const SEATS_PER_GAME = numEnv("SEATS_PER_GAME", 10000);
+// Seat manifest size per game. Sized so attendance lands at a realistic mid-market
+// MLB gate (~20k/game) and total club revenue lands ~$180–200M/season once media
+// rights (~$90M) are included. See the total_revenue knowledge doc.
+const SEATS_PER_GAME = numEnv("SEATS_PER_GAME", 26000);
 // POS volume is attendance-driven (≈ this share of scanned fans transact), so
 // per-cap (F&B revenue ÷ attendance) lands in a realistic ~$15–20 range.
 const POS_TXN_RATE = numEnv("POS_TXN_RATE", 0.6);
@@ -67,10 +70,29 @@ const addMin = (d: Date, n: number) => new Date(d.getTime() + n * 60000);
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 // ── pools (fictional) ───────────────────────────────────────────────────────
-const OPP_CODES = ["CCC","LKO","GBM","HCA","SMP","DLT","IWL","CCT","PWB","CCS","MRF","BCP","FVY","SDC"];
+// The 29 league opponents (the Bonita Bulldogs make 30 teams). [full name, city, 3-letter code].
+const TEAMS: [string, string, string][] = [
+  ["San Clemente Breakers","San Clemente","SCB"], ["Lake Forest Flames","Lake Forest","LFF"],
+  ["Mission Viejo Monarchs","Mission Viejo","MVM"], ["Laguna Hills Hawks","Laguna Hills","LHH"],
+  ["Aliso Viejo Aviators","Aliso Viejo","AVA"], ["Yorba Linda Mustangs","Yorba Linda","YLM"],
+  ["Rancho Santa Margarita Rancheros","Rancho Santa Margarita","RSM"], ["San Juan Capistrano Bells","San Juan Capistrano","SJC"],
+  ["Dana Point Anchors","Dana Point","DPA"], ["Ladera Ranch Longhorns","Ladera Ranch","LRL"],
+  ["Santee Scorpions","Santee","STS"], ["El Cajon Rattlers","El Cajon","ECR"],
+  ["Vista Vaqueros","Vista","VVQ"], ["San Marcos Sagebrush","San Marcos","SMS"],
+  ["Escondido Chaparrals","Escondido","ESC"], ["Ramona Wranglers","Ramona","RMW"],
+  ["Poway Prospectors","Poway","PWP"], ["Chula Vista Charros","Chula Vista","CVC"],
+  ["Lemon Grove Squeeze","Lemon Grove","LGS"], ["Spring Valley Surge","Spring Valley","SVS"],
+  ["Lakeside Longhorns","Lakeside","LKL"], ["National City Navigators","National City","NCN"],
+  ["Fallbrook Avocados","Fallbrook","FBA"], ["Oceanside Tides","Oceanside","OCT"],
+  ["Carlsbad Breeze","Carlsbad","CBB"], ["Encinitas Crestline","Encinitas","ENC"],
+  ["La Mesa Lightning","La Mesa","LML"], ["Cypress Stingers","Cypress","CYS"],
+  ["Tustin Tillers","Tustin","TUT"],
+];
+const OPP_CODES = TEAMS.map((t) => t[2]);
 const FIRST = ["James","Mary","Robert","Patricia","John","Jennifer","Michael","Linda","David","Elizabeth","William","Barbara","Richard","Susan","Joseph","Jessica","Thomas","Sarah","Chris","Karen","Daniel","Nancy","Matthew","Lisa","Anthony","Margaret","Mark","Betty","Donald","Sandra","Steven","Ashley","Paul","Kimberly","Andrew","Emily","Joshua","Donna","Kenneth","Michelle","Aisha","Diego","Wei","Priya","Omar","Sofia","Hyun","Fatima","Mateo","Yuki"];
 const LAST = ["Smith","Johnson","Williams","Brown","Jones","Garcia","Miller","Davis","Rodriguez","Martinez","Hernandez","Lopez","Gonzalez","Wilson","Anderson","Thomas","Taylor","Moore","Jackson","Martin","Lee","Perez","Thompson","White","Harris","Sanchez","Clark","Ramirez","Lewis","Robinson","Walker","Young","Allen","King","Wright","Scott","Torres","Nguyen","Hill","Flores","Okafor","Petrov","Nakamura","Kowalski","Ahmed","Silva","Cohen","Murphy","Reyes","Brooks"];
-const CITIES = [["Riverside","OH","45011"],["Fairview","OH","43615"],["Oakdale","IN","46060"],["Lakewood","OH","44107"],["Springfield","IL","62701"],["Madison","WI","53703"],["Clinton","IA","52732"],["Georgetown","KY","40324"],["Salem","OH","44460"],["Ashland","OH","44805"],["Brookfield","WI","53005"],["Carmel","IN","46032"]];
+// Fan home cities — San Diego county / South Orange County, around Bonita.
+const CITIES = [["Bonita","CA","91902"],["Chula Vista","CA","91910"],["National City","CA","91950"],["La Mesa","CA","91942"],["El Cajon","CA","92020"],["Spring Valley","CA","91977"],["Imperial Beach","CA","91932"],["Lemon Grove","CA","91945"],["Coronado","CA","92118"],["San Diego","CA","92113"],["Santee","CA","92071"],["Eastlake","CA","91915"]];
 // price-level code → list price ($) tier (documented in knowledge)
 const PL: Record<string, number> = { PL1: 22, PL2: 30, PL3: 45, PL4: 60, PL5: 95, PL6: 130 };
 const PL_CODES = Object.keys(PL);
@@ -88,6 +110,44 @@ const FB_ITEMS: [string, string, number, number][] = [
 const MK_PLATFORMS = ["google","meta","tv","radio","ooh","email"];
 const MK_OBJ = ["awareness","ticket_sales","membership","merch"];
 
+// Ticket-PRICE promotions: code → fractional discount off the normal paid price.
+// Weighted toward weekend games. (Distinct from promo_flg giveaway/theme nights.)
+const PRICE_PROMO: Record<string, number> = {
+  WKND_FAMILY: 0.15,   // weekend family 4-pack pricing
+  GROUP_SAVER: 0.20,   // group-night discount
+  STUDENT_NIGHT: 0.25, // student/college night
+  THEME_NIGHT: 0.10,   // theme-night bundle (small discount)
+  TWILIGHT: 0.18,      // weeknight twilight pricing
+};
+// Concession-PRICE promotions: code → which items get repriced (handled in POS).
+const FNB_PROMO = ["DOLLAR_DOG","FIVE_DOLLAR_BEER","FAMILY_MEAL_DEAL","HAPPY_HOUR"];
+
+// Gameday incident types → [relative weight, severity bias]. cleanup/lost+found are
+// common and benign; security_breach/missing_child are rare and high-severity.
+const INCIDENT_TYPES: [string, number, string][] = [
+  ["cleanup", 34, "low"], ["lost_and_found", 20, "low"], ["fan_ejection", 14, "medium"],
+  ["medical", 12, "medium"], ["missing_item", 9, "low"], ["weather_delay", 4, "medium"],
+  ["security_breach", 4, "high"], ["missing_child", 3, "high"],
+];
+const INCIDENT_ZONES = ["Gate A","Gate C","Field Level","Club Level","Upper Concourse","Bleachers","RF Porch","Parking Lot 4","Family Pavilion","Concourse 200","Restroom 114","Team Store"];
+const INCIDENT_REPORTERS = ["Security Lead","Guest Services","Ops Supervisor","Usher","EMT","Cleaning Crew","Gate Supervisor"];
+// short, deliberately messy incident descriptions (no real PII)
+const INCIDENT_NOTES: Record<string, string[]> = {
+  cleanup: ["spill sec 112 aisle, mopped", "broken glass near gate c cleaned up", "restroom 114 out of order, maint notified", "trash overflow upper concourse"],
+  lost_and_found: ["found phone at guest svcs, logged", "lost car keys turned in", "wallet found row F, no id claimed yet", "kids jacket left at family pavilion"],
+  fan_ejection: ["intoxicated fan removed sec 205, no police", "2 fans ejected for fighting bleachers", "ejected guest using abusive language to staff"],
+  medical: ["fan fainted heat, EMT treated on site refused transport", "minor slip on stairs, ice pack", "allergic reaction, epipen administered, transported"],
+  missing_item: ["report stolen bag lot 4, filed", "guest says jersey taken from seat", "missing stroller, located at gate"],
+  weather_delay: ["rain delay 22 min, tarp on", "lightning in area, fans held on concourse"],
+  security_breach: ["fan jumped rail onto warning track, detained", "unauthorized person in tunnel, escorted out", "gate b breach during rush, secured"],
+  missing_child: ["child separated from parent sec 130, reunited 12 min", "lost child at team store, found w/ usher", "missing minor paged, located concourse"],
+};
+
+// CS-note fragments (assembled into messy free text). All fictional.
+const CS_ISSUE = ["called about a double charge on her cc", "emailed re lost tickets for the fireworks game", "complained seats were wet from sprinklers", "upset about parking price hike", "asked for refund, game rained out", "phone issue scanning mobile ticket at gate", "wanted to move seats away from loud section", "billing dispute on the half plan", "no-show for group outing, wants credit"];
+const CS_PREF = ["prefers aisle seats", "wants nut-free section info, allergy", "only emails, do NOT call", "asks for rep maria every time", "likes the bullpen bar", "season holder since forever, vip treat", "brings kids, wants family pavilion", "veteran, appreciates the salute night", "wheelchair access needed", "wants paper tickets not mobile"];
+const CS_OUTCOME = ["resolved, comped 2 tix", "escalated to supervisor", "issued partial refund", "left vm no callback", "happy now", "still annoyed tbh", "followed up, all good", "promised callback nxt wk", ""];
+
 // dirty an email the way real exports are dirty
 function dirtyEmail(canon: string): string {
   let e = canon;
@@ -98,6 +158,21 @@ function dirtyEmail(canon: string): string {
   if (chance(0.10)) e = e + " ";
   if (chance(0.05)) e = " " + e;
   return e;
+}
+
+// concession promotional pricing: given an event's fnb_promo_cd, return the
+// possibly-discounted unit price for an item. Standard price when no promo applies.
+function fnbPromoPrice(promo: string | null, name: string, cat: string, base: number): number {
+  if (!promo) return base;
+  if (promo === "DOLLAR_DOG") {
+    if (name.includes("Hot Dog")) return 1;
+    if (name.includes("Bratwurst")) return 2;
+  }
+  if (promo === "FIVE_DOLLAR_BEER" && cat === "alcohol" &&
+      (name.includes("Beer") || name.includes("IPA") || name.includes("Seltzer"))) return 5;
+  if (promo === "HAPPY_HOUR" && cat === "alcohol") return round2(base * 0.7);
+  if (promo === "FAMILY_MEAL_DEAL" && cat === "food") return round2(base * 0.8);
+  return base;
 }
 
 // ── batched inserter (handles schema-qualified tables) ──────────────────────
@@ -121,7 +196,13 @@ async function main() {
   await client.connect();
   console.log(`→ connected; seeding (SEED=${SEED}, seasons=${SEASONS.join("/")}, seats/game=${SEATS_PER_GAME})`);
   await client.query(fs.readFileSync(path.join(import.meta.dir, "schema.sql"), "utf8"));
-  console.log("→ schema applied (7 vendor schemas)");
+  console.log("→ schema applied (9 vendor schemas)");
+
+  // ── ticketing.team (league dimension — the 29 opponents) ──────────────────
+  const teamL = new Loader(client, "ticketing.team", ["team_cd","team_name","city"]);
+  for (const [name, city, code] of TEAMS) await teamL.push([code, name, city]);
+  await teamL.flush();
+  console.log(`✓ ticketing.team: ${TEAMS.length} opponents`);
 
   // ── people pool (canonical identities behind every system) ────────────────
   const people: Person[] = [];
@@ -137,13 +218,20 @@ async function main() {
   console.log(`✓ people pool: ${people.length}`);
 
   // ── ticketing.event (3 seasons) ───────────────────────────────────────────
-  type Ev = { no: number; season: number; date: Date; demand: number; completed: boolean };
+  // first_pitch carries the start TIME; pricePromo/priceDisc and fnbPromo carry the
+  // promotional-pricing state so the seat ledger and POS apply the discounts.
+  type Ev = { no: number; season: number; date: Date; firstPitch: Date; demand: number;
+              completed: boolean; pricePromo: string | null; priceDisc: number; fnbPromo: string | null };
   const events: Ev[] = [];
   const evLoader = new Loader(client, "ticketing.event",
-    ["event_no","season_yr","event_dt","opponent_cd","day_night","promo_flg","promo_desc","gate_attend"]);
+    ["event_no","season_yr","event_dt","first_pitch","opponent_cd","day_night","promo_flg","promo_desc","price_promo_cd","fnb_promo_cd","gate_attend"]);
+  const PRICE_PROMO_CODES = Object.keys(PRICE_PROMO);
+  const WEEKEND_PROMOS = ["WKND_FAMILY","GROUP_SAVER","STUDENT_NIGHT","THEME_NIGHT"];
   let evNo = 0;
   for (const season of SEASONS) {
     const start = new Date(`${season}-04-01T18:00:00Z`);
+    // ~22 of the 29 opponents appear in a given season (not every team visits every year).
+    const seasonOpps = [...OPP_CODES].sort(() => rand() - 0.5).slice(0, 22);
     let cursor = 0;
     for (let g = 0; g < GAMES_PER_SEASON; g++) {
       cursor += g === 0 ? 0 : pick([1, 1, 2, 2, 3]);
@@ -151,13 +239,25 @@ async function main() {
       const dow = date.getUTCDay();
       const weekend = dow === 0 || dow === 5 || dow === 6;
       const promo = chance(0.22);
-      let demand = 0.55 + (weekend ? 0.18 : 0) + (promo ? 0.16 : 0) + (rand() - 0.5) * 0.18;
+      const dayGame = weekend && chance(0.5);
+      // start TIME: day games ~1:10pm, night games ~7:10pm (local), small jitter. We
+      // model time-of-day as a UTC offset from the event date midpoint (18:00Z).
+      const firstPitch = dayGame ? addMin(date, -ri(280, 320)) : addMin(date, ri(0, 50));
+      // ticket-price promotion: common on weekends, occasional on weeknights.
+      const pricePromo = weekend ? (chance(0.5) ? pick(WEEKEND_PROMOS) : null)
+                                 : (chance(0.12) ? "TWILIGHT" : null);
+      const priceDisc = pricePromo ? PRICE_PROMO[pricePromo] : 0;
+      // concession-price promotion (independent of the ticket promo).
+      const fnbPromo = chance(0.18) ? pick(FNB_PROMO) : null;
+      // promo pricing nudges demand up a little (cheaper seats → more sell-through).
+      let demand = 0.55 + (weekend ? 0.18 : 0) + (promo ? 0.16 : 0) + priceDisc * 0.4 + (rand() - 0.5) * 0.18;
       demand = Math.max(0.3, Math.min(0.99, demand));
       const completed = date.getTime() < AS_OF.getTime();
       evNo++;
-      events.push({ no: evNo, season, date, demand, completed });
-      await evLoader.push([evNo, season, ymd(date), pick(OPP_CODES), weekend && chance(0.5) ? "day" : "night",
+      events.push({ no: evNo, season, date, firstPitch, demand, completed, pricePromo, priceDisc, fnbPromo });
+      await evLoader.push([evNo, season, ymd(date), firstPitch.toISOString(), pick(seasonOpps), dayGame ? "day" : "night",
         promo, promo ? pick(["Bobblehead Night","Fireworks Friday","Cap Giveaway","Kids Day","Jersey Giveaway","Dollar Dog Night","Throwback Night","Fan Appreciation"]) : null,
+        pricePromo, fnbPromo,
         null]);  // gate_attend backfilled from the actual scanned-seat count once the manifest is built
     }
   }
@@ -182,7 +282,7 @@ async function main() {
     const typeRoll = rand();
     const type = isTest ? "COMP" : typeRoll < 0.10 ? "STH" : typeRoll < 0.16 ? "CORP" : typeRoll < 0.22 ? "PREMIUM" : typeRoll < 0.40 ? "GROUP" : typeRoll < 0.45 ? "COMP" : "SINGLE";
     if (type === "STH") sthPool.push(acctId); else buyerAccts.push(acctId);
-    const email = isTest ? `${p.fname.toLowerCase()}.${p.lname.toLowerCase()}@stags.test`
+    const email = isTest ? `${p.fname.toLowerCase()}.${p.lname.toLowerCase()}@bonita.test`
       : chance(0.04) ? null : dirtyEmail(p.email);
     const fname = isTest ? pick(["VOID","TEST","DupCheck"]) : p.fname;
     await acctLoader.push([acctId, email, fname, p.lname, type,
@@ -211,7 +311,7 @@ async function main() {
 
   // ── ticketing.seat_txn (the manifest + ledger) ────────────────────────────
   const seatLoader = new Loader(client, "ticketing.seat_txn",
-    ["txn_id","event_no","acct_id","sec","seat_row","seat","pl_cd","plan_cd","price_list_cents","price_paid_cents","status_cd","is_resale_flg","orig_acct_id","upd_dt","upd_by"], 400);
+    ["txn_id","event_no","acct_id","sec","seat_row","seat","pl_cd","plan_cd","price_list_cents","price_paid_cents","status_cd","is_resale_flg","orig_acct_id","scan_ts","upd_dt","upd_by"], 400);
   let txnId = 0;
   const scanned = new Map<number, number>();   // scanned-seat count per event → becomes gate_attend
   for (const ev of events) {
@@ -238,7 +338,11 @@ async function main() {
       const sold = isSeason || isComp || rand() < ev.demand;
       if (sold) {
         buyer = acct ?? pick(buyerAccts);
-        paid = isComp ? 0 : Math.round(listCents * (0.9 + rand() * 0.45));
+        // promotional pricing: discount the paid price for promo-priced events
+        // (season-plan seats are pre-priced by the plan, so they're exempt). The
+        // list price (price_list_cents) is unchanged — the promo shows as paid<list.
+        const promoMult = isSeason ? 1 : 1 - ev.priceDisc;
+        paid = isComp ? 0 : Math.round(listCents * (0.74 + rand() * 0.38) * promoMult);
         // secondary-market resale on a minority of non-season sold seats
         if (!isSeason && !isComp && chance(0.05)) { resale = true; orig = pick(buyerAccts); }
         if (ev.completed) {
@@ -247,10 +351,13 @@ async function main() {
         } else status = chance(0.03) ? "RF" : "SD";
       } else { buyer = null; paid = null; status = chance(0.65) ? "LS" : "HD"; }
 
+      // scan-in time: only scanned (attended) seats get one — fans stream in from
+      // ~90 min before first pitch to ~40 min after. NULL for everything else.
+      const scanTs = status === "SC" ? addMin(ev.firstPitch, ri(-90, 40)) : null;
       if (status === "SC") scanned.set(ev.no, (scanned.get(ev.no) ?? 0) + 1);
       txnId++;
       await seatLoader.push([txnId, ev.no, buyer, sec, seatRow, seatNo, plCd, planCd, listCents, paid, status,
-        resale, orig,
+        resale, orig, scanTs,
         ev.completed ? addDays(ev.date, -ri(0, 60)) : addDays(AS_OF, -ri(0, 25)),
         pick(TKT_STAFF)]);
     }
@@ -268,7 +375,17 @@ async function main() {
 
   // ── crm.contact (dupes, dirty email, test rows, nulls) ─────────────────────
   const crmLoader = new Loader(client, "crm.contact",
-    ["sfid","email","first_name","last_name","mailing_city","mailing_state","do_not_email","lead_source","is_test__c","created_date"]);
+    ["sfid","email","first_name","last_name","mailing_city","mailing_state","do_not_email","lead_source","cs_notes","is_test__c","created_date"]);
+  // a messy, lowercase-ish service note assembled from fragments (mostly NULL).
+  const csNote = () => {
+    if (!chance(0.12)) return null;
+    const parts = [pick(CS_ISSUE)];
+    if (chance(0.7)) parts.push(pick(CS_PREF));
+    const out = pick(CS_OUTCOME); if (out) parts.push(out);
+    let s = parts.join(chance(0.5) ? ". " : "; ");
+    if (chance(0.4)) s = s.charAt(0).toUpperCase() + s.slice(1); // inconsistent casing
+    return s;
+  };
   let sf = 0;
   const sfid = () => `003${String(++sf).padStart(12, "0")}`;
   let crmCount = 0;
@@ -282,7 +399,7 @@ async function main() {
       if (extraDirty && email) email = email.trim().toUpperCase();
       return crmLoader.push([sfid(), email, p.fname, p.lname,
         chance(0.12) ? null : p.city, chance(0.12) ? null : p.st,
-        chance(0.18), pick(LEAD_SRC), chance(0.012), created]);
+        chance(0.18), pick(LEAD_SRC), csNote(), chance(0.012), created]);
     };
     await mk();
     if (chance(0.20)) await mk(true); // duplicate contact (same person, 2nd sfid)
@@ -361,13 +478,16 @@ async function main() {
       const nItems = ri(1, 3); let subtotal = 0;
       const items: [string, string, number, number, number][] = [];
       for (let k = 0; k < nItems; k++) {
-        const [name, cat, price, cost] = pick(FB_ITEMS);
+        const [name, cat, basePrice, cost] = pick(FB_ITEMS);
+        // concession promotional pricing for promo-priced events (cost unchanged →
+        // margin compresses; documented in the fnb_promo knowledge).
+        const price = fnbPromoPrice(ev.fnbPromo, name, cat, basePrice);
         const qty = ri(1, 2);
         subtotal += price * qty;
-        items.push([name, cat, qty, price, cost]);
+        items.push([name, cat, qty, round2(price), cost]);
       }
       const tax = round2(subtotal * 0.07);
-      await posL.push([posId, ev.no, pick(stands), addMin(ev.date, ri(-30, 180)), tender, loyalty, round2(subtotal), tax, round2(subtotal + tax)]);
+      await posL.push([posId, ev.no, pick(stands), addMin(ev.firstPitch, ri(-30, 180)), tender, loyalty, round2(subtotal), tax, round2(subtotal + tax)]);
       for (const [name, cat, qty, price, cost] of items) { itemId++; evItems.push([itemId, posId, name, cat, qty, price, cost]); }
     }
     await posL.flush();                       // this event's txns are now in the DB
@@ -384,7 +504,7 @@ async function main() {
     const pid = ri(0, people.length - 1);
     await merchL.push([i, addDays(new Date(`${SEASONS[0]}-03-01T00:00:00Z`), ri(0, 365 * SEASONS.length)),
       chance(0.03) ? null : dirtyEmail(people[pid].email),
-      `STG-${cat.slice(0,3).toUpperCase()}-${String(ri(1,400)).padStart(4,"0")}`, name, ri(1, 3), round2(Number(base) * (0.7 + rand() * 0.8)), "online"]);
+      `BUL-${cat.slice(0,3).toUpperCase()}-${String(ri(1,400)).padStart(4,"0")}`, name, ri(1, 3), round2(Number(base) * (0.7 + rand() * 0.8)), "online"]);
   }
   await merchL.flush();
   console.log(`✓ merch.online_order: ${N_MERCH_ORDERS} (team online store only — in-venue/retail is Fanatics, not present)`);
@@ -426,7 +546,7 @@ async function main() {
       const vendor = chance(0.55);
       const w = vendor ? null : pick(gamedayWorkers);
       const rate = vendor ? round2(15 + rand() * 8) : w!.rate;
-      const si = addMin(ev.date, -ri(90, 150)), so = addMin(ev.date, ri(180, 240));
+      const si = addMin(ev.firstPitch, -ri(90, 150)), so = addMin(ev.firstPitch, ri(180, 240));
       await shiftL.push([shiftId, ev.no, vendor ? null : w!.id, pick(["usher","concessions","security","cleaning","ticketing","grounds","guest_services"]),
         si, so, ev.completed ? addMin(si, ri(-10, 20)) : null, ev.completed ? addMin(so, ri(-20, 40)) : null,
         rate, vendor ? "vendor" : "team"]);
@@ -455,6 +575,66 @@ async function main() {
   await adL.flush();
   console.log(`✓ marketing.ad_spend: ${adId}`);
 
+  // ── ops.incident (gameday incident log; completed events only) ────────────
+  const incL = new Loader(client, "ops.incident",
+    ["incident_id","event_no","reported_ts","incident_type","severity","zone","status","reported_by","resolved_ts","notes"], 500);
+  // weighted incident-type picker
+  const incTotal = INCIDENT_TYPES.reduce((s, t) => s + t[1], 0);
+  const pickIncident = (): [string, string] => {
+    let r = rand() * incTotal;
+    for (const [type, w, sev] of INCIDENT_TYPES) { if ((r -= w) < 0) return [type, sev]; }
+    return [INCIDENT_TYPES[0][0], INCIDENT_TYPES[0][2]];
+  };
+  let incId = 0;
+  for (const ev of events) {
+    if (!ev.completed) continue;
+    const attend = scanned.get(ev.no) ?? 0;
+    // incident volume scales with crowd: ~1 per 2.5k fans, plus noise
+    const n = Math.max(1, Math.round(attend / 2500) + ri(-1, 2));
+    for (let i = 0; i < n; i++) {
+      incId++;
+      const [type, baseSev] = pickIncident();
+      // occasionally bump severity for an otherwise-low type
+      const severity = chance(0.12) ? (baseSev === "low" ? "medium" : "high") : baseSev;
+      const reported = addMin(ev.firstPitch, ri(-45, 210));
+      // most incidents resolve same-day; a few stay open (recent games especially)
+      const open = chance(0.08);
+      const resolved = open ? null : addMin(reported, ri(3, 90));
+      await incL.push([incId, ev.no, reported.toISOString(), type, severity, pick(INCIDENT_ZONES),
+        open ? "open" : "resolved", pick(INCIDENT_REPORTERS),
+        resolved ? resolved.toISOString() : null, pick(INCIDENT_NOTES[type])]);
+    }
+  }
+  await incL.flush();
+  console.log(`✓ ops.incident: ${incId}`);
+
+  // ── media.rights_deal (broadcast rights — the club's biggest revenue line) ─
+  // Four packages per season summing to ~$80–100M: regional sports network (the
+  // bulk), a national-broadcast slice, streaming, and radio. Slight YoY growth.
+  const mediaL = new Loader(client, "media.rights_deal",
+    ["deal_id","rightsholder","rights_type","season_yr","annual_value","status","start_dt","end_dt"]);
+  const MEDIA_PKGS: [string, string, number, number][] = [
+    // [rightsholder, rights_type, min$, max$]
+    ["Pacific Sports Network", "regional", 48_000_000, 56_000_000],
+    ["National Broadcast Co.",  "national", 20_000_000, 26_000_000],
+    ["StreamCast+",             "streaming", 7_000_000, 12_000_000],
+    ["BulldogsRadio 1180 AM",   "radio",     3_000_000,  5_000_000],
+  ];
+  let mediaId = 0;
+  const lastSeason = SEASONS[SEASONS.length - 1];
+  for (const season of SEASONS) {
+    const growth = 1 + (season - SEASONS[0]) * 0.04; // ~4% per season
+    for (const [holder, type, lo, hi] of MEDIA_PKGS) {
+      mediaId++;
+      const value = round2((lo + rand() * (hi - lo)) * growth);
+      await mediaL.push([mediaId, holder, type, season, value,
+        season < lastSeason ? "expired" : "active",
+        ymd(new Date(`${season}-01-01`)), ymd(new Date(`${season}-12-31`))]);
+    }
+  }
+  await mediaL.flush();
+  console.log(`✓ media.rights_deal: ${mediaId}`);
+
   await client.query("ANALYZE");
   const c = await client.query(`SELECT
     (SELECT count(*) FROM ticketing.seat_txn) seat_txn,
@@ -465,7 +645,9 @@ async function main() {
     (SELECT count(*) FROM sponsorship.deal) deals,
     (SELECT count(*) FROM hr.shift) shifts,
     (SELECT count(*) FROM merch.online_order) merch_orders,
-    (SELECT count(*) FROM marketing.ad_spend) ad_rows`);
+    (SELECT count(*) FROM marketing.ad_spend) ad_rows,
+    (SELECT count(*) FROM ops.incident) incidents,
+    (SELECT count(*) FROM media.rights_deal) media_deals`);
   console.log("✓ done —", c.rows[0]);
   await client.end();
 }

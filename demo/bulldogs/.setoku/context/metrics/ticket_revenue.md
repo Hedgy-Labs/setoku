@@ -21,9 +21,11 @@ LEFT JOIN ticketing.account a ON a.acct_id = st.acct_id
 WHERE st.status_cd IN ('SD','SC')
   AND st.price_paid_cents IS NOT NULL
   AND COALESCE(a.acct_type_cd,'') <> 'COMP'
-  AND COALESCE(a.acct_email,'') NOT ILIKE '%@stags.test'
+  AND COALESCE(a.acct_email,'') NOT ILIKE '%@bonita.test'
 GROUP BY e.season_yr
 ORDER BY e.season_yr;
 ```
 
-Drop the `GROUP BY` for an all-time total; add `e.event_no` to go per game.
+Drop the `GROUP BY` for an all-time total; add `e.event_no` to go per game. A completed season
+lands **~$67M** in ticket revenue (avg paid ~$50/seat). `price_paid_cents` already reflects any
+[[gotchas]] promotional pricing (`price_promo_cd`), so no extra adjustment is needed.
