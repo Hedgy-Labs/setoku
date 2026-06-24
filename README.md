@@ -1,13 +1,15 @@
 # Setoku
 
-**Give claude access to your data + context to answer questions.**
+**Your company's brain, wired into Claude.**
 
-- **The problem.** What your data *means* lives in people's heads — which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong. Agents never had that, so they guess and get it confidently wrong.
-- **What it does.** It remembers those definitions and gotchas and hands them to Claude right before it answers, so it computes things the way you actually do.
+- **The problem.** What your company knows about itself lives in people's heads — which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
+- **What it does.** Setoku is the shared, curated memory of what your data and operations *mean*. It remembers those definitions and gotchas and hands them to Claude right before it answers, so Claude computes things the way your company actually does.
 - **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows — a human approves that, outside the agent's loop.
 - **It's cheap.** No AI runs in Setoku itself; the thinking happens in the Claude you already pay for. A whole deployment is one small VPS.
 
-Today it's mostly about **data** (what your tables and metrics mean). The same idea could hold more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
+One brain, two kinds of question: *"what was revenue last quarter?"* and *"what's been erroring since the deploy?"* — the business metric and the operational truth, both answered the same governed, read-only way.
+
+Today the brain mostly holds **data and operations** (what your tables, metrics, and logs mean). The same idea could hold more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
 
 _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI.
 
