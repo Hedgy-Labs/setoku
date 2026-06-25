@@ -51,10 +51,9 @@ export function Dashboards() {
     <>
       <div className="flex items-start justify-between gap-4">
         <Heading title="Dashboards">
-          Dashboards agents published to this box, backed by <b className="text-stone-800">live data</b> — the box
-          re-runs each panel's query on a refresh interval. <b className="text-stone-800">Team</b> links are
-          session-gated; the author or an admin can make one <b className="text-stone-800">public</b> for a
-          credential-free link.
+          Dashboards agents published to this box, backed by <b className="text-stone-800">live data</b>.{" "}
+          <b className="text-stone-800">Team</b> links are session-gated; the author or an admin can make one{" "}
+          <b className="text-stone-800">public</b> for a credential-free link.
         </Heading>
         <Button className="mt-1 shrink-0" onClick={() => setNewOpen(true)}>
           New dashboard
