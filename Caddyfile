@@ -91,3 +91,14 @@
 		respond "setoku" 404
 	}
 }
+
+# Box-local extra site blocks (e.g. demo subdomains) live in /etc/caddy/conf.d
+# (the ./caddy.d dir mounted in docker-compose). They are NOT in the repo and the
+# deploy does NOT rsync them, so they survive deploys *and* container recreates —
+# unlike appending to this file, which the deploy clobbers. Each *.caddy file is a
+# full site block. An empty/absent dir makes this import a harmless no-op.
+#
+# Only the EXPLICIT hostnames named here and in conf.d get a cert and are served;
+# with on-demand TLS off, any other host (e.g. a typo under a wildcard *.setoku.com
+# A record) fails the TLS handshake rather than being served a wrong vhost (I1).
+import /etc/caddy/conf.d/*.caddy

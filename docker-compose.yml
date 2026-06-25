@@ -38,6 +38,10 @@ services:
       SETOKU_VERCEL_VERIFY: ${SETOKU_VERCEL_VERIFY:-}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Box-local extra site blocks, imported by the Caddyfile. Survives deploys
+      # (not rsynced) and recreates. A directory mount, so added files show on the
+      # next recreate. Absent dir → import is a no-op (Caddyfile handles it).
+      - ./caddy.d:/etc/caddy/conf.d:ro
       - caddy_data:/data
       - caddy_config:/config
     depends_on:

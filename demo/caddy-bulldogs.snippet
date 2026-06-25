@@ -1,8 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-# Setoku demo — public routing. Append to the production Caddyfile, then load it.
-# CAVEAT on the rsync box: the Caddyfile bind-mount is inode-pinned, so a plain
-# `caddy reload` does NOT pick up edits — recreate the container instead:
+# Setoku demo — public routing. Drop this into the box's /opt/setoku/caddy.d/ as a
+# *.caddy file (the production Caddyfile imports /etc/caddy/conf.d/*.caddy, which is
+# that dir). It then survives deploys AND container recreates — do NOT append it
+# into the Caddyfile itself, which the deploy rsync clobbers. Install + load:
+#   scp demo/caddy-bulldogs.snippet BOX:/opt/setoku/caddy.d/demo-bulldogs.caddy
 #   docker compose -p setoku up -d --force-recreate --no-deps caddy
+# CAVEAT on the rsync box: the Caddyfile/dir bind-mounts are inode-pinned, so a
+# plain `caddy reload` does NOT pick up edits — recreate the container (above).
 #
 # The hostnames below front the Bulldogs gateway. The sslip.io name works with
 # NO DNS change; demo.setoku.com is the friendly primary (needs an A record →
