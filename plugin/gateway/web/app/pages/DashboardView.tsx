@@ -128,7 +128,7 @@ export function DashboardView() {
         <div className="mb-3 text-xs text-stone-500">
           published by {data.createdBy} · {String(data.createdAt).slice(0, 16)}
           {isDashboard && data.updatedAt ? ` · data updated ${relTime(data.updatedAt)}` : ""}
-          {isDashboard && data.refreshSeconds ? ` · refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
+          {isDashboard && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
         </div>
       ) : null}
       {flash ? <Flash>{flash}</Flash> : null}

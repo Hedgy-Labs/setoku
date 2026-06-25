@@ -717,7 +717,7 @@ function publicDashboardShell(opts: {
     fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
       var secs=d.refreshSeconds||CFG.refresh;
       var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
-      stamp.textContent='updated '+rel(d.updatedAt)+' · refreshes every '+iv;
+      stamp.textContent='data updated '+rel(d.updatedAt)+' · auto-refreshes every '+iv;
       prov.innerHTML=(d.panels||[]).map(function(p){
         var lines=[];
         lines.push('<p>'+esc(p.dialect)+(p.metricId?' · metric: '+esc(p.metricId):'')+' · '+(p.error?'<span class="err">error: '+esc(p.error)+'</span>':esc(p.rowCount)+' row(s)')+(p.computedAt?' · '+rel(p.computedAt):'')+'</p>');
