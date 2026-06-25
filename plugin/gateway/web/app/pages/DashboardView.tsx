@@ -10,6 +10,13 @@ import { Menu, MenuItem } from "../components/Menu";
 import { dashboardShareUrl, relTime } from "../format";
 import type { DashboardData, PanelProvenance } from "../types";
 
+/** A refresh interval as a compact label: 30s · 5m · 1h (rolls up the units). */
+function fmtInterval(s: number): string {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.round(s / 60)}m`;
+  return `${Math.round(s / 3600)}h`;
+}
+
 /**
  * Render one dashboard. The agent-authored template + injected live data is
  * served by /admin/frame/<id> and shown in a sandboxed iframe — that endpoint
@@ -121,9 +128,7 @@ export function DashboardView() {
         <div className="mb-3 text-xs text-stone-500">
           published by {data.createdBy} · {String(data.createdAt).slice(0, 16)}
           {isDashboard && data.updatedAt ? ` · data updated ${relTime(data.updatedAt)}` : ""}
-          {isDashboard && data.refreshSeconds
-            ? ` · refreshes every ${data.refreshSeconds < 60 ? `${data.refreshSeconds}s` : `${Math.round(data.refreshSeconds / 60)}m`}`
-            : ""}
+          {isDashboard && data.refreshSeconds ? ` · refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
         </div>
       ) : null}
       {flash ? <Flash>{flash}</Flash> : null}

@@ -49,6 +49,25 @@ describe("Setoku chart runtime", () => {
     Setoku.table("tb", "t", {});
     expect(html("tb")).toContain("<table");
   });
+
+  it("table: right-aligns numeric-format columns", () => {
+    const { Setoku, html } = runRuntime({ t: { rows: [{ name: "A", amt: "1000" }], error: null } });
+    Setoku.table("c", "t", { columns: ["name", "amt"], format: { amt: "money" } });
+    const out = html("c");
+    expect(out).toContain("text-align:right"); // the numeric column
+    expect(out).toContain("$1.0k");
+  });
+
+  it("line: draws a path plus y min/max, x endpoints, and a last-value label", () => {
+    const { Setoku, html } = runRuntime({ t: { rows: [{ d: "Jan", v: "10" }, { d: "Feb", v: "30" }, { d: "Mar", v: "20" }], error: null } });
+    Setoku.line("c", "t", { x: "d", value: "v", format: "int" });
+    const out = html("c");
+    expect(out).toContain("<path"); // the line itself
+    expect(out).toContain(">Jan<"); // first x label
+    expect(out).toContain(">Mar<"); // last x label
+    expect(out).toContain(">30<"); // y max
+    expect(out).toContain(">10<"); // y min
+  });
 });
 
 describe("lintDashboardTemplate", () => {

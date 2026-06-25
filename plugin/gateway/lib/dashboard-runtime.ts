@@ -57,24 +57,28 @@ export const DASHBOARD_RUNTIME = `(function () {
     var max = opts.max != null ? num(opts.max) : Math.max.apply(null, vals.concat([0]));
     var color = opts.color || "#2f6f8f";
     el.innerHTML = r.rows.map(function (row, i) {
-      var v = vals[i], w = max > 0 ? (v / max * 100) : 0;
+      var v = vals[i], w = max > 0 ? Math.max(0, v / max * 100) : 0; // clamp: no negative widths
       var c = typeof color === "function" ? color(row, i) : color;
+      var label = lab ? String(row[lab] == null ? "" : row[lab]) : "";
       return '<div style="display:flex;align-items:center;gap:10px;font:13px system-ui;margin:6px 0">' +
-        '<span style="width:130px;flex:none;color:#5b6b7a">' + esc(lab ? row[lab] : "") + "</span>" +
+        '<span title="' + esc(label) + '" style="width:130px;flex:none;color:#5b6b7a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(label) + "</span>" +
         '<span style="flex:1;display:block;background:#f1f4f7;border-radius:5px;height:20px;overflow:hidden">' +
         '<span style="display:block;height:100%;border-radius:5px;width:' + w.toFixed(1) + "%;background:" + esc(c) + '"></span></span>' +
         '<span style="width:84px;flex:none;text-align:right;font-weight:600;font-variant-numeric:tabular-nums">' + esc(f(v)) + "</span></div>";
     }).join("");
   }
+  // Numeric formats get right-aligned + tabular figures so columns line up.
+  function isNumFmt(f) { return f === "money" || f === "int" || f === "num" || f === "pct"; }
   function table(target, src, opts) {
     opts = opts || {}; var el = elOf(target); var r = resolve(src); if (guard(el, r)) return;
     var cols = opts.columns || Object.keys(r.rows[0]);
     var fmts = opts.format || {}, labels = opts.labels || {};
-    var head = "<tr>" + cols.map(function (c) {
-      return '<th style="text-align:left;padding:6px 10px;border-bottom:1px solid #e3e8ee;color:#5b6b7a;font-weight:500">' + esc(labels[c] || c) + "</th>"; }).join("") + "</tr>";
+    var aligns = cols.map(function (c) { return isNumFmt(fmts[c]) ? "right" : "left"; });
+    var head = "<tr>" + cols.map(function (c, i) {
+      return '<th style="text-align:' + aligns[i] + ';padding:6px 10px;border-bottom:1px solid #e3e8ee;color:#5b6b7a;font-weight:500">' + esc(labels[c] || c) + "</th>"; }).join("") + "</tr>";
     var body = r.rows.map(function (row) {
-      return "<tr>" + cols.map(function (c) { var f = fmtOf(fmts[c] || "raw");
-        return '<td style="padding:6px 10px;border-bottom:1px solid #f1f4f7">' + esc(f(row[c])) + "</td>"; }).join("") + "</tr>"; }).join("");
+      return "<tr>" + cols.map(function (c, i) { var f = fmtOf(fmts[c] || "raw"); var nums = aligns[i] === "right";
+        return '<td style="padding:6px 10px;border-bottom:1px solid #f1f4f7;text-align:' + aligns[i] + (nums ? ";font-variant-numeric:tabular-nums" : "") + '">' + esc(f(row[c])) + "</td>"; }).join("") + "</tr>"; }).join("");
     el.innerHTML = '<table style="width:100%;border-collapse:collapse;font:13px system-ui">' + head + body + "</table>";
   }
   function stat(target, src, opts) {
@@ -87,13 +91,30 @@ export const DASHBOARD_RUNTIME = `(function () {
   }
   function line(target, src, opts) {
     opts = opts || {}; var el = elOf(target); var r = resolve(src); if (guard(el, r)) return;
+    var f = fmtOf(opts.format || "num");
     var ys = r.rows.map(function (row) { return num(row[opts.value]); });
-    var W = 600, H = 140, PAD = 24, n = ys.length;
+    var xs = opts.x ? r.rows.map(function (row) { return row[opts.x]; }) : null;
+    var W = 600, H = 180, padL = 6, padR = 6, padT = 16, padB = 30, n = ys.length;
     var mn = Math.min.apply(null, ys), mx = Math.max.apply(null, ys); if (mn === mx) { mn = Math.min(0, mn); mx = mx || 1; }
-    var d = ys.map(function (y, i) { var x = PAD + (n > 1 ? i / (n - 1) : 0) * (W - 2 * PAD);
-      var yy = H - PAD - ((y - mn) / (mx - mn)) * (H - 2 * PAD); return (i ? "L" : "M") + x.toFixed(1) + " " + yy.toFixed(1); }).join(" ");
-    el.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" style="width:100%;height:' + H + 'px;display:block">' +
-      '<path d="' + d + '" fill="none" stroke="' + esc(opts.color || "#2f6f8f") + '" stroke-width="2"/></svg>';
+    var X = function (i) { return padL + (n > 1 ? i / (n - 1) : 0) * (W - padL - padR); };
+    var Y = function (v) { return padT + (1 - (v - mn) / (mx - mn)) * (H - padT - padB); };
+    var color = esc(opts.color || "#2f6f8f");
+    var line = ys.map(function (v, i) { return (i ? "L" : "M") + X(i).toFixed(1) + " " + Y(v).toFixed(1); }).join(" ");
+    var area = "M" + X(0).toFixed(1) + " " + (H - padB) + " " + ys.map(function (v, i) { return "L" + X(i).toFixed(1) + " " + Y(v).toFixed(1); }).join(" ") + " L" + X(n - 1).toFixed(1) + " " + (H - padB) + " Z";
+    var lx = X(n - 1), ly = Y(ys[n - 1]);
+    var s = '<svg viewBox="0 0 ' + W + " " + H + '" style="width:100%;height:' + H + 'px;display:block;overflow:visible;font:11px system-ui">';
+    s += '<text x="' + padL + '" y="' + (padT - 4) + '" fill="#8a99a8">' + esc(f(mx)) + "</text>"; // y max
+    s += '<text x="' + padL + '" y="' + (H - padB + 13) + '" fill="#8a99a8">' + esc(f(mn)) + "</text>"; // y min
+    s += '<path d="' + area + '" fill="' + color + '" opacity="0.08"/>';
+    s += '<path d="' + line + '" fill="none" stroke="' + color + '" stroke-width="2"/>';
+    s += '<circle cx="' + lx.toFixed(1) + '" cy="' + ly.toFixed(1) + '" r="3" fill="' + color + '"/>';
+    s += '<text x="' + lx.toFixed(1) + '" y="' + (ly - 8).toFixed(1) + '" text-anchor="end" fill="#15202b" font-weight="600">' + esc(f(ys[n - 1])) + "</text>";
+    if (xs) {
+      s += '<text x="' + padL + '" y="' + (H - 4) + '" fill="#8a99a8">' + esc(xs[0]) + "</text>";
+      s += '<text x="' + (W - padR) + '" y="' + (H - 4) + '" text-anchor="end" fill="#8a99a8">' + esc(xs[n - 1]) + "</text>";
+    }
+    s += "</svg>";
+    el.innerHTML = s;
   }
   window.Setoku = { bar: bar, table: table, stat: stat, line: line, fmt: fmt, num: num,
     rows: function (k) { return resolve(k).rows; } };
