@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";
-import { Heading, Loading, ErrorMsg, Flash } from "../components/Page";
+import { Heading, Loading, ErrorMsg } from "../components/Page";
+import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
 import { dashboardShareUrl } from "../format";
@@ -14,28 +15,27 @@ export function Dashboards() {
   const { me } = useAuth();
   const isAdmin = me?.role === "admin";
   const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.dashboards(), []);
-  const [flash, setFlash] = useState<string | null>(null);
 
   const copy = async (r: PublishedMeta) => {
     try {
       await navigator.clipboard.writeText(dashboardShareUrl(r));
-      setFlash(
+      toast(
         r.visibility === "public"
           ? "Public link copied — anyone can open it, no login."
           : "Link copied — recipients must sign in to the box to view.",
       );
     } catch {
-      setFlash(dashboardShareUrl(r));
+      toast(dashboardShareUrl(r));
     }
   };
 
   const act = async (fn: () => Promise<{ flash?: string }>) => {
     try {
       const r = await fn();
-      setFlash(r.flash ?? null);
+      if (r.flash) toast(r.flash);
       reload();
     } catch (e) {
-      setFlash(e instanceof Error ? e.message : "Failed.");
+      toast(e instanceof Error ? e.message : "Failed.");
     }
   };
 
@@ -50,7 +50,6 @@ export function Dashboards() {
         session-gated; the author or an admin can make one <b className="text-stone-800">public</b> for a
         credential-free link.
       </Heading>
-      {flash ? <Flash>{flash}</Flash> : null}
       {loading ? (
         <Loading />
       ) : error ? (

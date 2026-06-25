@@ -3,7 +3,8 @@ import { useState, type ReactNode } from "react";
 import { api, type MutationResult } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";
-import { Heading, Loading, ErrorMsg, Flash } from "../components/Page";
+import { Heading, Loading, ErrorMsg } from "../components/Page";
+import { toast } from "../components/Toast";
 import { Status } from "../components/Status";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
@@ -24,7 +25,6 @@ export function Team() {
   const { me } = useAuth();
   const mayManage = me?.role === "admin";
   const { data, loading, error, reload } = useApi<TeamData>(() => api.team(), []);
-  const [flash, setFlash] = useState<string | null>(null);
   const [invite, setInvite] = useState<Invite | null>(null);
   const [newLogin, setNewLogin] = useState<NewLogin | null>(null);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
@@ -33,12 +33,12 @@ export function Team() {
   const apply = async (p: Promise<MutationResult>) => {
     try {
       const r = await p;
-      setFlash(r.flash ?? null);
+      if (r.flash) toast(r.flash);
       setInvite(r.invite ?? null);
       setNewLogin(r.newLogin ?? null);
       reload();
     } catch (e) {
-      setFlash(e instanceof Error ? e.message : "Failed.");
+      toast(e instanceof Error ? e.message : "Failed.");
     }
   };
 
@@ -54,7 +54,6 @@ export function Team() {
         across everyone. (Curator <i>write</i> connectors are a separate, deliberate step —{" "}
         <code className="kbd">admin-cli</code> on the box — never a default.)
       </Heading>
-      {flash ? <Flash>{flash}</Flash> : null}
       {noAgent > 0 && mayManage ? (
         <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-700">
           {noAgent} {noAgent === 1 ? "person has" : "people have"} a login but no agent connector — click{" "}

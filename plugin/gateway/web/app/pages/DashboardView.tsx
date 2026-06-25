@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useCallback, useEffect, useRef, useState } from "react";
+import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";
-import { Loading, ErrorMsg, Flash } from "../components/Page";
+import { Loading, ErrorMsg } from "../components/Page";
+import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
 import { dashboardShareUrl, relTime } from "../format";
@@ -36,12 +38,12 @@ export function DashboardView() {
   const navigate = useNavigate();
   const isAdmin = me?.role === "admin";
   const { data, loading, error, reload } = useApi<DashboardData>(() => api.dashboardData(id), [id]);
-  const [flash, setFlash] = useState<string | null>(null);
   // Bumping the nonce changes the iframe src → reloads the frame (re-renders the
   // panels server-side; within the refresh TTL that's a cache hit).
   const [nonce, setNonce] = useState(0);
   // The calc drawer toggles in/out; collapsed lets the iframe take full height.
   const [showCalc, setShowCalc] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const refreshing = useRef(false);
 
   const visibility = data?.visibility ?? "team";
@@ -57,9 +59,9 @@ export function DashboardView() {
         if (force) await api.dashboardData(id, true);
         setNonce((n) => n + 1);
         reload();
-        if (force) setFlash("Refreshed.");
+        if (force) toast("Refreshed.");
       } catch (e) {
-        setFlash(e instanceof Error ? e.message : "Refresh failed.");
+        toast(e instanceof Error ? e.message : "Refresh failed.");
       } finally {
         refreshing.current = false;
       }
@@ -78,19 +80,19 @@ export function DashboardView() {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(link);
-      setFlash(visibility === "public" ? "Public link copied — no login needed." : "Link copied.");
+      toast(visibility === "public" ? "Public link copied — no login needed." : "Link copied.");
     } catch {
-      setFlash(link);
+      toast(link);
     }
   };
 
   const act = async (fn: () => Promise<{ flash?: string }>) => {
     try {
       const r = await fn();
-      setFlash(r.flash ?? null);
+      if (r.flash) toast(r.flash);
       reload();
     } catch (e) {
-      setFlash(e instanceof Error ? e.message : "Failed.");
+      toast(e instanceof Error ? e.message : "Failed.");
     }
   };
 
@@ -101,7 +103,7 @@ export function DashboardView() {
       await api.archive(id);
       navigate("/dashboards");
     } catch (e) {
-      setFlash(e instanceof Error ? e.message : "Failed.");
+      toast(e instanceof Error ? e.message : "Failed.");
     }
   };
 
@@ -121,6 +123,7 @@ export function DashboardView() {
             </MenuItem>
           ) : null}
           {isDashboard ? <MenuItem onSelect={() => void refresh(true)}>Refresh data</MenuItem> : null}
+          {isDashboard ? <MenuItem onSelect={() => setEditOpen(true)}>Edit…</MenuItem> : null}
           <MenuItem onSelect={() => void copy()}>Copy link</MenuItem>
           {data && !data.archivedAt && (isAdmin || mine) ? (
             <MenuItem
@@ -143,7 +146,6 @@ export function DashboardView() {
           {isDashboard && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
         </div>
       ) : null}
-      {flash ? <Flash>{flash}</Flash> : null}
       {loading ? (
         <Loading />
       ) : error ? (
@@ -163,7 +165,66 @@ export function DashboardView() {
           {isDashboard && showCalc ? <Provenance panels={data.panels} onClose={() => setShowCalc(false)} /> : null}
         </>
       ) : null}
+      <EditDialog
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        id={id}
+        title={data?.title ?? ""}
+        onCopied={() => toast("Prompt copied — paste it into your agent (with the changes you want).")}
+      />
     </div>
+  );
+}
+
+/** Setoku has no in-browser editor by design — editing is a conversational agent
+ *  action (get_dashboard → update_dashboard). This hands the user a ready prompt
+ *  (with a link to this dashboard) to paste into their agent. */
+function EditDialog({
+  open,
+  onClose,
+  id,
+  title,
+  onCopied,
+}: {
+  open: boolean;
+  onClose: () => void;
+  id: string;
+  title: string;
+  onCopied: () => void;
+}) {
+  const url = `${location.origin}/admin/p/${id}`;
+  const prompt =
+    `Edit my Setoku dashboard${title ? ` "${title}"` : ""} at ${url}\n` +
+    `Read it with get_dashboard("${id}"), then update_dashboard("${id}", …) in place (same link).\n\n` +
+    `Changes I want:\n`;
+  return (
+    <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
+        <AlertDialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
+          <AlertDialog.Title className="text-base font-semibold text-stone-900">Edit this dashboard</AlertDialog.Title>
+          <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
+            Dashboards are edited by your agent, not a form. Paste this prompt into your Setoku-connected agent,
+            fill in the changes you want, and it'll update this dashboard in place — same link.
+          </AlertDialog.Description>
+          <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
+            {prompt}
+          </pre>
+          <div className="mt-4 flex justify-end gap-2">
+            <AlertDialog.Cancel className="btn btn-ghost">Close</AlertDialog.Cancel>
+            <AlertDialog.Action
+              className="btn btn-primary"
+              onClick={() => {
+                void navigator.clipboard?.writeText(prompt).catch(() => {});
+                onCopied();
+              }}
+            >
+              Copy prompt
+            </AlertDialog.Action>
+          </div>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }
 

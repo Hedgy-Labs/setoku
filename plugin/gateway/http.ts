@@ -669,10 +669,11 @@ function publicDashboardShell(opts: {
   title: string;
   framePath: string;
   dataPath: string;
+  adminPath: string;
   refreshSeconds: number;
 }): string {
   const title = escapeHtml(opts.title || "Dashboard");
-  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, refresh: opts.refreshSeconds });
+  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, admin: opts.adminPath, refresh: opts.refreshSeconds });
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
@@ -683,10 +684,12 @@ function publicDashboardShell(opts: {
   header{flex:none;display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1rem;padding:.7rem 1.1rem;border-bottom:1px solid #e7e5e4}
   h1{margin:0;font-size:1.02rem;font-weight:600}
   .muted{color:#78716c;font-size:.8rem}
+  .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#0d9488;border:1px solid #99f6e4;background:#f0fdfa;padding:.2rem .6rem;border-radius:.4rem}
+  .adminbtn:hover{background:#ccfbf1}
   main{flex:1;min-height:0;display:flex;padding:.9rem 1.1rem}
   iframe{flex:1;width:100%;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
 </style></head><body>
-<header><h1>${title}</h1><span class="muted" id="stamp"></span></header>
+<header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a></header>
 <main><iframe id="frame" title="${title}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></main>
 <script>
 (function(){
@@ -701,6 +704,11 @@ function publicDashboardShell(opts: {
     var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
     stamp.textContent='data updated '+rel(d.updatedAt)+' · auto-refreshes every '+iv;
   }).catch(function(){}); }
+  // Reveal the Admin link only if this viewer has a box session (the cookie is
+  // Path=/admin, so it rides along to /admin/api/session but not to /p/*).
+  fetch('/admin/api/session',{credentials:'include'}).then(function(r){
+    if(r.ok){ var a=document.getElementById('adminlink'); a.href=CFG.admin; a.style.display='inline-block'; }
+  }).catch(function(){});
   reload(); refresh();
   setInterval(function(){ reload(); refresh(); }, Math.max(30,CFG.refresh)*1000);
 })();
@@ -825,6 +833,7 @@ const httpServer = http.createServer(async (req, res) => {
           title: meta.title,
           framePath: `/p/${encodeURIComponent(id)}/frame`,
           dataPath: `/p/${encodeURIComponent(id)}/data`,
+          adminPath: `/admin/p/${encodeURIComponent(id)}`,
           refreshSeconds: meta.refreshSeconds ?? 300,
         }),
       );
