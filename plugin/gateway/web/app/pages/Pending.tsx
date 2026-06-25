@@ -3,7 +3,8 @@ import { useState } from "react";
 import { api } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";
-import { Heading, Loading, ErrorMsg, Flash } from "../components/Page";
+import { Heading, Loading, ErrorMsg } from "../components/Page";
+import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import type { Correction, CorrectionDraft } from "../types";
@@ -52,7 +53,6 @@ export function Pending() {
   const { me } = useAuth();
   const mayApprove = me?.role === "admin";
   const { data, loading, error, reload } = useApi<Correction[]>(() => api.pending(), []);
-  const [flash, setFlash] = useState<string | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
 
   const resolve = async (
@@ -64,10 +64,10 @@ export function Pending() {
     setBusy(id);
     try {
       const r = await api.resolve(id, action, reason || undefined, draft);
-      setFlash(r.flash ?? null);
+      if (r.flash) toast(r.flash);
       reload();
     } catch (e) {
-      setFlash(e instanceof Error ? e.message : "Failed.");
+      toast(e instanceof Error ? e.message : "Failed.");
     } finally {
       setBusy(null);
     }
@@ -79,7 +79,6 @@ export function Pending() {
         Each proposal is shown as a finished, ready-to-approve change. Nothing is curated until an admin
         approves it — this is the only path into verified context, and agents can only propose.
       </Heading>
-      {flash ? <Flash>{flash}</Flash> : null}
       {!mayApprove ? (
         <div className="mb-4 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-600">
           You are signed in as a <b className="text-stone-800">member</b> — viewing only. Ask an admin to
@@ -104,7 +103,7 @@ export function Pending() {
               <div className="card p-8 text-center text-stone-500">Nothing pending. 🎉</div>
             )}
           </div>
-          <RejectedSection mayApprove={mayApprove} setFlash={setFlash} />
+          <RejectedSection mayApprove={mayApprove} />
         </>
       )}
     </>
@@ -247,13 +246,7 @@ function DraftEditor({ draft, onChange }: { draft: CorrectionDraft; onChange: (d
 
 /** Collapsible list of rejected items (esp. bot-rejected) with un-reject —
  *  makes a janitor that suppresses good proposals visible and reversible. */
-function RejectedSection({
-  mayApprove,
-  setFlash,
-}: {
-  mayApprove: boolean;
-  setFlash: (s: string | null) => void;
-}) {
+function RejectedSection({ mayApprove }: { mayApprove: boolean }) {
   const [open, setOpen] = useState(false);
   const { data, reload } = useApi<Correction[]>(() => api.rejected(), []);
   const botRejected = (data ?? []).filter((c) => c.rejectedByBot);
@@ -262,10 +255,10 @@ function RejectedSection({
   const unreject = async (id: number) => {
     try {
       const r = await api.unreject(id);
-      setFlash(r.flash ?? null);
+      if (r.flash) toast(r.flash);
       reload();
     } catch (e) {
-      setFlash(e instanceof Error ? e.message : "Failed.");
+      toast(e instanceof Error ? e.message : "Failed.");
     }
   };
 

@@ -20,6 +20,7 @@ import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type DashboardPanel, type DocType } from "./lib/store";
 import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/dashboards";
+import { lintDashboardTemplate } from "./lib/dashboard-runtime";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
@@ -909,6 +910,97 @@ const publishUrl = (id: string, visibility: "team" | "public" = "team"): string 
 
 const PANEL_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
+type PanelInput = { key: string; title?: string; description?: string; sql: string; dialect?: "postgres" | "clickhouse"; metricId?: string };
+type PanelSeed = { key: string; columns: string[]; rows: Record<string, unknown>[]; rowCount: number };
+
+// Validate + dry-run a panel set through the governed path. Shared by publish and
+// update so the rules (keys, caps, the I2/I9 lake membrane via runPanel, "every
+// panel must run") can never drift between the two.
+async function prepPanels(
+  list: PanelInput[],
+): Promise<{ ok: true; normalized: DashboardPanel[]; seeds: PanelSeed[] } | { ok: false; error: string }> {
+  if (list.length > MAX_PANELS)
+    return { ok: false, error: `Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the dashboard.` };
+  const keys = new Set<string>();
+  for (const p of list) {
+    if (!PANEL_KEY_RE.test(p.key ?? "")) return { ok: false, error: `Panel key "${p.key}" must be a 1–64 char slug ([A-Za-z0-9_-]).` };
+    if (keys.has(p.key)) return { ok: false, error: `Duplicate panel key "${p.key}".` };
+    keys.add(p.key);
+    if (!p.sql?.trim()) return { ok: false, error: `Panel "${p.key}" has no sql.` };
+  }
+  const normalized: DashboardPanel[] = list.map((p) => ({
+    key: p.key,
+    title: p.title,
+    description: p.description,
+    sql: p.sql,
+    dialect: p.dialect ?? "postgres",
+    metricId: p.metricId ?? null,
+  }));
+  let config;
+  try {
+    config = requireConfig();
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  const seeds: PanelSeed[] = [];
+  for (const p of normalized) {
+    try {
+      const r = await runPanel(projectDir, config, p, { denyLakeRead });
+      seeds.push({ key: p.key, columns: r.columns, rows: r.rows, rowCount: r.rowCount });
+    } catch (e) {
+      return { ok: false, error: `Panel "${p.key}" failed to run: ${(e as Error).message}\nFix the query and try again.` };
+    }
+  }
+  return { ok: true, normalized, seeds };
+}
+
+const clampRefresh = (refreshSeconds: number | undefined, hasPanels: boolean): number | null =>
+  hasPanels
+    ? Math.min(MAX_REFRESH_SECONDS, Math.max(MIN_REFRESH_SECONDS, Math.round(refreshSeconds ?? DEFAULT_REFRESH_SECONDS)))
+    : null;
+
+// Non-blocking warnings the agent can't see for itself (it publishes blind):
+// missing curated metric links + static render-lint of the template.
+function publishNotes(html: string, panels: DashboardPanel[]): string {
+  const notes: string[] = [];
+  const missing = panels.filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId))).map((p) => p.metricId);
+  if (missing.length)
+    notes.push(`no curated metric named ${missing.map((m) => `"${m}"`).join(", ")} — that provenance link is dropped (document it with /setoku:generate or upsert_context).`);
+  // A panel without a title shows its raw slug in the "how is this calculated"
+  // drawer; without a description, viewers get no plain-language explanation.
+  const noTitle = panels.filter((p) => !p.title?.trim()).map((p) => p.key);
+  if (noTitle.length)
+    notes.push(`panel(s) ${noTitle.map((k) => `"${k}"`).join(", ")} have no \`title\` — viewers see the raw slug. Give each a human title.`);
+  const noDesc = panels.filter((p) => !p.description?.trim()).map((p) => p.key);
+  if (noDesc.length)
+    notes.push(`panel(s) ${noDesc.map((k) => `"${k}"`).join(", ")} have no \`description\` — the drawer can't explain what they compute. Add a one-line description.`);
+  notes.push(...lintDashboardTemplate(html, panels.map((p) => p.key)));
+  return notes.length ? `\n\n⚠ Heads up (publishes anyway):\n- ${notes.join("\n- ")}` : "";
+}
+
+const PANEL_SCHEMA = z.object({
+  key: z.string().describe("Stable slug the template reads: window.__SETOKU__.panels[key]"),
+  title: z
+    .string()
+    .optional()
+    .describe("STRONGLY RECOMMENDED. Human label shown in the 'how is this calculated' drawer (e.g. 'Total revenue (2025)'). Without it viewers see the raw slug."),
+  description: z
+    .string()
+    .optional()
+    .describe("STRONGLY RECOMMENDED. One-line plain-language explanation of what this number is and how it's computed (e.g. 'Sum of paid ticket prices, comps/test excluded, cents→dollars'). The only calc explanation public viewers get."),
+  sql: z.string().describe("A single read-only SELECT/WITH statement (validate with run_query first)"),
+  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = the lake"),
+  metricId: z.string().optional().describe("Name of a curated metric this panel computes — links provenance to the verified definition"),
+});
+
+const TEMPLATE_HELP =
+  "Pass `html`: the presentation TEMPLATE — a self-contained HTML fragment (inline <style>/<script>, inline SVG; " +
+  "NO external/CDN assets and NO network — data is injected, not fetched). A tested helper is preloaded: prefer " +
+  "`Setoku.bar(targetElId, panelKey, {label, value, format})`, `Setoku.table`, `Setoku.stat`, `Setoku.line` over " +
+  "hand-rolled SVG/CSS — they coerce numeric strings, size correctly, and render empty/error states. Raw data is " +
+  "also at `window.__SETOKU__.panels[<key>]` = `{ columns, rows, rowCount, computedAt, error }` (DB numerics arrive " +
+  "as STRINGS — wrap in Number() before any math).";
+
 server.registerTool(
   "publish_dashboard",
   {
@@ -917,45 +1009,21 @@ server.registerTool(
     description:
       "Publishes a dashboard backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
       "the team as a link that stays current — not for answering in-session.\n" +
-      "Pass `html`: the presentation TEMPLATE — a self-contained HTML fragment (inline <style>/<script>, inline " +
-      "SVG for charts; NO external/CDN assets and NO network calls — data is injected, not fetched). Render from " +
-      "`window.__SETOKU__.panels[<key>]`, each `{ columns, rows, rowCount, computedAt, error }`.\n" +
-      "Pass `panels`: the data bindings. Each panel's `sql` is a read-only query the box re-runs live (same path " +
-      "as run_query — develop & validate it with run_query first, then paste it here). Set `dialect` to match " +
-      "(postgres = business DB, clickhouse = lake). Set `metricId` to the name of a curated metric when the panel " +
-      "computes one — it links the panel to the team's verified definition in the 'how is this calculated' drawer.\n" +
-      "Omit `panels` for a static report. The link is TEAM-ONLY (viewers sign in); an admin can later make it public. " +
-      "Every panel is dry-run at publish — a broken query is rejected so you fix it now. Manage with " +
+      TEMPLATE_HELP +
+      "\nPass `panels`: the data bindings. Each panel's `sql` is a read-only query the box re-runs live (same path " +
+      "as run_query — develop & validate it with run_query first). Set `dialect` to match. Set `metricId` to a " +
+      "curated metric name to link its verified definition.\n" +
+      "Omit `panels` for a static report. The link is TEAM-ONLY; an admin can later make it public. Every panel is " +
+      "dry-run at publish (broken query → rejected). Edit later with update_dashboard (same link); also " +
       "list_dashboards / get_dashboard / unpublish_dashboard.",
     inputSchema: {
       title: z.string().describe("Short human title (shown in the box's Dashboards list)"),
-      html: z
-        .string()
-        .describe(
-          "The presentation template: a self-contained HTML fragment that renders from window.__SETOKU__.panels[key]. No external assets, no network.",
-        ),
-      panels: z
-        .array(
-          z.object({
-            key: z.string().describe("Stable slug the template reads: window.__SETOKU__.panels[key]"),
-            title: z.string().optional().describe("Human label for the provenance drawer"),
-            sql: z.string().describe("A single read-only SELECT/WITH statement (validate with run_query first)"),
-            dialect: z
-              .enum(["postgres", "clickhouse"])
-              .optional()
-              .describe("postgres (default) = business DB; clickhouse = the lake"),
-            metricId: z
-              .string()
-              .optional()
-              .describe("Name of a curated metric this panel computes — links provenance to the verified definition"),
-          }),
-        )
-        .optional()
-        .describe("Live data bindings. Omit for a static report."),
+      html: z.string().describe("The presentation template (self-contained HTML fragment; use the Setoku.* helpers)."),
+      panels: z.array(PANEL_SCHEMA).optional().describe("Live data bindings. Omit for a static report."),
       refreshSeconds: z
         .number()
         .optional()
-        .describe(`How often the box re-runs panels (default ${DEFAULT_REFRESH_SECONDS}, min ${MIN_REFRESH_SECONDS})`),
+        .describe(`How often the box re-runs panels (default ${DEFAULT_REFRESH_SECONDS}, ${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS})`),
     },
   },
   async ({ title, html, panels, refreshSeconds }) => {
@@ -965,51 +1033,12 @@ server.registerTool(
         `Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap. Keep it a self-contained ` +
           "fragment; the live data arrives via panels, so don't embed bulk data in the template.",
       );
-    const list = panels ?? [];
-    if (list.length > MAX_PANELS)
-      return errorText(`Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the dashboard.`);
-    const keys = new Set<string>();
-    for (const p of list) {
-      if (!PANEL_KEY_RE.test(p.key ?? ""))
-        return errorText(`Panel key "${p.key}" must be a 1–64 char slug ([A-Za-z0-9_-]).`);
-      if (keys.has(p.key)) return errorText(`Duplicate panel key "${p.key}".`);
-      keys.add(p.key);
-      if (!p.sql?.trim()) return errorText(`Panel "${p.key}" has no sql.`);
-    }
-    const normalized: DashboardPanel[] = list.map((p) => ({
-      key: p.key,
-      title: p.title,
-      sql: p.sql,
-      dialect: p.dialect ?? "postgres",
-      metricId: p.metricId ?? null,
-    }));
-
-    let config;
-    try {
-      config = requireConfig();
-    } catch (e) {
-      return errorText((e as Error).message);
-    }
-    // Dry-run every panel through the governed path BEFORE storing, so a broken
-    // query is fixed in-loop rather than shipped as a dead panel. Seed the cache
-    // with the results so the first view is instant.
-    const seeds: { key: string; columns: string[]; rows: Record<string, unknown>[]; rowCount: number }[] = [];
-    for (const p of normalized) {
-      try {
-        const r = await runPanel(projectDir, config, p, { denyLakeRead });
-        seeds.push({ key: p.key, columns: r.columns, rows: r.rows, rowCount: r.rowCount });
-      } catch (e) {
-        return errorText(`Panel "${p.key}" failed to run: ${(e as Error).message}\nFix the query and publish again.`);
-      }
-    }
+    const prep = await prepPanels(panels ?? []);
+    if (!prep.ok) return errorText(prep.error);
+    const { normalized, seeds } = prep;
 
     const id = mintShareId();
-    const refresh = normalized.length
-      ? Math.min(
-          MAX_REFRESH_SECONDS,
-          Math.max(MIN_REFRESH_SECONDS, Math.round(refreshSeconds ?? DEFAULT_REFRESH_SECONDS)),
-        )
-      : null;
+    const refresh = clampRefresh(refreshSeconds, normalized.length > 0);
     store.createPublished({
       id,
       title: title.trim() || "Untitled dashboard",
@@ -1023,21 +1052,98 @@ server.registerTool(
       store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
     store.audit(user, "publish_dashboard", { id, title, bytes, panels: normalized.length });
 
-    const missingMetrics = normalized
-      .filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId)))
-      .map((p) => p.metricId);
     const noun = normalized.length ? "dashboard" : "report";
     return text(
       `Published "${title}" → ${publishUrl(id)}\n\n` +
-        (normalized.length
-          ? `${normalized.length} live panel(s); the box re-runs them every ${refresh}s. `
-          : "") +
+        (normalized.length ? `${normalized.length} live panel(s); the box re-runs them every ${refresh}s. ` : "") +
         "This link is TEAM-ONLY: anyone you share it with must sign in to the box to view it. " +
         (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
-        (missingMetrics.length
-          ? `\n\nNote: no curated metric named ${missingMetrics.map((m) => `"${m}"`).join(", ")} — the provenance link will be dropped. Document it with /setoku:generate or upsert_context.`
-          : "") +
-        `\n\nManage with get_dashboard("${id}") / unpublish_dashboard("${id}"). (An admin can make this ${noun} public from /admin.)`,
+        `\n\nEdit it with update_dashboard("${id}", …) — same link. Manage: get_dashboard / unpublish_dashboard("${id}"). ` +
+        `(An admin can make this ${noun} public from /admin.)` +
+        publishNotes(html, normalized),
+    );
+  },
+);
+
+server.registerTool(
+  "update_dashboard",
+  {
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    title: "Edit a dashboard you published (in place, same link)",
+    description:
+      "Updates a dashboard you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
+      "(new template), `panels` (REPLACES the whole panel set — re-validated + dry-run), and/or `refreshSeconds`. " +
+      "Only the dashboard's AUTHOR can edit it. " +
+      "Note: changing `panels` on a dashboard that's currently public reverts it to team-only — an admin must " +
+      "re-approve it for the public link, since the data it exposes changed. " +
+      TEMPLATE_HELP,
+    inputSchema: {
+      id: z.string().describe("The dashboard id (from publish_dashboard / list_dashboards)"),
+      title: z.string().optional().describe("New title"),
+      html: z.string().optional().describe("New presentation template (replaces the current one)"),
+      panels: z.array(PANEL_SCHEMA).optional().describe("New panel set — REPLACES all panels. Pass [] to make it a static report."),
+      refreshSeconds: z.number().optional().describe(`New refresh interval (${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS})`),
+    },
+  },
+  async ({ id, title, html, panels, refreshSeconds }) => {
+    const tid = id.trim();
+    const meta = store.getPublishedMeta(tid);
+    if (!meta || meta.archivedAt)
+      return errorText(`No active dashboard "${id}" (archived or unknown). Call list_dashboards.`);
+    if (meta.createdBy !== user)
+      return errorText(`Only the author (${meta.createdBy}) can edit this dashboard. Publish your own with publish_dashboard.`);
+    const newTitle = title?.trim() || undefined; // whitespace-only title is a no-op, not a change
+    if (newTitle === undefined && html === undefined && panels === undefined && refreshSeconds === undefined)
+      return errorText("Nothing to update — pass a non-empty title, or html / panels / refreshSeconds.");
+    if (html !== undefined) {
+      const bytes = Buffer.byteLength(html, "utf8");
+      if (bytes > MAX_REPORT_BYTES)
+        return errorText(`Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap.`);
+    }
+
+    let normalized: DashboardPanel[] | undefined;
+    let seeds: PanelSeed[] | undefined;
+    if (panels !== undefined) {
+      const prep = await prepPanels(panels);
+      if (!prep.ok) return errorText(prep.error);
+      normalized = prep.normalized;
+      seeds = prep.seeds;
+    }
+
+    const willHavePanels = normalized ? normalized.length > 0 : (meta.panels?.length ?? 0) > 0;
+    let refresh: number | null | undefined;
+    if (refreshSeconds !== undefined) refresh = clampRefresh(refreshSeconds, willHavePanels);
+    else if (panels !== undefined) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
+
+    const ok = store.updatePublished(tid, {
+      title: newTitle,
+      body: html,
+      panels: normalized, // undefined → unchanged; [] → becomes a static report (cache cleared)
+      refreshSeconds: refresh,
+    });
+    if (!ok) return errorText(`Update failed — no active dashboard "${id}".`);
+    // Re-seed the cache for the new panels (updatePublished cleared the old rows).
+    if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
+
+    // A panel change alters what the dashboard exposes — if it was public, revert
+    // to team so an admin re-approves (the human public-promotion gate, I9).
+    let reverted = false;
+    if (panels !== undefined && meta.visibility === "public") {
+      store.setReportVisibility(tid, "team");
+      reverted = true;
+    }
+    store.audit(user, "update_dashboard", {
+      id: tid,
+      changed: [newTitle !== undefined && "title", html !== undefined && "html", panels !== undefined && "panels", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
+      reverted,
+    });
+
+    const finalHtml = html ?? store.getPublished(tid)?.body ?? "";
+    const finalPanels = normalized ?? meta.panels ?? [];
+    return text(
+      `Updated "${meta.title}" → ${publishUrl(tid, reverted ? "team" : meta.visibility)} (same link).` +
+        (reverted ? "\n\n⚠ Panels changed on a PUBLIC dashboard — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
+        publishNotes(finalHtml, finalPanels),
     );
   },
 );
@@ -1108,6 +1214,9 @@ server.registerTool(
       lines.push(
         `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${p.metricId ? ` · metric:${p.metricId}` : ""}`,
       );
+      // Surface description so a read-before-edit (get_dashboard → update_dashboard)
+      // round-trip can preserve it — update_dashboard REPLACES the whole panel set.
+      if (p.description) lines.push(`description: ${p.description}`);
       if (cache)
         lines.push(
           `last run ${cache.computedAt.slice(0, 16)} — ${cache.error ? `ERROR: ${cache.error}` : `${cache.rowCount} row(s)`}`,

@@ -108,6 +108,7 @@ describe("tool surface", () => {
         "resolve_correction",
         "run_query",
         "unpublish_dashboard",
+        "update_dashboard",
         "upsert_context",
       ].sort(),
     );
@@ -456,5 +457,28 @@ describe("dashboard surface", () => {
     const r = await call("publish_dashboard", { title: "too big", html: huge });
     expect(r.isError).toBe(true);
     expect(r.text.toLowerCase()).toContain("cap");
+  });
+
+  it("edits a dashboard in place — same id, new title + panels", async () => {
+    const pub = await call("publish_dashboard", {
+      title: "Editable",
+      html: "<div id=x></div>",
+      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders WHERE status='paid'", dialect: "postgres" }],
+    });
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+
+    const upd = await call("update_dashboard", {
+      id,
+      title: "Edited title",
+      panels: [{ key: "b", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+    });
+    expect(upd.isError).toBeFalsy();
+    expect(upd.text).toContain(id); // same link
+
+    const got = await call("get_dashboard", { id });
+    expect(got.text).toContain("Edited title");
+    expect(got.text).toContain("panel b"); // new panel present
+    expect(got.text).not.toContain("panel a"); // old panel replaced
+    await call("unpublish_dashboard", { id });
   });
 });

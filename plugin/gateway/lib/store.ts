@@ -112,6 +112,10 @@ export type PanelDialect = "postgres" | "clickhouse";
 export interface DashboardPanel {
   key: string;
   title?: string;
+  /** One-line, plain-language explanation of what this panel computes — shown in
+   *  the "how is this calculated" drawer (the human-readable companion to the
+   *  raw SQL, and the only calc explanation public viewers get). */
+  description?: string;
   sql: string;
   dialect: PanelDialect;
   metricId?: string | null;
@@ -943,6 +947,65 @@ export class KnowledgeStore {
       ],
     );
     return computedAt;
+  }
+
+  /** Edit a published dashboard/report in place (same id/link) — author-gated
+   *  upstream. Only provided fields change; id/createdBy/createdAt/visibility are
+   *  preserved. Passing `panels` (incl. []) rewrites the panel set + format AND
+   *  clears the panel cache (the old rows no longer apply). Returns false if the
+   *  row is unknown or archived. */
+  updatePublished(
+    id: string,
+    fields: { title?: string; body?: string; panels?: DashboardPanel[]; refreshSeconds?: number | null },
+  ): boolean {
+    const sets: string[] = [];
+    const vals: (string | number | null)[] = [];
+    if (fields.title !== undefined) {
+      sets.push("title = ?");
+      vals.push(fields.title);
+    }
+    if (fields.body !== undefined) {
+      sets.push("body = ?");
+      vals.push(fields.body);
+    }
+    if (fields.panels !== undefined) {
+      const json = fields.panels.length ? JSON.stringify(fields.panels) : null;
+      sets.push("panels = ?", "format = ?");
+      vals.push(json, json ? "dashboard" : "html");
+    }
+    if (fields.refreshSeconds !== undefined) {
+      sets.push("refresh_seconds = ?");
+      vals.push(fields.refreshSeconds);
+    }
+    if (!sets.length) return true;
+    vals.push(id);
+    const changed =
+      this.db.run(`UPDATE published SET ${sets.join(", ")} WHERE id = ? AND archived_at IS NULL`, vals).changes > 0;
+    if (changed && fields.panels !== undefined)
+      this.db.run("DELETE FROM dashboard_cache WHERE dashboard_id = ?", [id]);
+    return changed;
+  }
+
+  /** Restore an archived report/dashboard (clear the soft-delete) — and reset it to
+   *  team-only. A previously-PUBLIC dashboard must NOT silently come back on its
+   *  credential-free link; re-going-public is a fresh admin action (I9). Returns
+   *  false if unknown or not currently archived. */
+  unarchivePublished(id: string): boolean {
+    return (
+      this.db.run(
+        "UPDATE published SET archived_at = NULL, visibility = 'team' WHERE id = ? AND archived_at IS NOT NULL",
+        [id],
+      ).changes > 0
+    );
+  }
+
+  /** Newest cached panel computed_at for a dashboard (the "data updated" stamp),
+   *  read straight from the cache WITHOUT re-running any query. */
+  newestPanelComputedAt(id: string): string | null {
+    const row = this.db
+      .query("SELECT MAX(computed_at) AS t FROM dashboard_cache WHERE dashboard_id = ?")
+      .get(id) as { t: string | null } | null;
+    return row?.t ?? null;
   }
 
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or

@@ -755,10 +755,9 @@ describe("live dashboards (end-to-end render path)", () => {
     const boss = await session("boss", "s3cret-pass");
     const dd = (await (
       await fetch(`${BASE}/admin/api/dashboard_data?id=${id}`, { headers: { cookie: boss.cookie } })
-    ).json()) as { createdBy?: string; panels: { sql?: string; metric: { body?: string } | null; rowCount: number }[] };
-    expect(dd.panels[0].sql).toContain("count(*)");
-    expect(dd.panels[0].metric).not.toBeNull(); // "revenue" metric resolved
-    expect(dd.panels[0].metric?.body).toBeTruthy(); // team sees the canonical metric SQL
+    ).json()) as { createdBy?: string; panels: { sql?: string; metricSummary: string | null; rowCount: number }[] };
+    expect(dd.panels[0].sql).toContain("count(*)"); // team drawer shows the query it runs
+    expect(dd.panels[0].metricSummary).toBeTruthy(); // "revenue" metric summary resolved
     expect(dd.createdBy).toBeTruthy(); // and the author
     expect(dd.panels[0].rowCount).toBe(1);
 
@@ -789,24 +788,30 @@ describe("live dashboards (end-to-end render path)", () => {
     });
     expect(promote.status).toBe(200);
 
-    // 6. Public provenance OMITS schema-revealing fields — raw SQL, the metric
-    //    BODY (which is the canonical SQL), and the author — but still shows
-    //    methodology (metric name + summary). The public frame injects data; the
-    //    public page is the trusted shell (frames it).
+    // 6. Public /data exposes NO calculations at all — just freshness meta (no
+    //    panels, no SQL, no metrics, no author). The public page is the trusted
+    //    shell that frames the dashboard; the drawer is team-only.
     const pdata = (await (await fetch(`${BASE}/p/${id}/data`)).json()) as {
       createdBy?: string;
-      panels: { sql?: string; metric: { body?: string; summary?: string } | null }[];
+      panels?: unknown;
+      updatedAt?: string;
+      refreshSeconds?: number;
     };
-    expect(pdata.panels[0].sql).toBeUndefined();
+    expect(pdata.panels).toBeUndefined(); // no per-panel calc info publicly
     expect(pdata.createdBy).toBeUndefined(); // author identity not leaked publicly
-    expect(pdata.panels[0].metric).not.toBeNull(); // methodology IS shown publicly
-    expect(pdata.panels[0].metric?.summary).toBeTruthy();
-    expect(pdata.panels[0].metric?.body).toBeUndefined(); // but NOT the canonical SQL body
+    expect(pdata.refreshSeconds).toBeDefined(); // freshness meta is fine
+    expect(pdata.updatedAt).toBeDefined();
     const pframe = await (await fetch(`${BASE}/p/${id}/frame`)).text();
     expect(pframe).toContain("window.__SETOKU__");
     const shell = await (await fetch(`${BASE}/p/${id}`)).text();
     expect(shell).toContain("<iframe");
     expect(shell).toContain(`/p/${id}/frame`);
+
+    // 6b. A logged-OUT hit on /admin/p/<id> for a public dashboard bounces to the
+    //     public view rather than the login wall.
+    const bounce = await fetch(`${BASE}/admin/p/${id}`, { redirect: "manual" });
+    expect(bounce.status).toBe(302);
+    expect(bounce.headers.get("location")).toBe(`/p/${id}`);
 
     // 7. Archiving 404s the link everywhere (and drops cached data).
     const arch = await fetch(`${BASE}/admin/api/archive`, {
@@ -817,6 +822,46 @@ describe("live dashboards (end-to-end render path)", () => {
     expect(arch.status).toBe(200);
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404);
     expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(404);
+
+    // 8. Unarchive restores it as TEAM-ONLY — a previously-public link must not
+    //    silently come back; re-going-public is a fresh admin action (I9).
+    const un = await fetch(`${BASE}/admin/api/unarchive`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id }),
+    });
+    expect(un.status).toBe(200);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // public link NOT restored
+    expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(200); // active again (team)
+  }, 20_000);
+
+  it("making a dashboard public is admin-only; a member cannot promote", async () => {
+    const alice = await connect("tok-alice");
+    const pub = await call(alice, "publish_dashboard", {
+      title: "Member test",
+      html: "<div></div>",
+      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+    });
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    await alice.close();
+    // a MEMBER session cannot make it public
+    const viewer = await session("viewer", "viewer-pass");
+    const denied = await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: viewer.cookie, "x-csrf-token": viewer.csrf },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect(denied.status).toBe(403);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // still team-only
+    // an ADMIN can
+    const boss = await session("boss", "s3cret-pass");
+    const okp = await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect(okp.status).toBe(200);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200);
   }, 20_000);
 
   it("clamps an absurd refresh, strips SQL from the list, and 404s subpaths for legacy reports", async () => {
@@ -859,5 +904,48 @@ describe("live dashboards (end-to-end render path)", () => {
     expect((await fetch(`${BASE}/p/${legId}`)).status).toBe(200);
     expect((await fetch(`${BASE}/p/${legId}/frame`)).status).toBe(404);
     expect((await fetch(`${BASE}/p/${legId}/data`)).status).toBe(404);
+  }, 20_000);
+
+  it("update_dashboard is author-gated, edits in place, injects the chart runtime, and reverts public on panel change", async () => {
+    const alice = await connect("tok-alice");
+    const pub = await call(alice, "publish_dashboard", {
+      title: "Alice board",
+      html: "<div id=x></div>",
+      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+    });
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    await alice.close();
+
+    // a different identity cannot edit it
+    const bob = await connect("tok-bob");
+    const denied = await call(bob, "update_dashboard", { id, title: "hax" });
+    expect(denied.isError).toBe(true);
+    expect(denied.text.toLowerCase()).toContain("only the author");
+    await bob.close();
+
+    // admin promotes it to public
+    const boss = await session("boss", "s3cret-pass");
+    await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200);
+
+    // the author edits PANELS → reverts to team-only (re-approval needed)
+    const alice2 = await connect("tok-alice");
+    const upd = await call(alice2, "update_dashboard", {
+      id,
+      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders WHERE status='paid'", dialect: "postgres" }],
+    });
+    expect(upd.isError).toBe(false);
+    expect(upd.text.toLowerCase()).toContain("reverted to team");
+    await alice2.close();
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // public link gone
+
+    // the team frame serves the new code, with the chart runtime injected
+    const frame = await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).text();
+    expect(frame).toContain("window.__SETOKU__");
+    expect(frame).toContain("window.Setoku"); // tested chart helpers present
   }, 20_000);
 });

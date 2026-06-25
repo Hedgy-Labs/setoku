@@ -38,6 +38,7 @@ import {
   type PublishedReport,
 } from "./lib/store";
 import { newestComputedAt, renderDashboard, type RenderedPanel } from "./lib/dashboards";
+import { DASHBOARD_RUNTIME } from "./lib/dashboard-runtime";
 import {
   type Invite,
   applyApprovalAction,
@@ -569,7 +570,11 @@ function jsonForScript(value: unknown): string {
  *  gates raw error text: a public frame must NOT inject a raw DB error (it can
  *  name tables/columns/env vars) — same scrub the public /data path applies. */
 function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { team: boolean }): string {
-  if (!panels.length) return dash.body;
+  // A legacy full HTML document (pre-dashboard report) is served as-is. But a
+  // FRAGMENT with no panels — e.g. a dashboard the author turned static while
+  // keeping a Setoku.*/__SETOKU__ template — still gets the runtime + empty data
+  // injected, so those calls degrade ("No data") instead of ReferenceError.
+  if (!panels.length && /<!doctype|<html[\s>]/i.test(dash.body)) return dash.body;
   const scrub = (e: string | null | undefined): string | null =>
     e ? (opts.team ? e : "data temporarily unavailable") : null;
   const data = {
@@ -593,6 +598,9 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
     `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
     `<meta name="viewport" content="width=device-width,initial-scale=1">` +
     `<script>window.__SETOKU__=${jsonForScript(data)};</script>` +
+    // Tested chart helpers (window.Setoku.*) — defined after the data, before the
+    // agent template's own <script> in <body> runs, so the template can call them.
+    `<script>${DASHBOARD_RUNTIME}</script>` +
     `</head><body>${dash.body}</body></html>`
   );
 }
@@ -602,46 +610,41 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
  *  schema (raw `sql`, the metric BODY which is the canonical SQL, the author's
  *  identity, or a raw DB error that may name an env var) — it shows methodology
  *  only: the metric name + summary, and a generic "unavailable" on failure. */
+// TEAM-ONLY provenance: the "how is this calculated" drawer (incl. raw SQL) is
+// served only to a signed-in box session. The PUBLIC surface exposes NO
+// calculations — its /data returns just freshness meta (see the /p/<id>/data
+// handler), so a public link is the visual dashboard and nothing else.
 function dashboardProvenance(
   knowledge: KnowledgeStore,
   meta: PublishedMeta,
   panels: RenderedPanel[],
-  opts: { team: boolean },
 ): Record<string, unknown> {
   const byKey = new Map(panels.map((p) => [p.key, p]));
-  const publicError = (e: string | null | undefined): string | null =>
-    e ? (opts.team ? e : "data temporarily unavailable") : null;
   return {
     id: meta.id,
     title: meta.title,
     format: meta.format,
     visibility: meta.visibility,
     refreshSeconds: meta.refreshSeconds,
-    ...(opts.team ? { createdBy: meta.createdBy } : {}),
+    createdBy: meta.createdBy,
     createdAt: meta.createdAt,
     archivedAt: meta.archivedAt,
     updatedAt: newestComputedAt(panels),
     panels: (meta.panels ?? []).map((p) => {
       const r = byKey.get(p.key);
       const doc = p.metricId ? knowledge.getDoc("metric", String(p.metricId)) : null;
-      // The metric BODY is the canonical SQL — team-only, like raw `sql`.
-      const metric = doc
-        ? opts.team
-          ? { name: doc.name, summary: String(doc.meta.summary ?? ""), body: doc.body }
-          : { name: doc.name, summary: String(doc.meta.summary ?? "") }
-        : null;
       return {
         key: p.key,
         title: p.title ?? null,
+        description: p.description ?? null,
         dialect: p.dialect,
         metricId: p.metricId ?? null,
-        metric,
-        ...(opts.team ? { sql: p.sql } : {}),
-        columns: r?.columns ?? [],
+        metricSummary: doc ? String(doc.meta.summary ?? "") : null,
+        sql: p.sql,
         rowCount: r?.rowCount ?? 0,
         computedAt: r?.computedAt ?? null,
-        error: publicError(r?.error),
-        refreshError: publicError(r?.refreshError),
+        error: r?.error ?? null,
+        refreshError: r?.refreshError ?? null,
       };
     }),
   };
@@ -670,57 +673,46 @@ function publicDashboardShell(opts: {
   title: string;
   framePath: string;
   dataPath: string;
+  adminPath: string;
   refreshSeconds: number;
 }): string {
   const title = escapeHtml(opts.title || "Dashboard");
-  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, refresh: opts.refreshSeconds });
+  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, admin: opts.adminPath, refresh: opts.refreshSeconds });
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
 <style>
   :root{color-scheme:light}
   *{box-sizing:border-box}
-  body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fafaf9}
-  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:.5rem 1rem;padding:1rem 1.25rem;border-bottom:1px solid #e7e5e4}
-  h1{margin:0;font-size:1.05rem;font-weight:600}
+  body{margin:0;display:flex;flex-direction:column;height:100vh;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fafaf9}
+  header{flex:none;display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1rem;padding:.7rem 1.1rem;border-bottom:1px solid #e7e5e4}
+  h1{margin:0;font-size:1.02rem;font-weight:600}
   .muted{color:#78716c;font-size:.8rem}
-  main{padding:1rem 1.25rem}
-  iframe{width:100%;height:70vh;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
-  details{margin-top:1rem;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
-  summary{cursor:pointer;padding:.6rem .9rem;font-weight:500;font-size:.85rem}
-  .panel{padding:.6rem .9rem;border-top:1px solid #f5f5f4}
-  .panel h3{margin:0 0 .15rem;font-size:.85rem}
-  .panel p{margin:.15rem 0;color:#57534e;font-size:.8rem;white-space:pre-wrap}
-  .err{color:#b91c1c}
+  .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
+  .adminbtn:hover{background:#f5f5f4}
+  main{flex:1;min-height:0;display:flex;padding:.9rem 1.1rem}
+  iframe{flex:1;width:100%;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
 </style></head><body>
-<header><h1>${title}</h1><span class="muted" id="stamp"></span></header>
-<main>
-  <iframe id="frame" title="${title}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
-  <details><summary>How this is calculated</summary><div id="prov" class="muted" style="padding:.6rem .9rem">Loading…</div></details>
-</main>
+<header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a></header>
+<main><iframe id="frame" title="${title}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></main>
 <script>
 (function(){
   var CFG=${cfg};
-  var frame=document.getElementById('frame');
-  var stamp=document.getElementById('stamp');
-  var prov=document.getElementById('prov');
+  var frame=document.getElementById('frame'), stamp=document.getElementById('stamp');
   function rel(iso){ if(!iso) return ''; var s=Math.max(0,Math.round((Date.now()-Date.parse(iso))/1000));
     if(s<60) return s+'s ago'; var m=Math.round(s/60); if(m<60) return m+'m ago';
     var h=Math.round(m/60); return h<48? h+'h ago' : Math.round(h/24)+'d ago'; }
-  function esc(t){ var d=document.createElement('div'); d.textContent=t==null?'':String(t); return d.innerHTML; }
   function reload(){ frame.src=CFG.frame+'?t='+Date.now(); }
-  function refresh(){
-    fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
-      var secs=d.refreshSeconds||CFG.refresh;
-      stamp.textContent='updated '+rel(d.updatedAt)+' · refreshes every '+(secs<60?secs+'s':Math.round(secs/60)+'m');
-      prov.innerHTML=(d.panels||[]).map(function(p){
-        var lines=[];
-        lines.push('<p>'+esc(p.dialect)+(p.metricId?' · metric: '+esc(p.metricId):'')+' · '+(p.error?'<span class="err">error: '+esc(p.error)+'</span>':esc(p.rowCount)+' row(s)')+(p.computedAt?' · '+rel(p.computedAt):'')+'</p>');
-        if(p.metric&&p.metric.summary) lines.push('<p>'+esc(p.metric.summary)+'</p>');
-        return '<div class="panel"><h3>'+esc(p.title||p.key)+'</h3>'+lines.join('')+'</div>';
-      }).join('')||'<p style="padding:.6rem .9rem">No panels.</p>';
-    }).catch(function(){});
-  }
+  function refresh(){ fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
+    var secs=d.refreshSeconds||CFG.refresh;
+    var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
+    stamp.textContent='data updated '+rel(d.updatedAt)+' · auto-refreshes every '+iv;
+  }).catch(function(){}); }
+  // Reveal the Admin link only if this viewer has a box session (the cookie is
+  // Path=/admin, so it rides along to /admin/api/session but not to /p/*).
+  fetch('/admin/api/session',{credentials:'include'}).then(function(r){
+    if(r.ok){ var a=document.getElementById('adminlink'); a.href=CFG.admin; a.style.display='inline-block'; }
+  }).catch(function(){});
   reload(); refresh();
   setInterval(function(){ reload(); refresh(); }, Math.max(30,CFG.refresh)*1000);
 })();
@@ -782,18 +774,24 @@ const httpServer = http.createServer(async (req, res) => {
       // them for non-dashboards.
       if ((sub === "data" || sub === "frame") && !isDashboard) return notFound();
 
-      // /p/<id>/data — provenance JSON for the shell's drawer. NO raw SQL on the
-      // public surface (it would leak schema); methodology + metric defs only.
-      // Renders from `meta` (no body read — this is a credential-free hot path).
+      // /p/<id>/data — FRESHNESS ONLY for the public shell's "updated …" stamp.
+      // The public surface exposes NO calculations (no SQL, descriptions, metrics).
+      // Reads the newest cached computed_at directly — does NOT re-run any query
+      // (the /frame request drives execution; this credential-free poll must not).
       if (sub === "data") {
-        const panels = await renderDashboard(store, projectDir, meta);
         store.audit("public", "dashboard_data_public", { id });
         res.writeHead(200, {
           "content-type": "application/json",
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(JSON.stringify(dashboardProvenance(store, meta, panels, { team: false })));
+        res.end(
+          JSON.stringify({
+            title: meta.title,
+            refreshSeconds: meta.refreshSeconds,
+            updatedAt: store.newestPanelComputedAt(id),
+          }),
+        );
         return;
       }
 
@@ -827,7 +825,9 @@ const httpServer = http.createServer(async (req, res) => {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(rep.body);
+        // frameDocument serves a legacy full-doc as-is, but injects the runtime +
+        // empty data for a fragment template (so Setoku.* degrades, not throws).
+        res.end(frameDocument(rep, [], { team: false }));
         return;
       }
       // Live dashboard: serve the trusted outer shell (frames /p/<id>/frame, polls
@@ -843,6 +843,7 @@ const httpServer = http.createServer(async (req, res) => {
           title: meta.title,
           framePath: `/p/${encodeURIComponent(id)}/frame`,
           dataPath: `/p/${encodeURIComponent(id)}/data`,
+          adminPath: `/admin/p/${encodeURIComponent(id)}`,
           refreshSeconds: meta.refreshSeconds ?? 300,
         }),
       );
@@ -1010,7 +1011,7 @@ const httpServer = http.createServer(async (req, res) => {
           // Renders from `meta` — provenance + frame don't need the report body.
           const panels = await renderDashboard(store, projectDir, meta, { force });
           store.audit(session.identity, force ? "dashboard_refreshed" : "dashboard_viewed", { id });
-          return json(200, dashboardProvenance(store, meta, panels, { team: true }));
+          return json(200, dashboardProvenance(store, meta, panels));
         }
 
         // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----
@@ -1048,6 +1049,26 @@ const httpServer = http.createServer(async (req, res) => {
             return json(200, { ok, flash: "Archived — its link no longer works." });
           }
 
+          // Restore an archived dashboard. Author-or-admin, but (unlike the other
+          // per-dashboard mutations) it operates on an ARCHIVED row, so it gates
+          // here rather than via mayMutateDashboard (which 404s archived rows).
+          if (api === "unarchive") {
+            const body = (await readBody(req)) as { id?: string } | undefined;
+            const id = (body?.id ?? "").trim();
+            const rep = id ? store.getPublishedMeta(id) : null;
+            if (!rep || !rep.archivedAt) return json(404, { ok: false, error: "No archived dashboard with that id." });
+            if (rep.createdBy !== session.identity && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              return json(403, { ok: false, error: "Only the dashboard's author or an admin can restore it." });
+            }
+            const ok = store.unarchivePublished(id);
+            store.audit(session.identity, "unarchive_dashboard", { id, ok });
+            return json(ok ? 200 : 409, {
+              ok,
+              flash: ok ? "Restored as team-only — an admin can make it public again." : "Already restored.",
+            });
+          }
+
           if (api === "set_visibility") {
             const body = (await readBody(req)) as { id?: string; visibility?: string } | undefined;
             const id = (body?.id ?? "").trim();
@@ -1055,6 +1076,12 @@ const httpServer = http.createServer(async (req, res) => {
             if (visibility !== "team" && visibility !== "public")
               return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
             if (!mayMutateDashboard(id)) return;
+            // Making a dashboard PUBLIC (a credential-free link) is an ADMIN action
+            // (I9) — an author can take it back to team-only, but not expose it.
+            if (visibility === "public" && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              return json(403, { ok: false, error: "Only an admin can make a dashboard public." });
+            }
             const ok = store.setReportVisibility(id, visibility);
             store.audit(session.identity, "dashboard_visibility_set", { id, visibility, ok });
             return json(ok ? 200 : 404, {
@@ -1214,6 +1241,19 @@ const httpServer = http.createServer(async (req, res) => {
         }
 
         return json(404, { ok: false, error: "unknown endpoint" });
+      }
+
+      // A logged-OUT visitor to /admin/p/<id> for a PUBLIC dashboard should see
+      // the public view, not the login wall — bounce them to /p/<id>. (Signed-in
+      // users fall through to the SPA, which renders the full team view.)
+      const pm = reqPath.match(/^\/admin\/p\/([^/]+)$/);
+      if (pm && req.method === "GET" && !sessions.get(sessionIdFromCookie(req.headers.cookie))) {
+        const pmeta = store.getPublishedMeta(decodeURIComponent(pm[1]));
+        if (pmeta && !pmeta.archivedAt && pmeta.visibility === "public") {
+          res.writeHead(302, { location: `/p/${encodeURIComponent(pmeta.id)}`, "referrer-policy": "no-referrer" });
+          res.end();
+          return;
+        }
       }
 
       // SPA shell for every other /admin GET — client-side routing renders the
