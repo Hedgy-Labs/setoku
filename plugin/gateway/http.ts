@@ -637,6 +637,7 @@ function dashboardProvenance(
       return {
         key: p.key,
         title: p.title ?? null,
+        description: p.description ?? null,
         dialect: p.dialect,
         metricId: p.metricId ?? null,
         metric,
@@ -695,6 +696,8 @@ function publicDashboardShell(opts: {
   .panel{padding:.6rem .9rem;border-top:1px solid #f5f5f4}
   .panel h3{margin:0 0 .15rem;font-size:.85rem}
   .panel p{margin:.15rem 0;color:#57534e;font-size:.8rem;white-space:pre-wrap}
+  .panel p.meta{color:#8a99a8;font-size:.72rem}
+  .panel p.muted{color:#78716c}
   .err{color:#b91c1c}
 </style></head><body>
 <header><h1>${title}</h1><span class="muted" id="stamp"></span></header>
@@ -718,11 +721,13 @@ function publicDashboardShell(opts: {
       var secs=d.refreshSeconds||CFG.refresh;
       var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
       stamp.textContent='data updated '+rel(d.updatedAt)+' · auto-refreshes every '+iv;
+      function human(k){return String(k||'').replace(/[_-]+/g,' ');}
       prov.innerHTML=(d.panels||[]).map(function(p){
         var lines=[];
-        lines.push('<p>'+esc(p.dialect)+(p.metricId?' · metric: '+esc(p.metricId):'')+' · '+(p.error?'<span class="err">error: '+esc(p.error)+'</span>':esc(p.rowCount)+' row(s)')+(p.computedAt?' · '+rel(p.computedAt):'')+'</p>');
-        if(p.metric&&p.metric.summary) lines.push('<p>'+esc(p.metric.summary)+'</p>');
-        return '<div class="panel"><h3>'+esc(p.title||p.key)+'</h3>'+lines.join('')+'</div>';
+        if(p.description) lines.push('<p>'+esc(p.description)+'</p>');
+        if(p.metric&&p.metric.summary) lines.push('<p class="muted">Based on the team metric <b>'+esc(p.metric.name)+'</b>: '+esc(p.metric.summary)+'</p>');
+        lines.push('<p class="meta">'+esc(p.dialect)+' · '+(p.error?'<span class="err">error: '+esc(p.error)+'</span>':esc(p.rowCount)+' row(s)')+(p.computedAt?' · updated '+rel(p.computedAt):'')+'</p>');
+        return '<div class="panel"><h3>'+esc(p.title||human(p.key))+'</h3>'+lines.join('')+'</div>';
       }).join('')||'<p style="padding:.6rem .9rem">No panels.</p>';
     }).catch(function(){});
   }

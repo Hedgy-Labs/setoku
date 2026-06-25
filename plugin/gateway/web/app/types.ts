@@ -119,6 +119,7 @@ export type PanelDialect = "postgres" | "clickhouse";
 export interface DashboardPanel {
   key: string;
   title?: string;
+  description?: string;
   sql: string;
   dialect: PanelDialect;
   metricId?: string | null;
@@ -143,6 +144,7 @@ export interface PublishedMeta {
 export interface PanelProvenance {
   key: string;
   title: string | null;
+  description: string | null;
   dialect: PanelDialect;
   metricId: string | null;
   metric: { name: string; summary: string; body: string } | null;

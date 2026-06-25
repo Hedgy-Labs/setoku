@@ -910,7 +910,7 @@ const publishUrl = (id: string, visibility: "team" | "public" = "team"): string 
 
 const PANEL_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
-type PanelInput = { key: string; title?: string; sql: string; dialect?: "postgres" | "clickhouse"; metricId?: string };
+type PanelInput = { key: string; title?: string; description?: string; sql: string; dialect?: "postgres" | "clickhouse"; metricId?: string };
 type PanelSeed = { key: string; columns: string[]; rows: Record<string, unknown>[]; rowCount: number };
 
 // Validate + dry-run a panel set through the governed path. Shared by publish and
@@ -931,6 +931,7 @@ async function prepPanels(
   const normalized: DashboardPanel[] = list.map((p) => ({
     key: p.key,
     title: p.title,
+    description: p.description,
     sql: p.sql,
     dialect: p.dialect ?? "postgres",
     metricId: p.metricId ?? null,
@@ -965,13 +966,28 @@ function publishNotes(html: string, panels: DashboardPanel[]): string {
   const missing = panels.filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId))).map((p) => p.metricId);
   if (missing.length)
     notes.push(`no curated metric named ${missing.map((m) => `"${m}"`).join(", ")} — that provenance link is dropped (document it with /setoku:generate or upsert_context).`);
+  // A panel without a title shows its raw slug in the "how is this calculated"
+  // drawer; without a description, viewers get no plain-language explanation.
+  const noTitle = panels.filter((p) => !p.title?.trim()).map((p) => p.key);
+  if (noTitle.length)
+    notes.push(`panel(s) ${noTitle.map((k) => `"${k}"`).join(", ")} have no \`title\` — viewers see the raw slug. Give each a human title.`);
+  const noDesc = panels.filter((p) => !p.description?.trim()).map((p) => p.key);
+  if (noDesc.length)
+    notes.push(`panel(s) ${noDesc.map((k) => `"${k}"`).join(", ")} have no \`description\` — the drawer can't explain what they compute. Add a one-line description.`);
   notes.push(...lintDashboardTemplate(html, panels.map((p) => p.key)));
   return notes.length ? `\n\n⚠ Heads up (publishes anyway):\n- ${notes.join("\n- ")}` : "";
 }
 
 const PANEL_SCHEMA = z.object({
   key: z.string().describe("Stable slug the template reads: window.__SETOKU__.panels[key]"),
-  title: z.string().optional().describe("Human label for the provenance drawer"),
+  title: z
+    .string()
+    .optional()
+    .describe("STRONGLY RECOMMENDED. Human label shown in the 'how is this calculated' drawer (e.g. 'Total revenue (2025)'). Without it viewers see the raw slug."),
+  description: z
+    .string()
+    .optional()
+    .describe("STRONGLY RECOMMENDED. One-line plain-language explanation of what this number is and how it's computed (e.g. 'Sum of paid ticket prices, comps/test excluded, cents→dollars'). The only calc explanation public viewers get."),
   sql: z.string().describe("A single read-only SELECT/WITH statement (validate with run_query first)"),
   dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = the lake"),
   metricId: z.string().optional().describe("Name of a curated metric this panel computes — links provenance to the verified definition"),

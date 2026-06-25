@@ -17,6 +17,11 @@ function fmtInterval(s: number): string {
   return `${Math.round(s / 3600)}h`;
 }
 
+/** Fallback heading when a panel has no title — turn the slug into words. */
+function humanizeKey(k: string): string {
+  return k.replace(/[_-]+/g, " ").trim();
+}
+
 /**
  * Render one dashboard. The agent-authored template + injected live data is
  * served by /admin/frame/<id> and shown in a sandboxed iframe — that endpoint
@@ -165,7 +170,7 @@ function Provenance({ panels }: { panels: PanelProvenance[] }) {
         {panels.map((p) => (
           <div key={p.key} className="px-4 py-3">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm font-medium text-stone-900">{p.title || p.key}</span>
+              <span className="text-sm font-medium text-stone-900">{p.title || humanizeKey(p.key)}</span>
               <Badge tone="idle">{p.dialect}</Badge>
               {p.metricId ? <Badge tone="ok">metric: {p.metricId}</Badge> : null}
               <span className="ml-auto text-xs text-stone-500">
@@ -174,15 +179,24 @@ function Provenance({ panels }: { panels: PanelProvenance[] }) {
                 ) : (
                   <>
                     {p.rowCount} row(s)
-                    {p.computedAt ? ` · ${relTime(p.computedAt)}` : ""}
+                    {p.computedAt ? ` · updated ${relTime(p.computedAt)}` : ""}
                     {p.refreshError ? <span className="text-amber-700"> · refresh failed</span> : null}
                   </>
                 )}
               </span>
             </div>
-            {p.metric?.summary ? <p className="mt-1 text-xs text-stone-600">{p.metric.summary}</p> : null}
+            {/* plain-language explanation first; the metric definition + raw SQL are the technical backup */}
+            {p.description ? <p className="mt-1 text-sm text-stone-700">{p.description}</p> : null}
+            {p.metric?.summary ? (
+              <p className="mt-1 text-xs text-stone-500">
+                Based on the team metric <b className="font-medium text-stone-700">{p.metric.name}</b>: {p.metric.summary}
+              </p>
+            ) : null}
             {p.sql ? (
-              <pre className="mt-2 overflow-x-auto rounded bg-stone-50 p-2 text-xs text-stone-700">{p.sql}</pre>
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs text-stone-500">show SQL</summary>
+                <pre className="mt-1 overflow-x-auto rounded bg-stone-50 p-2 text-xs text-stone-700">{p.sql}</pre>
+              </details>
             ) : null}
           </div>
         ))}

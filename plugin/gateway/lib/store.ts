@@ -112,6 +112,10 @@ export type PanelDialect = "postgres" | "clickhouse";
 export interface DashboardPanel {
   key: string;
   title?: string;
+  /** One-line, plain-language explanation of what this panel computes — shown in
+   *  the "how is this calculated" drawer (the human-readable companion to the
+   *  raw SQL, and the only calc explanation public viewers get). */
+  description?: string;
   sql: string;
   dialect: PanelDialect;
   metricId?: string | null;
