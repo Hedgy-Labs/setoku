@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState, type ReactNode } from "react";
+import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
@@ -7,6 +8,7 @@ import { useAuth } from "../auth";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
+import { Button } from "../components/Button";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
 import { dashboardShareUrl } from "../format";
@@ -17,6 +19,7 @@ export function Dashboards() {
   const isAdmin = me?.role === "admin";
   const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.dashboards(), []);
   const [archiving, setArchiving] = useState<PublishedMeta | null>(null);
+  const [newOpen, setNewOpen] = useState(false);
 
   const copy = async (r: PublishedMeta) => {
     try {
@@ -46,12 +49,17 @@ export function Dashboards() {
 
   return (
     <>
-      <Heading title="Dashboards">
-        Dashboards agents published to this box, backed by <b className="text-stone-800">live data</b> — the box
-        re-runs each panel's query on a refresh interval. <b className="text-stone-800">Team</b> links are
-        session-gated; the author or an admin can make one <b className="text-stone-800">public</b> for a
-        credential-free link.
-      </Heading>
+      <div className="flex items-start justify-between gap-4">
+        <Heading title="Dashboards">
+          Dashboards agents published to this box, backed by <b className="text-stone-800">live data</b> — the box
+          re-runs each panel's query on a refresh interval. <b className="text-stone-800">Team</b> links are
+          session-gated; the author or an admin can make one <b className="text-stone-800">public</b> for a
+          credential-free link.
+        </Heading>
+        <Button className="mt-1 shrink-0" onClick={() => setNewOpen(true)}>
+          New dashboard
+        </Button>
+      </div>
       {loading ? (
         <Loading />
       ) : error ? (
@@ -148,6 +156,49 @@ export function Dashboards() {
         }}
         onClose={() => setArchiving(null)}
       />
+      <NewDialog
+        open={newOpen}
+        onClose={() => setNewOpen(false)}
+        onCopied={() => toast("Prompt copied — paste it into your agent (describe the dashboard you want).")}
+      />
     </>
+  );
+}
+
+/** Like the viewer's Edit dialog: dashboards are built by your agent, not a form.
+ *  Hands the user a ready prompt to paste in and describe what they want. */
+function NewDialog({ open, onClose, onCopied }: { open: boolean; onClose: () => void; onCopied: () => void }) {
+  const prompt =
+    `Build a new dashboard on my Setoku (${location.origin}).\n` +
+    `Develop the queries with run_query (find_context / get_metric for curated metrics), then publish_dashboard — give each panel a title + one-line description, and a template using the Setoku.bar/table/stat/line helpers.\n\n` +
+    `What I want:\n`;
+  return (
+    <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
+        <AlertDialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
+          <AlertDialog.Title className="text-base font-semibold text-stone-900">New dashboard</AlertDialog.Title>
+          <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
+            Dashboards are built by your agent, not a form. Paste this into your Setoku-connected agent, describe what
+            you want, and it'll create and publish it.
+          </AlertDialog.Description>
+          <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
+            {prompt}
+          </pre>
+          <div className="mt-4 flex justify-end gap-2">
+            <AlertDialog.Cancel className="btn btn-ghost">Close</AlertDialog.Cancel>
+            <AlertDialog.Action
+              className="btn btn-primary"
+              onClick={() => {
+                void navigator.clipboard?.writeText(prompt).catch(() => {});
+                onCopied();
+              }}
+            >
+              Copy prompt
+            </AlertDialog.Action>
+          </div>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }
