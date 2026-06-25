@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import { type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
@@ -8,6 +8,7 @@ import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
+import { Confirm } from "../components/Confirm";
 import { dashboardShareUrl } from "../format";
 import type { PublishedMeta } from "../types";
 
@@ -15,6 +16,7 @@ export function Dashboards() {
   const { me } = useAuth();
   const isAdmin = me?.role === "admin";
   const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.dashboards(), []);
+  const [archiving, setArchiving] = useState<PublishedMeta | null>(null);
 
   const copy = async (r: PublishedMeta) => {
     try {
@@ -80,7 +82,7 @@ export function Dashboards() {
                     >
                       {r.visibility === "public" ? "Make team-only" : "Make public"}
                     </MenuItem>,
-                    <MenuItem key="arch" danger onSelect={() => void act(() => api.archive(r.id))}>
+                    <MenuItem key="arch" danger onSelect={() => setArchiving(r)}>
                       Archive
                     </MenuItem>,
                   );
@@ -114,17 +116,38 @@ export function Dashboards() {
                 Archived ({archived.length})
               </div>
               <div className="space-y-2">
-                {archived.map((r) => (
-                  <div key={r.id} className="card flex items-center gap-3 p-3 opacity-60">
-                    <span className="flex-1 text-sm text-stone-600">{r.title}</span>
-                    <Badge tone="idle">archived</Badge>
-                  </div>
-                ))}
+                {archived.map((r) => {
+                  const canManage = isAdmin || me?.identity === r.createdBy;
+                  return (
+                    <div key={r.id} className="card flex items-center gap-3 p-3">
+                      <span className="flex-1 text-sm text-stone-500">{r.title}</span>
+                      <Badge tone="idle">archived</Badge>
+                      {canManage ? (
+                        <Menu label={`Actions for ${r.title}`}>
+                          <MenuItem onSelect={() => void act(() => api.unarchive(r.id))}>Unarchive</MenuItem>
+                        </Menu>
+                      ) : null}
+                    </div>
+                  );
+                })}
               </div>
             </>
           ) : null}
         </>
       )}
+      <Confirm
+        open={!!archiving}
+        title="Archive this dashboard?"
+        body={`"${archiving?.title}" will stop working at its link (public and team). The record is kept — you can restore it from the Archived list.`}
+        confirmLabel="Archive"
+        danger
+        onConfirm={() => {
+          const a = archiving;
+          setArchiving(null);
+          if (a) void act(() => api.archive(a.id));
+        }}
+        onClose={() => setArchiving(null)}
+      />
     </>
   );
 }

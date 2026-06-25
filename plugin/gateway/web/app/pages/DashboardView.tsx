@@ -9,6 +9,7 @@ import { Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
+import { Confirm } from "../components/Confirm";
 import { dashboardShareUrl, relTime } from "../format";
 import type { DashboardData, PanelProvenance } from "../types";
 
@@ -44,6 +45,7 @@ export function DashboardView() {
   // The calc drawer toggles in/out; collapsed lets the iframe take full height.
   const [showCalc, setShowCalc] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const refreshing = useRef(false);
 
   const visibility = data?.visibility ?? "team";
@@ -133,7 +135,7 @@ export function DashboardView() {
             </MenuItem>
           ) : null}
           {data && !data.archivedAt && (isAdmin || mine) ? (
-            <MenuItem danger onSelect={() => void archive()}>
+            <MenuItem danger onSelect={() => setArchiveOpen(true)}>
               Archive
             </MenuItem>
           ) : null}
@@ -170,42 +172,66 @@ export function DashboardView() {
         onClose={() => setEditOpen(false)}
         id={id}
         title={data?.title ?? ""}
+        canEdit={mine}
         onCopied={() => toast("Prompt copied — paste it into your agent (with the changes you want).")}
+      />
+      <Confirm
+        open={archiveOpen}
+        title="Archive this dashboard?"
+        body={`"${data?.title ?? ""}" will stop working at its link (public and team). The record is kept — you can restore it from the Dashboards list.`}
+        confirmLabel="Archive"
+        danger
+        onConfirm={() => {
+          setArchiveOpen(false);
+          void archive();
+        }}
+        onClose={() => setArchiveOpen(false)}
       />
     </div>
   );
 }
 
 /** Setoku has no in-browser editor by design — editing is a conversational agent
- *  action (get_dashboard → update_dashboard). This hands the user a ready prompt
- *  (with a link to this dashboard) to paste into their agent. */
+ *  action. The prompt adapts to who you are: the AUTHOR gets an edit-in-place
+ *  prompt (update_dashboard, same link); anyone else can only duplicate it
+ *  (get_dashboard → publish_dashboard a new copy), since update_dashboard is
+ *  author-gated. */
 function EditDialog({
   open,
   onClose,
   id,
   title,
+  canEdit,
   onCopied,
 }: {
   open: boolean;
   onClose: () => void;
   id: string;
   title: string;
+  canEdit: boolean;
   onCopied: () => void;
 }) {
   const url = `${location.origin}/admin/p/${id}`;
-  const prompt =
-    `Edit my Setoku dashboard${title ? ` "${title}"` : ""} at ${url}\n` +
-    `Read it with get_dashboard("${id}"), then update_dashboard("${id}", …) in place (same link).\n\n` +
-    `Changes I want:\n`;
+  const named = title ? ` "${title}"` : "";
+  const prompt = canEdit
+    ? `Edit my Setoku dashboard${named} at ${url}\n` +
+      `Read it with get_dashboard("${id}"), then update_dashboard("${id}", …) in place (same link).\n\n` +
+      `Changes I want:\n`
+    : `Make my own copy of the Setoku dashboard${named} at ${url}\n` +
+      `Read it with get_dashboard("${id}"), then publish_dashboard a new one with my changes (a new link — I can't edit someone else's in place).\n\n` +
+      `Changes I want:\n`;
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
         <AlertDialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
-          <AlertDialog.Title className="text-base font-semibold text-stone-900">Edit this dashboard</AlertDialog.Title>
+          <AlertDialog.Title className="text-base font-semibold text-stone-900">
+            {canEdit ? "Edit this dashboard" : "Make your own copy"}
+          </AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
-            Dashboards are edited by your agent, not a form. Paste this prompt into your Setoku-connected agent,
-            fill in the changes you want, and it'll update this dashboard in place — same link.
+            {canEdit
+              ? "Dashboards are edited by your agent, not a form. Paste this prompt into your Setoku-connected agent, fill in the changes you want, and it'll update this dashboard in place — same link."
+              : "You didn't create this dashboard, so you can't edit it in place. Paste this into your Setoku-connected agent to build your own copy with your changes (it gets a new link)."}
           </AlertDialog.Description>
           <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
             {prompt}

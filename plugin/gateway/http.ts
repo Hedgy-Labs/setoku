@@ -1039,6 +1039,23 @@ const httpServer = http.createServer(async (req, res) => {
             return json(200, { ok, flash: "Archived — its link no longer works." });
           }
 
+          // Restore an archived dashboard. Author-or-admin, but (unlike the other
+          // per-dashboard mutations) it operates on an ARCHIVED row, so it gates
+          // here rather than via mayMutateDashboard (which 404s archived rows).
+          if (api === "unarchive") {
+            const body = (await readBody(req)) as { id?: string } | undefined;
+            const id = (body?.id ?? "").trim();
+            const rep = id ? store.getPublishedMeta(id) : null;
+            if (!rep || !rep.archivedAt) return json(404, { ok: false, error: "No archived dashboard with that id." });
+            if (rep.createdBy !== session.identity && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              return json(403, { ok: false, error: "Only the dashboard's author or an admin can restore it." });
+            }
+            const ok = store.unarchivePublished(id);
+            store.audit(session.identity, "unarchive_dashboard", { id, ok });
+            return json(200, { ok, flash: "Restored — the dashboard is active again." });
+          }
+
           if (api === "set_visibility") {
             const body = (await readBody(req)) as { id?: string; visibility?: string } | undefined;
             const id = (body?.id ?? "").trim();

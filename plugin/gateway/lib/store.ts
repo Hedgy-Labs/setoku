@@ -986,6 +986,14 @@ export class KnowledgeStore {
     return changed;
   }
 
+  /** Restore an archived report/dashboard (clear the soft-delete). Returns false
+   *  if unknown or not currently archived. */
+  unarchivePublished(id: string): boolean {
+    return (
+      this.db.run("UPDATE published SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL", [id]).changes > 0
+    );
+  }
+
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or
    *  archived report. Promoting to public is an admin action (enforced upstream). */
   setReportVisibility(id: string, visibility: ReportVisibility): boolean {

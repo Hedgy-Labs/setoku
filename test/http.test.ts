@@ -822,6 +822,15 @@ describe("live dashboards (end-to-end render path)", () => {
     expect(arch.status).toBe(200);
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404);
     expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(404);
+
+    // 8. Unarchive restores it (keeping its prior public visibility).
+    const un = await fetch(`${BASE}/admin/api/unarchive`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id }),
+    });
+    expect(un.status).toBe(200);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200);
   }, 20_000);
 
   it("clamps an absurd refresh, strips SQL from the list, and 404s subpaths for legacy reports", async () => {

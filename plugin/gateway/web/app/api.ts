@@ -106,6 +106,7 @@ export const api = {
   dashboardData: (id: string, force = false) =>
     req<DashboardData>(`dashboard_data?id=${encodeURIComponent(id)}${force ? "&force=1" : ""}`),
   archive: (id: string) => req<MutationResult>("archive", { method: "POST", body: { id } }),
+  unarchive: (id: string) => req<MutationResult>("unarchive", { method: "POST", body: { id } }),
   setVisibility: (id: string, visibility: "team" | "public") =>
     req<MutationResult>("set_visibility", { method: "POST", body: { id, visibility } }),
 };
