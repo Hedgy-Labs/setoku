@@ -684,8 +684,8 @@ function publicDashboardShell(opts: {
   header{flex:none;display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1rem;padding:.7rem 1.1rem;border-bottom:1px solid #e7e5e4}
   h1{margin:0;font-size:1.02rem;font-weight:600}
   .muted{color:#78716c;font-size:.8rem}
-  .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#0d9488;border:1px solid #99f6e4;background:#f0fdfa;padding:.2rem .6rem;border-radius:.4rem}
-  .adminbtn:hover{background:#ccfbf1}
+  .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
+  .adminbtn:hover{background:#f5f5f4}
   main{flex:1;min-height:0;display:flex;padding:.9rem 1.1rem}
   iframe{flex:1;width:100%;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
 </style></head><body>
