@@ -807,6 +807,12 @@ describe("live dashboards (end-to-end render path)", () => {
     expect(shell).toContain("<iframe");
     expect(shell).toContain(`/p/${id}/frame`);
 
+    // 6b. A logged-OUT hit on /admin/p/<id> for a public dashboard bounces to the
+    //     public view rather than the login wall.
+    const bounce = await fetch(`${BASE}/admin/p/${id}`, { redirect: "manual" });
+    expect(bounce.status).toBe(302);
+    expect(bounce.headers.get("location")).toBe(`/p/${id}`);
+
     // 7. Archiving 404s the link everywhere (and drops cached data).
     const arch = await fetch(`${BASE}/admin/api/archive`, {
       method: "POST",

@@ -1198,6 +1198,19 @@ const httpServer = http.createServer(async (req, res) => {
         return json(404, { ok: false, error: "unknown endpoint" });
       }
 
+      // A logged-OUT visitor to /admin/p/<id> for a PUBLIC dashboard should see
+      // the public view, not the login wall — bounce them to /p/<id>. (Signed-in
+      // users fall through to the SPA, which renders the full team view.)
+      const pm = reqPath.match(/^\/admin\/p\/([^/]+)$/);
+      if (pm && req.method === "GET" && !sessions.get(sessionIdFromCookie(req.headers.cookie))) {
+        const pmeta = store.getPublishedMeta(decodeURIComponent(pm[1]));
+        if (pmeta && !pmeta.archivedAt && pmeta.visibility === "public") {
+          res.writeHead(302, { location: `/p/${encodeURIComponent(pmeta.id)}`, "referrer-policy": "no-referrer" });
+          res.end();
+          return;
+        }
+      }
+
       // SPA shell for every other /admin GET — client-side routing renders the
       // view; the app fetches /admin/api/session and shows login if unauthenticated.
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "referrer-policy": "no-referrer" });
