@@ -1092,8 +1092,9 @@ server.registerTool(
       return errorText(`No active dashboard "${id}" (archived or unknown). Call list_dashboards.`);
     if (meta.createdBy !== user)
       return errorText(`Only the author (${meta.createdBy}) can edit this dashboard. Publish your own with publish_dashboard.`);
-    if (title === undefined && html === undefined && panels === undefined && refreshSeconds === undefined)
-      return errorText("Nothing to update — pass at least one of title, html, panels, refreshSeconds.");
+    const newTitle = title?.trim() || undefined; // whitespace-only title is a no-op, not a change
+    if (newTitle === undefined && html === undefined && panels === undefined && refreshSeconds === undefined)
+      return errorText("Nothing to update — pass a non-empty title, or html / panels / refreshSeconds.");
     if (html !== undefined) {
       const bytes = Buffer.byteLength(html, "utf8");
       if (bytes > MAX_REPORT_BYTES)
@@ -1115,7 +1116,7 @@ server.registerTool(
     else if (panels !== undefined) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
 
     const ok = store.updatePublished(tid, {
-      title: title?.trim() || undefined,
+      title: newTitle,
       body: html,
       panels: normalized, // undefined → unchanged; [] → becomes a static report (cache cleared)
       refreshSeconds: refresh,
@@ -1133,7 +1134,7 @@ server.registerTool(
     }
     store.audit(user, "update_dashboard", {
       id: tid,
-      changed: [title !== undefined && "title", html !== undefined && "html", panels !== undefined && "panels", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
+      changed: [newTitle !== undefined && "title", html !== undefined && "html", panels !== undefined && "panels", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
       reverted,
     });
 
@@ -1213,6 +1214,9 @@ server.registerTool(
       lines.push(
         `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${p.metricId ? ` · metric:${p.metricId}` : ""}`,
       );
+      // Surface description so a read-before-edit (get_dashboard → update_dashboard)
+      // round-trip can preserve it — update_dashboard REPLACES the whole panel set.
+      if (p.description) lines.push(`description: ${p.description}`);
       if (cache)
         lines.push(
           `last run ${cache.computedAt.slice(0, 16)} — ${cache.error ? `ERROR: ${cache.error}` : `${cache.rowCount} row(s)`}`,

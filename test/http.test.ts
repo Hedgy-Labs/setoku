@@ -823,13 +823,44 @@ describe("live dashboards (end-to-end render path)", () => {
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404);
     expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(404);
 
-    // 8. Unarchive restores it (keeping its prior public visibility).
+    // 8. Unarchive restores it as TEAM-ONLY — a previously-public link must not
+    //    silently come back; re-going-public is a fresh admin action (I9).
     const un = await fetch(`${BASE}/admin/api/unarchive`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
       body: JSON.stringify({ id }),
     });
     expect(un.status).toBe(200);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // public link NOT restored
+    expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(200); // active again (team)
+  }, 20_000);
+
+  it("making a dashboard public is admin-only; a member cannot promote", async () => {
+    const alice = await connect("tok-alice");
+    const pub = await call(alice, "publish_dashboard", {
+      title: "Member test",
+      html: "<div></div>",
+      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+    });
+    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    await alice.close();
+    // a MEMBER session cannot make it public
+    const viewer = await session("viewer", "viewer-pass");
+    const denied = await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: viewer.cookie, "x-csrf-token": viewer.csrf },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect(denied.status).toBe(403);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // still team-only
+    // an ADMIN can
+    const boss = await session("boss", "s3cret-pass");
+    const okp = await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect(okp.status).toBe(200);
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200);
   }, 20_000);
 

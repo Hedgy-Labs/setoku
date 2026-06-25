@@ -986,12 +986,26 @@ export class KnowledgeStore {
     return changed;
   }
 
-  /** Restore an archived report/dashboard (clear the soft-delete). Returns false
-   *  if unknown or not currently archived. */
+  /** Restore an archived report/dashboard (clear the soft-delete) — and reset it to
+   *  team-only. A previously-PUBLIC dashboard must NOT silently come back on its
+   *  credential-free link; re-going-public is a fresh admin action (I9). Returns
+   *  false if unknown or not currently archived. */
   unarchivePublished(id: string): boolean {
     return (
-      this.db.run("UPDATE published SET archived_at = NULL WHERE id = ? AND archived_at IS NOT NULL", [id]).changes > 0
+      this.db.run(
+        "UPDATE published SET archived_at = NULL, visibility = 'team' WHERE id = ? AND archived_at IS NOT NULL",
+        [id],
+      ).changes > 0
     );
+  }
+
+  /** Newest cached panel computed_at for a dashboard (the "data updated" stamp),
+   *  read straight from the cache WITHOUT re-running any query. */
+  newestPanelComputedAt(id: string): string | null {
+    const row = this.db
+      .query("SELECT MAX(computed_at) AS t FROM dashboard_cache WHERE dashboard_id = ?")
+      .get(id) as { t: string | null } | null;
+    return row?.t ?? null;
   }
 
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or

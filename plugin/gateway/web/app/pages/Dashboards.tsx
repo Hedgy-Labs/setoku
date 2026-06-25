@@ -80,20 +80,26 @@ export function Dashboards() {
                     Copy link
                   </MenuItem>,
                 ];
-                if (canManage)
+                if (canManage) {
+                  // Making PUBLIC is admin-only (I9); taking it back to team is author-or-admin.
+                  if (r.visibility === "public")
+                    items.push(
+                      <MenuItem key="vis" onSelect={() => void act(() => api.setVisibility(r.id, "team"))}>
+                        Make team-only
+                      </MenuItem>,
+                    );
+                  else if (isAdmin)
+                    items.push(
+                      <MenuItem key="vis" onSelect={() => void act(() => api.setVisibility(r.id, "public"))}>
+                        Make public
+                      </MenuItem>,
+                    );
                   items.push(
-                    <MenuItem
-                      key="vis"
-                      onSelect={() =>
-                        void act(() => api.setVisibility(r.id, r.visibility === "public" ? "team" : "public"))
-                      }
-                    >
-                      {r.visibility === "public" ? "Make team-only" : "Make public"}
-                    </MenuItem>,
                     <MenuItem key="arch" danger onSelect={() => setArchiving(r)}>
                       Archive
                     </MenuItem>,
                   );
+                }
                 return (
                   <div key={r.id} className="card flex items-center gap-3 p-4">
                     <div className="min-w-0 flex-1">

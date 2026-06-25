@@ -570,7 +570,11 @@ function jsonForScript(value: unknown): string {
  *  gates raw error text: a public frame must NOT inject a raw DB error (it can
  *  name tables/columns/env vars) — same scrub the public /data path applies. */
 function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { team: boolean }): string {
-  if (!panels.length) return dash.body;
+  // A legacy full HTML document (pre-dashboard report) is served as-is. But a
+  // FRAGMENT with no panels — e.g. a dashboard the author turned static while
+  // keeping a Setoku.*/__SETOKU__ template — still gets the runtime + empty data
+  // injected, so those calls degrade ("No data") instead of ReferenceError.
+  if (!panels.length && /<!doctype|<html[\s>]/i.test(dash.body)) return dash.body;
   const scrub = (e: string | null | undefined): string | null =>
     e ? (opts.team ? e : "data temporarily unavailable") : null;
   const data = {
@@ -771,10 +775,10 @@ const httpServer = http.createServer(async (req, res) => {
       if ((sub === "data" || sub === "frame") && !isDashboard) return notFound();
 
       // /p/<id>/data — FRESHNESS ONLY for the public shell's "updated …" stamp.
-      // The public surface exposes NO calculations (no SQL, no descriptions, no
-      // metrics) — that's the team-only drawer. Renders from `meta` (no body read).
+      // The public surface exposes NO calculations (no SQL, descriptions, metrics).
+      // Reads the newest cached computed_at directly — does NOT re-run any query
+      // (the /frame request drives execution; this credential-free poll must not).
       if (sub === "data") {
-        const panels = await renderDashboard(store, projectDir, meta);
         store.audit("public", "dashboard_data_public", { id });
         res.writeHead(200, {
           "content-type": "application/json",
@@ -782,7 +786,11 @@ const httpServer = http.createServer(async (req, res) => {
           "referrer-policy": "no-referrer",
         });
         res.end(
-          JSON.stringify({ title: meta.title, refreshSeconds: meta.refreshSeconds, updatedAt: newestComputedAt(panels) }),
+          JSON.stringify({
+            title: meta.title,
+            refreshSeconds: meta.refreshSeconds,
+            updatedAt: store.newestPanelComputedAt(id),
+          }),
         );
         return;
       }
@@ -817,7 +825,9 @@ const httpServer = http.createServer(async (req, res) => {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(rep.body);
+        // frameDocument serves a legacy full-doc as-is, but injects the runtime +
+        // empty data for a fragment template (so Setoku.* degrades, not throws).
+        res.end(frameDocument(rep, [], { team: false }));
         return;
       }
       // Live dashboard: serve the trusted outer shell (frames /p/<id>/frame, polls
@@ -1053,7 +1063,10 @@ const httpServer = http.createServer(async (req, res) => {
             }
             const ok = store.unarchivePublished(id);
             store.audit(session.identity, "unarchive_dashboard", { id, ok });
-            return json(200, { ok, flash: "Restored — the dashboard is active again." });
+            return json(ok ? 200 : 409, {
+              ok,
+              flash: ok ? "Restored as team-only — an admin can make it public again." : "Already restored.",
+            });
           }
 
           if (api === "set_visibility") {
@@ -1063,6 +1076,12 @@ const httpServer = http.createServer(async (req, res) => {
             if (visibility !== "team" && visibility !== "public")
               return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
             if (!mayMutateDashboard(id)) return;
+            // Making a dashboard PUBLIC (a credential-free link) is an ADMIN action
+            // (I9) — an author can take it back to team-only, but not expose it.
+            if (visibility === "public" && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              return json(403, { ok: false, error: "Only an admin can make a dashboard public." });
+            }
             const ok = store.setReportVisibility(id, visibility);
             store.audit(session.identity, "dashboard_visibility_set", { id, visibility, ok });
             return json(ok ? 200 : 404, {

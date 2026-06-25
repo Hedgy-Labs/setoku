@@ -95,7 +95,8 @@ export const DASHBOARD_RUNTIME = `(function () {
     var ys = r.rows.map(function (row) { return num(row[opts.value]); });
     var xs = opts.x ? r.rows.map(function (row) { return row[opts.x]; }) : null;
     var W = 600, H = 180, padL = 6, padR = 6, padT = 16, padB = 30, n = ys.length;
-    var mn = Math.min.apply(null, ys), mx = Math.max.apply(null, ys); if (mn === mx) { mn = Math.min(0, mn); mx = mx || 1; }
+    var mn = Math.min.apply(null, ys), mx = Math.max.apply(null, ys);
+    if (mx === mn) { mn -= 1; mx += 1; } // flat/single/negative series → a band, never divide-by-zero
     var X = function (i) { return padL + (n > 1 ? i / (n - 1) : 0) * (W - padL - padR); };
     var Y = function (v) { return padT + (1 - (v - mn) / (mx - mn)) * (H - padT - padB); };
     var color = esc(opts.color || "#2f6f8f");
@@ -140,16 +141,22 @@ export function lintDashboardTemplate(html: string, panelKeys: string[]): string
   }
 
   // Explicit panels.IDENT / panels["x"] references to keys that don't exist.
+  // Skip built-in JS props so panels.length / .map / aliasing don't false-warn.
+  const JS_PROPS = new Set([
+    "length", "map", "filter", "forEach", "constructor", "hasOwnProperty", "prototype",
+    "toString", "valueOf", "keys", "entries", "values", "indexOf", "slice",
+  ]);
   const refs = new Set<string>();
   for (const m of html.matchAll(/panels\.([A-Za-z_$][\w$]*)/g)) refs.add(m[1]);
   for (const m of html.matchAll(/panels\[\s*['"]([^'"]+)['"]\s*\]/g)) refs.add(m[1]);
-  for (const r of refs) if (!keys.has(r)) warn.push(`template reads panels.${r} but there is no panel "${r}".`);
+  for (const r of refs) if (!keys.has(r) && !JS_PROPS.has(r)) warn.push(`template reads panels.${r} but there is no panel "${r}".`);
 
   // A <span> given width/height but no display — inline spans ignore both, so the
   // element renders at zero size (blank bars/fills). The single most common break.
+  // Match both quote styles (agents in JS strings often reach for single quotes).
   let sizedSpans = 0;
-  for (const m of html.matchAll(/<span\b[^>]*\bstyle\s*=\s*"([^"]*)"/gi)) {
-    const s = m[1];
+  for (const m of html.matchAll(/<span\b[^>]*\bstyle\s*=\s*(['"])([\s\S]*?)\1/gi)) {
+    const s = m[2];
     if (/(^|;)\s*(width|height)\s*:/.test(s) && !/(^|;)\s*display\s*:/.test(s)) sizedSpans++;
   }
   if (sizedSpans)

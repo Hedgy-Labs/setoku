@@ -127,12 +127,11 @@ export function DashboardView() {
           {isDashboard ? <MenuItem onSelect={() => void refresh(true)}>Refresh data</MenuItem> : null}
           {isDashboard ? <MenuItem onSelect={() => setEditOpen(true)}>Edit…</MenuItem> : null}
           <MenuItem onSelect={() => void copy()}>Copy link</MenuItem>
-          {data && !data.archivedAt && (isAdmin || mine) ? (
-            <MenuItem
-              onSelect={() => void act(() => api.setVisibility(id, visibility === "public" ? "team" : "public"))}
-            >
-              {visibility === "public" ? "Make team-only" : "Make public"}
-            </MenuItem>
+          {data && !data.archivedAt && visibility === "public" && (isAdmin || mine) ? (
+            <MenuItem onSelect={() => void act(() => api.setVisibility(id, "team"))}>Make team-only</MenuItem>
+          ) : null}
+          {data && !data.archivedAt && visibility === "team" && isAdmin ? (
+            <MenuItem onSelect={() => void act(() => api.setVisibility(id, "public"))}>Make public</MenuItem>
           ) : null}
           {data && !data.archivedAt && (isAdmin || mine) ? (
             <MenuItem danger onSelect={() => setArchiveOpen(true)}>
