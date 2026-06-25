@@ -755,10 +755,9 @@ describe("live dashboards (end-to-end render path)", () => {
     const boss = await session("boss", "s3cret-pass");
     const dd = (await (
       await fetch(`${BASE}/admin/api/dashboard_data?id=${id}`, { headers: { cookie: boss.cookie } })
-    ).json()) as { createdBy?: string; panels: { sql?: string; metric: { body?: string } | null; rowCount: number }[] };
-    expect(dd.panels[0].sql).toContain("count(*)");
-    expect(dd.panels[0].metric).not.toBeNull(); // "revenue" metric resolved
-    expect(dd.panels[0].metric?.body).toBeTruthy(); // team sees the canonical metric SQL
+    ).json()) as { createdBy?: string; panels: { sql?: string; metricSummary: string | null; rowCount: number }[] };
+    expect(dd.panels[0].sql).toContain("count(*)"); // team drawer shows the query it runs
+    expect(dd.panels[0].metricSummary).toBeTruthy(); // "revenue" metric summary resolved
     expect(dd.createdBy).toBeTruthy(); // and the author
     expect(dd.panels[0].rowCount).toBe(1);
 
@@ -789,19 +788,19 @@ describe("live dashboards (end-to-end render path)", () => {
     });
     expect(promote.status).toBe(200);
 
-    // 6. Public provenance OMITS schema-revealing fields — raw SQL, the metric
-    //    BODY (which is the canonical SQL), and the author — but still shows
-    //    methodology (metric name + summary). The public frame injects data; the
-    //    public page is the trusted shell (frames it).
+    // 6. Public /data exposes NO calculations at all — just freshness meta (no
+    //    panels, no SQL, no metrics, no author). The public page is the trusted
+    //    shell that frames the dashboard; the drawer is team-only.
     const pdata = (await (await fetch(`${BASE}/p/${id}/data`)).json()) as {
       createdBy?: string;
-      panels: { sql?: string; metric: { body?: string; summary?: string } | null }[];
+      panels?: unknown;
+      updatedAt?: string;
+      refreshSeconds?: number;
     };
-    expect(pdata.panels[0].sql).toBeUndefined();
+    expect(pdata.panels).toBeUndefined(); // no per-panel calc info publicly
     expect(pdata.createdBy).toBeUndefined(); // author identity not leaked publicly
-    expect(pdata.panels[0].metric).not.toBeNull(); // methodology IS shown publicly
-    expect(pdata.panels[0].metric?.summary).toBeTruthy();
-    expect(pdata.panels[0].metric?.body).toBeUndefined(); // but NOT the canonical SQL body
+    expect(pdata.refreshSeconds).toBeDefined(); // freshness meta is fine
+    expect(pdata.updatedAt).toBeDefined();
     const pframe = await (await fetch(`${BASE}/p/${id}/frame`)).text();
     expect(pframe).toContain("window.__SETOKU__");
     const shell = await (await fetch(`${BASE}/p/${id}`)).text();

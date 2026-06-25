@@ -606,47 +606,41 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
  *  schema (raw `sql`, the metric BODY which is the canonical SQL, the author's
  *  identity, or a raw DB error that may name an env var) — it shows methodology
  *  only: the metric name + summary, and a generic "unavailable" on failure. */
+// TEAM-ONLY provenance: the "how is this calculated" drawer (incl. raw SQL) is
+// served only to a signed-in box session. The PUBLIC surface exposes NO
+// calculations — its /data returns just freshness meta (see the /p/<id>/data
+// handler), so a public link is the visual dashboard and nothing else.
 function dashboardProvenance(
   knowledge: KnowledgeStore,
   meta: PublishedMeta,
   panels: RenderedPanel[],
-  opts: { team: boolean },
 ): Record<string, unknown> {
   const byKey = new Map(panels.map((p) => [p.key, p]));
-  const publicError = (e: string | null | undefined): string | null =>
-    e ? (opts.team ? e : "data temporarily unavailable") : null;
   return {
     id: meta.id,
     title: meta.title,
     format: meta.format,
     visibility: meta.visibility,
     refreshSeconds: meta.refreshSeconds,
-    ...(opts.team ? { createdBy: meta.createdBy } : {}),
+    createdBy: meta.createdBy,
     createdAt: meta.createdAt,
     archivedAt: meta.archivedAt,
     updatedAt: newestComputedAt(panels),
     panels: (meta.panels ?? []).map((p) => {
       const r = byKey.get(p.key);
       const doc = p.metricId ? knowledge.getDoc("metric", String(p.metricId)) : null;
-      // The metric BODY is the canonical SQL — team-only, like raw `sql`.
-      const metric = doc
-        ? opts.team
-          ? { name: doc.name, summary: String(doc.meta.summary ?? ""), body: doc.body }
-          : { name: doc.name, summary: String(doc.meta.summary ?? "") }
-        : null;
       return {
         key: p.key,
         title: p.title ?? null,
         description: p.description ?? null,
         dialect: p.dialect,
         metricId: p.metricId ?? null,
-        metric,
-        ...(opts.team ? { sql: p.sql } : {}),
-        columns: r?.columns ?? [],
+        metricSummary: doc ? String(doc.meta.summary ?? "") : null,
+        sql: p.sql,
         rowCount: r?.rowCount ?? 0,
         computedAt: r?.computedAt ?? null,
-        error: publicError(r?.error),
-        refreshError: publicError(r?.refreshError),
+        error: r?.error ?? null,
+        refreshError: r?.refreshError ?? null,
       };
     }),
   };
@@ -685,52 +679,28 @@ function publicDashboardShell(opts: {
 <style>
   :root{color-scheme:light}
   *{box-sizing:border-box}
-  body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fafaf9}
-  header{display:flex;flex-wrap:wrap;align-items:baseline;gap:.5rem 1rem;padding:1rem 1.25rem;border-bottom:1px solid #e7e5e4}
-  h1{margin:0;font-size:1.05rem;font-weight:600}
+  body{margin:0;display:flex;flex-direction:column;height:100vh;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fafaf9}
+  header{flex:none;display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1rem;padding:.7rem 1.1rem;border-bottom:1px solid #e7e5e4}
+  h1{margin:0;font-size:1.02rem;font-weight:600}
   .muted{color:#78716c;font-size:.8rem}
-  main{padding:1rem 1.25rem}
-  iframe{width:100%;height:70vh;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
-  details{margin-top:1rem;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
-  summary{cursor:pointer;padding:.6rem .9rem;font-weight:500;font-size:.85rem}
-  .panel{padding:.6rem .9rem;border-top:1px solid #f5f5f4}
-  .panel h3{margin:0 0 .15rem;font-size:.85rem}
-  .panel p{margin:.15rem 0;color:#57534e;font-size:.8rem;white-space:pre-wrap}
-  .panel p.meta{color:#8a99a8;font-size:.72rem}
-  .panel p.muted{color:#78716c}
-  .err{color:#b91c1c}
+  main{flex:1;min-height:0;display:flex;padding:.9rem 1.1rem}
+  iframe{flex:1;width:100%;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
 </style></head><body>
 <header><h1>${title}</h1><span class="muted" id="stamp"></span></header>
-<main>
-  <iframe id="frame" title="${title}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>
-  <details><summary>How this is calculated</summary><div id="prov" class="muted" style="padding:.6rem .9rem">Loading…</div></details>
-</main>
+<main><iframe id="frame" title="${title}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></main>
 <script>
 (function(){
   var CFG=${cfg};
-  var frame=document.getElementById('frame');
-  var stamp=document.getElementById('stamp');
-  var prov=document.getElementById('prov');
+  var frame=document.getElementById('frame'), stamp=document.getElementById('stamp');
   function rel(iso){ if(!iso) return ''; var s=Math.max(0,Math.round((Date.now()-Date.parse(iso))/1000));
     if(s<60) return s+'s ago'; var m=Math.round(s/60); if(m<60) return m+'m ago';
     var h=Math.round(m/60); return h<48? h+'h ago' : Math.round(h/24)+'d ago'; }
-  function esc(t){ var d=document.createElement('div'); d.textContent=t==null?'':String(t); return d.innerHTML; }
   function reload(){ frame.src=CFG.frame+'?t='+Date.now(); }
-  function refresh(){
-    fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
-      var secs=d.refreshSeconds||CFG.refresh;
-      var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
-      stamp.textContent='data updated '+rel(d.updatedAt)+' · auto-refreshes every '+iv;
-      function human(k){return String(k||'').replace(/[_-]+/g,' ');}
-      prov.innerHTML=(d.panels||[]).map(function(p){
-        var lines=[];
-        if(p.description) lines.push('<p>'+esc(p.description)+'</p>');
-        if(p.metric&&p.metric.summary) lines.push('<p class="muted">Based on the team metric <b>'+esc(p.metric.name)+'</b>: '+esc(p.metric.summary)+'</p>');
-        lines.push('<p class="meta">'+esc(p.dialect)+' · '+(p.error?'<span class="err">error: '+esc(p.error)+'</span>':esc(p.rowCount)+' row(s)')+(p.computedAt?' · updated '+rel(p.computedAt):'')+'</p>');
-        return '<div class="panel"><h3>'+esc(p.title||human(p.key))+'</h3>'+lines.join('')+'</div>';
-      }).join('')||'<p style="padding:.6rem .9rem">No panels.</p>';
-    }).catch(function(){});
-  }
+  function refresh(){ fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
+    var secs=d.refreshSeconds||CFG.refresh;
+    var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
+    stamp.textContent='data updated '+rel(d.updatedAt)+' · auto-refreshes every '+iv;
+  }).catch(function(){}); }
   reload(); refresh();
   setInterval(function(){ reload(); refresh(); }, Math.max(30,CFG.refresh)*1000);
 })();
@@ -792,9 +762,9 @@ const httpServer = http.createServer(async (req, res) => {
       // them for non-dashboards.
       if ((sub === "data" || sub === "frame") && !isDashboard) return notFound();
 
-      // /p/<id>/data — provenance JSON for the shell's drawer. NO raw SQL on the
-      // public surface (it would leak schema); methodology + metric defs only.
-      // Renders from `meta` (no body read — this is a credential-free hot path).
+      // /p/<id>/data — FRESHNESS ONLY for the public shell's "updated …" stamp.
+      // The public surface exposes NO calculations (no SQL, no descriptions, no
+      // metrics) — that's the team-only drawer. Renders from `meta` (no body read).
       if (sub === "data") {
         const panels = await renderDashboard(store, projectDir, meta);
         store.audit("public", "dashboard_data_public", { id });
@@ -803,7 +773,9 @@ const httpServer = http.createServer(async (req, res) => {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(JSON.stringify(dashboardProvenance(store, meta, panels, { team: false })));
+        res.end(
+          JSON.stringify({ title: meta.title, refreshSeconds: meta.refreshSeconds, updatedAt: newestComputedAt(panels) }),
+        );
         return;
       }
 
@@ -1020,7 +992,7 @@ const httpServer = http.createServer(async (req, res) => {
           // Renders from `meta` — provenance + frame don't need the report body.
           const panels = await renderDashboard(store, projectDir, meta, { force });
           store.audit(session.identity, force ? "dashboard_refreshed" : "dashboard_viewed", { id });
-          return json(200, dashboardProvenance(store, meta, panels, { team: true }));
+          return json(200, dashboardProvenance(store, meta, panels));
         }
 
         // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----

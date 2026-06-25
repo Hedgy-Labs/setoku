@@ -40,6 +40,8 @@ export function DashboardView() {
   // Bumping the nonce changes the iframe src → reloads the frame (re-renders the
   // panels server-side; within the refresh TTL that's a cache hit).
   const [nonce, setNonce] = useState(0);
+  // The calc drawer toggles in/out; collapsed lets the iframe take full height.
+  const [showCalc, setShowCalc] = useState(false);
   const refreshing = useRef(false);
 
   const visibility = data?.visibility ?? "team";
@@ -104,14 +106,19 @@ export function DashboardView() {
   };
 
   return (
-    <>
-      <div className="mb-4 flex flex-wrap items-center gap-3">
+    <div className="flex h-[calc(100vh-9.5rem)] flex-col">
+      <div className="mb-2 flex flex-wrap items-center gap-3">
         <Link to="/dashboards" className="text-sm text-stone-500 hover:text-stone-800">
           ← Dashboards
         </Link>
         <h1 className="flex-1 truncate text-lg font-semibold tracking-tight">{data?.title ?? "Dashboard"}</h1>
         {isDashboard ? <Badge tone="ok">live</Badge> : null}
         {data ? <Badge tone={visibility === "public" ? "ok" : "idle"}>{visibility}</Badge> : null}
+        {isDashboard ? (
+          <button className="btn-ghost text-sm" onClick={() => setShowCalc((v) => !v)}>
+            {showCalc ? "Hide calculations" : "How it's calculated"}
+          </button>
+        ) : null}
         <Menu label="Dashboard actions">
           {isDashboard ? <MenuItem onSelect={() => void refresh(true)}>Refresh data</MenuItem> : null}
           <MenuItem onSelect={() => void copy()}>Copy link</MenuItem>
@@ -130,7 +137,7 @@ export function DashboardView() {
         </Menu>
       </div>
       {data ? (
-        <div className="mb-3 text-xs text-stone-500">
+        <div className="mb-2 text-xs text-stone-500">
           published by {data.createdBy} · {String(data.createdAt).slice(0, 16)}
           {isDashboard && data.updatedAt ? ` · data updated ${relTime(data.updatedAt)}` : ""}
           {isDashboard && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
@@ -142,6 +149,8 @@ export function DashboardView() {
       ) : error ? (
         <ErrorMsg>{error}</ErrorMsg>
       ) : data ? (
+        // iframe fills the remaining height; the calc drawer toggles in as a footer
+        // below it (and the iframe shrinks to make room), out for full height.
         <>
           <iframe
             key={nonce}
@@ -149,58 +158,54 @@ export function DashboardView() {
             src={`/admin/frame/${encodeURIComponent(id)}?t=${nonce}`}
             sandbox="allow-scripts"
             referrerPolicy="no-referrer"
-            className="h-[calc(100vh-16rem)] w-full rounded-lg border border-stone-200 bg-white"
+            className="min-h-0 w-full flex-1 rounded-lg border border-stone-200 bg-white"
           />
-          {isDashboard ? <Provenance panels={data.panels} /> : null}
+          {isDashboard && showCalc ? <Provenance panels={data.panels} onClose={() => setShowCalc(false)} /> : null}
         </>
       ) : null}
-    </>
+    </div>
   );
 }
 
-/** "How this is calculated": per-panel SQL, dialect, linked metric, freshness.
- *  Rendered in trusted chrome (the agent's template can't reach it). */
-function Provenance({ panels }: { panels: PanelProvenance[] }) {
+/** "How this is calculated" — a collapsible footer (team-only; the public surface
+ *  shows no calculations). Per panel: title, plain-language description, the
+ *  exact SQL it runs, and freshness. */
+function Provenance({ panels, onClose }: { panels: PanelProvenance[]; onClose: () => void }) {
   return (
-    <details className="card mt-3 p-0">
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-stone-800">
-        How this is calculated
-      </summary>
-      <div className="divide-y divide-stone-100 border-t border-stone-100">
+    <div className="card mt-2 flex max-h-[42vh] shrink-0 flex-col overflow-hidden p-0">
+      <div className="flex items-center justify-between border-b border-stone-100 px-4 py-2">
+        <span className="text-sm font-medium text-stone-800">How this is calculated</span>
+        <button className="text-xs text-stone-500 hover:text-stone-800" onClick={onClose}>
+          Hide
+        </button>
+      </div>
+      <div className="divide-y divide-stone-100 overflow-auto">
         {panels.map((p) => (
           <div key={p.key} className="px-4 py-3">
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-2">
               <span className="text-sm font-medium text-stone-900">{p.title || humanizeKey(p.key)}</span>
-              <Badge tone="idle">{p.dialect}</Badge>
               {p.metricId ? <Badge tone="ok">metric: {p.metricId}</Badge> : null}
-              <span className="ml-auto text-xs text-stone-500">
+              <span className="ml-auto text-xs text-stone-400">
                 {p.error ? (
-                  <span className="text-red-700">error: {p.error}</span>
+                  <span className="text-red-700">error</span>
                 ) : (
                   <>
-                    {p.rowCount} row(s)
-                    {p.computedAt ? ` · updated ${relTime(p.computedAt)}` : ""}
+                    {p.dialect} · {p.rowCount} row(s)
+                    {p.computedAt ? ` · ${relTime(p.computedAt)}` : ""}
                     {p.refreshError ? <span className="text-amber-700"> · refresh failed</span> : null}
                   </>
                 )}
               </span>
             </div>
-            {/* plain-language explanation first; the metric definition + raw SQL are the technical backup */}
-            {p.description ? <p className="mt-1 text-sm text-stone-700">{p.description}</p> : null}
-            {p.metric?.summary ? (
-              <p className="mt-1 text-xs text-stone-500">
-                Based on the team metric <b className="font-medium text-stone-700">{p.metric.name}</b>: {p.metric.summary}
-              </p>
+            {p.description || p.metricSummary ? (
+              <p className="mt-0.5 text-xs text-stone-600">{p.description || p.metricSummary}</p>
             ) : null}
-            {p.sql ? (
-              <details className="mt-2">
-                <summary className="cursor-pointer text-xs text-stone-500">show SQL</summary>
-                <pre className="mt-1 overflow-x-auto rounded bg-stone-50 p-2 text-xs text-stone-700">{p.sql}</pre>
-              </details>
-            ) : null}
+            <pre className="mt-2 overflow-x-auto rounded bg-stone-50 p-2 text-[11px] leading-relaxed text-stone-700">
+              {p.error ? p.error : p.sql}
+            </pre>
           </div>
         ))}
       </div>
-    </details>
+    </div>
   );
 }

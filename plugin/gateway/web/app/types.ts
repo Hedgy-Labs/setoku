@@ -139,17 +139,16 @@ export interface PublishedMeta {
   archivedAt: string | null;
 }
 
-/** One panel as the provenance drawer / viewer sees it (server: dashboardProvenance).
- *  `sql` is present only on the authenticated team surface. */
+/** One panel as the team provenance drawer sees it (server: dashboardProvenance).
+ *  Team-only — the public surface exposes no calculations. */
 export interface PanelProvenance {
   key: string;
   title: string | null;
   description: string | null;
   dialect: PanelDialect;
   metricId: string | null;
-  metric: { name: string; summary: string; body: string } | null;
-  sql?: string;
-  columns: string[];
+  metricSummary: string | null;
+  sql: string;
   rowCount: number;
   computedAt: string | null;
   error: string | null;
