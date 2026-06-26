@@ -1,13 +1,13 @@
 # Setoku
 
-**Your company's brain, wired into Claude.**
+**A tool for your AI to do two things: reach your data, and understand it better over time.**
 
 - **The problem.** What your company knows about itself lives in people's heads — which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
-- **What it does.** Setoku is the shared, curated memory of what your data and operations *mean*. It remembers those definitions and gotchas and hands them to Claude right before it answers, so Claude computes things the way your company actually does.
+- **What it does.** Setoku is the shared, curated memory of what your data and operations *mean*. It remembers those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
 - **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows — a human approves that, outside the agent's loop.
-- **It's cheap.** No AI runs in Setoku itself; the thinking happens in the Claude you already pay for. A whole deployment is one small VPS.
+- **It's cheap.** No AI runs in Setoku itself; the thinking happens in the AI you already pay for. A whole deployment is one small VPS.
 
-One brain, two kinds of question: *"what was revenue last quarter?"* and *"what's been erroring since the deploy?"* — the business metric and the operational truth, both answered the same governed, read-only way.
+One brain, two kinds of question: *"what was revenue last quarter?"* and *"what's been erroring since the deploy?"* — the business metric and the operational truth, both answered the same read-only way.
 
 Today the brain mostly holds **data and operations** (what your tables, metrics, and logs mean). The same idea could hold more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
 
@@ -47,11 +47,17 @@ It ships **tools, not models**. No AI runs on the server; all the reasoning happ
 
 ## Why we built it
 
-Claude is good at SQL but doesn't know our business. It would write a clean query against the wrong definition — what "paying customer" means, which metric counts, the small gotchas that make an obvious query wrong — and give us a confident, wrong number. The knowledge to get it right was in our heads, not anywhere an agent could read.
+**We're curious.** There are plenty of AI memory stores, and plenty of data gateways. Stapling the two together, and nudging the agent to gather knowledge about the data as it goes, seemed worth trying and fun to tinker with.
 
-We didn't want to pay for a second AI to fix that; we already pay for Claude. So Setoku doesn't run a model of its own — it just hands context and a safe way to query to the Claude we already have. A whole deployment is one small box.
+**We're cheap.** We wanted something that runs on one small box, works on a Pro/Max subscription or a cheap model with no added inference cost, mostly sets itself up (no field engineer to pay for), stays portable between providers, and is open source.
 
-We also didn't want an agent able to do damage with our data, so queries are read-only (the database enforces it) and the agent can't change what Setoku knows — a human signs off on that, outside the loop.
+**We and some friends wanted the same thing.**
+
+- **Hedgy**: keep scaling without hiring. Debug from live logs and data, find growth levers, and match candidates and companies better with more data.
+- **Baggu**: give employees state-of-the-art tools. Faster onboarding, and a safe way to build against real data.
+- **Tlon**: experimenting with giving agents curated data to work from.
+- **Sports analysts**: query across data that doesn't usually sit together.
+- **Academic labs**: think through hypotheses against real papers, data, and drafts.
 
 It's a small thing, but it's been useful for us. Maybe it's useful for you.
 
