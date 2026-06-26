@@ -533,6 +533,39 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const shell = await (await fetch(`${BASE}/admin`)).text();
     expect(shell).not.toContain("<script>alert('xss')</script>");
   });
+
+  it("an active session slides forward on use (sliding window) — without re-issuing a cookie on every response", async () => {
+    const { Database } = await import("bun:sqlite");
+    const { cookie } = await session("boss", "s3cret-pass");
+    const sid = decodeURIComponent(cookie.split("=").slice(1).join("="));
+
+    // a just-issued session is inside the renewal throttle → an authed read does
+    // NOT re-issue the cookie (we don't Set-Cookie on every response).
+    const fresh = await apiGet("session", cookie);
+    expect(fresh.status).toBe(200);
+    expect(fresh.headers.get("set-cookie")).toBeNull();
+
+    // age it past the throttle but keep it valid — the way a day of use leaves it.
+    {
+      const db = new Database(path.join(tmpRepo, "knowledge.db"));
+      db.run("UPDATE sessions SET expires = ? WHERE sid = ?", [Date.now() + 60_000, sid]);
+      db.close();
+    }
+
+    // now the same request slides the window forward and re-issues the cookie.
+    const slid = await apiGet("session", cookie);
+    expect(slid.status).toBe(200);
+    const setCookie = slid.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain(`setoku_session=${sid}`);
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("Max-Age=1209600"); // 14 days, mirrors the server-side TTL
+
+    // and the persisted expiry actually slid ~14 days out (not just the cookie).
+    const check = new Database(path.join(tmpRepo, "knowledge.db"), { readonly: true });
+    const row = check.query("SELECT expires FROM sessions WHERE sid = ?").get(sid) as { expires: number };
+    check.close();
+    expect(row.expires).toBeGreaterThan(Date.now() + 13 * 24 * 60 * 60 * 1000);
+  });
 });
 
 describe("installer", () => {
