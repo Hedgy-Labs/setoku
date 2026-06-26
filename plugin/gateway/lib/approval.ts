@@ -77,6 +77,17 @@ export interface Session {
   expires: number;
 }
 
+// Session lifetime is a SLIDING 14-day window: each authenticated request slides
+// the expiry forward, so an active admin stays signed in ("once per device") and
+// only a full 14 days of inactivity forces a fresh login. The cookie's Max-Age
+// (below) mirrors this so the browser keeps the cookie just as long.
+export const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+// Don't write a renewal on every single request (the SPA polls): only slide the
+// window once it's drifted by more than a day. Cheap, and still effectively
+// "infinite while in use" against a 14-day window.
+const RENEW_AFTER_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Session store for the approval surface, backed by the KnowledgeStore (SQLite
  * on the durable volume) — NOT process memory — so a server restart/redeploy
@@ -86,7 +97,7 @@ export interface Session {
 export class SessionStore {
   constructor(
     private readonly store: KnowledgeStore,
-    private readonly ttlMs = 12 * 60 * 60 * 1000,
+    private readonly ttlMs = SESSION_TTL_MS,
   ) {}
 
   create(identity: string, role: string): { sid: string; csrf: string } {
@@ -99,6 +110,19 @@ export class SessionStore {
   get(sid: string | undefined): Session | null {
     if (!sid) return null;
     return this.store.getSession(sid);
+  }
+
+  /**
+   * Slide a live session's expiry forward by the full TTL. Throttled — a no-op
+   * unless the window has drifted more than RENEW_AFTER_MS. Returns true when it
+   * actually renewed, so the caller knows to re-issue the cookie.
+   */
+  renew(sid: string | undefined, session: Session): boolean {
+    if (!sid) return false;
+    const freshlyIssuedAt = session.expires - this.ttlMs;
+    if (Date.now() - freshlyIssuedAt < RENEW_AFTER_MS) return false;
+    this.store.touchSession(sid, Date.now() + this.ttlMs);
+    return true;
   }
 
   destroy(sid: string | undefined): void {
@@ -126,7 +150,7 @@ const secureAttr = (): string => (process.env.SETOKU_COOKIE_INSECURE === "1" ? "
 
 /** Set-Cookie value for a new session (HttpOnly, Secure, SameSite=Strict). */
 export function sessionSetCookie(sid: string): string {
-  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly;${secureAttr()} SameSite=Strict; Path=/admin; Max-Age=43200`;
+  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly;${secureAttr()} SameSite=Strict; Path=/admin; Max-Age=${SESSION_TTL_MS / 1000}`;
 }
 
 /** Set-Cookie value that clears the session cookie. */
