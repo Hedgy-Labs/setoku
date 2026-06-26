@@ -63,14 +63,18 @@ It's a small thing, but it's been useful for us. Maybe it's useful for you.
 
 ## How to deploy it
 
-Setup is built for a coding agent. Open Claude Code (or your agent of choice) in your main project directory, the first codebase you'll want Setoku to understand, and tell it:
+Setoku installs as a Claude Code plugin, so setup runs inside Claude. Add the plugin (no server needed yet), then run onboarding from your main project directory, the codebase you want Setoku to learn from:
 
-> Read https://github.com/Hedgy-Labs/setoku and set up a Setoku server for this project.
+```
+/plugin marketplace add Hedgy-Labs/setoku
+/plugin install setoku@setoku
+/setoku:onboard
+```
 
-It reads these docs, stands up the server, points it at your database (read-only), and generates the first knowledge from your code. You stay in the loop for anything that touches your data. You'll need somewhere to host it (a small VPS works) and read access to the database you want it to learn about.
+`/setoku:onboard` stands up the server (provisions and bootstraps a small VPS, or connects to one you already have), connects this Claude to it, wires your database read-only, and generates the first knowledge from your code. You'll need a VPS it can use (~$12/mo) and an admin connection URL for the database. You stay in the loop for anything that touches your data. (Or just tell Claude "set up setoku.")
 
 <details>
-<summary>Or set it up by hand</summary>
+<summary>Or stand up the server by hand</summary>
 
 One command on a fresh Ubuntu VPS (~$12/mo):
 
@@ -81,7 +85,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh
 
 It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect your AI and the token for log drains. (`SETOKU_ADMIN_USER` is the `/admin` login it creates; set it so the script runs unattended, or omit it and it asks once, interactively.)
 
-Then point your AI at the box and run `/setoku:onboard` in a business repo. It wires up your database (the credential stays in your env; only the env-var *name* goes in config) and generates the first knowledge from your code.
+Then add the plugin and run `/setoku:onboard` from your project; it detects the box you just made, wires up your database (the credential stays in your env; only the env-var *name* goes in config), and generates the first knowledge from your code.
 
 </details>
 
