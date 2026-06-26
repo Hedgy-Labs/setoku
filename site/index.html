@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Setoku — open-source MCP server for company data</title>
+<link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+<meta name="description" content="Setoku is an open-source MCP server that gives your AI a read-only view of your company's data, plus the context to use it correctly." />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..500&family=Hanken+Grotesk:wght@400;500;600&family=Bagel+Fat+One&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --cream:#FAF6EC; --cream-2:#F1EADB; --paper:#FFFFFF;
+    --ink:#212E26; --ink-soft:#54615A; --ink-faint:#8E968C;
+    --line:rgba(33,46,38,.13); --line-soft:rgba(33,46,38,.07);
+    --sage:#5F8C6B; --sage-d:#487256;
+    --serif:"Fraunces",Georgia,serif; --sans:"Hanken Grotesk",system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,monospace;
+    --w:760px;
+    --brand:"Bagel Fat One",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+  body{background:var(--cream);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.65}
+  a{color:var(--sage-d);text-decoration:none}
+  a:hover{text-decoration:underline;text-underline-offset:3px}
+  svg{display:block}
+  .wrap{max-width:var(--w);margin:0 auto;padding-inline:24px}
+  code{font-family:var(--mono);font-size:.86em;background:var(--cream-2);padding:1.5px 6px;border-radius:6px;color:var(--sage-d)}
+  ::selection{background:var(--sage);color:#fff}
+
+  /* header */
+  header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--cream) 86%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line-soft)}
+  .bar{max-width:var(--w);margin:0 auto;padding:13px 24px;display:flex;align-items:center;justify-content:space-between}
+  .brand{display:flex;align-items:center;gap:8px;color:var(--ink);font-weight:600;font-size:17px}
+  .brand:hover{text-decoration:none}
+  .brand .mark{width:22px;height:22px;color:#1A1A19}
+  .nav{display:flex;gap:22px;align-items:center}
+  .nav a{color:var(--ink-soft);font-size:14.5px}
+  .nav a:hover{color:var(--ink);text-decoration:none}
+  @media(max-width:560px){.nav a.hideable{display:none}}
+
+  /* intro */
+  .intro{padding-block:56px 12px}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.06em;color:var(--sage-d)}
+  h1{font-family:var(--serif);font-weight:500;font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.02em;margin:16px 0 0;max-width:18em}
+  .intro p.lede{color:var(--ink-soft);font-size:18px;margin-top:18px;max-width:42em}
+  .actions{margin-top:24px;display:flex;gap:10px;flex-wrap:wrap}
+  .btn{display:inline-flex;align-items:center;gap:7px;font-size:14.5px;font-weight:600;padding:9px 16px;border-radius:9px;border:1px solid var(--ink);background:var(--ink);color:var(--cream)}
+  .btn:hover{background:var(--sage-d);border-color:var(--sage-d);text-decoration:none}
+  .btn.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+  .btn.ghost:hover{background:transparent;border-color:var(--sage);color:var(--sage-d)}
+
+  /* sections */
+  section{padding:40px 0;border-top:1px solid var(--line-soft);scroll-margin-top:80px}
+  section:first-of-type{border-top:none}
+  h2{font-family:var(--serif);font-weight:500;font-size:24px;letter-spacing:-.01em;margin-bottom:6px;scroll-margin-top:70px}
+  .diagram{margin-top:24px}
+  .diagram svg{width:100%;height:auto;max-width:600px;display:block;margin:0 auto}
+  .diagram .node{fill:#fff;stroke:var(--ink);stroke-width:1.4}
+  .diagram .box{fill:none;stroke:var(--ink-faint);stroke-width:1.2;stroke-dasharray:4 5}
+  .diagram .t{font-family:var(--sans);font-size:13px;fill:var(--ink)}
+  .diagram .s{font-family:var(--sans);font-size:10.5px;fill:var(--ink-soft)}
+  .diagram .e{font-family:var(--mono);font-size:10.5px;fill:var(--ink-soft)}
+  .diagram .arr{stroke:var(--ink-soft);stroke-width:1.4;fill:none}
+  .why h3{font-family:var(--sans);font-weight:600;font-size:16px;margin:22px 0 4px;color:var(--ink)}
+  .why p{color:var(--ink-soft);max-width:44em}
+  .uses{list-style:none;margin-top:12px;display:grid;gap:9px}
+  .uses li{color:var(--ink-soft);font-size:15px;line-height:1.5;padding-left:18px;position:relative;max-width:44em}
+  .uses li::before{content:"–";position:absolute;left:2px;color:var(--ink-faint)}
+  .uses b{color:var(--ink);font-weight:600}
+  section > .wrap > p{color:var(--ink-soft);margin-top:8px;max-width:44em}
+  .lead{margin-bottom:20px}
+
+  /* code */
+  pre{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:18px 20px;overflow-x:auto;margin-top:16px}
+  pre code{font-family:var(--mono);font-size:13.5px;line-height:1.8;background:none;padding:0;color:var(--ink);white-space:pre}
+  pre code .c{color:var(--ink-faint)}
+  .note{font-size:14.5px;color:var(--ink-soft);margin-top:14px}
+  .say{background:var(--paper);border:1px solid var(--line);border-left:3px solid var(--sage);border-radius:10px;padding:15px 18px;margin-top:16px}
+  .say-label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--sage-d);margin-bottom:7px}
+  .say-text{font-family:var(--serif);font-style:italic;font-size:17px;color:var(--ink);line-height:1.4;word-break:break-word}
+  .manual{margin-top:18px}
+  .manual summary{cursor:pointer;font-size:14px;color:var(--sage-d);font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:6px}
+  .manual summary::-webkit-details-marker{display:none}
+  .manual summary::before{content:"›";display:inline-block;transition:transform .2s}
+  .manual[open] summary::before{transform:rotate(90deg)}
+  .manual summary:hover{text-decoration:underline}
+
+  /* how it works list */
+  .steps{margin-top:18px;display:grid;gap:2px}
+  .row{display:grid;grid-template-columns:160px 1fr;gap:18px;padding:14px 0;border-top:1px solid var(--line-soft);align-items:start}
+  .row:first-child{border-top:none}
+  @media(max-width:560px){.row{grid-template-columns:1fr;gap:4px}}
+  .row .k{font-weight:600;font-size:15px}
+  .row .k .t{display:block;font-family:var(--mono);font-size:11.5px;color:var(--sage-d);font-weight:500;margin-top:3px}
+  .row .v{color:var(--ink-soft);font-size:15px}
+
+  /* integrations */
+  .integ{margin-top:8px;display:grid;gap:26px}
+  .igroup h3{font-size:13px;font-family:var(--mono);letter-spacing:.04em;color:var(--ink-faint);font-weight:500;margin-bottom:12px;text-transform:uppercase}
+  .chips{display:flex;flex-wrap:wrap;gap:10px}
+  .chip{display:flex;align-items:center;gap:9px;border:1px solid var(--line);border-radius:10px;padding:10px 14px;background:var(--paper);font-size:14.5px;min-width:0}
+  .chip .dot{width:8px;height:8px;border-radius:50%;background:var(--sage);flex:0 0 auto}
+  .chip b{font-weight:600}
+  .chip span{color:var(--ink-faint);font-size:13px}
+  .chip.muted{border-style:dashed;background:transparent;color:var(--ink-faint)}
+  .chip.muted .dot{background:var(--ink-faint)}
+
+  /* demo example */
+  .examples{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:20px}
+  @media(max-width:560px){.examples{grid-template-columns:1fr}}
+  .ex{border:1px solid var(--line);border-radius:12px;background:var(--paper);padding:14px 16px;display:flex;flex-direction:column}
+  .ex .q{font-family:var(--serif);font-style:italic;font-size:15.5px;line-height:1.3}
+  .ex .a{display:flex;align-items:baseline;gap:9px;margin-top:auto;padding-top:9px;border-top:1px solid var(--line-soft)}
+  .ex .a b{font-family:var(--serif);font-size:22px;line-height:1}
+  .ex .a span{color:var(--ink-soft);font-size:12.5px;line-height:1.35}
+
+  /* footer */
+  footer{border-top:1px solid var(--line);margin-top:24px;padding:30px 0 0;overflow:hidden}
+  .foot-brand{display:flex;align-items:center;justify-content:center;gap:.06em;font-family:var(--brand);color:#FFFFFF;font-size:clamp(74px,21vw,290px);line-height:.9;letter-spacing:.005em;margin:34px 0 -0.06em;user-select:none}
+  .foot-brand svg{width:.6em;height:.6em;color:#FFFFFF;flex:0 0 auto}
+  .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center;font-size:13.5px;color:var(--ink-faint)}
+  .foot .l{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
+  .foot a{color:var(--ink-soft)}
+  .foot .jp{font-family:var(--mono);font-size:12px}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><symbol id="clover" viewBox="0 0 64 64"><path d="M32 35 Q24.8 27.88 11.47 25.91 A11 11 0 1 1 26.61 13.21 Q32.37 21.53 32 35 Z" fill="currentColor"/><path d="M32 35 Q32.37 25.88 35.79 19.33 A8 8 0 1 1 46.77 28.54 Q37.86 30.49 32 35 Z" fill="currentColor"/><path d="M29.86 35.18 L29.87 36.49 L29.83 37.72 L29.76 38.89 L29.65 40.02 L29.51 41.12 L29.34 42.17 L29.15 43.2 L28.93 44.2 L28.7 45.17 L28.45 46.13 L28.2 47.08 L27.93 48.02 L27.66 48.96 L27.39 49.9 L27.12 50.84 L26.86 51.8 L26.61 52.77 L26.38 53.76 L26.16 54.78 L25.97 55.82 L25.82 56.9 L25.7 57.92 L34.3 58.08 L34.22 57.2 L34.16 56.4 L34.14 55.58 L34.13 54.74 L34.15 53.88 L34.19 52.99 L34.25 52.08 L34.32 51.14 L34.39 50.18 L34.47 49.19 L34.55 48.17 L34.63 47.12 L34.7 46.04 L34.75 44.93 L34.78 43.79 L34.8 42.61 L34.78 41.4 L34.73 40.15 L34.65 38.87 L34.52 37.55 L34.35 36.19 L34.14 34.82 Z" fill="currentColor"/></symbol></svg>
+
+<header>
+  <div class="bar">
+    <a class="brand" href="#top"><svg class="mark" viewBox="0 0 64 64"><use href="#clover"/></svg> Setoku</a>
+    <nav class="nav">
+      <a class="hideable" href="#how">How it works</a>
+      <a class="hideable" href="#integrations">Integrations</a>
+      <a href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+
+  <div class="intro wrap">
+    <span class="eyebrow">Open source · MCP server · Apache-2.0</span>
+    <h1>Give your AI a read-only window into your company's data.</h1>
+    <p class="lede">Setoku is a small self-hosted MCP server. It does two things: it gives your AI a read-only way to query your data, and it remembers what that data means (the metric definitions, the gotchas), getting better the more you use it. No model runs on the server; it works with whatever AI you already have.</p>
+    <div class="actions">
+      <a class="btn" href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">View on GitHub ↗</a>
+      <a class="btn ghost" href="#demo">Try the demo</a>
+    </div>
+  </div>
+
+  <!-- QUICKSTART -->
+  <section id="quickstart">
+    <div class="wrap">
+      <h2>Quickstart</h2>
+      <p class="lead">Setup is built for a coding agent. Open Claude Code (or your agent of choice) in your main project directory (the first codebase you'll want Setoku to understand) and tell it:</p>
+      <div class="say"><span class="say-label">Tell your coding agent</span><span class="say-text">Read https://github.com/Hedgy-Labs/setoku and set up a Setoku server for this project.</span></div>
+      <p class="note">It reads the docs, stands up the server, points it at your database (read-only), and generates the first knowledge from your code. You stay in the loop for anything that touches your data.</p>
+      <p class="note">You'll need somewhere to host it (a small VPS works) and read access to the database you want it to learn about. The agent walks you through the rest.</p>
+      <details class="manual">
+        <summary>Or set it up by hand</summary>
+        <pre><code><span class="c"># on a fresh Ubuntu VPS</span>
+git clone https://github.com/Hedgy-Labs/setoku /opt/setoku
+cd /opt/setoku
+SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
+        <p class="note" style="margin-top:12px">Installs Docker, generates secrets, gets an HTTPS certificate, and prints the MCP URL to connect your AI.</p>
+      </details>
+    </div>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section id="how">
+    <div class="wrap">
+      <h2>How it works</h2>
+      <p class="lead">Setoku gives the AI two kinds of MCP tools, and one rule: look up what the data means before you touch it.</p>
+      <div class="steps">
+        <div class="row">
+          <div class="k">Context tools<span class="t">find_context · get_metric</span></div>
+          <div class="v">The AI reads what your data means first: canonical metric definitions, entity docs, and the gotchas that make a naive query wrong.</div>
+        </div>
+        <div class="row">
+          <div class="k">Read-only query<span class="t">get_schema · run_query</span></div>
+          <div class="v">Read-only, with a row cap, a statement timeout, a table allow-list, and an append-only audit log. Enforced by the database role, not by parsing SQL.</div>
+        </div>
+        <div class="row">
+          <div class="k">Human-approved<span class="t">report_correction</span></div>
+          <div class="v">The AI can only propose changes to what Setoku knows. A person accepts them on the admin page, outside the agent loop, so an injected session can't rewrite the brain.</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ARCHITECTURE -->
+  <section id="architecture">
+    <div class="wrap">
+      <h2>What's in the box</h2>
+      <p class="lead">You can host this on whatever infra you like. We put it all on one small box (a ~$12/mo VPS): it's simple, and it lets us turn a coding agent loose on the box to add custom integrations. Only the proxy is public; your databases aren't exposed. Queries are read-only, and knowledge changes pass through a person.</p>
+      <div class="diagram">
+        <svg viewBox="0 0 680 440" role="img" aria-label="Setoku architecture: you and your AI connect over MCP to the gateway, which reads your data read-only and proposes knowledge that a person approves.">
+          <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#54615A"/></marker></defs>
+          <rect class="node" x="255" y="14" width="170" height="44" rx="10"/>
+          <text class="t" x="340" y="41" text-anchor="middle">You + your AI</text>
+          <path class="arr" d="M340 58 L340 98" marker-end="url(#ah)"/>
+          <text class="e" x="348" y="82">MCP</text>
+          <rect class="box" x="36" y="106" width="608" height="312" rx="14"/>
+          <text class="e" x="52" y="126" fill="#8E968C">your box · only the proxy is public</text>
+          <rect class="node" x="250" y="142" width="180" height="58" rx="10"/>
+          <text class="t" x="340" y="167" text-anchor="middle">Setoku gateway</text>
+          <text class="s" x="340" y="185" text-anchor="middle">context · query tools</text>
+          <rect class="node" x="448" y="146" width="160" height="46" rx="10"/>
+          <text class="t" x="528" y="174" text-anchor="middle">a person (admin)</text>
+          <rect class="node" x="70" y="330" width="200" height="62" rx="10"/>
+          <text class="t" x="170" y="358" text-anchor="middle">Your database</text>
+          <text class="s" x="170" y="376" text-anchor="middle">read-only · not copied</text>
+          <rect class="node" x="410" y="330" width="200" height="62" rx="10"/>
+          <text class="t" x="510" y="366" text-anchor="middle">Knowledge store</text>
+          <path class="arr" d="M305 200 L188 330" marker-end="url(#ah)"/>
+          <text class="e" x="205" y="262">read-only</text>
+          <path class="arr" d="M372 200 L468 330" marker-end="url(#ah)"/>
+          <text class="e" x="430" y="266">proposes</text>
+          <path class="arr" d="M528 192 L516 330" marker-end="url(#ah)"/>
+          <text class="e" x="536" y="266">approves</text>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- INTEGRATIONS -->
+  <section id="integrations">
+    <div class="wrap">
+      <h2>Integrations</h2>
+      <p class="lead">Point Setoku at the data you already have. Setup skills are included that help your coding agent wire everything up and add new integrations.</p>
+      <div class="integ">
+        <div class="igroup">
+          <h3>Query live (read-only)</h3>
+          <div class="chips">
+            <div class="chip"><span class="dot"></span><b>PostgreSQL</b><span>your app database</span></div>
+          </div>
+        </div>
+        <div class="igroup">
+          <h3>Lake — ingested logs &amp; events</h3>
+          <div class="chips">
+            <div class="chip"><span class="dot"></span><b>ClickHouse</b><span>logs · events · telemetry</span></div>
+          </div>
+        </div>
+        <div class="igroup">
+          <h3>Source connectors</h3>
+          <div class="chips">
+            <div class="chip"><span class="dot"></span><b>Vercel</b><span>deploys &amp; logs</span></div>
+            <div class="chip"><span class="dot"></span><b>Render</b><span>deploys &amp; logs</span></div>
+            <div class="chip"><span class="dot"></span><b>Slack</b><span>messages</span></div>
+            <div class="chip"><span class="dot"></span><b>Mercury</b><span>banking &amp; finance</span></div>
+          </div>
+        </div>
+        <div class="igroup">
+          <h3>AI clients (over MCP)</h3>
+          <div class="chips">
+            <div class="chip"><span class="dot"></span><b>Claude</b><span>claude.ai · Claude Code</span></div>
+            <div class="chip muted"><span class="dot"></span><b>Any MCP client</b></div>
+          </div>
+        </div>
+      </div>
+      <p class="note">No connector for your source yet? The included setup skills give your coding agent the patterns to wire one up itself. See <a href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">the repo</a>, or open an issue.</p>
+    </div>
+  </section>
+
+  <!-- DEMO -->
+  <section id="demo">
+    <div class="wrap">
+      <h2>Try it on real-ish data</h2>
+      <p class="lead">There's a live demo wired to a fictional pro sports club, the Bonita Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast rights).</p>
+      <p class="note" style="margin-top:0"><b style="color:var(--ink)">Connect it:</b> in Claude (or any MCP client) open Settings → Connectors → Add custom connector, and paste this URL. The token rides in the URL, so there's no separate key to enter.</p>
+      <pre><code>https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</code></pre>
+      <p class="lead" style="margin-top:24px">Then ask in plain English:</p>
+      <div class="examples">
+      <div class="ex">
+        <div class="q">"How many unique fans do we have?"</div>
+        <div class="a"><b>71,204</b><span>deduped by normalized email, internal accounts excluded. Not the raw 92,118.</span></div>
+      </div>
+      <div class="ex">
+        <div class="q">"What's our total annual revenue, and how much is media rights?"</div>
+        <div class="a"><b>$192M</b><span>five systems reconciled to the same units. Media rights is the biggest line, ~$90M.</span></div>
+      </div>
+      <div class="ex">
+        <div class="q">"What was ticket revenue this season?"</div>
+        <div class="a"><b>$46.8M</b><span>cents reconciled to dollars; refunds, exchanges, and comps excluded.</span></div>
+      </div>
+      <div class="ex">
+        <div class="q">"What's our season-ticket renewal rate?"</div>
+        <div class="a"><b>81%</b><span>across three seasons of ticketing history.</span></div>
+      </div>
+      <div class="ex" style="grid-column:1/-1">
+        <div class="q">"What's our total merchandise revenue?"</div>
+        <div class="a"><b style="font-size:20px">It flags it</b><span>most merch is sold via Fanatics, not in this data, so it says so instead of returning a wrong total.</span></div>
+      </div>
+      </div>
+      <p class="note" style="margin-top:20px">Read-only, audited, synthetic data.</p>
+    </div>
+  </section>
+
+  <!-- WHY -->
+  <section id="why" class="why">
+    <div class="wrap">
+      <h2>Why we built it</h2>
+      <h3>We're curious.</h3>
+      <p>There are plenty of AI memory stores, and plenty of data gateways. Stapling the two together, and nudging the agent to gather knowledge about the data as it goes, seemed worth trying and fun to tinker with.</p>
+      <h3>We're cheap.</h3>
+      <p>We wanted something that runs on one small box, works on a Pro/Max subscription or a cheap model with no added inference cost, mostly sets itself up (no field engineer to pay for), stays portable between providers, and is open source.</p>
+      <h3>We and some friends wanted the same thing.</h3>
+      <ul class="uses">
+        <li><b>Hedgy</b>: keep scaling without hiring. Debug from live logs and data, find growth levers, and match candidates and companies better with more data.</li>
+        <li><b>Baggu</b>: give employees state-of-the-art tools. Faster onboarding, and a safe way to build against real data.</li>
+        <li><b>Tlon</b>: experimenting with giving agents curated data to work from.</li>
+        <li><b>Sports analysts</b>: query across data that doesn't usually sit together.</li>
+        <li><b>Academic labs</b>: think through hypotheses against real papers, data, and drafts.</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- SETUP HELP -->
+  <section id="help">
+    <div class="wrap">
+      <h2>Setup help</h2>
+      <p>It's open source, so you can self-host it today. If you'd rather not, we're happy to help set it up: we wire it to your data, capture the first knowledge with you, and hand it over. Email <a href="mailto:hello@setoku.com">hello@setoku.com</a>.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap foot">
+    <div class="l">
+      <a class="brand" href="#top" style="font-size:15px"><svg class="mark" viewBox="0 0 64 64" style="width:18px;height:18px"><use href="#clover"/></svg> Setoku</a>
+      <a href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">GitHub</a>
+      <a href="#demo">Demo</a>
+      <a href="mailto:hello@setoku.com">Contact</a>
+      <span>Apache-2.0</span>
+    </div>
+    <span class="jp">設 × 奥 · set (math) × oku (innermost)</span>
+  </div>
+  <div class="foot-brand" aria-hidden="true"><svg viewBox="0 0 64 64"><use href="#clover"/></svg>Setoku</div>
+</footer>
+
+</body>
+</html>
