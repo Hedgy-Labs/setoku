@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { KnowledgeStore } from "../plugin/gateway/lib/store";
+import { SessionStore, SESSION_TTL_MS } from "../plugin/gateway/lib/approval";
 
 const dbPath = path.join(os.tmpdir(), `setoku-sessions-${process.pid}.db`);
 afterAll(() => {
@@ -55,5 +56,31 @@ describe("session persistence (survives a restart)", () => {
     expect(s.getSession("sid-bye")).not.toBeNull();
     s.destroySession("sid-bye");
     expect(s.getSession("sid-bye")).toBeNull();
+  });
+});
+
+describe("sliding-window renewal (stay signed in while active)", () => {
+  it("a fresh session is not renewed yet (throttle holds for the first day)", () => {
+    const store = new KnowledgeStore(dbPath);
+    const sessions = new SessionStore(store);
+    const { sid } = sessions.create("peter", "admin");
+    const before = store.getSession(sid)!.expires;
+    // just-issued → within the throttle window → no write
+    expect(sessions.renew(sid, store.getSession(sid)!)).toBe(false);
+    expect(store.getSession(sid)!.expires).toBe(before);
+  });
+
+  it("a session older than the throttle slides its expiry forward by a full TTL", () => {
+    const store = new KnowledgeStore(dbPath);
+    const sessions = new SessionStore(store);
+    const { sid } = sessions.create("peter", "admin");
+    // simulate a session issued ~29 days ago: expiry near the end of its window
+    const aged = { ...store.getSession(sid)!, expires: Date.now() + 60_000 };
+    store.touchSession(sid, aged.expires);
+
+    expect(sessions.renew(sid, aged)).toBe(true);
+    const renewed = store.getSession(sid)!.expires;
+    // slid forward to ~now + full TTL, well past the old near-expiry value
+    expect(renewed).toBeGreaterThan(Date.now() + SESSION_TTL_MS - 60_000);
   });
 });

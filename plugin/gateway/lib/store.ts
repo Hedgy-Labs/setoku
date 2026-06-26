@@ -755,6 +755,11 @@ export class KnowledgeStore {
     return row;
   }
 
+  /** Slide a session's expiry forward (sliding-window renewal on activity). */
+  touchSession(sid: string, expires: number): void {
+    this.db.run("UPDATE sessions SET expires = ? WHERE sid = ?", [expires, sid]);
+  }
+
   destroySession(sid: string): void {
     this.db.run("DELETE FROM sessions WHERE sid = ?", [sid]);
   }

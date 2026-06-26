@@ -914,8 +914,16 @@ const httpServer = http.createServer(async (req, res) => {
       // ---- JSON API ----
       if (reqPath.startsWith("/admin/api/")) {
         const api = reqPath.slice("/admin/api/".length);
+        // When a request slides the session window forward, re-issue the cookie so
+        // the browser's copy slides too (Max-Age is relative to each Set-Cookie).
+        let renewedCookie: string | undefined;
         const json = (status: number, body: unknown): void => {
-          res.writeHead(status, { "content-type": "application/json", "referrer-policy": "no-referrer" });
+          const headers: Record<string, string> = {
+            "content-type": "application/json",
+            "referrer-policy": "no-referrer",
+          };
+          if (renewedCookie) headers["set-cookie"] = renewedCookie;
+          res.writeHead(status, headers);
           res.end(JSON.stringify(body));
         };
 
@@ -948,6 +956,11 @@ const httpServer = http.createServer(async (req, res) => {
 
         // everything below requires a session
         if (!session) return json(401, { ok: false, error: "not signed in" });
+
+        // Sliding window: an active (non-logout) session renews on use, so a
+        // working admin never gets logged out mid-use — only 14 days idle does.
+        // Throttled inside, and the re-issued cookie slides the browser's copy too.
+        if (sessions.renew(sid, session)) renewedCookie = sessionSetCookie(sid!);
 
         // who am I — drives the SPA's auth state + the CSRF token for mutations
         if (api === "session")
