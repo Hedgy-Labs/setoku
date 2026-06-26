@@ -2,14 +2,14 @@
 
 **A tool for your AI to do two things: reach your data, and understand it better over time.**
 
-- **The problem.** What your company knows about itself lives in people's heads — which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
+- **The problem.** What your company knows about itself lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
 - **What it does.** Setoku is the shared, curated memory of what your data and operations *mean*. It remembers those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
-- **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows — a human approves that, outside the agent's loop.
+- **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows; a human approves that, outside the agent's loop.
 - **It's cheap.** No AI runs in Setoku itself; the thinking happens in the AI you already pay for. A whole deployment is one small VPS.
 
-One brain, two kinds of question: *"what was revenue last quarter?"* and *"what's been erroring since the deploy?"* — the business metric and the operational truth, both answered the same read-only way.
+One brain, two kinds of question: *"what was revenue last quarter?"* and *"what's been erroring since the deploy?"* The business metric and the operational truth, both answered the same read-only way.
 
-Today the brain mostly holds **data and operations** (what your tables, metrics, and logs mean). The same idea could hold more — personal context, house design conventions — see [docs/memory.md](./docs/memory.md).
+Today the brain mostly holds **data and operations** (what your tables, metrics, and logs mean). The same idea could hold more (personal context, house design conventions); see [docs/memory.md](./docs/memory.md).
 
 _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI.
 
@@ -17,33 +17,33 @@ _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer undern
 
 ## Try it live
 
-There's a public demo wired to a synthetic dataset for a fictional pro baseball club — the **Bonita Bulldogs** — covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, marketing, gameday incidents, and broadcast media rights.
+There's a public demo wired to a synthetic dataset for a fictional pro baseball club, the **Bonita Bulldogs**, covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, marketing, gameday incidents, and broadcast media rights.
 
-1. In **Claude.ai → Settings → Connectors → Add custom connector**, paste this as the server URL (there's no header field — the token rides in the URL):
+1. In **Claude.ai** (or any MCP client), open **Settings → Connectors → Add custom connector** and paste this as the server URL (there's no header field; the token rides in the URL):
    ```
    https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9
    ```
-2. Ask in plain language. Setoku feeds Claude the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names. Try:
-   - *"How many unique fans do we have?"* — the CRM has duplicates and test records; Setoku dedupes by normalized email instead of a naive `COUNT(*)`.
-   - *"What was our ticket revenue this season, and which games sold best?"* — handles cents-vs-dollars and excludes refunds, exchanges, and comps.
-   - *"What's our season-ticket renewal rate?"* — spans three seasons of ticketing history.
-   - *"What's our total annual revenue, and how much of it is media rights?"* — combines five systems with reconciled units (~$180–200M; media rights ~$90M, the biggest line).
-   - *"What's our total merchandise revenue?"* — Setoku flags that the data is online-only (most merch is Fanatics, not here) instead of returning a wrong total.
+2. Ask in plain language. Setoku feeds your AI the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names. Try:
+   - *"How many unique fans do we have?"* The CRM has duplicates and test records; Setoku dedupes by normalized email instead of a naive `COUNT(*)`.
+   - *"What was our ticket revenue this season, and which games sold best?"* It handles cents vs dollars and excludes refunds, exchanges, and comps.
+   - *"What's our season-ticket renewal rate?"* It spans three seasons of ticketing history.
+   - *"What's our total annual revenue, and how much of it is media rights?"* It combines five systems with reconciled units (~$180–200M; media rights is the biggest line, ~$90M).
+   - *"What's our total merchandise revenue?"* Setoku flags that the data is online only (most merch is via Fanatics, not here) instead of returning a wrong total.
 
 Full walkthrough, the `/admin` approval surface, and the data model: [`demo/README.md`](./demo/README.md).
 
 ---
 
-## What it is
+## How it works
 
-Setoku is a small self-hosted server that sits between your AI (Claude) and your data. It does two things:
+Setoku is a small self-hosted MCP server that sits between your AI and your data. It works with any MCP client (Claude today). It does two things:
 
-1. **Holds curated knowledge about your data** — what your tables and metrics actually mean, the canonical SQL for each metric, and the gotchas that make naive queries wrong (e.g. "active user" excludes internal test accounts; refunds must be subtracted from revenue; a status column is current-state only, so you count events from the log table instead).
-2. **Gives the agent a governed way to query** — read-only, with a row cap, a statement timeout, a table allow-list, and an append-only audit log of who ran what.
+1. **Holds curated knowledge about your data**: what your tables and metrics actually mean, the canonical SQL for each metric, and the gotchas that make naive queries wrong (e.g. "active user" excludes internal test accounts; refunds must be subtracted from revenue; a status column is current-state only, so you count events from the log table instead).
+2. **Gives the agent a read-only way to query**: with a row cap, a statement timeout, a table allow-list, and an append-only audit log of who ran what.
 
-The agent looks up the context first, then runs the query — so it answers the way your business actually computes things instead of guessing from column names.
+The agent looks up the context first, then runs the query, so it answers the way your business actually computes things instead of guessing from column names.
 
-It ships **tools, not models**. No AI runs on the server; all the reasoning happens in your Claude. That means no AI API keys and no per-query AI cost — a whole deployment is one small VPS plus the Claude seats your team already has.
+It ships **tools, not models**. No AI runs on the server; the reasoning happens in the AI you already use. That means no AI API keys and no per-query AI cost: a whole deployment is one small VPS plus the AI seats your team already has.
 
 ## Why we built it
 
@@ -63,6 +63,15 @@ It's a small thing, but it's been useful for us. Maybe it's useful for you.
 
 ## How to deploy it
 
+Setup is built for a coding agent. Open Claude Code (or your agent of choice) in your main project directory, the first codebase you'll want Setoku to understand, and tell it:
+
+> Read https://github.com/Hedgy-Labs/setoku and set up a Setoku server for this project.
+
+It reads these docs, stands up the server, points it at your database (read-only), and generates the first knowledge from your code. You stay in the loop for anything that touches your data. You'll need somewhere to host it (a small VPS works) and read access to the database you want it to learn about.
+
+<details>
+<summary>Or set it up by hand</summary>
+
 One command on a fresh Ubuntu VPS (~$12/mo):
 
 ```bash
@@ -70,11 +79,13 @@ git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku
 SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh
 ```
 
-It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect Claude and the token for log drains. (`SETOKU_ADMIN_USER` is the `/admin` login it creates; set it so the script runs unattended — omit it and it asks once, interactively.)
+It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect your AI and the token for log drains. (`SETOKU_ADMIN_USER` is the `/admin` login it creates; set it so the script runs unattended, or omit it and it asks once, interactively.)
 
-Then point Claude at the box and run `/setoku:onboard` in a business repo — it wires up your database (the credential stays in your env; only the env-var *name* goes in config) and generates the first knowledge from your code.
+Then point your AI at the box and run `/setoku:onboard` in a business repo. It wires up your database (the credential stays in your env; only the env-var *name* goes in config) and generates the first knowledge from your code.
 
-The point isn't that Claude can query your Postgres — if you're an engineer, it already can. The point is that the *meaning* gets captured once and **shared with the whole team**: `add-teammate` mints a connector for anyone, and a non-technical teammate can then query and visualize their own data in plain language on claude.ai ("show me signups by week") — and get the *right* number, because your annotations ride along.
+</details>
+
+The point isn't that an agent can query your Postgres; if you're an engineer, it already can. The point is that the *meaning* gets captured once and **shared with the whole team**: `add-teammate` mints a connector for anyone, so a non-technical teammate can query and visualize their own data in plain language ("show me signups by week") and get the *right* number, because your annotations ride along.
 
 ## High level architecture
 
@@ -82,12 +93,12 @@ Everything is one `docker compose` on one VPS. Only the web proxy faces the inte
 
 ```mermaid
 flowchart LR
-    A["You + Claude / Claude Code"]
+    A["You + your AI"]
 
-    subgraph box["Your VPS — docker compose (only the proxy is public)"]
+    subgraph box["Your VPS · docker compose (only the proxy is public)"]
         GW["Gateway (MCP)<br/>context + read-only query tools"]
         K[("Knowledge store<br/>what your data means")]
-        LAKE[("Lake — optional<br/>logs · events · SaaS/bank data")]
+        LAKE[("Lake (optional)<br/>logs · events · SaaS/bank data")]
         ADMIN["Approval page<br/>human accepts knowledge changes"]
     end
 
@@ -103,21 +114,21 @@ flowchart LR
 
 **Two pieces:**
 
-1. **A provisioner** that hooks each data source up on demand — query a Postgres live (read-only), ingest logs and events, pull an API on a schedule, archive Slack. You maintain a handful of proven patterns, not one connector per vendor.
-2. **A gateway** that gives agents two kinds of tools over MCP: *context* tools (look up what the data means) and *data* tools (`get_schema`, `run_query` — read-only, audited, routed to whichever store the data lives in).
+1. **A provisioner** that hooks each data source up on demand: query a Postgres live (read-only), ingest logs and events, pull an API on a schedule, archive Slack. You maintain a handful of proven patterns, not one connector per vendor.
+2. **A gateway** that gives agents two kinds of tools over MCP: *context* tools (look up what the data means) and *data* tools (`get_schema`, `run_query`; read-only, audited, routed to whichever store the data lives in).
 
-**The membrane — what makes it injection-safe.** Agents can only *propose* knowledge; a human accepts it on the approval page, outside the agent loop. The deployed gateway holds no tool that commits curated knowledge. So an agent tricked by a malicious log line can propose nonsense, but nothing takes effect without a human click.
+**The membrane: what makes it injection-safe.** Agents can only *propose* knowledge; a human accepts it on the approval page, outside the agent loop. The deployed gateway holds no tool that commits curated knowledge. So an agent tricked by a malicious log line can propose nonsense, but nothing takes effect without a human click.
 
 **What runs in the box:**
 
 | Component | Role |
 |---|---|
-| **Caddy** | HTTPS edge — the only public-facing container |
+| **Caddy** | HTTPS edge, the only public-facing container |
 | **Gateway** | the MCP server (context + query tools) and the `/admin` approval surface |
 | **Postgres** | the knowledge store and admin accounts |
-| **ClickHouse + Vector** *(optional)* | a lake for logs/events/telemetry — only when there's more than Postgres should hold |
+| **ClickHouse + Vector** *(optional)* | a lake for logs/events/telemetry, only when there's more than Postgres should hold |
 
-Your operational data stays where it is — Setoku queries Postgres **live and read-only**; it doesn't copy your database. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
+Your operational data stays where it is: Setoku queries Postgres **live and read-only**; it doesn't copy your database. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
 
 ---
 
