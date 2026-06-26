@@ -157,17 +157,22 @@
   <section id="quickstart">
     <div class="wrap">
       <h2>Quickstart</h2>
-      <p class="lead">Setup is built for a coding agent. Open Claude Code (or your agent of choice) in your main project directory (the first codebase you'll want Setoku to understand) and tell it:</p>
-      <div class="say"><span class="say-label">Tell your coding agent</span><span class="say-text">Read https://github.com/Hedgy-Labs/setoku and set up a Setoku server for this project.</span></div>
-      <p class="note">It reads the docs, stands up the server, points it at your database (read-only), and generates the first knowledge from your code. You stay in the loop for anything that touches your data.</p>
-      <p class="note">You'll need somewhere to host it (a small VPS works) and read access to the database you want it to learn about. The agent walks you through the rest.</p>
+      <p class="lead">Setoku installs as a Claude Code plugin, so setup happens right inside Claude. Add the plugin (no server needed yet), then run onboarding from your main project directory, the codebase you want Setoku to learn from:</p>
+      <pre><code><span class="c"># 1 · add the plugin (skills only)</span>
+/plugin marketplace add Hedgy-Labs/setoku
+/plugin install setoku@setoku
+
+<span class="c"># 2 · from your project directory</span>
+/setoku:onboard</code></pre>
+      <p class="note">Onboarding stands up the server (on a small VPS you provide), connects this Claude to it, wires your database read-only, and generates the first knowledge from your code. You stay in the loop for anything that touches your data. Or just tell Claude "set up setoku."</p>
+      <p class="note">You'll need somewhere to host it (a small VPS works) and an admin connection URL for the database you want it to learn about.</p>
       <details class="manual">
-        <summary>Or set it up by hand</summary>
+        <summary>Or stand up the server by hand</summary>
         <pre><code><span class="c"># on a fresh Ubuntu VPS</span>
 git clone https://github.com/Hedgy-Labs/setoku /opt/setoku
 cd /opt/setoku
 SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
-        <p class="note" style="margin-top:12px">Installs Docker, generates secrets, gets an HTTPS certificate, and prints the MCP URL to connect your AI.</p>
+        <p class="note" style="margin-top:12px">Installs Docker, generates secrets, gets an HTTPS certificate, and prints the connect command. Then add the plugin and run /setoku:onboard from your project; it'll detect the box you just made.</p>
       </details>
     </div>
   </section>
