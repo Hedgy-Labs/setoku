@@ -101,16 +101,16 @@
   /* demo example */
   .examples{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:20px}
   @media(max-width:560px){.examples{grid-template-columns:1fr}}
-  .ex{border:1px solid var(--line);border-radius:12px;background:var(--paper);padding:14px 16px}
+  .ex{border:1px solid var(--line);border-radius:12px;background:var(--paper);padding:14px 16px;display:flex;flex-direction:column}
   .ex .q{font-family:var(--serif);font-style:italic;font-size:15.5px;line-height:1.3}
-  .ex .a{display:flex;align-items:baseline;gap:9px;margin-top:9px;padding-top:9px;border-top:1px solid var(--line-soft)}
+  .ex .a{display:flex;align-items:baseline;gap:9px;margin-top:auto;padding-top:9px;border-top:1px solid var(--line-soft)}
   .ex .a b{font-family:var(--serif);font-size:22px;line-height:1}
   .ex .a span{color:var(--ink-soft);font-size:12.5px;line-height:1.35}
 
   /* footer */
   footer{border-top:1px solid var(--line);margin-top:24px;padding:30px 0 0;overflow:hidden}
-  .foot-brand{display:flex;align-items:center;justify-content:center;gap:.06em;font-family:var(--brand);color:#1A1A19;font-size:clamp(74px,21vw,290px);line-height:.9;letter-spacing:.005em;margin:34px 0 -0.06em;user-select:none}
-  .foot-brand svg{width:.6em;height:.6em;color:#1A1A19;flex:0 0 auto}
+  .foot-brand{display:flex;align-items:center;justify-content:center;gap:.06em;font-family:var(--brand);color:#FFFFFF;font-size:clamp(74px,21vw,290px);line-height:.9;letter-spacing:.005em;margin:34px 0 -0.06em;user-select:none}
+  .foot-brand svg{width:.6em;height:.6em;color:#FFFFFF;flex:0 0 auto}
   .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center;font-size:13.5px;color:var(--ink-faint)}
   .foot .l{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
   .foot a{color:var(--ink-soft)}
@@ -140,7 +140,7 @@
     <p class="lede">Setoku is a small self-hosted MCP server. It does two things: it gives your AI a read-only way to query your data, and it remembers what that data means (the metric definitions, the gotchas), getting better the more you use it. No model runs on the server; it works with whatever AI you already have.</p>
     <div class="actions">
       <a class="btn" href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">View on GitHub ↗</a>
-      <a class="btn ghost" href="https://demo.setoku.com" target="_blank" rel="noopener">Try the demo</a>
+      <a class="btn ghost" href="#demo">Try the demo</a>
     </div>
   </div>
 
@@ -218,7 +218,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
   <section id="integrations">
     <div class="wrap">
       <h2>Integrations</h2>
-      <p class="lead">Point Setoku at the data you already have. A handful of proven patterns, not one connector per vendor.</p>
+      <p class="lead">Point Setoku at the data you already have. Setup skills are included that help your coding agent wire everything up and add new integrations.</p>
       <div class="integ">
         <div class="igroup">
           <h3>Query live (read-only)</h3>
@@ -249,7 +249,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
           </div>
         </div>
       </div>
-      <p class="note">Adding a source is a pattern, not a product feature. See <a href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">the repo</a> for how connectors are wired, or open an issue for one you need.</p>
+      <p class="note">No connector for your source yet? The included setup skills give your coding agent the patterns to wire one up itself. See <a href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">the repo</a>, or open an issue.</p>
     </div>
   </section>
 
@@ -257,7 +257,10 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
   <section id="demo">
     <div class="wrap">
       <h2>Try it on real-ish data</h2>
-      <p class="lead">There's a live demo wired to a fictional pro sports club, the Bonita Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast rights). Add it as a custom connector in claude.ai and ask in plain English.</p>
+      <p class="lead">There's a live demo wired to a fictional pro sports club, the Bonita Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast rights).</p>
+      <p class="note" style="margin-top:0"><b style="color:var(--ink)">Connect it:</b> in Claude (or any MCP client) open Settings → Connectors → Add custom connector, and paste this URL. The token rides in the URL, so there's no separate key to enter.</p>
+      <pre><code>https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</code></pre>
+      <p class="lead" style="margin-top:24px">Then ask in plain English:</p>
       <div class="examples">
       <div class="ex">
         <div class="q">"How many unique fans do we have?"</div>
@@ -280,9 +283,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         <div class="a"><b style="font-size:20px">It flags it</b><span>most merch is sold via Fanatics, not in this data, so it says so instead of returning a wrong total.</span></div>
       </div>
       </div>
-      <p class="note" style="margin-top:24px"><b style="color:var(--ink)">Connect it:</b> in Claude (or any MCP client) open Settings → Connectors → Add custom connector, and paste this URL. The token rides in the URL, so there's no separate key to enter.</p>
-      <pre><code>https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</code></pre>
-      <p class="note">Read-only, audited, synthetic data. More at <a href="https://demo.setoku.com" target="_blank" rel="noopener">demo.setoku.com</a>.</p>
+      <p class="note" style="margin-top:20px">Read-only, audited, synthetic data.</p>
     </div>
   </section>
 
@@ -320,7 +321,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
     <div class="l">
       <a class="brand" href="#top" style="font-size:15px"><svg class="mark" viewBox="0 0 64 64" style="width:18px;height:18px"><use href="#clover"/></svg> Setoku</a>
       <a href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">GitHub</a>
-      <a href="https://demo.setoku.com" target="_blank" rel="noopener">Demo</a>
+      <a href="#demo">Demo</a>
       <a href="mailto:hello@setoku.com">Contact</a>
       <span>Apache-2.0</span>
     </div>
