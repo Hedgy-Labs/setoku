@@ -77,6 +77,15 @@
   pre code{font-family:var(--mono);font-size:13.5px;line-height:1.8;background:none;padding:0;color:var(--ink);white-space:pre}
   pre code .c{color:var(--ink-faint)}
   .note{font-size:14.5px;color:var(--ink-soft);margin-top:14px}
+  .say{background:var(--paper);border:1px solid var(--line);border-left:3px solid var(--sage);border-radius:10px;padding:15px 18px;margin-top:16px}
+  .say-label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--sage-d);margin-bottom:7px}
+  .say-text{font-family:var(--serif);font-style:italic;font-size:17px;color:var(--ink);line-height:1.4;word-break:break-word}
+  .manual{margin-top:18px}
+  .manual summary{cursor:pointer;font-size:14px;color:var(--sage-d);font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:6px}
+  .manual summary::-webkit-details-marker{display:none}
+  .manual summary::before{content:"›";display:inline-block;transition:transform .2s}
+  .manual[open] summary::before{transform:rotate(90deg)}
+  .manual summary:hover{text-decoration:underline}
 
   /* how it works list */
   .steps{margin-top:18px;display:grid;gap:2px}
@@ -148,12 +157,18 @@
   <section id="quickstart">
     <div class="wrap">
       <h2>Quickstart</h2>
-      <p class="lead">One command on a fresh Ubuntu VPS (about $12/mo). Everything runs as one <code>docker compose</code>; only the proxy faces the internet.</p>
-      <pre><code><span class="c"># clone and bootstrap</span>
+      <p class="lead">Setup is built for a coding agent. Open Claude Code (or your agent of choice) in your main project directory (the first codebase you'll want Setoku to understand) and tell it:</p>
+      <div class="say"><span class="say-label">Tell your coding agent</span><span class="say-text">Read https://github.com/Hedgy-Labs/setoku and set up a Setoku server for this project.</span></div>
+      <p class="note">It reads the docs, stands up the server, points it at your database (read-only), and generates the first knowledge from your code. You stay in the loop for anything that touches your data.</p>
+      <p class="note">You'll need somewhere to host it (a small VPS works) and read access to the database you want it to learn about. The agent walks you through the rest.</p>
+      <details class="manual">
+        <summary>Or set it up by hand</summary>
+        <pre><code><span class="c"># on a fresh Ubuntu VPS</span>
 git clone https://github.com/Hedgy-Labs/setoku /opt/setoku
 cd /opt/setoku
 SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
-      <p class="note">It installs Docker, generates secrets, gets an HTTPS certificate, and prints the MCP URL to connect your AI. Then run <code>/setoku:onboard</code> in a business repo to wire up your database (read-only) and generate the first knowledge from your code.</p>
+        <p class="note" style="margin-top:12px">Installs Docker, generates secrets, gets an HTTPS certificate, and prints the MCP URL to connect your AI.</p>
+      </details>
     </div>
   </section>
 
@@ -183,7 +198,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
   <section id="architecture">
     <div class="wrap">
       <h2>What's in the box</h2>
-      <p class="lead">Everything runs as one docker compose on a small VPS. Only the proxy is public; your databases aren't exposed. Queries are read-only, and changes to the knowledge store pass through a person.</p>
+      <p class="lead">You can host this on whatever infra you like. We put it all on one small box (a ~$12/mo VPS): it's simple, and it lets us turn a coding agent loose on the box to add custom integrations. Only the proxy is public; your databases aren't exposed. Queries are read-only, and knowledge changes pass through a person.</p>
       <div class="diagram">
         <svg viewBox="0 0 680 440" role="img" aria-label="Setoku architecture: you and your AI connect over MCP to the gateway, which reads your data read-only and proposes knowledge that a person approves.">
           <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#54615A"/></marker></defs>
