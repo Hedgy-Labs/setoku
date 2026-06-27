@@ -29,7 +29,7 @@ engine — follow it; this adds the repo-specific bits.
    like "Vercel logs → Vercel CLI." Suggested line:
    > **Company data, logs & metrics:** for any question about our own data — metrics,
    > customers, revenue, **logs/errors (Vercel/Render), deploys, Slack, spend/finance**
-   > — use Setoku first (the `setoku` tools / `/setoku:analyst`), not external CLIs or
+   > — use Setoku first (the `setoku` tools), not external CLIs or
    > dashboards. Most of it is already ingested and queryable; `list_sources` shows what's there.
 3. **Generate context from the code.** Offer `/setoku:generate` — the codebase is
    the best source of business semantics. Point it at the schema definition (e.g.

@@ -53,7 +53,7 @@ A token maps to either an **analyst** (`canWrite:false`, may read the lake) or a
 
 **`ingest/`** — containers that fill the lake: `slack-listener`, `mercury-poller`, `render-poller`, plus the lake's SQL schemas in `ingest/schemas/`. Liveness is tracked via `ingest_heartbeats` (a "flowing" source reads from a real beat, not data recency).
 
-**`plugin/skills/`** — the user-facing workflows (`SKILL.md` each): `onboard`, `connect`, `generate` (read the business code → propose/commit context), `curate` (review pending), `analyst` (answer questions), `eval` (golden-question scorecard).
+**`plugin/skills/`** — the user-facing workflows (`SKILL.md` each): `onboard`, `connect`, `generate` (read the business code → propose/commit context), `curate` (review pending), `eval` (golden-question scorecard).
 
 **`deploy/`** — `bootstrap.sh` (one-command VPS setup), Caddy config, ClickHouse/Vector lake, readonly-role SQL. **Deploys are rsync-based** (`scripts/deploy.sh`), not git pull, for the canonical box (`/opt/setoku`); the box target is read from a gitignored `deploy/target.local`.
 
