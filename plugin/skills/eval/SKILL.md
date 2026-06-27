@@ -5,7 +5,7 @@ description: Run the Setoku golden-question eval for this repository and report 
 
 # Setoku eval
 
-Run the repo's golden questions end-to-end through the analyst workflow and score the results. This is how we measure whether the context artifact actually improves answers. All inference happens right here in this session — no harness, no API keys.
+Run the repo's golden questions end-to-end through the normal retrieve-then-query path and score the results. This is how we measure whether the context artifact actually improves answers. All inference happens right here in this session — no harness, no API keys.
 
 ## Golden questions file
 
@@ -30,7 +30,7 @@ If the file doesn't exist, offer to create it: propose 5–10 questions from the
 
 ## Run protocol (per question, in order)
 
-1. Answer the question **exactly as the analyst skill prescribes** (find_context → get_metric → SQL → run_query). Do not peek at the `expect` line until your answer is produced.
+1. Answer the question **exactly as you would for a real question** (find_context → get_metric → SQL → run_query). Do not peek at the `expect` line until your answer is produced.
 2. Then compare against the rubric: PASS / FAIL / PARTIAL, one line of reasoning.
 3. On FAIL, diagnose the layer: retrieval miss (find_context didn't surface the right doc) / context gap (doc missing or wrong) / SQL error / rubric stale. Propose the fix; for context gaps, draft the `report_correction` call and make it.
 

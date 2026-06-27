@@ -119,7 +119,7 @@ connected, what was learned, and the open questions worth a human's attention.
 - **`/setoku:generate`** stays the *code → knowledge* path; `connect` calls it
   when a source has a codebase (or run it standalone). Curator connector.
 - **`/setoku:curate`** stays the human review of proposed knowledge.
-- **`/setoku:analyst`** stays everyday Q&A.
+- **Everyday Q&A** needs no skill: any MCP client can query once a source is connected.
 - **`onboard`** → retire or make it a thin alias that runs `connect` for the
   first source and offers `generate`. (Open question below.)
 
