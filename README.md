@@ -54,7 +54,7 @@ It ships **tools, not models**. No AI runs on the server; the reasoning happens 
 **We and some friends wanted the same thing.**
 
 - **Hedgy**: keep scaling without hiring. Debug from live logs and data, find growth levers, and match candidates and companies better with more data.
-- **Baggu**: give employees state-of-the-art tools. Faster onboarding, and a safe way to build against real data.
+- **Baggu**: give employees state-of-the-art tools. Faster onboarding, and a safe way to vibecode against real data.
 - **Tlon**: experimenting with giving agents curated data to work from.
 - **Sports analysts**: query across data that doesn't usually sit together.
 - **Academic labs**: think through hypotheses against real papers, data, and drafts.

@@ -115,6 +115,9 @@
   .ex .a{display:flex;align-items:baseline;gap:9px;margin-top:auto;padding-top:9px;border-top:1px solid var(--line-soft)}
   .ex .a b{font-family:var(--serif);font-size:22px;line-height:1}
   .ex .a span{color:var(--ink-soft);font-size:12.5px;line-height:1.35}
+  .chart{border:1px solid var(--line);border-radius:12px;background:var(--paper);padding:16px 18px 12px;margin-top:12px}
+  .chart .cl{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:10px}
+  .chart svg{width:100%;height:auto;display:block}
 
   /* footer */
   footer{border-top:1px solid var(--line);margin-top:24px;padding:30px 0 0;overflow:hidden}
@@ -146,7 +149,7 @@
   <div class="intro wrap">
     <span class="eyebrow">Open source · MCP server · Apache-2.0</span>
     <h1>Give your AI a read-only window into your company's data.</h1>
-    <p class="lede">Setoku is a small self-hosted MCP server. It does two things: it gives your AI a read-only way to query your data, and it remembers what that data means (the metric definitions, the gotchas), getting better the more you use it. No model runs on the server; it works with whatever AI you already have.</p>
+    <p class="lede">Setoku is a small self-hosted MCP knowledge server + Claude Code skills for hooking up your data. It does two things: it gives your AI a read-only way to query your data, and it remembers what that data means (the metric definitions, the gotchas), getting better the more you use it. No model runs on the server; it works with whatever AI you already have.</p>
     <div class="actions">
       <a class="btn" href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">View on GitHub ↗</a>
       <a class="btn ghost" href="#demo">Try the demo</a>
@@ -196,14 +199,20 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
           <div class="v">The AI can only propose changes to what Setoku knows. A person accepts them on the admin page, outside the agent loop, so an injected session can't rewrite the brain.</div>
         </div>
       </div>
-    </div>
-  </section>
+      <p class="note" style="margin-top:20px">You set it up with <b>Claude Code</b> skills (the plugin) for the steps that touch your code and your box:</p>
+      <ul class="uses">
+        <li><code>/setoku:onboard</code> sets Setoku up in a repo for the first time.</li>
+        <li><code>/setoku:connect</code> adds a data source or custom integration.</li>
+        <li><code>/setoku:generate</code> writes business context from your code.</li>
+        <li><code>/setoku:curate</code> reviews and approves pending knowledge.</li>
+      </ul>
+      <p class="note">Once it's set up, <b>any MCP client</b> can use it — Claude, Codex, or whatever you run. Just ask in plain language; the tools do the rest.</p>
 
   <!-- ARCHITECTURE -->
   <section id="architecture">
     <div class="wrap">
       <h2>What's in the box</h2>
-      <p class="lead">You can host this on whatever infra you like. We put it all on one small box (a ~$12/mo VPS): it's simple, and it lets us turn a coding agent loose on the box to add custom integrations. Only the proxy is public; your databases aren't exposed. Queries are read-only, and knowledge changes pass through a person.</p>
+      <p class="lead">You can host this on whatever infra you like. We put it all on one small box (a ~$12/mo VPS). The <code>/setoku:connect</code> skill helps you add custom integrations. Only the proxy is public; your databases aren't exposed. Queries are read-only, and knowledge changes pass through a person.</p>
       <div class="diagram">
         <svg viewBox="0 0 680 440" role="img" aria-label="Setoku architecture: you and your AI connect over MCP to the gateway, which reads your data read-only and proposes knowledge that a person approves.">
           <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#54615A"/></marker></defs>
@@ -303,7 +312,36 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         <div class="a"><b style="font-size:20px">It flags it</b><span>most merch is sold via Fanatics, not in this data, so it says so instead of returning a wrong total.</span></div>
       </div>
       </div>
-      <p class="note" style="margin-top:20px">Read-only, audited, synthetic data.</p>
+      <p class="note" style="margin-top:18px">It charts, too. Ask "show me revenue by line" and you get a panel like this:</p>
+      <div class="chart">
+        <div class="cl">Annual revenue by line · ~$192M total</div>
+        <svg viewBox="0 0 640 214" role="img" aria-label="Annual revenue by line: media rights $90M, ticketing $47M, sponsorship $28M, concessions $14M, merch $8M, other $5M.">
+          <g fill="#5F8C6B">
+            <rect x="148" y="14" width="400" height="16" rx="3"/>
+            <rect x="148" y="48" width="209" height="16" rx="3"/>
+            <rect x="148" y="82" width="124" height="16" rx="3"/>
+            <rect x="148" y="116" width="62" height="16" rx="3"/>
+            <rect x="148" y="150" width="36" height="16" rx="3"/>
+            <rect x="148" y="184" width="22" height="16" rx="3"/>
+          </g>
+          <g font-family="Hanken Grotesk,system-ui,sans-serif" font-size="12.5" fill="#54615A">
+            <text x="8" y="26">Media rights</text>
+            <text x="8" y="60">Ticketing</text>
+            <text x="8" y="94">Sponsorship</text>
+            <text x="8" y="128">Concessions</text>
+            <text x="8" y="162">Merch</text>
+            <text x="8" y="196">Other</text>
+          </g>
+          <g font-family="JetBrains Mono,ui-monospace,monospace" font-size="12" fill="#212E26">
+            <text x="555" y="26">$90M</text>
+            <text x="364" y="60">$47M</text>
+            <text x="279" y="94">$28M</text>
+            <text x="217" y="128">$14M</text>
+            <text x="191" y="162">$8M</text>
+            <text x="177" y="196">$5M</text>
+          </g>
+        </svg>
+      </div>
     </div>
   </section>
 
@@ -318,7 +356,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
       <h3>We and some friends wanted the same thing.</h3>
       <ul class="uses">
         <li><b>Hedgy</b>: keep scaling without hiring. Debug from live logs and data, find growth levers, and match candidates and companies better with more data.</li>
-        <li><b>Baggu</b>: give employees state-of-the-art tools. Faster onboarding, and a safe way to build against real data.</li>
+        <li><b>Baggu</b>: give employees state-of-the-art tools. Faster onboarding, and a safe way to vibecode against real data.</li>
         <li><b>Tlon</b>: experimenting with giving agents curated data to work from.</li>
         <li><b>Sports analysts</b>: query across data that doesn't usually sit together.</li>
         <li><b>Academic labs</b>: think through hypotheses against real papers, data, and drafts.</li>
