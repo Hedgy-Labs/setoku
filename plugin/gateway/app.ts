@@ -26,58 +26,60 @@ import { lintDashboardTemplate } from "./lib/dashboard-runtime";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
+/**
+ * A token's capability role — the I2/I9 membrane, made a type. A session is
+ * EXACTLY one of these; capabilities are derived (capabilitiesFor), never passed
+ * as free booleans. This is what makes the dangerous combination — commit
+ * knowledge AND read the untrusted lake on one session — *unrepresentable*:
+ *
+ *   • analyst — reads the lake (untrusted bulk text); propose-only, no write tool.
+ *   • curator — commits curated knowledge; CANNOT read the lake.
+ *   • janitor — draft + reject only (zero authority); reads untrusted pending text.
+ *
+ * An agent reading untrusted content is prompt-injectable, so it must never hold a
+ * tool that commits knowledge. With a single role there is no way to construct a
+ * session that both writes and reads the lake — the boolean soup that previously
+ * left that one careless call-site away.
+ */
+export type TokenRole = "analyst" | "curator" | "janitor";
+
+export interface Capabilities {
+  /** Expose curated-write tools (upsert_context, resolve_correction). */
+  canWrite: boolean;
+  /** Block run_query on the lake (clickhouse) — true exactly when canWrite. */
+  denyLakeRead: boolean;
+  /** Expose draft_correction (draft-only, zero authority). */
+  canDraft: boolean;
+  /** Expose reject_correction (reject-only, zero authority). */
+  canReject: boolean;
+}
+
+/** Derive a role's capabilities. The ONLY place capabilities are decided, so the
+ *  membrane is one switch, not a convention spread across call sites. By
+ *  construction no role yields `canWrite && !denyLakeRead`. */
+export function capabilitiesFor(role: TokenRole): Capabilities {
+  switch (role) {
+    case "curator":
+      return { canWrite: true, denyLakeRead: true, canDraft: false, canReject: false };
+    case "janitor":
+      return { canWrite: false, denyLakeRead: false, canDraft: true, canReject: true };
+    case "analyst":
+      return { canWrite: false, denyLakeRead: false, canDraft: false, canReject: false };
+  }
+}
+
 export interface GatewayDeps {
   projectDir: string;
   store: KnowledgeStore;
   user: string;
+  /** The session's capability role (the membrane). Capabilities are derived from
+   *  it, so the forbidden write+lake-read combination can't be constructed. */
+  role: TokenRole;
   /**
-   * Whether to expose the curated-write tools (upsert_context,
-   * resolve_correction). FALSE = propose-only: the agent surface is read
-   * tools + report_correction, whose proposals are inert (pending) until a
-   * human accepts them. This is the membrane (I2/I9): an agent reading
-   * untrusted lake/Slack content is prompt-injectable, so it must not hold a
-   * tool that COMMITS curated knowledge — injection attacks the agent's
-   * decision, not its credential. Analyst tokens are always propose-only;
-   * `canWrite` is granted only to a separate **curator token**, which is in
-   * turn forbidden from reading the lake (see `denyLakeRead`). The two
-   * capabilities — commit knowledge, read untrusted bulk text — never coexist
-   * on one session, by enforcement. The human accept path is the web approval
-   * surface; curator tokens drive /setoku:generate and /setoku:curate.
-   */
-  canWrite: boolean;
-  /**
-   * Block `run_query` on the `clickhouse` dialect (the lake). Set TRUE for
-   * curator sessions: a session that can COMMIT curated knowledge must not be
-   * able to READ the bulk, attacker-controlled free text in the lake — that
-   * removes the injection vector that could weaponize the write tools. Curator
-   * sessions read only the business Postgres (to validate metric SQL) and the
-   * agent's own codebase (outside the gateway). Analyst sessions are the
-   * inverse: they read the lake but hold no write tool.
-   */
-  denyLakeRead: boolean;
-  /**
-   * Expose `draft_correction` — a DRAFT-ONLY capability (curation-cockpit piece
-   * B). It writes a drafted doc-edit + advisory flags onto a pending correction
-   * but touches NO curated doc: a draft grants zero authority. This is the
-   * auto-draft janitor's only write. Crucially it is NOT `upsert_context`: even
-   * though the drafting agent reads untrusted pending content, the worst it can
-   * do is propose a draft a human must still bless. Granted to the janitor
-   * token, never the analyst (no write at all) or the curator (commits directly).
-   */
-  canDraft?: boolean;
-  /**
-   * Expose `reject_correction` — a REJECT-ONLY capability (curation-cockpit piece
-   * C). It resolves a pending correction to `rejected` and nothing else: removing
-   * from the queue grants no authority (unlike accept, which commits knowledge —
-   * deliberately NOT an MCP tool). Splitting reject out of the accept-or-reject
-   * space is the whole safety argument; the janitor holds this, never accept.
-   */
-  canReject?: boolean;
-  /**
-   * The process-wide semantic index (I8 opt-in local embeddings). When present
-   * and enabled, `find_context` fuses embedding similarity with keyword retrieval
-   * (hybrid). Null/absent/disabled → keyword retrieval only (graceful fallback).
-   * Shared across per-request servers, like `store`.
+   * The process-wide semantic index (local embeddings). When enabled,
+   * `find_context` fuses embedding similarity with keyword retrieval (hybrid).
+   * Null/disabled → keyword retrieval only (graceful fallback). Shared across
+   * per-request servers, like `store`.
    */
   embedIndex?: EmbedIndex | null;
 }
@@ -86,12 +88,10 @@ export function buildServer({
   projectDir,
   store,
   user,
-  canWrite,
-  denyLakeRead,
-  canDraft = false,
-  canReject = false,
+  role,
   embedIndex = null,
 }: GatewayDeps): McpServer {
+const { canWrite, denyLakeRead, canDraft, canReject } = capabilitiesFor(role);
 const server = new McpServer({ name: "setoku", version: VERSION });
 
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
