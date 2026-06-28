@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "./artifact";
 import { setokuDir } from "./config";
+import type { AppParam } from "./params";
 
 export type DocType = "entity" | "metric" | "query" | "overview" | "gotcha";
 
@@ -130,6 +131,9 @@ export interface PublishedReport {
   body: string;
   /** Live data bindings; null/[] for a frozen report. */
   panels: AppPanel[] | null;
+  /** Declared interactive inputs (date/int/text/bool/enum) a panel's SQL binds
+   *  via `:name`. null/[] for a non-interactive app. See lib/params.ts. */
+  params: AppParam[] | null;
   /** TTL (seconds) for cached panel data; null on frozen reports. */
   refreshSeconds: number | null;
   /** "team" = session-gated (default); "public" = served credential-free at
@@ -158,6 +162,17 @@ function parsePanels(json: string | null): AppPanel[] | null {
   try {
     const v = JSON.parse(json);
     return Array.isArray(v) ? (v as AppPanel[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse the stored params JSON; tolerates null/garbage (legacy rows). */
+function parseParams(json: string | null): AppParam[] | null {
+  if (!json) return null;
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? (v as AppParam[]) : null;
   } catch {
     return null;
   }
@@ -342,6 +357,7 @@ export class KnowledgeStore {
     this.ensureColumn("published", "visibility", "TEXT NOT NULL DEFAULT 'team'");
     this.ensureColumn("published", "archived_at", "TEXT");
     this.ensureColumn("published", "panels", "TEXT");
+    this.ensureColumn("published", "params", "TEXT");
     this.ensureColumn("published", "refresh_seconds", "INTEGER");
     // Per-panel result cache. A app view serves cached rows within the
     // app's refresh TTL and re-runs the query when stale — bounding DB load
@@ -841,19 +857,22 @@ export class KnowledgeStore {
     format?: "html" | "app";
     body: string;
     panels?: AppPanel[] | null;
+    params?: AppParam[] | null;
     refreshSeconds?: number | null;
     visibility?: ReportVisibility;
     createdBy: string;
   }): void {
     const panels = rec.panels && rec.panels.length ? JSON.stringify(rec.panels) : null;
+    const params = rec.params && rec.params.length ? JSON.stringify(rec.params) : null;
     this.db.run(
-      "INSERT INTO published (id, title, format, body, panels, refresh_seconds, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO published (id, title, format, body, panels, params, refresh_seconds, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         rec.id,
         rec.title,
         rec.format ?? (panels ? "app" : "html"),
         rec.body,
         panels,
+        params,
         rec.refreshSeconds ?? null,
         rec.visibility ?? "team",
         rec.createdBy,
@@ -867,10 +886,10 @@ export class KnowledgeStore {
   getPublished(id: string): PublishedReport | null {
     const row = this.db
       .query(
-        "SELECT id, title, format, body, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+        "SELECT id, title, format, body, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
       )
-      .get(id) as (Omit<PublishedReport, "panels"> & { panels: string | null }) | null;
-    return row ? { ...row, panels: parsePanels(row.panels) } : null;
+      .get(id) as (Omit<PublishedReport, "panels" | "params"> & { panels: string | null; params: string | null }) | null;
+    return row ? { ...row, panels: parsePanels(row.panels), params: parseParams(row.params) } : null;
   }
 
   /** One report's metadata WITHOUT its (up-to-2MB) body — for cheap 404/policy
@@ -878,20 +897,20 @@ export class KnowledgeStore {
   getPublishedMeta(id: string): PublishedMeta | null {
     const row = this.db
       .query(
-        "SELECT id, title, format, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
       )
-      .get(id) as (Omit<PublishedMeta, "panels"> & { panels: string | null }) | null;
-    return row ? { ...row, panels: parsePanels(row.panels) } : null;
+      .get(id) as (Omit<PublishedMeta, "panels" | "params"> & { panels: string | null; params: string | null }) | null;
+    return row ? { ...row, panels: parsePanels(row.panels), params: parseParams(row.params) } : null;
   }
 
   /** Published reports/apps without bodies, newest first (admin list). */
   listPublished(): PublishedMeta[] {
     const rows = this.db
       .query(
-        "SELECT id, title, format, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published ORDER BY created_at DESC",
+        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published ORDER BY created_at DESC",
       )
-      .all() as unknown as (Omit<PublishedMeta, "panels"> & { panels: string | null })[];
-    return rows.map((r) => ({ ...r, panels: parsePanels(r.panels) }));
+      .all() as unknown as (Omit<PublishedMeta, "panels" | "params"> & { panels: string | null; params: string | null })[];
+    return rows.map((r) => ({ ...r, panels: parsePanels(r.panels), params: parseParams(r.params) }));
   }
 
   /** Soft-delete (archive) a published report/app. Returns false if already
@@ -961,7 +980,16 @@ export class KnowledgeStore {
    *  row is unknown or archived. */
   updatePublished(
     id: string,
-    fields: { title?: string; body?: string; panels?: AppPanel[]; refreshSeconds?: number | null },
+    fields: {
+      title?: string;
+      body?: string;
+      panels?: AppPanel[];
+      params?: AppParam[];
+      /** Explicit format — the caller (which has the body) decides app vs legacy
+       *  html; falls back to panels-based derivation when omitted. */
+      format?: "html" | "app";
+      refreshSeconds?: number | null;
+    },
   ): boolean {
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
@@ -976,7 +1004,11 @@ export class KnowledgeStore {
     if (fields.panels !== undefined) {
       const json = fields.panels.length ? JSON.stringify(fields.panels) : null;
       sets.push("panels = ?", "format = ?");
-      vals.push(json, json ? "app" : "html");
+      vals.push(json, fields.format ?? (json ? "app" : "html"));
+    }
+    if (fields.params !== undefined) {
+      sets.push("params = ?");
+      vals.push(fields.params.length ? JSON.stringify(fields.params) : null);
     }
     if (fields.refreshSeconds !== undefined) {
       sets.push("refresh_seconds = ?");

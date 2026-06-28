@@ -40,6 +40,7 @@ import {
 import { newestComputedAt, renderApp, type RenderedPanel } from "./lib/apps";
 import { APP_RUNTIME } from "./lib/app-runtime";
 import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
+import type { AppParam } from "./lib/params";
 import {
   type Invite,
   applyApprovalAction,
@@ -679,6 +680,46 @@ const SHELL_CSP =
 /** The credential-free public app shell at /p/<id>. (The team surface uses
  *  the React app, which renders the same frame + provenance.) Provenance here
  *  shows methodology only — never raw SQL. */
+/** Server-rendered stone controls for an app's declared params (chrome — never an
+ *  accent color). Each carries `data-pname`; the shell's JS gathers their values
+ *  into `?p.<name>=…` and re-requests the frame. Defaults are pre-selected. */
+function paramControlsHtml(params: AppParam[]): string {
+  if (!params.length) return "";
+  const ctrl = (p: AppParam): string => {
+    const nm = escapeHtml(p.name);
+    if (p.type === "enum") {
+      const opts = (p.options ?? [])
+        .map((o) => `<option value="${escapeHtml(o.value)}"${o.value === p.default ? " selected" : ""}>${escapeHtml(o.label || o.value)}</option>`)
+        .join("");
+      return `<select data-pname="${nm}">${opts}</select>`;
+    }
+    if (p.type === "bool")
+      return `<select data-pname="${nm}"><option value="true"${p.default === true ? " selected" : ""}>Yes</option><option value="false"${p.default !== true ? " selected" : ""}>No</option></select>`;
+    const type = p.type === "int" ? "number" : p.type === "date" ? "date" : "text";
+    const mm = p.type === "int" ? `${p.min != null ? ` min="${p.min}"` : ""}${p.max != null ? ` max="${p.max}"` : ""}` : "";
+    return `<input type="${type}" data-pname="${nm}"${mm} value="${escapeHtml(String(p.default ?? ""))}">`;
+  };
+  return (
+    `<div id="controls">` +
+    params.map((p) => `<label class="pc"><span>${escapeHtml(p.label || p.name)}</span>${ctrl(p)}</label>`).join("") +
+    `</div>`
+  );
+}
+
+/** Viewer-supplied param values from a frame/shell request: `?p.<name>=value`.
+ *  Raw strings — renderApp coerces each to its declared type (or the default). */
+function parseFrameParams(reqUrl: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  try {
+    for (const [k, v] of new URL(reqUrl ?? "", "http://x").searchParams) {
+      if (k.startsWith("p.")) out[k.slice(2)] = v;
+    }
+  } catch {
+    /* malformed URL — no params */
+  }
+  return out;
+}
+
 function publicAppShell(opts: {
   title: string;
   framePath: string;
@@ -686,9 +727,17 @@ function publicAppShell(opts: {
   statePath: string;
   adminPath: string;
   refreshSeconds: number;
+  /** False for a panel-less app (state-only) — no live data to stamp or poll, so
+   *  the shell shows no "updated …" line and never auto-reloads the frame (which
+   *  would wipe in-progress input). */
+  hasPanels: boolean;
+  /** Declared interactive inputs — rendered as stone controls in the header; the
+   *  shell re-requests the frame with `?p.<name>=…` when one changes. */
+  params: AppParam[];
 }): string {
   const title = escapeHtml(opts.title || "App");
-  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, state: opts.statePath, admin: opts.adminPath, refresh: opts.refreshSeconds });
+  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, state: opts.statePath, admin: opts.adminPath, refresh: opts.refreshSeconds, hasPanels: opts.hasPanels });
+  const controls = paramControlsHtml(opts.params);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
@@ -703,8 +752,12 @@ function publicAppShell(opts: {
   .adminbtn:hover{background:#f5f5f4}
   main{flex:1;min-height:0;display:flex;padding:.9rem 1.1rem}
   iframe{flex:1;width:100%;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
+  #controls{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .9rem;width:100%;margin-top:.1rem}
+  .pc{display:inline-flex;align-items:center;gap:.4rem;font-size:.8rem;color:#57534e}
+  .pc select,.pc input{font:inherit;font-size:.8rem;color:#1c1917;background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.18rem .45rem}
+  .pc select:focus,.pc input:focus{outline:none;border-color:#a8a29e;box-shadow:0 0 0 2px #e7e5e4}
 </style></head><body>
-<header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a></header>
+<header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
 <main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe></main>
 <script>
 (function(){
@@ -735,7 +788,13 @@ function publicAppShell(opts: {
   function rel(iso){ if(!iso) return ''; var s=Math.max(0,Math.round((Date.now()-Date.parse(iso))/1000));
     if(s<60) return s+'s ago'; var m=Math.round(s/60); if(m<60) return m+'m ago';
     var h=Math.round(m/60); return h<48? h+'h ago' : Math.round(h/24)+'d ago'; }
-  function reload(){ frame.src=CFG.frame+'?t='+Date.now(); }
+  // Gather the current control values into the frame query (?p.<name>=…) so every
+  // frame load — initial, on a control change, and the auto-refresh — runs the
+  // panels bound to the viewer's current selection.
+  function paramQuery(){ var parts=[]; document.querySelectorAll('[data-pname]').forEach(function(el){
+    parts.push('p.'+encodeURIComponent(el.getAttribute('data-pname'))+'='+encodeURIComponent(el.value)); }); return parts.join('&'); }
+  function reload(){ var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
+  document.querySelectorAll('[data-pname]').forEach(function(el){ el.addEventListener('change', function(){ reload(); }); });
   function refresh(){ fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
     var secs=d.refreshSeconds||CFG.refresh;
     var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
@@ -746,8 +805,14 @@ function publicAppShell(opts: {
   fetch('/admin/api/session',{credentials:'include'}).then(function(r){
     if(r.ok){ var a=document.getElementById('adminlink'); a.href=CFG.admin; a.style.display='inline-block'; }
   }).catch(function(){});
-  reload(); refresh();
-  setInterval(function(){ reload(); refresh(); }, Math.max(30,CFG.refresh)*1000);
+  reload();
+  // Only apps with data panels have something to stamp/poll and re-run on a TTL.
+  // A state-only app shows no freshness line and never auto-reloads (a reload
+  // would wipe whatever the viewer was typing); its state persists server-side.
+  if (CFG.hasPanels) {
+    refresh();
+    setInterval(function(){ reload(); refresh(); }, Math.max(30,CFG.refresh)*1000);
+  }
 })();
 </script>
 </body></html>`;
@@ -800,12 +865,17 @@ const httpServer = http.createServer(async (req, res) => {
       // the up-to-2MB body (this path is credential-free and cheap to hammer).
       const meta = store.getPublishedMeta(id);
       if (!meta || meta.archivedAt || meta.visibility !== "public") return notFound();
-      const isApp = meta.format === "app" && (meta.panels?.length ?? 0) > 0;
+      // An app renders via the runtime path whether or not it has data panels: a
+      // chart app has panels; a state-only app (todo/poll) has none but still
+      // wants the runtime + no-network frame. Only a legacy frozen report (format
+      // "html") is served whole at /p/<id>.
+      const isApp = meta.format === "app";
+      const hasPanels = (meta.panels?.length ?? 0) > 0;
 
-      // The /frame and /data subpaths exist only for live apps (the shell
-      // polls them); a legacy report is served whole at /p/<id>. Don't expose
-      // them for non-apps.
-      if ((sub === "data" || sub === "frame") && !isApp) return notFound();
+      // The /frame and /data subpaths exist only for apps (the shell embeds
+      // /frame; /data is the freshness poll, meaningful only with panels).
+      if (sub === "frame" && !isApp) return notFound();
+      if (sub === "data" && !(isApp && hasPanels)) return notFound();
 
       // /p/<id>/data — FRESHNESS ONLY for the public shell's "updated …" stamp.
       // The public surface exposes NO calculations (no SQL, descriptions, metrics).
@@ -876,7 +946,7 @@ const httpServer = http.createServer(async (req, res) => {
       if (sub === "frame") {
         const rep = store.getPublished(id);
         if (!rep) return notFound();
-        const panels = await renderApp(store, projectDir, rep);
+        const panels = await renderApp(store, projectDir, rep, { rawParams: parseFrameParams(req.url) });
         store.audit("public", "app_frame_public", { id });
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
@@ -923,6 +993,8 @@ const httpServer = http.createServer(async (req, res) => {
           statePath: `/p/${encodeURIComponent(id)}/state`,
           adminPath: `/admin/p/${encodeURIComponent(id)}`,
           refreshSeconds: meta.refreshSeconds ?? 300,
+          hasPanels,
+          params: meta.params ?? [],
         }),
       );
       return;
@@ -973,15 +1045,17 @@ const httpServer = http.createServer(async (req, res) => {
           res.end("not found\n");
           return;
         }
-        const isDash = rep.format === "app" && (rep.panels?.length ?? 0) > 0;
-        const panels = isDash ? await renderApp(store, projectDir, rep) : [];
+        // An app (with or without panels) renders via the runtime path; only a
+        // legacy frozen report (format "html") keeps the loose sandbox-only CSP.
+        const isApp = rep.format === "app";
+        const panels = isApp && (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: parseFrameParams(req.url) }) : [];
         store.audit(session.identity, "app_frame_viewed", { id });
         // A live app's template needs no network (data is injected) → strict
         // CSP. A LEGACY report predates that contract and may inline a CDN script
         // or remote image; keep its original sandbox-only CSP so it still renders.
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": isDash ? `${FRAME_CSP}; sandbox allow-scripts allow-forms` : "sandbox allow-scripts",
+          "content-security-policy": isApp ? `${FRAME_CSP}; sandbox allow-scripts allow-forms` : "sandbox allow-scripts",
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
@@ -1100,7 +1174,7 @@ const httpServer = http.createServer(async (req, res) => {
             url.searchParams.get("force") === "1" &&
             (meta.createdBy === session.identity || canApprove(session.role));
           // Renders from `meta` — provenance + frame don't need the report body.
-          const panels = await renderApp(store, projectDir, meta, { force });
+          const panels = await renderApp(store, projectDir, meta, { force, rawParams: parseFrameParams(req.url) });
           store.audit(session.identity, force ? "app_refreshed" : "app_viewed", { id });
           return json(200, appProvenance(store, meta, panels));
         }

@@ -44,6 +44,10 @@ export async function runLakeQuery(
     rowCap,
     statementTimeoutMs,
   }: Pick<SetokuConfig, "rowCap" | "statementTimeoutMs">,
+  /** Bound query params for `{name:Type}` placeholders (see lib/params.ts) —
+   *  ClickHouse substitutes them server-side via `param_<name>`; viewer input
+   *  reaches the engine only this way, never spliced into `sql`. */
+  chParams: Record<string, string> = {},
 ): Promise<QueryOutcome> {
   const v = validateSql(sql);
   if (!v.ok) throw new Error(v.error);
@@ -64,6 +68,7 @@ export async function runLakeQuery(
       wait_end_of_query: "1",
       default_format: "JSON",
     });
+    for (const [k, val] of Object.entries(chParams)) params.set(`param_${k}`, val);
     if (target.database) params.set("database", target.database);
     const res = await fetch(`${target.endpoint}/?${params}`, {
       method: "POST",

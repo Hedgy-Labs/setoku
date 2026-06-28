@@ -111,7 +111,13 @@ export function Apps() {
                         {panelCount ? ` · ${panelCount} live panel${panelCount === 1 ? "" : "s"}` : ""}
                       </div>
                     </div>
-                    {panelCount ? <Badge tone="ok">live</Badge> : <Badge tone="idle">static</Badge>}
+                    {panelCount ? (
+                      <Badge tone="ok">live</Badge>
+                    ) : r.format === "app" ? (
+                      <Badge tone="idle">interactive</Badge>
+                    ) : (
+                      <Badge tone="idle">static</Badge>
+                    )}
                     <Badge tone={r.visibility === "public" ? "ok" : "idle"}>{r.visibility}</Badge>
                     <Menu label={`Actions for ${r.title}`}>{items}</Menu>
                   </div>

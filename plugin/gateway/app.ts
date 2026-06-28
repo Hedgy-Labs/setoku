@@ -19,7 +19,8 @@ import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
-import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/apps";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel, compilePanel } from "./lib/apps";
+import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
@@ -807,6 +808,7 @@ server.registerTool(
         projectDir,
         config,
         { key: "run_query", sql, dialect: dialect ?? "postgres" },
+        { text: sql, referenced: [] }, // a direct query — no bound params
         { denyLakeRead },
       );
       store.audit(user, "run_query", {
@@ -918,6 +920,7 @@ type PanelSeed = { key: string; columns: string[]; rows: Record<string, unknown>
 // panel must run") can never drift between the two.
 async function prepPanels(
   list: PanelInput[],
+  declared: AppParam[] = [],
 ): Promise<{ ok: true; normalized: AppPanel[]; seeds: PanelSeed[] } | { ok: false; error: string }> {
   if (list.length > MAX_PANELS)
     return { ok: false, error: `Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the app.` };
@@ -942,11 +945,27 @@ async function prepPanels(
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
+  // Resolve the declared inputs to their DEFAULTS to dry-run the panels (no viewer
+  // yet) — this also validates every :token is declared and every default coerces.
+  let resolved;
+  try {
+    resolved = resolveParams(declared, {});
+  } catch (e) {
+    return { ok: false, error: `Bad param default: ${(e as Error).message}` };
+  }
   const seeds: PanelSeed[] = [];
   for (const p of normalized) {
+    let compiled;
     try {
-      const r = await runPanel(projectDir, config, p, { denyLakeRead });
-      seeds.push({ key: p.key, columns: r.columns, rows: r.rows, rowCount: r.rowCount });
+      compiled = compilePanel(p, declared, resolved); // throws on an undeclared :param
+    } catch (e) {
+      return { ok: false, error: `Panel "${p.key}": ${(e as Error).message}\nDeclare it in params, or fix the token.` };
+    }
+    const variant = paramsVariant(compiled.referenced, resolved);
+    const cacheKey = variant ? `${p.key}::${variant}` : p.key; // seed the default-params variant
+    try {
+      const r = await runPanel(projectDir, config, p, compiled, { denyLakeRead });
+      seeds.push({ key: cacheKey, columns: r.columns, rows: r.rows, rowCount: r.rowCount });
     } catch (e) {
       return { ok: false, error: `Panel "${p.key}" failed to run: ${(e as Error).message}\nFix the query and try again.` };
     }
@@ -993,6 +1012,20 @@ const PANEL_SCHEMA = z.object({
   metricId: z.string().optional().describe("Name of a curated metric this panel computes — links provenance to the verified definition"),
 });
 
+// A declared interactive input. A panel's SQL references it as `:name`; the
+// viewer's value is type-coerced and ENGINE-BOUND (never string-interpolated),
+// so it's injection-safe and can't name a table/column or drive a write.
+const PARAM_SCHEMA = z.object({
+  name: z.string().describe("Identifier a panel's SQL binds as :name"),
+  label: z.string().optional().describe("Human label for the shell-rendered control"),
+  type: z.enum(["date", "int", "text", "bool", "enum"]),
+  default: z.union([z.string(), z.number(), z.boolean()]).describe("REQUIRED — the app must render with no viewer input"),
+  options: z.array(z.object({ value: z.string(), label: z.string().optional() })).optional().describe("enum only: the closed set of accepted values"),
+  min: z.number().optional().describe("int: inclusive minimum"),
+  max: z.number().optional().describe("int: inclusive maximum"),
+  maxLength: z.number().optional().describe("text: max length"),
+});
+
 const TEMPLATE_HELP =
   "Pass `html`: the presentation TEMPLATE — a self-contained HTML fragment (inline <style>/<script>, inline SVG; " +
   "NO external/CDN assets and NO network — data is injected, not fetched). A tested helper is preloaded: prefer " +
@@ -1025,39 +1058,53 @@ server.registerTool(
       title: z.string().describe("Short human title (shown in the box's Apps list)"),
       html: z.string().describe("The presentation template (self-contained HTML fragment; use the Setoku.* helpers)."),
       panels: z.array(PANEL_SCHEMA).optional().describe("Live data bindings. Omit for a static report."),
+      params: z
+        .array(PARAM_SCHEMA)
+        .optional()
+        .describe(
+          "Interactive inputs the viewer can change. A panel's SQL references one as `:name` (e.g. `WHERE region = :region`); the box renders a control in the app's header and re-runs the panels with the value bound. Each needs a `default` so the app renders with no input.",
+        ),
       refreshSeconds: z
         .number()
         .optional()
         .describe(`How often the box re-runs panels (default ${DEFAULT_REFRESH_SECONDS}, ${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS})`),
     },
   },
-  async ({ title, html, panels, refreshSeconds }) => {
+  async ({ title, html, panels, params, refreshSeconds }) => {
     const bytes = Buffer.byteLength(html, "utf8");
     if (bytes > MAX_REPORT_BYTES)
       return errorText(
         `Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap. Keep it a self-contained ` +
           "fragment; the live data arrives via panels, so don't embed bulk data in the template.",
       );
-    const prep = await prepPanels(panels ?? []);
+    const declaredParams = (params ?? []) as AppParam[];
+    const prep = await prepPanels(panels ?? [], declaredParams);
     if (!prep.ok) return errorText(prep.error);
     const { normalized, seeds } = prep;
 
     const id = mintShareId();
     const refresh = clampRefresh(refreshSeconds, normalized.length > 0);
+    // An "app" renders via the runtime path (chart helpers + Setoku.state + the
+    // no-network app CSP). That's anything with panels OR a zero-panel FRAGMENT
+    // (e.g. a state-only app: a todo, a poll). Only a zero-panel full HTML
+    // DOCUMENT is a legacy frozen report (format "html"), served as-is.
+    const isFullDoc = /<!doctype|<html[\s>]/i.test(html);
+    const format = normalized.length > 0 || !isFullDoc ? "app" : "html";
     store.createPublished({
       id,
       title: title.trim() || "Untitled app",
       body: html,
       panels: normalized,
+      params: declaredParams.length ? declaredParams : null,
       refreshSeconds: refresh,
-      format: normalized.length ? "app" : "html",
+      format,
       createdBy: user,
     });
     for (const s of seeds)
       store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
     store.audit(user, "publish_app", { id, title, bytes, panels: normalized.length });
 
-    const noun = normalized.length ? "app" : "report";
+    const noun = format === "app" ? "app" : "report";
     return text(
       `Published "${title}" → ${publishUrl(id)}\n\n` +
         (normalized.length ? `${normalized.length} live panel(s); the box re-runs them every ${refresh}s. ` : "") +
@@ -1086,11 +1133,12 @@ server.registerTool(
       id: z.string().describe("The app id (from publish_app / list_apps)"),
       title: z.string().optional().describe("New title"),
       html: z.string().optional().describe("New presentation template (replaces the current one)"),
-      panels: z.array(PANEL_SCHEMA).optional().describe("New panel set — REPLACES all panels. Pass [] to make it a static report."),
+      panels: z.array(PANEL_SCHEMA).optional().describe("New panel set — REPLACES all panels. Pass [] for a state-only or static app."),
+      params: z.array(PARAM_SCHEMA).optional().describe("New interactive inputs — REPLACES all params (pass [] to remove). See publish_app."),
       refreshSeconds: z.number().optional().describe(`New refresh interval (${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS})`),
     },
   },
-  async ({ id, title, html, panels, refreshSeconds }) => {
+  async ({ id, title, html, panels, params, refreshSeconds }) => {
     const tid = id.trim();
     const meta = store.getPublishedMeta(tid);
     if (!meta || meta.archivedAt)
@@ -1098,18 +1146,21 @@ server.registerTool(
     if (meta.createdBy !== user)
       return errorText(`Only the author (${meta.createdBy}) can edit this app. Publish your own with publish_app.`);
     const newTitle = title?.trim() || undefined; // whitespace-only title is a no-op, not a change
-    if (newTitle === undefined && html === undefined && panels === undefined && refreshSeconds === undefined)
-      return errorText("Nothing to update — pass a non-empty title, or html / panels / refreshSeconds.");
+    if (newTitle === undefined && html === undefined && panels === undefined && params === undefined && refreshSeconds === undefined)
+      return errorText("Nothing to update — pass a non-empty title, or html / panels / params / refreshSeconds.");
     if (html !== undefined) {
       const bytes = Buffer.byteLength(html, "utf8");
       if (bytes > MAX_REPORT_BYTES)
         return errorText(`Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap.`);
     }
 
+    // Use the new params if provided, else the app's existing declared params, so
+    // a panels-only edit still compiles its `:tokens`.
+    const declaredParams = params !== undefined ? (params as AppParam[]) : (meta.params ?? []);
     let normalized: AppPanel[] | undefined;
     let seeds: PanelSeed[] | undefined;
     if (panels !== undefined) {
-      const prep = await prepPanels(panels);
+      const prep = await prepPanels(panels, declaredParams);
       if (!prep.ok) return errorText(prep.error);
       normalized = prep.normalized;
       seeds = prep.seeds;
@@ -1120,10 +1171,23 @@ server.registerTool(
     if (refreshSeconds !== undefined) refresh = clampRefresh(refreshSeconds, willHavePanels);
     else if (panels !== undefined) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
 
+    // When panels change, recompute format: panels → app; zero panels → "app" for
+    // a fragment (state app), "html" only for a full legacy document.
+    let format: "html" | "app" | undefined;
+    if (panels !== undefined) {
+      if (willHavePanels) format = "app";
+      else {
+        const bodyToCheck = html ?? store.getPublished(tid)?.body ?? "";
+        format = /<!doctype|<html[\s>]/i.test(bodyToCheck) ? "html" : "app";
+      }
+    }
+
     const ok = store.updatePublished(tid, {
       title: newTitle,
       body: html,
-      panels: normalized, // undefined → unchanged; [] → becomes a static report (cache cleared)
+      panels: normalized, // undefined → unchanged; [] → state-only/static (cache cleared)
+      params: params !== undefined ? (params as AppParam[]) : undefined,
+      format,
       refreshSeconds: refresh,
     });
     if (!ok) return errorText(`Update failed — no active app "${id}".`);

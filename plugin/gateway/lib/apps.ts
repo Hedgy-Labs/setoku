@@ -13,7 +13,26 @@
 import { loadConfig, resolveDatabaseUrl, resolveLakeUrl, type SetokuConfig } from "./config";
 import { runReadOnlyQuery, type QueryOutcome } from "./db";
 import { runLakeQuery } from "./lake";
+import {
+  resolveParams,
+  compilePostgres,
+  compileClickhouse,
+  paramsVariant,
+  type AppParam,
+  type ParamValue,
+} from "./params";
 import type { AppPanel, KnowledgeStore, PublishedReport } from "./store";
+
+/** A panel's SQL compiled with its bound param values, ready to execute. */
+export interface CompiledPanel {
+  text: string;
+  /** Postgres positional bind values ($1…$n). */
+  values?: ParamValue[];
+  /** ClickHouse param_<name> values. */
+  chParams?: Record<string, string>;
+  /** Param names this panel references (for the cache-variant key). */
+  referenced: string[];
+}
 
 /** Default refresh TTL when an app doesn't declare one. */
 export const DEFAULT_REFRESH_SECONDS = 300;
@@ -46,17 +65,34 @@ export async function runPanel(
   projectDir: string,
   config: SetokuConfig,
   panel: AppPanel,
+  compiled: CompiledPanel,
   opts: { denyLakeRead?: boolean } = {},
 ): Promise<QueryOutcome> {
   if (panel.dialect === "clickhouse") {
     if (opts.denyLakeRead) throw new Error(LAKE_MEMBRANE_ERROR);
     const lake = resolveLakeUrl(projectDir, config);
     if (!lake.ok) throw new Error(lake.error);
-    return runLakeQuery(lake.url, panel.sql, config);
+    return runLakeQuery(lake.url, compiled.text, config, compiled.chParams ?? {});
   }
   const db = resolveDatabaseUrl(projectDir, config);
   if (!db.ok) throw new Error(db.error);
-  return runReadOnlyQuery(db.url, panel.sql, config);
+  return runReadOnlyQuery(db.url, compiled.text, config, compiled.values ?? []);
+}
+
+/** Compile a panel's `:name` tokens to engine placeholders + bound values, using
+ *  the app's declared params and the resolved (viewer-or-default) values. Throws
+ *  on a panel that references an undeclared param (caught per-panel at render). */
+export function compilePanel(
+  panel: AppPanel,
+  declared: AppParam[],
+  resolved: Map<string, ParamValue>,
+): CompiledPanel {
+  if (panel.dialect === "clickhouse") {
+    const c = compileClickhouse(panel.sql, declared, resolved);
+    return { text: c.text, chParams: c.chParams, referenced: c.referenced };
+  }
+  const c = compilePostgres(panel.sql, resolved);
+  return { text: c.text, values: c.values, referenced: c.referenced };
 }
 
 /** One panel's data as handed to the template / provenance drawer. */
@@ -101,15 +137,19 @@ export function renderApp(
   store: KnowledgeStore,
   projectDir: string,
   dash: RenderInput,
-  opts: { force?: boolean; denyLakeRead?: boolean; now?: number } = {},
+  opts: { force?: boolean; denyLakeRead?: boolean; now?: number; rawParams?: Record<string, unknown> } = {},
 ): Promise<RenderedPanel[]> {
   if (!(dash.panels ?? []).length) return Promise.resolve([]);
-  // Key includes denyLakeRead so two callers in different membrane modes never
-  // share one execution (latent today, but the result depends on it).
-  const key = `${dash.id}:${opts.force ? 1 : 0}:${opts.denyLakeRead ? 1 : 0}`;
+  // Resolve declared inputs once (viewer value when coercible, else default).
+  const declared = dash.params ?? [];
+  const resolved = resolveParams(declared, opts.rawParams ?? {});
+  // Key includes denyLakeRead AND a hash of the resolved params so two callers in
+  // different membrane modes / with different inputs never share one execution.
+  const pv = paramsVariant(declared.map((p) => p.name), resolved);
+  const key = `${dash.id}:${opts.force ? 1 : 0}:${opts.denyLakeRead ? 1 : 0}:${pv}`;
   const existing = inFlight.get(key);
   if (existing) return existing;
-  const p = renderUncoalesced(store, projectDir, dash, opts).finally(() => inFlight.delete(key));
+  const p = renderUncoalesced(store, projectDir, dash, resolved, opts).finally(() => inFlight.delete(key));
   inFlight.set(key, p);
   return p;
 }
@@ -118,9 +158,11 @@ async function renderUncoalesced(
   store: KnowledgeStore,
   projectDir: string,
   dash: RenderInput,
+  resolved: Map<string, ParamValue>,
   opts: { force?: boolean; denyLakeRead?: boolean; now?: number },
 ): Promise<RenderedPanel[]> {
   const panels = dash.panels ?? [];
+  const declared = dash.params ?? [];
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
   const now = opts.now ?? Date.now();
@@ -138,7 +180,13 @@ async function renderUncoalesced(
     panels.map(async (panel): Promise<RenderedPanel> => {
       const base = { key: panel.key, title: panel.title, dialect: panel.dialect, metricId: panel.metricId ?? null };
       try {
-        const cached = store.getPanelCache(dash.id, panel.key);
+        // Compile + bind first (throws on an undeclared :param → caught below as a
+        // panel error). The cache key folds in the param VARIANT so different
+        // inputs cache separately; a param-less panel keeps its bare key.
+        const compiled = compilePanel(panel, declared, resolved);
+        const variant = paramsVariant(compiled.referenced, resolved);
+        const cacheKey = variant ? `${panel.key}::${variant}` : panel.key;
+        const cached = store.getPanelCache(dash.id, cacheKey);
         // An errored cache row is retried sooner than the full refresh TTL.
         const cacheLimit = cached?.error ? Math.min(ERROR_TTL_MS, limit) : limit;
         const fresh = !opts.force && cached != null && now - Date.parse(cached.computedAt) < cacheLimit;
@@ -155,14 +203,14 @@ async function renderUncoalesced(
           return { ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: msg };
         }
         try {
-          const r = await runPanel(projectDir, config, panel, { denyLakeRead: opts.denyLakeRead });
-          const computedAt = store.putPanelCache(dash.id, panel.key, { columns: r.columns, rows: r.rows, rowCount: r.rowCount, error: null });
+          const r = await runPanel(projectDir, config, panel, compiled, { denyLakeRead: opts.denyLakeRead });
+          const computedAt = store.putPanelCache(dash.id, cacheKey, { columns: r.columns, rows: r.rows, rowCount: r.rowCount, error: null });
           return { ...base, columns: r.columns, rows: r.rows, rowCount: r.rowCount, computedAt, error: null };
         } catch (e) {
           const msg = (e as Error).message;
           if (keepLastGood && cached)
             return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
-          const computedAt = store.putPanelCache(dash.id, panel.key, { columns: [], rows: [], rowCount: 0, error: msg });
+          const computedAt = store.putPanelCache(dash.id, cacheKey, { columns: [], rows: [], rowCount: 0, error: msg });
           return { ...base, columns: [], rows: [], rowCount: 0, computedAt, error: msg };
         }
       } catch (e) {
