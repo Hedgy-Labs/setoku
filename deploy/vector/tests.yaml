@@ -258,7 +258,7 @@ tests:
               assert!(.amount == -2500.0, "signed amount preserved")
               assert!(.status == "pending", "status")
               assert!(.posted_at == null, "posted_at null while pending")
-              assert!(starts_with!(string!(.estimated_delivery), "2026-06-20 00:00:00"), "date-only fallback: " + string!(.estimated_delivery))
+              assert!(starts_with(string!(.estimated_delivery), "2026-06-20 00:00:00"), "date-only fallback: " + string!(.estimated_delivery))
               assert!(starts_with!(.created_at, "2026-06-11 09:00:00"), "created_at parsed")
               assert!(starts_with!(.ingested_at, "2026-06-12 18:00:00"), "ingested_at parsed")
 
@@ -281,7 +281,7 @@ tests:
           - type: vrl
             source: |
               assert!(.status == "sent", "status")
-              assert!(starts_with!(string!(.posted_at), "2026-06-11 12:00:00"), "posted_at: " + string!(.posted_at))
+              assert!(starts_with(string!(.posted_at), "2026-06-11 12:00:00"), "posted_at: " + string!(.posted_at))
 
   - name: mercury webhook event extracts nested ids defensively, keeps raw
     inputs:
