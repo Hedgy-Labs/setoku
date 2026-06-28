@@ -227,6 +227,11 @@ export function defaultDbPath(projectDir: string): string {
   );
 }
 
+/** Cap on cached panel/param-variant rows per app. Bounds app_cache so an
+ *  open-domain param on a public link can't grow it without limit (a few panels
+ *  × many variants stays well under this in normal use). */
+const MAX_CACHE_ROWS_PER_APP = 256;
+
 export class KnowledgeStore {
   db: Database;
 
@@ -359,6 +364,11 @@ export class KnowledgeStore {
     this.ensureColumn("published", "panels", "TEXT");
     this.ensureColumn("published", "params", "TEXT");
     this.ensureColumn("published", "refresh_seconds", "INTEGER");
+    // Dashboards→Apps rename: the live-render format value was 'dashboard'. Boxes
+    // that published before the rename hold rows with format='dashboard'; the new
+    // code gates the runtime path on format='app', so backfill them in place (a
+    // no-op on a fresh box). Legacy v0.11 frozen reports stay format='html'.
+    this.db.run("UPDATE published SET format = 'app' WHERE format = 'dashboard'");
     // Per-panel result cache. A app view serves cached rows within the
     // app's refresh TTL and re-runs the query when stale — bounding DB load
     // on a hammered public link and giving an honest "updated N ago" stamp.
@@ -969,6 +979,17 @@ export class KnowledgeStore {
         computedAt,
         data.error ?? null,
       ],
+    );
+    // Bound the cache per app: each panel/param VARIANT is a distinct panel_key,
+    // so an open-domain param on a public link (?p.note=<random>) could otherwise
+    // grow this table without limit. Keep the newest MAX_CACHE_ROWS_PER_APP rows
+    // (by last write) and evict the rest. A no-op under the cap; a re-view of an
+    // evicted variant just recomputes. The default-params variant stays warm
+    // because viewing the app re-stamps it.
+    this.db.run(
+      `DELETE FROM app_cache WHERE app_id = ? AND panel_key NOT IN (
+         SELECT panel_key FROM app_cache WHERE app_id = ? ORDER BY computed_at DESC LIMIT ?)`,
+      [appId, appId, MAX_CACHE_ROWS_PER_APP],
     );
     return computedAt;
   }

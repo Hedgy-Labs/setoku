@@ -42,23 +42,34 @@ hard (see Security). Its only channel back to the box is a narrow, mediated
 ## Data model
 
 One table, extended in place from `published` (idempotent `ensureColumn`
-migration — pre-app boxes keep working, their rows are `format='html'` with no
-panels):
+migrations). Two upgrade cases are handled automatically: v0.10 boxes keep their
+legacy rows (`format='html'`, no panels), and the v0.20 Dashboards→Apps rename
+backfills the stored format value with a one-time
+`UPDATE published SET format='app' WHERE format='dashboard'` on startup, so
+dashboards published *before* the rename keep rendering as apps instead of
+silently falling back to the legacy path:
 
 ```
 published(
   id, title,
-  format,          -- 'html' (legacy frozen report) | 'app'
+  format,          -- 'app' (renders via the runtime path) | 'html' (legacy frozen report)
   body,            -- the agent-authored template (fragment for apps)
-  panels,          -- JSON: [{ key, title?, sql, dialect, metricId? }]  (NULL for legacy)
+  panels,          -- JSON: [{ key, title?, sql, dialect, metricId? }]  (NULL/[] for a state-only app)
+  params,          -- JSON: [{ name, type, default, … }]  declared interactive inputs (NULL for none)
   refresh_seconds, -- TTL for cached panel data (default 300, min 30)
   visibility,      -- 'team' (default) | 'public'  — promotion is a human action
   created_by, created_at, archived_at
 )
 
 app_cache(app_id, panel_key, columns, rows, row_count, computed_at, error)
-  PRIMARY KEY (app_id, panel_key)
+  PRIMARY KEY (app_id, panel_key)   -- panel_key folds in the param variant; capped per app
 ```
+
+An app is `format='app'` whether or not it has data panels: a chart app has
+panels, a **state-only app** (a todo list, a poll) has none but still renders
+through the runtime path (chart helpers + `Setoku.state` + the no-network frame).
+Only a *zero-panel full HTML document* is a legacy `'html'` report, served as-is.
+`publish_app` makes that call automatically (a fragment ⇒ `app`).
 
 A panel:
 
@@ -107,8 +118,8 @@ Endpoints:
   runs.
 - The **shell** is ours: it frames the sandboxed document, renders the
   provenance chrome *outside* the sandbox (so the agent's template can neither
-  spoof nor hide how a number was computed), and **mediates the app's state
-  bridge** (below).
+  spoof nor hide how a number was computed), renders the **param control bar**
+  (see Viewer params), and **mediates the app's state bridge** (below).
 - Auto-refresh = the shell reloads the child frame on the app's `refreshSeconds`
   and re-reads the provenance endpoint.
 
@@ -130,6 +141,58 @@ they're stale (lazy refresh). This bounds DB load on a hammered public link and
 gives an honest "updated N ago" stamp. `publish_app` seeds the cache with its
 dry-run results so the first view is instant. (A future cron can pre-warm panels
 so views are always instant — see SPEC.)
+
+For a parameterized app each **param variant** caches separately (the variant
+hash is folded into `panel_key`), so different viewer selections don't clobber
+each other. To keep that from growing without bound on a public link — where an
+open-domain param (`text`, an unbounded `int`) could otherwise mint a fresh cache
+row per distinct value — the cache is **capped per app**: the newest ~256 rows
+are kept and the oldest are evicted on write.
+
+## Viewer params — interactive apps
+
+An app can declare typed **inputs** the viewer changes — a date range, a region
+dropdown, a "first N" limit — and the box re-runs the panels bound to the new
+value. The whole point is to do this **without** opening an injection hole: a
+viewer's input is untrusted text, so it reaches SQL only as an *engine-bound
+parameter*, never spliced in.
+
+An app declares its params alongside its panels (`publish_app` / `update_app`):
+
+```ts
+interface AppParam {
+  name: string;                       // a panel binds it as :name
+  label?: string;                     // shown on the control
+  type: "date" | "int" | "text" | "bool" | "enum";
+  default: string | number | boolean; // REQUIRED — the app must render with no input
+  options?: { value, label? }[];      // enum: the closed set of accepted values
+  min?, max?, maxLength?;             // int / text bounds
+}
+```
+
+A panel's SQL references one by name:
+
+```sql
+select month, revenue from monthly_revenue where region = :region order by month
+```
+
+At render, `renderApp` resolves each param to the viewer's value (coerced to the
+declared type) or the default, then **compiles + binds** it through `lib/params.ts`:
+`:name` → `$n` for Postgres / `{name:Type}` for ClickHouse, with the value passed
+as a bound parameter to `runReadOnlyQuery` / `runLakeQuery`. Because the value is
+bound, never concatenated, it is **injection-safe** and can't name a table or
+column or drive a write — an `enum` value that isn't in `options`, or a `text`
+value over `maxLength`, is rejected and the default is used. Publish is rejected
+if a panel references a `:token` that isn't declared, or if a `default` doesn't
+coerce — so a broken interactive app is caught in-loop, not at a viewer's
+keystroke.
+
+The **control bar** renders the declared params as stone widgets — on *both*
+surfaces: the public shell (`/p/<id>`, server-rendered) and the React `AppView`
+(`/admin/p/<id>`). Changing a control re-requests the frame with `?p.<name>=…`,
+which re-runs the panels bound to the new value (the param variant caches
+separately — see Freshness). Controls are chrome: they live in the trusted shell,
+not the sandboxed template, so the agent never hand-rolls input widgets.
 
 ## Per-app state — an app's own datastore
 
@@ -233,17 +296,19 @@ presenting numbers the query can no longer produce).
 
 Replaces `publish_report` / `list_published` / `unpublish_report`:
 
-- **`publish_app({ title, html, panels?, refreshSeconds? })`** — dry-runs every
-  panel through the governed path **at publish time**; a broken query, an
-  off-allow-list table, or (on a curator session) a lake read is rejected with
-  the offending panel key + error, so the agent fixes it in-loop instead of
-  shipping a dead panel. Seeds the cache with the dry-run results. Returns the
-  team-only URL. `panels` omitted/empty ⇒ a static report (back-compat).
-- **`update_app({ id, title?, html?, panels?, refreshSeconds? })`** — edit an app
-  **you authored**, in place (same id/link). Only the author can edit; `panels`
-  replaces the whole set (re-validated + dry-run). Changing `panels` on a
-  *public* app reverts it to team-only — the data it exposes changed, so an admin
-  must re-approve (the human public-promotion gate, I9).
+- **`publish_app({ title, html, panels?, params?, refreshSeconds? })`** — dry-runs
+  every panel through the governed path **at publish time** (with the params bound
+  to their defaults); a broken query, an off-allow-list table, an undeclared
+  `:token`, a default that won't coerce, or (on a curator session) a lake read is
+  rejected with the offending panel key + error, so the agent fixes it in-loop
+  instead of shipping a dead panel. Seeds the cache with the dry-run results.
+  Returns the team-only URL. `panels` omitted/empty + a fragment body ⇒ a
+  state-only app; only a zero-panel full HTML document is a static report.
+- **`update_app({ id, title?, html?, panels?, params?, refreshSeconds? })`** — edit
+  an app **you authored**, in place (same id/link). Only the author can edit;
+  `panels` / `params` each replace the whole set (re-validated + dry-run). Changing
+  `panels` on a *public* app reverts it to team-only — the data it exposes changed,
+  so an admin must re-approve (the human public-promotion gate, I9).
 - **`list_apps()`** / **`unpublish_app({ id })`** — unchanged semantics from the
   old list/unpublish.
 - **`get_app({ id })`** — read-only inspection of panel definitions + last-run
@@ -309,9 +374,10 @@ the deferred next step — it pairs with `update_app` for a see-then-fix loop.
 
 ## Out of scope (v1)
 
-- **Viewer interactivity** (date-range / dropdown filters / drill-down). The
-  bound-param layer that keeps this injection-safe (`lib/params.ts`: typed,
-  whitelisted, `$1`-bound, never string-interpolated) is **logic-complete and
-  unit-tested**, but not yet wired into `renderApp` / the shell. Ship it next.
 - **Scheduled pre-warm cron.** The TTL cache refreshes lazily on view; an
   `app-refresh` cron (mirroring `curate-cron.sh`) is a later optimization.
+- **Drill-down / linked apps.** Viewer params (above) cover filtering; navigating
+  *between* apps or into a row's detail is a later step.
+
+(Viewer interactivity via bound params — listed here through v0.19 — **shipped**
+in v0.20: see *Viewer params* above.)
