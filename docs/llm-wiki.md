@@ -240,10 +240,12 @@ Model choice (VPS-realistic, CPU, no GPU): **bge-small** (~130MB, ~120 ms/query,
 and ~2 GB). External embedding APIs would score higher but violate I8 and aren't
 box-local.
 
-**Decision: shipped as an opt-in hybrid (I8 amended).** I8 now permits a local,
-CPU, non-LLM embedding model on the box (default off, `SETOKU_EMBEDDINGS=1`) — the
+**Decision: hybrid is the product (I8 amended).** I8 permits a local, CPU, non-LLM
+embedding model on the box; embeddings are **on by default and required** — not an
+opt-in — with `SETOKU_EMBEDDINGS=0` as a diagnostics/test kill-switch only. The
 privacy guarantee is intact (data never leaves the box, no LLM, no external call,
-no key). The implementation:
+no key), and keyword fallback remains as resilience if the model can't load. The
+implementation:
 
 - **Model** `lib/embeddings.ts` — bge-small via `fastembed`, **dynamically
   imported** (a gateway with embeddings off never loads onnx) and **graceful**: any

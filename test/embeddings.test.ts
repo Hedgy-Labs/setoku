@@ -5,6 +5,9 @@
  * (no model loaded), proving the gateway never depends on the embedder being
  * present: disabled → null embedder, inert index, keyword retrieval unchanged.
  */
+// Embeddings are on by default in prod; the suite forces the kill-switch so it
+// never loads the native model (set here too, so the file is safe run directly).
+process.env.SETOKU_EMBEDDINGS = "0";
 import { describe, expect, it } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
@@ -19,9 +22,9 @@ const DOCS: ScorableDoc[] = [
   { type: "metric", name: "fan_count", meta: { keywords: ["fans"] }, body: "distinct fans" },
 ];
 
-describe("graceful degradation (embeddings off by default)", () => {
-  it("is disabled unless SETOKU_EMBEDDINGS=1", () => {
-    expect(embeddingsEnabled()).toBe(false); // not set in the test env
+describe("graceful degradation (kill-switch + fallback)", () => {
+  it("the SETOKU_EMBEDDINGS=0 kill-switch disables (default is ON in prod)", () => {
+    expect(embeddingsEnabled()).toBe(false); // forced off at the top of this file
   });
 
   it("getEmbedder() returns null when disabled (no native load)", async () => {

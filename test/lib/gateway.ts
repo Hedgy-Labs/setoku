@@ -13,11 +13,14 @@ export const ROOT = path.resolve(import.meta.dir, "..", "..");
 export const HTTP_SERVER = path.join(ROOT, "plugin", "gateway", "http.ts");
 export const FIXTURES = path.join(ROOT, "test", "fixtures");
 
-/** Spawn http.ts with the given env merged over the current process env. */
+/** Spawn http.ts with the given env merged over the current process env.
+ *  Embeddings default OFF for tests (kill-switch) so the suite never loads the
+ *  native model — fast + deterministic however it's invoked; a test can still opt
+ *  in via `env`. Precedence: this default < process env < caller's `env`. */
 export function spawnGateway(env: Record<string, string>): Subprocess {
   return spawn({
     cmd: ["bun", HTTP_SERVER],
-    env: { ...(process.env as Record<string, string>), ...env },
+    env: { SETOKU_EMBEDDINGS: "0", ...(process.env as Record<string, string>), ...env },
     stdout: "ignore",
     stderr: "pipe",
   });

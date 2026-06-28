@@ -24,9 +24,15 @@ export interface Embedder {
   embedQuery(text: string): Promise<number[]>;
 }
 
-/** Embeddings are an explicit opt-in (default off) so existing deploys are inert. */
+/**
+ * Embeddings are REQUIRED — hybrid retrieval is the product, not an opt-in.
+ * On by default; `SETOKU_EMBEDDINGS=0` is a diagnostics/test kill-switch only
+ * (e.g. CI keeps it off so the suite never loads the native model). Graceful
+ * fallback to keyword retrieval still applies if the model genuinely can't load —
+ * that's resilience, not a configuration choice.
+ */
 export function embeddingsEnabled(): boolean {
-  return process.env.SETOKU_EMBEDDINGS === "1";
+  return process.env.SETOKU_EMBEDDINGS !== "0";
 }
 
 let cached: Promise<Embedder | null> | null = null;
