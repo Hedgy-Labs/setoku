@@ -3,6 +3,7 @@ name: Workforce
 table: hr.worker
 summary: HR workers (employee vs contingent), their comp (hr.comp), and gameday shifts (hr.shift). Gameday staff are largely VENDOR-employed and absent from hr.worker. Dollars.
 keywords: [employee, hr, worker, staff, payroll, salary, hourly, comp, shift, gameday labor, vendor, headcount, manager, department]
+links: [gameday_labor_cost, Event]
 ---
 
 ## Semantics

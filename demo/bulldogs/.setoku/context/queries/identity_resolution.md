@@ -2,6 +2,7 @@
 name: identity_resolution
 summary: How to link a person across systems (ticketing, CRM, POS, merch) — there is no shared person ID, so match on a NORMALIZED email; CRM has duplicates that must be collapsed.
 keywords: [identity, identity resolution, link fan, match person, dedupe, duplicate, join across systems, email, crm to ticketing, single view of fan, customer 360, loyalty]
+links: [CrmContact, TicketingAccount, PosTransaction, MerchAndMarketing, unique_fans]
 ---
 
 ## The problem

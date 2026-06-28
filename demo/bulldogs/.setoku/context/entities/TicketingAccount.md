@@ -3,6 +3,7 @@ name: TicketingAccount
 table: ticketing.account
 summary: A ticketing-system account (the buyer behind seats). acct_type_cd classifies it; emails are dirty and some accounts are test/internal.
 keywords: [account, buyer, ticketing account, sth, season ticket holder, corporate, group, comp, customer]
+links: [SeatTxn, identity_resolution, season_renewal_rate]
 ---
 
 ## Semantics

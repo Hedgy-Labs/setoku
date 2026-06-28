@@ -2,6 +2,7 @@
 name: media_rights_revenue
 summary: Media / broadcast rights revenue — sum of media.rights_deal.annual_value (dollars) by season. The club's single biggest revenue line, ~$80–100M/season. Annual fees, NOT per-game.
 keywords: [media rights, broadcast revenue, tv revenue, rights fees, rsn, regional sports network, national, streaming, radio, biggest revenue line, how much from tv]
+links: [MediaRights, total_revenue]
 ---
 
 ## Definition

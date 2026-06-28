@@ -3,6 +3,7 @@ name: SponsorshipDeal
 table: sponsorship.deal
 summary: A contracted sponsorship deal (KORE-style) — partner × season, with a contract value (dollars) and assets. Multi-year. Exclude 'proposed' from booked revenue.
 keywords: [sponsorship, sponsor, deal, partnership, contract, partner, asset, led, signage, activation, rate card, booked]
+links: [sponsorship_revenue, total_revenue]
 ---
 
 ## Semantics
