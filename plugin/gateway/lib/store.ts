@@ -511,6 +511,13 @@ export class KnowledgeStore {
     this.db.run("DELETE FROM doc_embeddings WHERE doc_type = ? AND doc_name = ?", [type, name]);
   }
 
+  /** Drop every embedding NOT from the current model tag — so the table only ever
+   *  holds vectors from the model in use. A model/dimension change then leaves no
+   *  stale, wrong-space vectors that could be cosined against new query embeddings. */
+  clearDocEmbeddingsExcept(model: string): void {
+    this.db.run("DELETE FROM doc_embeddings WHERE model != ?", [model]);
+  }
+
   /* ---------------------------- corrections ---------------------------- */
 
   /**

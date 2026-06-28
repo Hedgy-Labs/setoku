@@ -16,6 +16,9 @@
  */
 
 export interface Embedder {
+  /** Model identifier — combined with `dim` to tag persisted vectors so a model
+   *  swap can never silently load vectors from a different embedding space. */
+  id: string;
   dim: number;
   embedDocs(texts: string[]): Promise<number[][]>;
   embedQuery(text: string): Promise<number[]>;
@@ -40,14 +43,17 @@ async function init(): Promise<Embedder | null> {
     // dynamic import: the native onnxruntime is never loaded when embeddings off
     const { FlagEmbedding, EmbeddingModel } = await import("fastembed");
     const cacheDir = process.env.SETOKU_EMBED_CACHE || undefined;
+    const modelKey = EmbeddingModel.BGESmallENV15;
     const model = await FlagEmbedding.init({
-      model: EmbeddingModel.BGESmallENV15,
+      model: modelKey,
       ...(cacheDir ? { cacheDir } : {}),
     });
     const warm = await model.queryEmbed("warmup");
     const dim = (warm as ArrayLike<number>).length;
-    console.error(`[embeddings] enabled — bge-small-en-v1.5, dim ${dim}`);
+    const id = String(modelKey);
+    console.error(`[embeddings] enabled — ${id}, dim ${dim}`);
     return {
+      id,
       dim,
       async embedDocs(texts) {
         const out: number[][] = [];

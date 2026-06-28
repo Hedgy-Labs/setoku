@@ -18,9 +18,6 @@ import { cosine, getEmbedder, type Embedder } from "./embeddings";
 import { docRef, type ScorableDoc } from "./search";
 import type { KnowledgeDoc, KnowledgeStore } from "./store";
 
-/** Identifies the embedding space; changing the model invalidates persisted vecs. */
-const MODEL_ID = "bge-small-en-v1.5";
-
 /** The text we embed for a doc — name + summary + keywords + body (capped). The
  *  same representation the offline A/B uses, so eval tracks production. */
 export function docTextForEmbedding(d: ScorableDoc): string {
@@ -39,6 +36,9 @@ export class EmbedIndex {
   private vecs = new Map<string, number[]>(); // DocRef (type:name) → embedding
   private embedder: Embedder | null = null;
   private store: KnowledgeStore | null = null;
+  /** Persistence tag = `${model.id}@${dim}` — derived from the LIVE model, so a
+   *  model or dimension change yields a new tag and old vectors are never loaded. */
+  private modelTag = "";
   /** True only once the model loaded AND docs are embedded. */
   enabled = false;
 
@@ -56,6 +56,7 @@ export class EmbedIndex {
       const e = await getEmbedder();
       if (!e) return; // disabled or failed → stays inert, callers fall back
       this.embedder = e;
+      this.modelTag = `${e.id}@${e.dim}`;
       await this.rebuild(getDocs());
       this.enabled = true;
     })().catch((err) =>
@@ -65,11 +66,14 @@ export class EmbedIndex {
 
   private async rebuild(docs: KnowledgeDoc[]): Promise<void> {
     if (!this.embedder) return;
+    // The table holds only the CURRENT model's vectors — drop any from a previous
+    // model/dim so they can never be cosined against this model's query embeddings.
+    this.store?.clearDocEmbeddingsExcept(this.modelTag);
     // The index is a pure projection of the current docs. Load persisted vectors
     // (keyed by DocRef), reuse unchanged ones, and PRUNE any whose doc no longer
     // exists — so renames/deletes can't leave orphan vectors behind.
     const persisted = new Map(
-      (this.store?.getDocEmbeddings(MODEL_ID) ?? []).map((r) => [docRef(r), r]),
+      (this.store?.getDocEmbeddings(this.modelTag) ?? []).map((r) => [docRef(r), r]),
     );
     const indexable = docs.filter((d) => d.type !== "gotcha");
     const currentRefs = new Set(indexable.map(docRef));
@@ -82,14 +86,16 @@ export class EmbedIndex {
       const text = docTextForEmbedding(d);
       const hash = textHash(text);
       const hit = persisted.get(docRef(d));
-      if (hit && hit.hash === hash) this.vecs.set(docRef(d), hit.vec); // unchanged → reuse
+      // reuse only if unchanged AND the right dimension (belt for the model tag)
+      if (hit && hit.hash === hash && hit.vec.length === this.embedder.dim)
+        this.vecs.set(docRef(d), hit.vec);
       else toEmbed.push({ doc: d, hash, text });
     }
     if (toEmbed.length) {
       const vecs = await this.embedder.embedDocs(toEmbed.map((t) => t.text));
       toEmbed.forEach((t, i) => {
         this.vecs.set(docRef(t.doc), vecs[i]);
-        this.store?.putDocEmbedding(t.doc.type, t.doc.name, MODEL_ID, t.hash, vecs[i]);
+        this.store?.putDocEmbedding(t.doc.type, t.doc.name, this.modelTag, t.hash, vecs[i]);
       });
     }
     console.error(
@@ -106,7 +112,7 @@ export class EmbedIndex {
       const [v] = await this.embedder.embedDocs([text]);
       if (v) {
         this.vecs.set(docRef(doc), v);
-        this.store?.putDocEmbedding(doc.type, doc.name, MODEL_ID, textHash(text), v);
+        this.store?.putDocEmbedding(doc.type, doc.name, this.modelTag, textHash(text), v);
       }
     } catch (e) {
       console.error(`[embeddings] upsert embed failed for ${doc.name}: ${(e as Error).message}`);
