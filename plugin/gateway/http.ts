@@ -27,7 +27,7 @@ import http from "node:http";
 import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { buildServer } from "./app";
+import { buildServer, type TokenRole } from "./app";
 import { EmbedIndex } from "./lib/embed-index";
 import { loadConfig, resolveProjectDir } from "./lib/config";
 import {
@@ -112,39 +112,36 @@ function storePath(): string {
 
 interface TokenInfo {
   identity: string;
-  /** curator tokens may commit curated knowledge but cannot read the lake. */
-  curator: boolean;
   /**
-   * Janitor tokens (the auto-draft/auto-reject job, curation-cockpit B/C). They
-   * hold ONLY draft + reject capabilities — both of which grant zero knowledge
-   * authority — never `upsert_context` or any accept path. So even though the
-   * janitor reads untrusted pending content, it cannot commit; the human /admin
-   * click remains the only door into curated context (the membrane, I2/I9).
+   * The token's capability role (the membrane, I2/I9). EXACTLY one value, so a
+   * token can never be both curator and janitor: analyst (reads lake, propose-
+   * only), curator (commits knowledge, no lake), janitor (draft+reject only).
+   * Each source env maps to a single role.
    */
-  janitor?: boolean;
+  role: TokenRole;
 }
 
 function loadTokens(): Map<string, TokenInfo> {
   const tokens = new Map<string, TokenInfo>();
-  const add = (spec: string | undefined, info: Omit<TokenInfo, "identity">): void => {
+  const add = (spec: string | undefined, role: TokenRole): void => {
     for (const pair of (spec ?? "").split(",")) {
       const i = pair.indexOf("=");
       if (i > 0)
         tokens.set(pair.slice(0, i).trim(), {
           identity: pair.slice(i + 1).trim(),
-          ...info,
+          role,
         });
     }
   };
-  add(process.env.SETOKU_TOKENS, { curator: false });
-  add(process.env.SETOKU_CURATOR_TOKENS, { curator: true });
-  add(process.env.SETOKU_JANITOR_TOKENS, { curator: false, janitor: true });
+  add(process.env.SETOKU_TOKENS, "analyst");
+  add(process.env.SETOKU_CURATOR_TOKENS, "curator");
+  add(process.env.SETOKU_JANITOR_TOKENS, "janitor");
   const file = process.env.SETOKU_TOKENS_FILE;
   if (file && fs.existsSync(file)) {
     for (const [token, identity] of Object.entries(
       JSON.parse(fs.readFileSync(file, "utf8")),
     )) {
-      tokens.set(token, { identity: String(identity), curator: false });
+      tokens.set(token, { identity: String(identity), role: "analyst" });
     }
   }
   return tokens;
@@ -172,7 +169,7 @@ function mintToken(): string {
  * surface never mints curator/write capability (that stays an operator action).
  */
 function addAnalystToken(token: string, identity: string): { persisted: boolean } {
-  tokens.set(token, { identity, curator: false });
+  tokens.set(token, { identity, role: "analyst" });
   const file = process.env.SETOKU_TOKENS_FILE;
   if (!file) return { persisted: false };
   let map: Record<string, string> = {};
@@ -205,7 +202,8 @@ function removeAnalystTokens(identity: string): { removed: number; envBacked: bo
   let removed = 0;
   let envBacked = false;
   for (const [tok, info] of [...tokens]) {
-    if (info.curator || info.identity !== identity) continue;
+    // only revoke analyst tokens for this identity (never curator/janitor)
+    if (info.role !== "analyst" || info.identity !== identity) continue;
     tokens.delete(tok);
     removed++;
     if (tok in fileMap) delete fileMap[tok];
@@ -215,9 +213,10 @@ function removeAnalystTokens(identity: string): { removed: number; envBacked: bo
   return { removed, envBacked };
 }
 
-/** Analyst (non-curator) identities currently provisioned — for the Team page. */
+/** Analyst identities currently provisioned — for the Team page (curator/janitor
+ *  are operator-held, not team members). */
 function analystIdentities(): string[] {
-  return [...new Set([...tokens.values()].filter((t) => !t.curator).map((t) => t.identity))].sort();
+  return [...new Set([...tokens.values()].filter((t) => t.role === "analyst").map((t) => t.identity))].sort();
 }
 
 const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
@@ -1296,19 +1295,13 @@ const httpServer = http.createServer(async (req, res) => {
     }
     // Stateless: a fresh McpServer per request, identity bound from the token.
     // Shared state lives in the SQLite store (WAL), not the server instance.
-    // Analyst tokens are propose-only (canWrite:false) and may read the lake.
-    // Curator tokens may commit curated knowledge (canWrite) but are blocked
-    // from reading the lake (denyLakeRead) — the two never coexist (I2/I9).
+    // The token's role IS the membrane (I2/I9): capabilities are derived from it,
+    // so commit-knowledge and read-the-lake can never coexist on one session.
     const server = buildServer({
       projectDir,
       store,
       user: auth.identity,
-      canWrite: auth.curator,
-      denyLakeRead: auth.curator,
-      // the janitor holds draft + reject only — both grant zero authority — so it
-      // can read untrusted pending content without ever committing knowledge.
-      canDraft: auth.janitor === true,
-      canReject: auth.janitor === true,
+      role: auth.role,
       embedIndex,
     });
     const transport = new StreamableHTTPServerTransport({
