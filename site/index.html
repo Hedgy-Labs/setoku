@@ -138,6 +138,7 @@
     <a class="brand" href="#top"><svg class="mark" viewBox="0 0 64 64"><use href="#clover"/></svg> Setoku</a>
     <nav class="nav">
       <a class="hideable" href="#how">How it works</a>
+      <a class="hideable" href="#apps">Apps</a>
       <a class="hideable" href="#integrations">Integrations</a>
       <a href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">GitHub ↗</a>
     </nav>
@@ -207,6 +208,32 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         <li><code>/setoku:curate</code> reviews and approves pending knowledge.</li>
       </ul>
       <p class="note">Once it's set up, <b>any MCP client</b> can use it — Claude, Codex, or whatever you run. Just ask in plain language; the tools do the rest.</p>
+
+  <!-- APPS -->
+  <section id="apps">
+    <div class="wrap">
+      <h2>Apps: build little tools on your data</h2>
+      <p class="lead">Once your AI can read and understand the data, ask it to <b>build</b> something on top — a dashboard, a poll, a triage list. It writes a self-contained app and gives you a link. Nothing to deploy, no frontend to maintain; a non-technical teammate just describes what they want.</p>
+      <div class="steps">
+        <div class="row">
+          <div class="k">Built by asking<span class="t">publish_app</span></div>
+          <div class="v">Describe it in plain language; the agent writes the app and publishes it to a URL. Edit it the same way — just ask for the change.</div>
+        </div>
+        <div class="row">
+          <div class="k">Backed by live data<span class="t">read-only</span></div>
+          <div class="v">Apps read through the same governed path — row caps, audit, a SELECT-only database role. They never get write access to your sources.</div>
+        </div>
+        <div class="row">
+          <div class="k">Their own private state<span class="t">no writes to your data</span></div>
+          <div class="v">Each app keeps its own state — todos, votes, annotations — in a sandbox that belongs to the app, not your database. Worst case, an app messes up its own notes. A neat trick: tag a business row by its id to mark it "reviewed" without ever writing the source.</div>
+        </div>
+        <div class="row">
+          <div class="k">Share by link<span class="t">team or public</span></div>
+          <div class="v">A team link is login-gated; an admin can flip one public for a credential-free URL. The page runs in a locked-down sandbox with no network, so a published app can't phone home.</div>
+        </div>
+      </div>
+    </div>
+  </section>
 
   <!-- ARCHITECTURE -->
   <section id="architecture">

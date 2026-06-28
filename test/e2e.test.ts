@@ -96,19 +96,19 @@ describe("tool surface", () => {
       [
         "describe_entity",
         "find_context",
-        "get_dashboard",
+        "get_app",
         "get_metric",
         "get_schema",
         "list_corrections",
-        "list_dashboards",
+        "list_apps",
         "list_entities",
         "list_sources",
-        "publish_dashboard",
+        "publish_app",
         "report_correction",
         "resolve_correction",
         "run_query",
-        "unpublish_dashboard",
-        "update_dashboard",
+        "unpublish_app",
+        "update_app",
         "upsert_context",
       ].sort(),
     );
@@ -376,9 +376,9 @@ describe("curation + knowledge store + audit", () => {
   });
 });
 
-describe("dashboard surface", () => {
-  it("publishes a live dashboard (dry-runs the panel), inspects it, lists it, then revokes it", async () => {
-    const pub = await call("publish_dashboard", {
+describe("app surface", () => {
+  it("publishes a live app (dry-runs the panel), inspects it, lists it, then revokes it", async () => {
+    const pub = await call("publish_app", {
       title: "Paid orders",
       html: '<div id="n"></div><script>document.getElementById("n").textContent=window.__SETOKU__.panels.paid.rows[0].n</script>',
       panels: [
@@ -399,27 +399,27 @@ describe("dashboard surface", () => {
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     expect(id).toBeTruthy();
 
-    // get_dashboard surfaces how it's calculated: the SQL + the last run
-    const got = await call("get_dashboard", { id });
+    // get_app surfaces how it's calculated: the SQL + the last run
+    const got = await call("get_app", { id });
     expect(got.isError).toBeFalsy();
     expect(got.text).toContain("count(*)");
     expect(got.text).toContain("metric:revenue");
     expect(got.text).toMatch(/1 row\(s\)/); // seeded from the publish dry-run
 
-    const listed = await call("list_dashboards");
+    const listed = await call("list_apps");
     expect(listed.text).toContain("Paid orders");
     expect(listed.text).toContain("1 panel");
     expect(listed.text).toContain(id!);
 
-    const off = await call("unpublish_dashboard", { id });
+    const off = await call("unpublish_app", { id });
     expect(off.isError).toBeFalsy();
     // a second revoke is a no-op error (already archived)
-    const again = await call("unpublish_dashboard", { id });
+    const again = await call("unpublish_app", { id });
     expect(again.isError).toBe(true);
   });
 
-  it("rejects a dashboard whose panel query is broken (dry-run gate)", async () => {
-    const r = await call("publish_dashboard", {
+  it("rejects an app whose panel query is broken (dry-run gate)", async () => {
+    const r = await call("publish_app", {
       title: "broken",
       html: "<div></div>",
       panels: [{ key: "x", sql: "SELECT * FROM no_such_table_here", dialect: "postgres" }],
@@ -429,7 +429,7 @@ describe("dashboard surface", () => {
   });
 
   it("blocks a curator session from authoring a lake-backed panel (I2/I9 membrane)", async () => {
-    const r = await call("publish_dashboard", {
+    const r = await call("publish_app", {
       title: "lake panel",
       html: "<div></div>",
       panels: [{ key: "logs", sql: "SELECT count() AS n FROM logs_vercel", dialect: "clickhouse" }],
@@ -439,35 +439,35 @@ describe("dashboard surface", () => {
   });
 
   it("still publishes a static (zero-panel) report for back-compat", async () => {
-    const pub = await call("publish_dashboard", {
+    const pub = await call("publish_app", {
       title: "Q2 revenue",
       html: "<!doctype html><h1>Q2 revenue</h1><p>$225</p>",
     });
     expect(pub.isError).toBeFalsy();
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     expect(id).toBeTruthy();
-    const listed = await call("list_dashboards");
+    const listed = await call("list_apps");
     expect(listed.text).toContain("Q2 revenue");
     expect(listed.text).toContain("static");
-    await call("unpublish_dashboard", { id });
+    await call("unpublish_app", { id });
   });
 
   it("rejects an oversized template", async () => {
     const huge = "x".repeat(2_000_001);
-    const r = await call("publish_dashboard", { title: "too big", html: huge });
+    const r = await call("publish_app", { title: "too big", html: huge });
     expect(r.isError).toBe(true);
     expect(r.text.toLowerCase()).toContain("cap");
   });
 
-  it("edits a dashboard in place — same id, new title + panels", async () => {
-    const pub = await call("publish_dashboard", {
+  it("edits an app in place — same id, new title + panels", async () => {
+    const pub = await call("publish_app", {
       title: "Editable",
       html: "<div id=x></div>",
       panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders WHERE status='paid'", dialect: "postgres" }],
     });
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
 
-    const upd = await call("update_dashboard", {
+    const upd = await call("update_app", {
       id,
       title: "Edited title",
       panels: [{ key: "b", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
@@ -475,10 +475,10 @@ describe("dashboard surface", () => {
     expect(upd.isError).toBeFalsy();
     expect(upd.text).toContain(id); // same link
 
-    const got = await call("get_dashboard", { id });
+    const got = await call("get_app", { id });
     expect(got.text).toContain("Edited title");
     expect(got.text).toContain("panel b"); // new panel present
     expect(got.text).not.toContain("panel a"); // old panel replaced
-    await call("unpublish_dashboard", { id });
+    await call("unpublish_app", { id });
   });
 });

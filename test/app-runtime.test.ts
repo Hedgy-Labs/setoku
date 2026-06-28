@@ -3,14 +3,20 @@
 // exercise it here with a minimal DOM stub so its behavior — numeric-string
 // coercion, correct sizing, empty/error states — is covered in CI.
 import { describe, it, expect } from "bun:test";
-import { DASHBOARD_RUNTIME, lintDashboardTemplate } from "../plugin/gateway/lib/dashboard-runtime";
+import { APP_RUNTIME, lintAppTemplate } from "../plugin/gateway/lib/app-runtime";
 
 function runRuntime(panels: Record<string, unknown>) {
   const els: Record<string, { innerHTML: string }> = {};
-  const win = { __SETOKU__: { panels } } as Record<string, unknown>;
+  // The runtime registers a message listener for the Setoku.state bridge at load;
+  // stub the browser globals it touches (no state op is invoked in these tests).
+  const win = {
+    __SETOKU__: { panels },
+    addEventListener: () => {},
+    parent: { postMessage: () => {} },
+  } as Record<string, unknown>;
   const doc = { getElementById: (id: string) => (els[id] ||= { innerHTML: "" }) };
   // eslint-disable-next-line no-new-func
-  new Function("window", "document", DASHBOARD_RUNTIME)(win, doc);
+  new Function("window", "document", APP_RUNTIME)(win, doc);
   return {
     Setoku: win.Setoku as Record<string, (...a: unknown[]) => void>,
     html: (id: string) => (els[id] ||= { innerHTML: "" }).innerHTML,
@@ -70,21 +76,21 @@ describe("Setoku chart runtime", () => {
   });
 });
 
-describe("lintDashboardTemplate", () => {
+describe("lintAppTemplate", () => {
   it("flags a <span> sized without display (the blank-bar bug)", () => {
-    const w = lintDashboardTemplate('<span style="width:50%;height:10px"></span>', []);
+    const w = lintAppTemplate('<span style="width:50%;height:10px"></span>', []);
     expect(w.join(" ")).toContain("display");
   });
 
   it("flags an unused panel and a reference to a missing panel", () => {
-    const w = lintDashboardTemplate('<div>Setoku.bar("c","known",{}) panels.bogus</div>', ["known", "extra"]);
+    const w = lintAppTemplate('<div>Setoku.bar("c","known",{}) panels.bogus</div>', ["known", "extra"]);
     const j = w.join(" ");
     expect(j).toContain('panel "extra" is never referenced');
     expect(j).toContain('no panel "bogus"');
   });
 
   it("clean template → no warnings", () => {
-    const w = lintDashboardTemplate('<div id="c"></div><script>Setoku.bar("c","rev",{label:"s",value:"v"})</script>', ["rev"]);
+    const w = lintAppTemplate('<div id="c"></div><script>Setoku.bar("c","rev",{label:"s",value:"v"})</script>', ["rev"]);
     expect(w).toEqual([]);
   });
 });

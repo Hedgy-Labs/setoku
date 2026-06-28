@@ -744,7 +744,7 @@ describe("curation cockpit capabilities (draft-only / reject-only — the membra
   });
 });
 
-describe("live dashboards (end-to-end render path)", () => {
+describe("live apps (end-to-end render path)", () => {
   async function session(username: string, password: string): Promise<{ cookie: string; csrf: string }> {
     const r = await fetch(`${BASE}/admin/api/login`, {
       method: "POST",
@@ -762,9 +762,9 @@ describe("live dashboards (end-to-end render path)", () => {
   };
 
   it("publishes (analyst), renders fresh data, reflects DB changes, promotes to public, then archives", async () => {
-    // 1. An analyst publishes a live dashboard; the panel is dry-run at publish.
+    // 1. An analyst publishes a live app; the panel is dry-run at publish.
     const alice = await connect("tok-alice");
-    const pub = await call(alice, "publish_dashboard", {
+    const pub = await call(alice, "publish_app", {
       title: "Paid orders",
       html: '<div id="n"></div><script>document.getElementById("n").textContent=window.__SETOKU__.panels.paid.rows[0].n</script>',
       panels: [
@@ -787,7 +787,7 @@ describe("live dashboards (end-to-end render path)", () => {
     //    metric link resolved, and the panel actually ran (rowCount).
     const boss = await session("boss", "s3cret-pass");
     const dd = (await (
-      await fetch(`${BASE}/admin/api/dashboard_data?id=${id}`, { headers: { cookie: boss.cookie } })
+      await fetch(`${BASE}/admin/api/app_data?id=${id}`, { headers: { cookie: boss.cookie } })
     ).json()) as { createdBy?: string; panels: { sql?: string; metricSummary: string | null; rowCount: number }[] };
     expect(dd.panels[0].sql).toContain("count(*)"); // team drawer shows the query it runs
     expect(dd.panels[0].metricSummary).toBeTruthy(); // "revenue" metric summary resolved
@@ -808,7 +808,7 @@ describe("live dashboards (end-to-end render path)", () => {
     await pg.connect();
     await pg.query("INSERT INTO orders (customer_id, status, total_cents) VALUES (1, 'paid', 100)");
     await pg.end();
-    await fetch(`${BASE}/admin/api/dashboard_data?id=${id}&force=1`, { headers: { cookie: boss.cookie } });
+    await fetch(`${BASE}/admin/api/app_data?id=${id}&force=1`, { headers: { cookie: boss.cookie } });
     const frame2 = await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).text();
     expect(countIn(frame2)).toBe((n0 ?? 0) + 1);
 
@@ -823,7 +823,7 @@ describe("live dashboards (end-to-end render path)", () => {
 
     // 6. Public /data exposes NO calculations at all — just freshness meta (no
     //    panels, no SQL, no metrics, no author). The public page is the trusted
-    //    shell that frames the dashboard; the drawer is team-only.
+    //    shell that frames the app; the drawer is team-only.
     const pdata = (await (await fetch(`${BASE}/p/${id}/data`)).json()) as {
       createdBy?: string;
       panels?: unknown;
@@ -840,7 +840,7 @@ describe("live dashboards (end-to-end render path)", () => {
     expect(shell).toContain("<iframe");
     expect(shell).toContain(`/p/${id}/frame`);
 
-    // 6b. A logged-OUT hit on /admin/p/<id> for a public dashboard bounces to the
+    // 6b. A logged-OUT hit on /admin/p/<id> for a public app bounces to the
     //     public view rather than the login wall.
     const bounce = await fetch(`${BASE}/admin/p/${id}`, { redirect: "manual" });
     expect(bounce.status).toBe(302);
@@ -868,9 +868,9 @@ describe("live dashboards (end-to-end render path)", () => {
     expect((await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).status).toBe(200); // active again (team)
   }, 20_000);
 
-  it("making a dashboard public is admin-only; a member cannot promote", async () => {
+  it("making an app public is admin-only; a member cannot promote", async () => {
     const alice = await connect("tok-alice");
-    const pub = await call(alice, "publish_dashboard", {
+    const pub = await call(alice, "publish_app", {
       title: "Member test",
       html: "<div></div>",
       panels: [{ key: "p", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
@@ -900,7 +900,7 @@ describe("live dashboards (end-to-end render path)", () => {
   it("clamps an absurd refresh, strips SQL from the list, and 404s subpaths for legacy reports", async () => {
     const alice = await connect("tok-alice");
     // huge refreshSeconds must be clamped (a 'live' link that never refreshes isn't)
-    const big = await call(alice, "publish_dashboard", {
+    const big = await call(alice, "publish_app", {
       title: "clamp test",
       html: "<div id=x></div>",
       refreshSeconds: 10_000_000,
@@ -908,7 +908,7 @@ describe("live dashboards (end-to-end render path)", () => {
     });
     const bigId = (big.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     // a legacy zero-panel report (static)
-    const legacy = await call(alice, "publish_dashboard", { title: "legacy", html: "<!doctype html><h1>hi</h1>" });
+    const legacy = await call(alice, "publish_app", { title: "legacy", html: "<!doctype html><h1>hi</h1>" });
     const legId = (legacy.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     await alice.close();
 
@@ -916,7 +916,7 @@ describe("live dashboards (end-to-end render path)", () => {
 
     // #9 clamp: 10M seconds → MAX_REFRESH_SECONDS (86400)
     const dd = (await (
-      await fetch(`${BASE}/admin/api/dashboard_data?id=${bigId}`, { headers: { cookie: boss.cookie } })
+      await fetch(`${BASE}/admin/api/app_data?id=${bigId}`, { headers: { cookie: boss.cookie } })
     ).json()) as { refreshSeconds: number };
     expect(dd.refreshSeconds).toBe(86400);
 
@@ -928,7 +928,7 @@ describe("live dashboards (end-to-end render path)", () => {
     expect(row.panels?.length).toBe(1); // count still available for the UI
     expect(row.panels?.[0].sql).toBe(""); // but SQL stripped
 
-    // #7: legacy report is served only at /p/<id>; the dashboard subpaths 404
+    // #7: legacy report is served only at /p/<id>; the app subpaths 404
     await fetch(`${BASE}/admin/api/set_visibility`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
@@ -939,9 +939,9 @@ describe("live dashboards (end-to-end render path)", () => {
     expect((await fetch(`${BASE}/p/${legId}/data`)).status).toBe(404);
   }, 20_000);
 
-  it("update_dashboard is author-gated, edits in place, injects the chart runtime, and reverts public on panel change", async () => {
+  it("update_app is author-gated, edits in place, injects the chart runtime, and reverts public on panel change", async () => {
     const alice = await connect("tok-alice");
-    const pub = await call(alice, "publish_dashboard", {
+    const pub = await call(alice, "publish_app", {
       title: "Alice board",
       html: "<div id=x></div>",
       panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
@@ -951,7 +951,7 @@ describe("live dashboards (end-to-end render path)", () => {
 
     // a different identity cannot edit it
     const bob = await connect("tok-bob");
-    const denied = await call(bob, "update_dashboard", { id, title: "hax" });
+    const denied = await call(bob, "update_app", { id, title: "hax" });
     expect(denied.isError).toBe(true);
     expect(denied.text.toLowerCase()).toContain("only the author");
     await bob.close();
@@ -967,7 +967,7 @@ describe("live dashboards (end-to-end render path)", () => {
 
     // the author edits PANELS → reverts to team-only (re-approval needed)
     const alice2 = await connect("tok-alice");
-    const upd = await call(alice2, "update_dashboard", {
+    const upd = await call(alice2, "update_app", {
       id,
       panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders WHERE status='paid'", dialect: "postgres" }],
     });

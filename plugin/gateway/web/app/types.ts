@@ -115,8 +115,8 @@ export interface AuditRow {
 export type ReportVisibility = "team" | "public";
 export type PanelDialect = "postgres" | "clickhouse";
 
-/** A dashboard panel's data binding (mirrors lib/store.ts DashboardPanel). */
-export interface DashboardPanel {
+/** A app panel's data binding (mirrors lib/store.ts AppPanel). */
+export interface AppPanel {
   key: string;
   title?: string;
   description?: string;
@@ -125,13 +125,13 @@ export interface DashboardPanel {
   metricId?: string | null;
 }
 
-/** A dashboard/report published to the box (list metadata; no body). A "dashboard"
+/** A app/report published to the box (list metadata; no body). A "app"
  *  has live `panels`; a legacy "html" report has none. Mirrors lib/store.ts. */
 export interface PublishedMeta {
   id: string;
   title: string;
-  format: "html" | "dashboard";
-  panels: DashboardPanel[] | null;
+  format: "html" | "app";
+  panels: AppPanel[] | null;
   refreshSeconds: number | null;
   visibility: ReportVisibility;
   createdBy: string;
@@ -139,7 +139,7 @@ export interface PublishedMeta {
   archivedAt: string | null;
 }
 
-/** One panel as the team provenance drawer sees it (server: dashboardProvenance).
+/** One panel as the team provenance drawer sees it (server: appProvenance).
  *  Team-only — the public surface exposes no calculations. */
 export interface PanelProvenance {
   key: string;
@@ -155,12 +155,12 @@ export interface PanelProvenance {
   refreshError: string | null;
 }
 
-/** The team viewer's data: dashboard meta + freshly-rendered panel provenance.
+/** The team viewer's data: app meta + freshly-rendered panel provenance.
  *  The panel ROWS render in the sandboxed /admin/frame/<id>; this is the chrome. */
-export interface DashboardData {
+export interface AppData {
   id: string;
   title: string;
-  format: "html" | "dashboard";
+  format: "html" | "app";
   visibility: ReportVisibility;
   refreshSeconds: number | null;
   createdBy: string;

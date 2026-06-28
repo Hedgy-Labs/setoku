@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Live-dashboard rendering. A dashboard's panels are saved read-only queries the
+ * Live-app rendering. A app's panels are saved read-only queries the
  * box re-runs through the SAME governed path as run_query (the gateway's own
  * read-only DB/lake role, caps, audit) — never a stored user token. Results are
- * cached per panel for the dashboard's refresh TTL so a hammered public link
+ * cached per panel for the app's refresh TTL so a hammered public link
  * doesn't re-run every query on every hit, and the view carries an honest
  * "updated N ago" stamp.
  *
@@ -13,22 +13,22 @@
 import { loadConfig, resolveDatabaseUrl, resolveLakeUrl, type SetokuConfig } from "./config";
 import { runReadOnlyQuery, type QueryOutcome } from "./db";
 import { runLakeQuery } from "./lake";
-import type { DashboardPanel, KnowledgeStore, PublishedReport } from "./store";
+import type { AppPanel, KnowledgeStore, PublishedReport } from "./store";
 
-/** Default refresh TTL when a dashboard doesn't declare one. */
+/** Default refresh TTL when an app doesn't declare one. */
 export const DEFAULT_REFRESH_SECONDS = 300;
-/** Floor on refresh TTL — guards the DB from a too-eager dashboard. */
+/** Floor on refresh TTL — guards the DB from a too-eager app. */
 export const MIN_REFRESH_SECONDS = 30;
 /** Ceiling on refresh TTL — a "live" link that never refreshes isn't live; cap
  *  it so cached data can't silently go stale for days behind a fresh-looking UI. */
 export const MAX_REFRESH_SECONDS = 86_400;
-/** Cap on panels per dashboard — keeps one view's fan-out bounded. */
+/** Cap on panels per app — keeps one view's fan-out bounded. */
 export const MAX_PANELS = 12;
 /** Ceiling on the serialized panel-rows payload handed to one render. Bounds the
  *  injected frame document + the cached/served JSON regardless of rowCap × panels. */
 export const MAX_RENDER_ROW_BYTES = 3_500_000;
 
-// One membrane gate, shared by run_query and dashboard panel execution (I2/I9):
+// One membrane gate, shared by run_query and app panel execution (I2/I9):
 // a session that can commit curated knowledge must not read the untrusted bulk
 // text in the lake. Reads cleanly for either caller.
 export const LAKE_MEMBRANE_ERROR =
@@ -45,7 +45,7 @@ const ERROR_TTL_MS = 30_000;
 export async function runPanel(
   projectDir: string,
   config: SetokuConfig,
-  panel: DashboardPanel,
+  panel: AppPanel,
   opts: { denyLakeRead?: boolean } = {},
 ): Promise<QueryOutcome> {
   if (panel.dialect === "clickhouse") {
@@ -63,7 +63,7 @@ export async function runPanel(
 export interface RenderedPanel {
   key: string;
   title?: string;
-  dialect: DashboardPanel["dialect"];
+  dialect: AppPanel["dialect"];
   metricId?: string | null;
   columns: string[];
   rows: Record<string, unknown>[];
@@ -83,21 +83,21 @@ function ttlMs(dash: { refreshSeconds: number | null }): number {
 
 type RenderInput = PublishedReport | (Omit<PublishedReport, "body"> & { body?: string });
 
-// In-flight render coalescing. A single dashboard view hits two endpoints (the
+// In-flight render coalescing. A single app view hits two endpoints (the
 // sandboxed /frame for rows + /data for provenance), and a popular public link
 // fans many viewers at one moment; without this each would independently re-run
 // every panel on a cold/expired cache. Concurrent NON-force renders of the same
-// dashboard share one execution; force renders are never shared.
+// app share one execution; force renders are never shared.
 const inFlight = new Map<string, Promise<RenderedPanel[]>>();
 
 /**
- * Render every panel of a dashboard, serving cached rows within the refresh TTL
+ * Render every panel of an app, serving cached rows within the refresh TTL
  * and re-running stale ones. `force` bypasses the cache (manual refresh). A run
  * error keeps the last good rows when there are any (flagged via refreshError),
  * otherwise it surfaces as a hard panel error. Panels run concurrently, and
- * concurrent renders of the same dashboard are coalesced.
+ * concurrent renders of the same app are coalesced.
  */
-export function renderDashboard(
+export function renderApp(
   store: KnowledgeStore,
   projectDir: string,
   dash: RenderInput,
@@ -133,7 +133,7 @@ async function renderUncoalesced(
   // Independent panels run concurrently — total latency is the slowest query,
   // not the sum (Promise.all preserves order). Every branch is wrapped so a
   // panel (incl. a cache-I/O hiccup) can NEVER reject the shared coalesced
-  // promise and fan a 500 out to every concurrent viewer of this dashboard.
+  // promise and fan a 500 out to every concurrent viewer of this app.
   const rendered = await Promise.all(
     panels.map(async (panel): Promise<RenderedPanel> => {
       const base = { key: panel.key, title: panel.title, dialect: panel.dialect, metricId: panel.metricId ?? null };

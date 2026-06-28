@@ -126,7 +126,10 @@ export function validateSql(sql: string): SqlValidation {
   return { ok: true, sql: s, kind: first };
 }
 
-/** Run a read-only query with a row cap and statement timeout. */
+/** Run a read-only query with a row cap and statement timeout. `params` are
+ *  engine-bound values for `$1…$n` placeholders (see lib/params.ts) — viewer
+ *  input reaches the DB only this way, never spliced into `sql`. Omitted/[] is
+ *  byte-identical to a plain unparameterized query. */
 export async function runReadOnlyQuery(
   url: string,
   sql: string,
@@ -134,9 +137,14 @@ export async function runReadOnlyQuery(
     rowCap,
     statementTimeoutMs,
   }: Pick<SetokuConfig, "rowCap" | "statementTimeoutMs">,
+  params: unknown[] = [],
 ): Promise<QueryOutcome> {
   const v = validateSql(sql);
   if (!v.ok) throw new Error(v.error);
+  // node-pg binds values only when an array is passed; keep the no-param call
+  // shape unchanged so existing callers (and the test suite) are untouched.
+  const q = (text: string) =>
+    params.length ? client.query(text, params) : client.query(text);
   const client = await poolFor(url).connect();
   const started = Date.now();
   try {
@@ -155,7 +163,8 @@ export async function runReadOnlyQuery(
       v.kind === "TABLE";
     if (wrappable) {
       try {
-        result = await client.query(
+        // The wrapper adds no placeholders; inner $1…$n pass through to the bind.
+        result = await q(
           `SELECT * FROM (\n${v.sql}\n) AS "_setoku_q" LIMIT ${rowCap + 1}`,
         );
       } catch (e) {
@@ -163,13 +172,13 @@ export async function runReadOnlyQuery(
           // syntax error introduced by wrapping (rare valid-SQL edge cases) — retry raw
           await client.query("ROLLBACK");
           await begin();
-          result = await client.query(v.sql);
+          result = await q(v.sql);
         } else {
           throw e;
         }
       }
     } else {
-      result = await client.query(v.sql);
+      result = await q(v.sql);
     }
     await client.query("COMMIT");
     let rows: Record<string, unknown>[] = result.rows ?? [];

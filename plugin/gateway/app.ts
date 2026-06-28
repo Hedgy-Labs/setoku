@@ -18,9 +18,9 @@ import {
 import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
-import { KnowledgeStore, type DashboardPanel, type DocType } from "./lib/store";
-import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/dashboards";
-import { lintDashboardTemplate } from "./lib/dashboard-runtime";
+import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/apps";
+import { lintAppTemplate } from "./lib/app-runtime";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
@@ -802,7 +802,7 @@ server.registerTool(
     try {
       const config = requireConfig();
       // Route + enforce the lake membrane (I2/I9) through the SAME helper the
-      // dashboard panels use, so there is one gate, not two divergent copies.
+      // app panels use, so there is one gate, not two divergent copies.
       const result = await runPanel(
         projectDir,
         config,
@@ -873,12 +873,12 @@ server.registerTool(
   },
 );
 
-/* ------------------------------ dashboards ----------------------------- */
-// The agent publishes a DASHBOARD to the box and gets back a shareable URL. A
-// dashboard splits presentation (a frozen, agent-authored template) from data
+/* ------------------------------ apps ----------------------------- */
+// The agent publishes a APP to the box and gets back a shareable URL. A
+// app splits presentation (a frozen, agent-authored template) from data
 // (named panels, each a saved read-only query the box RE-RUNS live through the
 // governed run_query path). The template reads results off window.__SETOKU__.
-// A zero-panel dashboard is just a static report (back-compat).
+// A zero-panel app is just a static report (back-compat).
 //
 // v0 is TEAM-ONLY: the link (/admin/p/<id>) is session-gated, so only people who
 // hold a box login can view it — that's what keeps a (prompt-injectable) analyst
@@ -897,11 +897,11 @@ const mintShareId = (): string =>
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-// Where a published dashboard lives. SETOKU_PUBLIC_URL is the box's public origin
+// Where a published app lives. SETOKU_PUBLIC_URL is the box's public origin
 // (also used by the installer links); without it we return the path and tell the
 // agent to prefix its box URL.
 const publishBase = (process.env.SETOKU_PUBLIC_URL ?? "").replace(/\/+$/, "");
-// Team dashboards live in the session-gated SPA (/admin/p/<id>); public ones serve
+// Team apps live in the session-gated SPA (/admin/p/<id>); public ones serve
 // credential-free at /p/<id>. The link an agent hands out follows visibility.
 const publishUrl = (id: string, visibility: "team" | "public" = "team"): string => {
   const path = visibility === "public" ? `/p/${id}` : `/admin/p/${id}`;
@@ -918,9 +918,9 @@ type PanelSeed = { key: string; columns: string[]; rows: Record<string, unknown>
 // panel must run") can never drift between the two.
 async function prepPanels(
   list: PanelInput[],
-): Promise<{ ok: true; normalized: DashboardPanel[]; seeds: PanelSeed[] } | { ok: false; error: string }> {
+): Promise<{ ok: true; normalized: AppPanel[]; seeds: PanelSeed[] } | { ok: false; error: string }> {
   if (list.length > MAX_PANELS)
-    return { ok: false, error: `Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the dashboard.` };
+    return { ok: false, error: `Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the app.` };
   const keys = new Set<string>();
   for (const p of list) {
     if (!PANEL_KEY_RE.test(p.key ?? "")) return { ok: false, error: `Panel key "${p.key}" must be a 1–64 char slug ([A-Za-z0-9_-]).` };
@@ -928,7 +928,7 @@ async function prepPanels(
     keys.add(p.key);
     if (!p.sql?.trim()) return { ok: false, error: `Panel "${p.key}" has no sql.` };
   }
-  const normalized: DashboardPanel[] = list.map((p) => ({
+  const normalized: AppPanel[] = list.map((p) => ({
     key: p.key,
     title: p.title,
     description: p.description,
@@ -961,7 +961,7 @@ const clampRefresh = (refreshSeconds: number | undefined, hasPanels: boolean): n
 
 // Non-blocking warnings the agent can't see for itself (it publishes blind):
 // missing curated metric links + static render-lint of the template.
-function publishNotes(html: string, panels: DashboardPanel[]): string {
+function publishNotes(html: string, panels: AppPanel[]): string {
   const notes: string[] = [];
   const missing = panels.filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId))).map((p) => p.metricId);
   if (missing.length)
@@ -974,7 +974,7 @@ function publishNotes(html: string, panels: DashboardPanel[]): string {
   const noDesc = panels.filter((p) => !p.description?.trim()).map((p) => p.key);
   if (noDesc.length)
     notes.push(`panel(s) ${noDesc.map((k) => `"${k}"`).join(", ")} have no \`description\` — the drawer can't explain what they compute. Add a one-line description.`);
-  notes.push(...lintDashboardTemplate(html, panels.map((p) => p.key)));
+  notes.push(...lintAppTemplate(html, panels.map((p) => p.key)));
   return notes.length ? `\n\n⚠ Heads up (publishes anyway):\n- ${notes.join("\n- ")}` : "";
 }
 
@@ -999,25 +999,30 @@ const TEMPLATE_HELP =
   "`Setoku.bar(targetElId, panelKey, {label, value, format})`, `Setoku.table`, `Setoku.stat`, `Setoku.line` over " +
   "hand-rolled SVG/CSS — they coerce numeric strings, size correctly, and render empty/error states. Raw data is " +
   "also at `window.__SETOKU__.panels[<key>]` = `{ columns, rows, rowCount, computedAt, error }` (DB numerics arrive " +
-  "as STRINGS — wrap in Number() before any math).";
+  "as STRINGS — wrap in Number() before any math). " +
+  "For INTERACTIVE apps, the app has its OWN private datastore (it can persist state but CANNOT write your data sources): " +
+  "`Setoku.state.get(scope, key)` / `set(scope, key, value)` / `list(scope)` / `del(scope, key)` — all return Promises. " +
+  "`scope` is \"app\" (shared by everyone who opens it — a team list, a poll tally) or \"viewer\" (private to each user). " +
+  "Read state on load and re-render after each change. Use it for todos, votes, notes, or an annotation OVERLAY keyed by a " +
+  "business row id (mark rows reviewed without writing the source).";
 
 server.registerTool(
-  "publish_dashboard",
+  "publish_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Publish a live dashboard to the box (team-shareable URL)",
+    title: "Publish a live app to the box (team-shareable URL)",
     description:
-      "Publishes a dashboard backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
+      "Publishes an app backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
       "the team as a link that stays current — not for answering in-session.\n" +
       TEMPLATE_HELP +
       "\nPass `panels`: the data bindings. Each panel's `sql` is a read-only query the box re-runs live (same path " +
       "as run_query — develop & validate it with run_query first). Set `dialect` to match. Set `metricId` to a " +
       "curated metric name to link its verified definition.\n" +
       "Omit `panels` for a static report. The link is TEAM-ONLY; an admin can later make it public. Every panel is " +
-      "dry-run at publish (broken query → rejected). Edit later with update_dashboard (same link); also " +
-      "list_dashboards / get_dashboard / unpublish_dashboard.",
+      "dry-run at publish (broken query → rejected). Edit later with update_app (same link); also " +
+      "list_apps / get_app / unpublish_app.",
     inputSchema: {
-      title: z.string().describe("Short human title (shown in the box's Dashboards list)"),
+      title: z.string().describe("Short human title (shown in the box's Apps list)"),
       html: z.string().describe("The presentation template (self-contained HTML fragment; use the Setoku.* helpers)."),
       panels: z.array(PANEL_SCHEMA).optional().describe("Live data bindings. Omit for a static report."),
       refreshSeconds: z
@@ -1041,24 +1046,24 @@ server.registerTool(
     const refresh = clampRefresh(refreshSeconds, normalized.length > 0);
     store.createPublished({
       id,
-      title: title.trim() || "Untitled dashboard",
+      title: title.trim() || "Untitled app",
       body: html,
       panels: normalized,
       refreshSeconds: refresh,
-      format: normalized.length ? "dashboard" : "html",
+      format: normalized.length ? "app" : "html",
       createdBy: user,
     });
     for (const s of seeds)
       store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
-    store.audit(user, "publish_dashboard", { id, title, bytes, panels: normalized.length });
+    store.audit(user, "publish_app", { id, title, bytes, panels: normalized.length });
 
-    const noun = normalized.length ? "dashboard" : "report";
+    const noun = normalized.length ? "app" : "report";
     return text(
       `Published "${title}" → ${publishUrl(id)}\n\n` +
         (normalized.length ? `${normalized.length} live panel(s); the box re-runs them every ${refresh}s. ` : "") +
         "This link is TEAM-ONLY: anyone you share it with must sign in to the box to view it. " +
         (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
-        `\n\nEdit it with update_dashboard("${id}", …) — same link. Manage: get_dashboard / unpublish_dashboard("${id}"). ` +
+        `\n\nEdit it with update_app("${id}", …) — same link. Manage: get_app / unpublish_app("${id}"). ` +
         `(An admin can make this ${noun} public from /admin.)` +
         publishNotes(html, normalized),
     );
@@ -1066,19 +1071,19 @@ server.registerTool(
 );
 
 server.registerTool(
-  "update_dashboard",
+  "update_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Edit a dashboard you published (in place, same link)",
+    title: "Edit an app you published (in place, same link)",
     description:
-      "Updates a dashboard you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
+      "Updates an app you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
       "(new template), `panels` (REPLACES the whole panel set — re-validated + dry-run), and/or `refreshSeconds`. " +
-      "Only the dashboard's AUTHOR can edit it. " +
-      "Note: changing `panels` on a dashboard that's currently public reverts it to team-only — an admin must " +
+      "Only the app's AUTHOR can edit it. " +
+      "Note: changing `panels` on an app that's currently public reverts it to team-only — an admin must " +
       "re-approve it for the public link, since the data it exposes changed. " +
       TEMPLATE_HELP,
     inputSchema: {
-      id: z.string().describe("The dashboard id (from publish_dashboard / list_dashboards)"),
+      id: z.string().describe("The app id (from publish_app / list_apps)"),
       title: z.string().optional().describe("New title"),
       html: z.string().optional().describe("New presentation template (replaces the current one)"),
       panels: z.array(PANEL_SCHEMA).optional().describe("New panel set — REPLACES all panels. Pass [] to make it a static report."),
@@ -1089,9 +1094,9 @@ server.registerTool(
     const tid = id.trim();
     const meta = store.getPublishedMeta(tid);
     if (!meta || meta.archivedAt)
-      return errorText(`No active dashboard "${id}" (archived or unknown). Call list_dashboards.`);
+      return errorText(`No active app "${id}" (archived or unknown). Call list_apps.`);
     if (meta.createdBy !== user)
-      return errorText(`Only the author (${meta.createdBy}) can edit this dashboard. Publish your own with publish_dashboard.`);
+      return errorText(`Only the author (${meta.createdBy}) can edit this app. Publish your own with publish_app.`);
     const newTitle = title?.trim() || undefined; // whitespace-only title is a no-op, not a change
     if (newTitle === undefined && html === undefined && panels === undefined && refreshSeconds === undefined)
       return errorText("Nothing to update — pass a non-empty title, or html / panels / refreshSeconds.");
@@ -1101,7 +1106,7 @@ server.registerTool(
         return errorText(`Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap.`);
     }
 
-    let normalized: DashboardPanel[] | undefined;
+    let normalized: AppPanel[] | undefined;
     let seeds: PanelSeed[] | undefined;
     if (panels !== undefined) {
       const prep = await prepPanels(panels);
@@ -1121,18 +1126,18 @@ server.registerTool(
       panels: normalized, // undefined → unchanged; [] → becomes a static report (cache cleared)
       refreshSeconds: refresh,
     });
-    if (!ok) return errorText(`Update failed — no active dashboard "${id}".`);
+    if (!ok) return errorText(`Update failed — no active app "${id}".`);
     // Re-seed the cache for the new panels (updatePublished cleared the old rows).
     if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
 
-    // A panel change alters what the dashboard exposes — if it was public, revert
+    // A panel change alters what the app exposes — if it was public, revert
     // to team so an admin re-approves (the human public-promotion gate, I9).
     let reverted = false;
     if (panels !== undefined && meta.visibility === "public") {
       store.setReportVisibility(tid, "team");
       reverted = true;
     }
-    store.audit(user, "update_dashboard", {
+    store.audit(user, "update_app", {
       id: tid,
       changed: [newTitle !== undefined && "title", html !== undefined && "html", panels !== undefined && "panels", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
       reverted,
@@ -1142,26 +1147,26 @@ server.registerTool(
     const finalPanels = normalized ?? meta.panels ?? [];
     return text(
       `Updated "${meta.title}" → ${publishUrl(tid, reverted ? "team" : meta.visibility)} (same link).` +
-        (reverted ? "\n\n⚠ Panels changed on a PUBLIC dashboard — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
+        (reverted ? "\n\n⚠ Panels changed on a PUBLIC app — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
         publishNotes(finalHtml, finalPanels),
     );
   },
 );
 
 server.registerTool(
-  "list_dashboards",
+  "list_apps",
   {
     annotations: { readOnlyHint: true },
-    title: "List dashboards published to the box",
+    title: "List apps published to the box",
     description:
-      "Lists dashboards/reports published to this box (active first), with their shareable URLs, panel counts, " +
-      "and who published them. Use it to find a link again, or an id to inspect (get_dashboard) or revoke.",
+      "Lists apps/reports published to this box (active first), with their shareable URLs, panel counts, " +
+      "and who published them. Use it to find a link again, or an id to inspect (get_app) or revoke.",
     inputSchema: {},
   },
   async () => {
     const rows = store.listPublished();
-    store.audit(user, "list_dashboards", { count: rows.length });
-    if (!rows.length) return text("Nothing published yet. Create one with publish_dashboard.");
+    store.audit(user, "list_apps", { count: rows.length });
+    if (!rows.length) return text("Nothing published yet. Create one with publish_app.");
     const active = rows.filter((r) => !r.archivedAt);
     const archived = rows.filter((r) => r.archivedAt);
     const lines: string[] = [];
@@ -1175,7 +1180,7 @@ server.registerTool(
         );
       }
     } else {
-      lines.push("No active dashboards (all archived).");
+      lines.push("No active apps (all archived).");
     }
     if (archived.length) {
       lines.push("", "# archived", ...archived.map((r) => `- ${r.title} (id ${r.id})`));
@@ -1185,20 +1190,20 @@ server.registerTool(
 );
 
 server.registerTool(
-  "get_dashboard",
+  "get_app",
   {
     annotations: { readOnlyHint: true },
-    title: "Inspect a dashboard's panels (how it's calculated)",
+    title: "Inspect an app's panels (how it's calculated)",
     description:
-      "Returns a published dashboard's panel definitions — each panel's SQL, dialect, linked metric, and " +
+      "Returns a published app's panel definitions — each panel's SQL, dialect, linked metric, and " +
       "when it last ran — so you can audit or iterate how a number is computed. Read-only.",
-    inputSchema: { id: z.string().describe("The dashboard id from publish_dashboard / list_dashboards") },
+    inputSchema: { id: z.string().describe("The app id from publish_app / list_apps") },
   },
   async ({ id }) => {
     const dash = store.getPublishedMeta(id.trim());
-    store.audit(user, "get_dashboard", { id, ok: !!dash });
+    store.audit(user, "get_app", { id, ok: !!dash });
     if (!dash || dash.archivedAt)
-      return errorText(`No active dashboard "${id}" (archived or unknown). Call list_dashboards.`);
+      return errorText(`No active app "${id}" (archived or unknown). Call list_apps.`);
     const lines: string[] = [
       `# ${dash.title} [${dash.format}] — ${publishUrl(dash.id, dash.visibility)}`,
       `by ${dash.createdBy} · ${dash.createdAt.slice(0, 16)} · visibility ${dash.visibility}` +
@@ -1214,8 +1219,8 @@ server.registerTool(
       lines.push(
         `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${p.metricId ? ` · metric:${p.metricId}` : ""}`,
       );
-      // Surface description so a read-before-edit (get_dashboard → update_dashboard)
-      // round-trip can preserve it — update_dashboard REPLACES the whole panel set.
+      // Surface description so a read-before-edit (get_app → update_app)
+      // round-trip can preserve it — update_app REPLACES the whole panel set.
       if (p.description) lines.push(`description: ${p.description}`);
       if (cache)
         lines.push(
@@ -1228,21 +1233,21 @@ server.registerTool(
 );
 
 server.registerTool(
-  "unpublish_dashboard",
+  "unpublish_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: true },
-    title: "Archive a published dashboard",
+    title: "Archive a published app",
     description:
-      "Archives a published dashboard/report by its id (from list_dashboards). The link stops working " +
+      "Archives a published app/report by its id (from list_apps). The link stops working " +
       "immediately and its cached data is dropped; the record is kept for the audit trail.",
-    inputSchema: { id: z.string().describe("The dashboard id from publish_dashboard / list_dashboards") },
+    inputSchema: { id: z.string().describe("The app id from publish_app / list_apps") },
   },
   async ({ id }) => {
     const ok = store.archivePublished(id.trim());
-    store.audit(user, "unpublish_dashboard", { id, ok });
+    store.audit(user, "unpublish_app", { id, ok });
     return ok
       ? text(`Archived ${id} — its link no longer works.`)
-      : errorText(`No active dashboard with id "${id}" (already archived, or unknown id). Call list_dashboards to check.`);
+      : errorText(`No active app with id "${id}" (already archived, or unknown id). Call list_apps to check.`);
   },
 );
 

@@ -104,12 +104,12 @@ export type ReportVisibility = "team" | "public";
 export type PanelDialect = "postgres" | "clickhouse";
 
 /**
- * One live data binding on a dashboard. `sql` is the executable binding (a
+ * One live data binding on an app. `sql` is the executable binding (a
  * validated read-only statement); `metricId` is provenance-only — it links the
  * panel to a curated metric doc so the "how is this calculated" drawer can show
  * the team's verified definition. We never re-parse SQL out of a metric body.
  */
-export interface DashboardPanel {
+export interface AppPanel {
   key: string;
   title?: string;
   /** One-line, plain-language explanation of what this panel computes — shown in
@@ -124,12 +124,12 @@ export interface DashboardPanel {
 export interface PublishedReport {
   id: string;
   title: string;
-  /** "html" = a frozen, self-contained report (legacy / zero-panel). "dashboard"
+  /** "html" = a frozen, self-contained report (legacy / zero-panel). "app"
    *  = a template whose panels the box re-runs live. */
-  format: "html" | "dashboard";
+  format: "html" | "app";
   body: string;
   /** Live data bindings; null/[] for a frozen report. */
-  panels: DashboardPanel[] | null;
+  panels: AppPanel[] | null;
   /** TTL (seconds) for cached panel data; null on frozen reports. */
   refreshSeconds: number | null;
   /** "team" = session-gated (default); "public" = served credential-free at
@@ -143,7 +143,7 @@ export interface PublishedReport {
 
 export type PublishedMeta = Omit<PublishedReport, "body">;
 
-/** One panel's last-executed result, cached for the dashboard's refresh TTL. */
+/** One panel's last-executed result, cached for the app's refresh TTL. */
 export interface PanelCacheRow {
   columns: string[];
   rows: Record<string, unknown>[];
@@ -153,11 +153,11 @@ export interface PanelCacheRow {
 }
 
 /** Parse the stored panels JSON; tolerates null/garbage (legacy rows). */
-function parsePanels(json: string | null): DashboardPanel[] | null {
+function parsePanels(json: string | null): AppPanel[] | null {
   if (!json) return null;
   try {
     const v = JSON.parse(json);
-    return Array.isArray(v) ? (v as DashboardPanel[]) : null;
+    return Array.isArray(v) ? (v as AppPanel[]) : null;
   } catch {
     return null;
   }
@@ -337,24 +337,24 @@ export class KnowledgeStore {
       archived_at TEXT
     )`);
     // Brought the table forward in-place for boxes created before visibility /
-    // the revoked→archived rename / live dashboards landed (idempotent). A
-    // pre-dashboard row stays format='html' with panels NULL and keeps rendering.
+    // the revoked→archived rename / live apps landed (idempotent). A
+    // pre-app row stays format='html' with panels NULL and keeps rendering.
     this.ensureColumn("published", "visibility", "TEXT NOT NULL DEFAULT 'team'");
     this.ensureColumn("published", "archived_at", "TEXT");
     this.ensureColumn("published", "panels", "TEXT");
     this.ensureColumn("published", "refresh_seconds", "INTEGER");
-    // Per-panel result cache. A dashboard view serves cached rows within the
-    // dashboard's refresh TTL and re-runs the query when stale — bounding DB load
+    // Per-panel result cache. A app view serves cached rows within the
+    // app's refresh TTL and re-runs the query when stale — bounding DB load
     // on a hammered public link and giving an honest "updated N ago" stamp.
-    this.db.run(`CREATE TABLE IF NOT EXISTS dashboard_cache (
-      dashboard_id TEXT NOT NULL,
+    this.db.run(`CREATE TABLE IF NOT EXISTS app_cache (
+      app_id TEXT NOT NULL,
       panel_key TEXT NOT NULL,
       columns TEXT NOT NULL DEFAULT '[]',
       rows TEXT NOT NULL DEFAULT '[]',
       row_count INTEGER NOT NULL DEFAULT 0,
       computed_at TEXT NOT NULL,
       error TEXT,
-      PRIMARY KEY (dashboard_id, panel_key)
+      PRIMARY KEY (app_id, panel_key)
     )`);
   }
 
@@ -833,14 +833,14 @@ export class KnowledgeStore {
 
   /* ------------------------------- published ---------------------------- */
 
-  /** Store a published report or dashboard. `id` must already be a minted opaque
+  /** Store a published report or app. `id` must already be a minted opaque
    *  token. Visibility defaults to "team" — the agent never publishes public. */
   createPublished(rec: {
     id: string;
     title: string;
-    format?: "html" | "dashboard";
+    format?: "html" | "app";
     body: string;
-    panels?: DashboardPanel[] | null;
+    panels?: AppPanel[] | null;
     refreshSeconds?: number | null;
     visibility?: ReportVisibility;
     createdBy: string;
@@ -851,7 +851,7 @@ export class KnowledgeStore {
       [
         rec.id,
         rec.title,
-        rec.format ?? (panels ? "dashboard" : "html"),
+        rec.format ?? (panels ? "app" : "html"),
         rec.body,
         panels,
         rec.refreshSeconds ?? null,
@@ -862,7 +862,7 @@ export class KnowledgeStore {
     );
   }
 
-  /** Fetch one published report/dashboard (incl. body + panels). Returns archived
+  /** Fetch one published report/app (incl. body + panels). Returns archived
    *  rows too — the caller decides how to treat `archivedAt` (the viewer 404s). */
   getPublished(id: string): PublishedReport | null {
     const row = this.db
@@ -884,7 +884,7 @@ export class KnowledgeStore {
     return row ? { ...row, panels: parsePanels(row.panels) } : null;
   }
 
-  /** Published reports/dashboards without bodies, newest first (admin list). */
+  /** Published reports/apps without bodies, newest first (admin list). */
   listPublished(): PublishedMeta[] {
     const rows = this.db
       .query(
@@ -894,7 +894,7 @@ export class KnowledgeStore {
     return rows.map((r) => ({ ...r, panels: parsePanels(r.panels) }));
   }
 
-  /** Soft-delete (archive) a published report/dashboard. Returns false if already
+  /** Soft-delete (archive) a published report/app. Returns false if already
    *  archived or unknown. The row + audit trail survive; cached panel data is
    *  dropped (an archived link must stop serving live data immediately). */
   archivePublished(id: string): boolean {
@@ -903,19 +903,19 @@ export class KnowledgeStore {
         new Date().toISOString(),
         id,
       ]).changes > 0;
-    if (archived) this.db.run("DELETE FROM dashboard_cache WHERE dashboard_id = ?", [id]);
+    if (archived) this.db.run("DELETE FROM app_cache WHERE app_id = ?", [id]);
     return archived;
   }
 
-  /* ------------------------- dashboard panel cache ---------------------- */
+  /* ------------------------- app panel cache ---------------------- */
 
   /** Cached result for one panel, or null if never computed. */
-  getPanelCache(dashboardId: string, panelKey: string): PanelCacheRow | null {
+  getPanelCache(appId: string, panelKey: string): PanelCacheRow | null {
     const row = this.db
       .query(
-        "SELECT columns, rows, row_count AS rowCount, computed_at AS computedAt, error FROM dashboard_cache WHERE dashboard_id = ? AND panel_key = ?",
+        "SELECT columns, rows, row_count AS rowCount, computed_at AS computedAt, error FROM app_cache WHERE app_id = ? AND panel_key = ?",
       )
-      .get(dashboardId, panelKey) as
+      .get(appId, panelKey) as
       | { columns: string; rows: string; rowCount: number; computedAt: string; error: string | null }
       | null;
     if (!row) return null;
@@ -930,19 +930,19 @@ export class KnowledgeStore {
 
   /** Upsert one panel's cached result (success or error), stamped now. */
   putPanelCache(
-    dashboardId: string,
+    appId: string,
     panelKey: string,
     data: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string | null },
   ): string {
     const computedAt = new Date().toISOString();
     this.db.run(
-      `INSERT INTO dashboard_cache (dashboard_id, panel_key, columns, rows, row_count, computed_at, error)
+      `INSERT INTO app_cache (app_id, panel_key, columns, rows, row_count, computed_at, error)
        VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(dashboard_id, panel_key) DO UPDATE SET
+       ON CONFLICT(app_id, panel_key) DO UPDATE SET
          columns = excluded.columns, rows = excluded.rows, row_count = excluded.row_count,
          computed_at = excluded.computed_at, error = excluded.error`,
       [
-        dashboardId,
+        appId,
         panelKey,
         JSON.stringify(data.columns ?? []),
         JSON.stringify(data.rows ?? []),
@@ -954,14 +954,14 @@ export class KnowledgeStore {
     return computedAt;
   }
 
-  /** Edit a published dashboard/report in place (same id/link) — author-gated
+  /** Edit a published app/report in place (same id/link) — author-gated
    *  upstream. Only provided fields change; id/createdBy/createdAt/visibility are
    *  preserved. Passing `panels` (incl. []) rewrites the panel set + format AND
    *  clears the panel cache (the old rows no longer apply). Returns false if the
    *  row is unknown or archived. */
   updatePublished(
     id: string,
-    fields: { title?: string; body?: string; panels?: DashboardPanel[]; refreshSeconds?: number | null },
+    fields: { title?: string; body?: string; panels?: AppPanel[]; refreshSeconds?: number | null },
   ): boolean {
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
@@ -976,7 +976,7 @@ export class KnowledgeStore {
     if (fields.panels !== undefined) {
       const json = fields.panels.length ? JSON.stringify(fields.panels) : null;
       sets.push("panels = ?", "format = ?");
-      vals.push(json, json ? "dashboard" : "html");
+      vals.push(json, json ? "app" : "html");
     }
     if (fields.refreshSeconds !== undefined) {
       sets.push("refresh_seconds = ?");
@@ -987,12 +987,12 @@ export class KnowledgeStore {
     const changed =
       this.db.run(`UPDATE published SET ${sets.join(", ")} WHERE id = ? AND archived_at IS NULL`, vals).changes > 0;
     if (changed && fields.panels !== undefined)
-      this.db.run("DELETE FROM dashboard_cache WHERE dashboard_id = ?", [id]);
+      this.db.run("DELETE FROM app_cache WHERE app_id = ?", [id]);
     return changed;
   }
 
-  /** Restore an archived report/dashboard (clear the soft-delete) — and reset it to
-   *  team-only. A previously-PUBLIC dashboard must NOT silently come back on its
+  /** Restore an archived report/app (clear the soft-delete) — and reset it to
+   *  team-only. A previously-PUBLIC app must NOT silently come back on its
    *  credential-free link; re-going-public is a fresh admin action (I9). Returns
    *  false if unknown or not currently archived. */
   unarchivePublished(id: string): boolean {
@@ -1004,13 +1004,22 @@ export class KnowledgeStore {
     );
   }
 
-  /** Newest cached panel computed_at for a dashboard (the "data updated" stamp),
+  /** Newest cached panel computed_at for an app (the "data updated" stamp),
    *  read straight from the cache WITHOUT re-running any query. */
   newestPanelComputedAt(id: string): string | null {
     const row = this.db
-      .query("SELECT MAX(computed_at) AS t FROM dashboard_cache WHERE dashboard_id = ?")
+      .query("SELECT MAX(computed_at) AS t FROM app_cache WHERE app_id = ?")
       .get(id) as { t: string | null } | null;
     return row?.t ?? null;
+  }
+
+  /** Rename a report (title only). Returns false for an unknown or archived
+   *  report. Author-or-admin gating is enforced upstream. */
+  renamePublished(id: string, title: string): boolean {
+    return (
+      this.db.run("UPDATE published SET title = ? WHERE id = ? AND archived_at IS NULL", [title, id])
+        .changes > 0
+    );
   }
 
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or

@@ -11,26 +11,26 @@ import { Badge } from "../components/Badge";
 import { Button } from "../components/Button";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
-import { dashboardShareUrl } from "../format";
+import { appShareUrl } from "../format";
 import type { PublishedMeta } from "../types";
 
-export function Dashboards() {
+export function Apps() {
   const { me } = useAuth();
   const isAdmin = me?.role === "admin";
-  const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.dashboards(), []);
+  const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.apps(), []);
   const [archiving, setArchiving] = useState<PublishedMeta | null>(null);
   const [newOpen, setNewOpen] = useState(false);
 
   const copy = async (r: PublishedMeta) => {
     try {
-      await navigator.clipboard.writeText(dashboardShareUrl(r));
+      await navigator.clipboard.writeText(appShareUrl(r));
       toast(
         r.visibility === "public"
           ? "Public link copied — anyone can open it, no login."
           : "Link copied — recipients must sign in to the box to view.",
       );
     } catch {
-      toast(dashboardShareUrl(r));
+      toast(appShareUrl(r));
     }
   };
 
@@ -50,13 +50,14 @@ export function Dashboards() {
   return (
     <>
       <div className="flex items-start justify-between gap-4">
-        <Heading title="Dashboards">
-          Dashboards agents published to this box, backed by <b className="text-stone-800">live data</b>.{" "}
+        <Heading title="Apps">
+          Little apps your agent built on your data — backed by <b className="text-stone-800">live data</b>, with their own{" "}
+          <b className="text-stone-800">private state</b> (and no writes to your sources).{" "}
           <b className="text-stone-800">Team</b> links are session-gated; the author or an admin can make one{" "}
           <b className="text-stone-800">public</b> for a credential-free link.
         </Heading>
         <Button className="mt-1 shrink-0" onClick={() => setNewOpen(true)}>
-          New dashboard
+          New app
         </Button>
       </div>
       {loading ? (
@@ -119,7 +120,7 @@ export function Dashboards() {
             ) : (
               <div className="card p-8 text-center text-stone-500">
                 Nothing published yet. An agent publishes with the{" "}
-                <code className="kbd">publish_dashboard</code> tool.
+                <code className="kbd">publish_app</code> tool.
               </div>
             )}
           </div>
@@ -150,7 +151,7 @@ export function Dashboards() {
       )}
       <Confirm
         open={!!archiving}
-        title="Archive this dashboard?"
+        title="Archive this app?"
         body={`"${archiving?.title}" will stop working at its link (public and team). The record is kept — you can restore it from the Archived list.`}
         confirmLabel="Archive"
         danger
@@ -164,27 +165,27 @@ export function Dashboards() {
       <NewDialog
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        onCopied={() => toast("Prompt copied — paste it into your agent (describe the dashboard you want).")}
+        onCopied={() => toast("Prompt copied — paste it into your agent (describe the app you want).")}
       />
     </>
   );
 }
 
-/** Like the viewer's Edit dialog: dashboards are built by your agent, not a form.
+/** Like the viewer's Edit dialog: apps are built by your agent, not a form.
  *  Hands the user a ready prompt to paste in and describe what they want. */
 function NewDialog({ open, onClose, onCopied }: { open: boolean; onClose: () => void; onCopied: () => void }) {
   const prompt =
-    `Build a new dashboard on my Setoku (${location.origin}).\n` +
-    `Develop the queries with run_query (find_context / get_metric for curated metrics), then publish_dashboard — give each panel a title + one-line description, and a template using the Setoku.bar/table/stat/line helpers.\n\n` +
+    `Build a new app on my Setoku (${location.origin}).\n` +
+    `Develop the queries with run_query (find_context / get_metric for curated metrics), then publish_app — give each panel a title + one-line description, and a template using the Setoku.bar/table/stat/line helpers.\n\n` +
     `What I want:\n`;
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
         <AlertDialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
-          <AlertDialog.Title className="text-base font-semibold text-stone-900">New dashboard</AlertDialog.Title>
+          <AlertDialog.Title className="text-base font-semibold text-stone-900">New app</AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
-            Dashboards are built by your agent, not a form. Paste this into your Setoku-connected agent, describe what
+            Apps are built by your agent, not a form. Paste this into your Setoku-connected agent, describe what
             you want, and it'll create and publish it.
           </AlertDialog.Description>
           <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">

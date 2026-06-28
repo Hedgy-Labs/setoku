@@ -37,8 +37,9 @@ import {
   type PublishedMeta,
   type PublishedReport,
 } from "./lib/store";
-import { newestComputedAt, renderDashboard, type RenderedPanel } from "./lib/dashboards";
-import { DASHBOARD_RUNTIME } from "./lib/dashboard-runtime";
+import { newestComputedAt, renderApp, type RenderedPanel } from "./lib/apps";
+import { APP_RUNTIME } from "./lib/app-runtime";
+import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
 import {
   type Invite,
   applyApprovalAction,
@@ -220,6 +221,11 @@ function analystIdentities(): string[] {
 }
 
 const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
+// Per-app private datastore — an app's OWN state (annotations, todos, votes),
+// isolated from every business data source (the read-only GRANT stays absolute).
+// A SEPARATE db file sibling to knowledge.db; there is no code path from here to
+// the business DB/lake. See lib/app-store.ts.
+const appStore = new AppStore(defaultAppDbPath(process.env.SETOKU_DB_PATH ?? storePath()));
 if (store.empty) {
   const imported = seedFromFiles(store, projectDir);
   if (imported > 0) store.audit("system", "seed_from_files", { imported });
@@ -544,13 +550,17 @@ async function gatherSources(): Promise<SourcesData> {
   return { postgres, lake, knowledge: { docs: store.docCount, byType } };
 }
 
-// ---- live-dashboard rendering helpers ----
+// ---- live-app rendering helpers ----
 // The agent-authored template runs in a sandboxed iframe under THIS CSP. Because
 // the box INJECTS the data (rather than the template fetching it), the template
 // needs no network at all — so default-src 'none' blocks every outbound request,
 // closing the exfil-via-author-JS hole a self-contained report would otherwise
 // have. Combined with the iframe `sandbox allow-scripts` (opaque origin) it can
 // neither reach the box's cookie/API nor phone home.
+// `form-action 'none'` is load-bearing: the frame sandbox grants `allow-forms`
+// (so an app's <form> submit handler fires — the natural app pattern), but this
+// directive blocks any ACTUAL submission from leaving the sandbox. The app's JS
+// handles the submit in-page; nothing posts out.
 const FRAME_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
 
@@ -565,13 +575,13 @@ function jsonForScript(value: unknown): string {
 
 /** Assemble the sandboxed frame document: our skeleton + injected panel data +
  *  the agent's template fragment. Legacy zero-panel reports are full documents,
- *  served as-is. The payload is already byte-bounded by renderDashboard's
+ *  served as-is. The payload is already byte-bounded by renderApp's
  *  capRenderBytes (shared with the provenance drawer so the two agree). `team`
  *  gates raw error text: a public frame must NOT inject a raw DB error (it can
  *  name tables/columns/env vars) — same scrub the public /data path applies. */
 function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { team: boolean }): string {
-  // A legacy full HTML document (pre-dashboard report) is served as-is. But a
-  // FRAGMENT with no panels — e.g. a dashboard the author turned static while
+  // A legacy full HTML document (pre-app report) is served as-is. But a
+  // FRAGMENT with no panels — e.g. an app the author turned static while
   // keeping a Setoku.*/__SETOKU__ template — still gets the runtime + empty data
   // injected, so those calls degrade ("No data") instead of ReferenceError.
   if (!panels.length && /<!doctype|<html[\s>]/i.test(dash.body)) return dash.body;
@@ -600,7 +610,7 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
     `<script>window.__SETOKU__=${jsonForScript(data)};</script>` +
     // Tested chart helpers (window.Setoku.*) — defined after the data, before the
     // agent template's own <script> in <body> runs, so the template can call them.
-    `<script>${DASHBOARD_RUNTIME}</script>` +
+    `<script>${APP_RUNTIME}</script>` +
     `</head><body>${dash.body}</body></html>`
   );
 }
@@ -613,8 +623,8 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
 // TEAM-ONLY provenance: the "how is this calculated" drawer (incl. raw SQL) is
 // served only to a signed-in box session. The PUBLIC surface exposes NO
 // calculations — its /data returns just freshness meta (see the /p/<id>/data
-// handler), so a public link is the visual dashboard and nothing else.
-function dashboardProvenance(
+// handler), so a public link is the visual app and nothing else.
+function appProvenance(
   knowledge: KnowledgeStore,
   meta: PublishedMeta,
   panels: RenderedPanel[],
@@ -666,18 +676,19 @@ function escapeHtml(s: string): string {
 const SHELL_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src 'self'; img-src data:; base-uri 'none'";
 
-/** The credential-free public dashboard shell at /p/<id>. (The team surface uses
+/** The credential-free public app shell at /p/<id>. (The team surface uses
  *  the React app, which renders the same frame + provenance.) Provenance here
  *  shows methodology only — never raw SQL. */
-function publicDashboardShell(opts: {
+function publicAppShell(opts: {
   title: string;
   framePath: string;
   dataPath: string;
+  statePath: string;
   adminPath: string;
   refreshSeconds: number;
 }): string {
-  const title = escapeHtml(opts.title || "Dashboard");
-  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, admin: opts.adminPath, refresh: opts.refreshSeconds });
+  const title = escapeHtml(opts.title || "App");
+  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, state: opts.statePath, admin: opts.adminPath, refresh: opts.refreshSeconds });
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
@@ -694,11 +705,33 @@ function publicDashboardShell(opts: {
   iframe{flex:1;width:100%;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
 </style></head><body>
 <header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a></header>
-<main><iframe id="frame" title="${title}" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe></main>
+<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe></main>
 <script>
 (function(){
   var CFG=${cfg};
   var frame=document.getElementById('frame'), stamp=document.getElementById('stamp');
+  // App-state bridge (public): the sandboxed frame has no network, so it
+  // postMessages state ops up to this shell — the policy gate. We pin the app id
+  // (CFG.state) and pass an anonymous per-browser id as the owner for viewer
+  // scope; app scope is shared by everyone with the link. Mirrors the admin
+  // AppView mediator, minus the session (this surface is credential-free).
+  var VKEY='setoku_av_'+location.pathname, viewerId;
+  try{ viewerId=localStorage.getItem(VKEY); if(!viewerId){ viewerId='v'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); localStorage.setItem(VKEY,viewerId);} }catch(e){ viewerId='anon'; }
+  window.addEventListener('message', function(e){
+    var m=e.data; if(!m||m.__setoku_state_req!==true) return;
+    if(e.source!==frame.contentWindow) return; // only OUR iframe
+    var scope=m.scope==='viewer'?'viewer':'app', owner=scope==='viewer'?viewerId:'';
+    var reply=function(b){ b.__setoku_state_res=true; b.id=m.id; frame.contentWindow.postMessage(b,'*'); };
+    function done(p){ p.then(function(r){return r.json()}).then(function(d){
+        if(m.op==='list') reply({result:d.entries||[]});
+        else if(m.op==='get'){ var hit=(d.entries||[]).filter(function(x){return x.key===String(m.key)})[0]; reply({result:hit?hit.value:null}); }
+        else if(m.op==='set') reply({result:d.entry});
+        else reply({result:d.deleted});
+      }).catch(function(err){ reply({error:String((err&&err.message)||err)}); }); }
+    if(m.op==='get'||m.op==='list'){ done(fetch(CFG.state+'?scope='+scope+'&owner='+encodeURIComponent(owner),{credentials:'omit'})); }
+    else if(m.op==='set'||m.op==='delete'){ done(fetch(CFG.state,{method:'POST',headers:{'content-type':'application/json'},credentials:'omit',body:JSON.stringify({op:m.op,scope:scope,owner:owner,key:String(m.key),value:m.value})})); }
+    else { reply({error:'bad op'}); }
+  });
   function rel(iso){ if(!iso) return ''; var s=Math.max(0,Math.round((Date.now()-Date.parse(iso))/1000));
     if(s<60) return s+'s ago'; var m=Math.round(s/60); if(m<60) return m+'m ago';
     var h=Math.round(m/60); return h<48? h+'h ago' : Math.round(h/24)+'d ago'; }
@@ -767,19 +800,19 @@ const httpServer = http.createServer(async (req, res) => {
       // the up-to-2MB body (this path is credential-free and cheap to hammer).
       const meta = store.getPublishedMeta(id);
       if (!meta || meta.archivedAt || meta.visibility !== "public") return notFound();
-      const isDashboard = meta.format === "dashboard" && (meta.panels?.length ?? 0) > 0;
+      const isApp = meta.format === "app" && (meta.panels?.length ?? 0) > 0;
 
-      // The /frame and /data subpaths exist only for live dashboards (the shell
+      // The /frame and /data subpaths exist only for live apps (the shell
       // polls them); a legacy report is served whole at /p/<id>. Don't expose
-      // them for non-dashboards.
-      if ((sub === "data" || sub === "frame") && !isDashboard) return notFound();
+      // them for non-apps.
+      if ((sub === "data" || sub === "frame") && !isApp) return notFound();
 
       // /p/<id>/data — FRESHNESS ONLY for the public shell's "updated …" stamp.
       // The public surface exposes NO calculations (no SQL, descriptions, metrics).
       // Reads the newest cached computed_at directly — does NOT re-run any query
       // (the /frame request drives execution; this credential-free poll must not).
       if (sub === "data") {
-        store.audit("public", "dashboard_data_public", { id });
+        store.audit("public", "app_data_public", { id });
         res.writeHead(200, {
           "content-type": "application/json",
           "x-content-type-options": "nosniff",
@@ -795,15 +828,59 @@ const httpServer = http.createServer(async (req, res) => {
         return;
       }
 
+      // /p/<id>/state — per-app private datastore on the PUBLIC surface.
+      // Reached only for public-visibility apps (the meta gate above already
+      // 404s team/missing/archived). Credential-free, so there is no session
+      // identity: `app` scope is shared by everyone with the link; `viewer` scope
+      // is keyed to an anonymous per-browser id the public shell mints and passes
+      // as `owner` (unguessable, so practically isolated — but, lacking a login,
+      // it's best-effort per-browser privacy, not a hard security boundary). Still
+      // can't touch any business source, and stays bounded by the AppStore quota.
+      if (sub === "state") {
+        const url = new URL(req.url ?? "", "http://x");
+        const scope = (url.searchParams.get("scope") ?? "app") as StateScope;
+        if (scope !== "app" && scope !== "viewer") {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ ok: false, error: "bad scope" }));
+          return;
+        }
+        const jsonOut = (status: number, body: unknown): void => {
+          res.writeHead(status, { "content-type": "application/json", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" });
+          res.end(JSON.stringify(body));
+        };
+        if (req.method === "GET") {
+          const owner = scope === "viewer" ? url.searchParams.get("owner") || "" : null;
+          return jsonOut(200, { ok: true, entries: appStore.list(id, scope, owner) });
+        }
+        if (req.method === "POST") {
+          const body = (await readBody(req)) as { op?: string; scope?: string; owner?: string; key?: string; value?: unknown } | undefined;
+          const owner = scope === "viewer" ? String(body?.owner ?? "") : null;
+          const key = String(body?.key ?? "");
+          try {
+            if (body?.op === "set") {
+              const entry = appStore.set(id, scope, owner, key, body.value, new Date().toISOString());
+              store.audit("public", "app_state_set_public", { id, scope, key });
+              return jsonOut(200, { ok: true, entry });
+            }
+            if (body?.op === "delete") return jsonOut(200, { ok: true, deleted: appStore.delete(id, scope, owner, key) });
+            return jsonOut(400, { ok: false, error: "bad op" });
+          } catch (e) {
+            if (e instanceof AppStoreQuotaError) return jsonOut(413, { ok: false, error: e.message });
+            throw e;
+          }
+        }
+        return notFound();
+      }
+
       // /p/<id>/frame — the sandboxed render document (data injected, no network).
       if (sub === "frame") {
         const rep = store.getPublished(id);
         if (!rep) return notFound();
-        const panels = await renderDashboard(store, projectDir, rep);
-        store.audit("public", "dashboard_frame_public", { id });
+        const panels = await renderApp(store, projectDir, rep);
+        store.audit("public", "app_frame_public", { id });
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts`,
+          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms`,
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
@@ -814,7 +891,7 @@ const httpServer = http.createServer(async (req, res) => {
       if (sub) return notFound(); // unknown subpath
 
       store.audit("public", "published_viewed_public", { id });
-      if (!isDashboard) {
+      if (!isApp) {
         // Legacy static report: serve the self-contained body sandboxed, as before
         // (opaque origin, no popups/top-navigation).
         const rep = store.getPublished(id);
@@ -830,7 +907,7 @@ const httpServer = http.createServer(async (req, res) => {
         res.end(frameDocument(rep, [], { team: false }));
         return;
       }
-      // Live dashboard: serve the trusted outer shell (frames /p/<id>/frame, polls
+      // Live app: serve the trusted outer shell (frames /p/<id>/frame, polls
       // /p/<id>/data). The agent template never runs in this top-level origin.
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
@@ -839,10 +916,11 @@ const httpServer = http.createServer(async (req, res) => {
         "referrer-policy": "no-referrer",
       });
       res.end(
-        publicDashboardShell({
+        publicAppShell({
           title: meta.title,
           framePath: `/p/${encodeURIComponent(id)}/frame`,
           dataPath: `/p/${encodeURIComponent(id)}/data`,
+          statePath: `/p/${encodeURIComponent(id)}/state`,
           adminPath: `/admin/p/${encodeURIComponent(id)}`,
           refreshSeconds: meta.refreshSeconds ?? 300,
         }),
@@ -877,8 +955,8 @@ const httpServer = http.createServer(async (req, res) => {
         return;
       }
 
-      // ---- team dashboard frame — /admin/frame/<id>, session-gated ----
-      // The sandboxed render document for a TEAM dashboard. Requires a box
+      // ---- team app frame — /admin/frame/<id>, session-gated ----
+      // The sandboxed render document for a TEAM app. Requires a box
       // session (cookie); the React viewer embeds it as the iframe src so the
       // strict no-network CSP is a real response header, not a srcdoc guess.
       if (reqPath.startsWith("/admin/frame/")) {
@@ -895,15 +973,15 @@ const httpServer = http.createServer(async (req, res) => {
           res.end("not found\n");
           return;
         }
-        const isDash = rep.format === "dashboard" && (rep.panels?.length ?? 0) > 0;
-        const panels = isDash ? await renderDashboard(store, projectDir, rep) : [];
-        store.audit(session.identity, "dashboard_frame_viewed", { id });
-        // A live dashboard's template needs no network (data is injected) → strict
+        const isDash = rep.format === "app" && (rep.panels?.length ?? 0) > 0;
+        const panels = isDash ? await renderApp(store, projectDir, rep) : [];
+        store.audit(session.identity, "app_frame_viewed", { id });
+        // A live app's template needs no network (data is injected) → strict
         // CSP. A LEGACY report predates that contract and may inline a CDN script
         // or remote image; keep its original sandbox-only CSP so it still renders.
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": isDash ? `${FRAME_CSP}; sandbox allow-scripts` : "sandbox allow-scripts",
+          "content-security-policy": isDash ? `${FRAME_CSP}; sandbox allow-scripts allow-forms` : "sandbox allow-scripts",
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
@@ -994,11 +1072,11 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "team" && req.method === "GET")
           return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
 
-        // published dashboards/reports — TEAM-ONLY: gated behind this session
+        // published apps/reports — TEAM-ONLY: gated behind this session
         // check, so a shared /admin/p/<id> link only renders for a box login.
         // The list UI needs only panel COUNT, not the queries — strip each panel's
-        // raw SQL so the list doesn't broadcast every dashboard's query text to all
-        // members (SQL stays team-tier, shown only in the per-dashboard drawer).
+        // raw SQL so the list doesn't broadcast every app's query text to all
+        // members (SQL stays team-tier, shown only in the per-app drawer).
         if (api === "published" && req.method === "GET")
           return json(
             200,
@@ -1010,11 +1088,11 @@ const httpServer = http.createServer(async (req, res) => {
         // Provenance + rendered panel metadata for the team viewer's drawer.
         // Includes raw SQL (this surface is authenticated). The rows themselves
         // arrive via the sandboxed /admin/frame/<id>.
-        if (api === "dashboard_data" && req.method === "GET") {
+        if (api === "app_data" && req.method === "GET") {
           const url = new URL(req.url ?? "", "http://x");
           const id = url.searchParams.get("id") ?? "";
           const meta = store.getPublishedMeta(id);
-          if (!meta || meta.archivedAt) return json(404, { ok: false, error: "dashboard not found or archived" });
+          if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found or archived" });
           // ?force=1 bypasses the cache and re-runs every panel — restrict it to
           // the author or an admin so a member (or a stale tab, or a credentialed
           // cross-site GET) can't hammer the prod DB the cache exists to protect.
@@ -1022,9 +1100,30 @@ const httpServer = http.createServer(async (req, res) => {
             url.searchParams.get("force") === "1" &&
             (meta.createdBy === session.identity || canApprove(session.role));
           // Renders from `meta` — provenance + frame don't need the report body.
-          const panels = await renderDashboard(store, projectDir, meta, { force });
-          store.audit(session.identity, force ? "dashboard_refreshed" : "dashboard_viewed", { id });
-          return json(200, dashboardProvenance(store, meta, panels));
+          const panels = await renderApp(store, projectDir, meta, { force });
+          store.audit(session.identity, force ? "app_refreshed" : "app_viewed", { id });
+          return json(200, appProvenance(store, meta, panels));
+        }
+
+        // ---- app state (per-app private datastore) ----
+        // An app reads/writes its OWN state here; this never touches a business
+        // data source. The app id comes from the request, but every op is scoped
+        // by (id, scope, owner) so an app can only see its own state, and viewer
+        // scope is keyed to THIS session's identity (one viewer can't read
+        // another's). Any signed-in user may use an app (members included).
+        if (api === "app_state" && req.method === "GET") {
+          const url = new URL(req.url ?? "", "http://x");
+          const id = url.searchParams.get("id") ?? "";
+          const scope = (url.searchParams.get("scope") ?? "app") as StateScope;
+          if (scope !== "app" && scope !== "viewer") return json(400, { ok: false, error: "bad scope" });
+          const meta = store.getPublishedMeta(id);
+          if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found" });
+          const owner = scope === "viewer" ? session.identity : null;
+          return json(200, {
+            ok: true,
+            entries: appStore.list(id, scope, owner),
+            usage: appStore.usage(id, scope, owner),
+          });
         }
 
         // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----
@@ -1032,22 +1131,51 @@ const httpServer = http.createServer(async (req, res) => {
           if ((req.headers["x-csrf-token"] ?? "") !== session.csrf)
             return json(403, { ok: false, error: "bad csrf token" });
 
-          // Author-or-admin gate for a per-dashboard mutation (archive, visibility):
+          // App state write — any signed-in user may use a published app (members
+          // included), so this sits BEFORE the admin-only gate below. It writes
+          // only the app's own sandbox; quota errors surface as 413.
+          if (api === "app_state") {
+            const body = (await readBody(req)) as
+              | { id?: string; op?: string; scope?: string; key?: string; value?: unknown }
+              | undefined;
+            const id = (body?.id ?? "").trim();
+            const scope = (body?.scope ?? "app") as StateScope;
+            if (scope !== "app" && scope !== "viewer") return json(400, { ok: false, error: "bad scope" });
+            const meta = id ? store.getPublishedMeta(id) : null;
+            if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found" });
+            const owner = scope === "viewer" ? session.identity : null;
+            const key = String(body?.key ?? "");
+            try {
+              if (body?.op === "set") {
+                const entry = appStore.set(id, scope, owner, key, body.value, new Date().toISOString());
+                store.audit(session.identity, "app_state_set", { id, scope, key });
+                return json(200, { ok: true, entry });
+              }
+              if (body?.op === "delete")
+                return json(200, { ok: true, deleted: appStore.delete(id, scope, owner, key) });
+              return json(400, { ok: false, error: "bad op" });
+            } catch (e) {
+              if (e instanceof AppStoreQuotaError) return json(413, { ok: false, error: e.message });
+              throw e;
+            }
+          }
+
+          // Author-or-admin gate for a per-app mutation (archive, visibility):
           // 404 if missing/archived, 403 unless the caller authored it or is an
           // admin. Returns false having ALREADY sent the response, so the handler
           // returns immediately. These two are allowed before the blanket admin
-          // gate below (a member can manage their own dashboard); every OTHER
+          // gate below (a member can manage their own app); every OTHER
           // mutation stays admin-only. The agent never reaches here — it has no
           // web session — so promotion-to-public is always a human decision.
-          const mayMutateDashboard = (id: string): boolean => {
+          const mayMutateApp = (id: string): boolean => {
             const rep = id ? store.getPublishedMeta(id) : null;
             if (!rep || rep.archivedAt) {
-              json(404, { ok: false, error: "No active dashboard with that id." });
+              json(404, { ok: false, error: "No active app with that id." });
               return false;
             }
             if (rep.createdBy !== session.identity && !canApprove(session.role)) {
               store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
-              json(403, { ok: false, error: "Only the dashboard's author or an admin can manage it." });
+              json(403, { ok: false, error: "Only the app's author or an admin can manage it." });
               return false;
             }
             return true;
@@ -1056,26 +1184,39 @@ const httpServer = http.createServer(async (req, res) => {
           if (api === "archive") {
             const body = (await readBody(req)) as { id?: string } | undefined;
             const id = (body?.id ?? "").trim();
-            if (!mayMutateDashboard(id)) return;
+            if (!mayMutateApp(id)) return;
             const ok = store.archivePublished(id);
-            store.audit(session.identity, "unpublish_dashboard", { id, ok });
+            store.audit(session.identity, "unpublish_app", { id, ok });
             return json(200, { ok, flash: "Archived — its link no longer works." });
           }
 
-          // Restore an archived dashboard. Author-or-admin, but (unlike the other
-          // per-dashboard mutations) it operates on an ARCHIVED row, so it gates
-          // here rather than via mayMutateDashboard (which 404s archived rows).
+          // Rename (title only) — author-or-admin, same gate as archive/visibility.
+          if (api === "rename") {
+            const body = (await readBody(req)) as { id?: string; title?: string } | undefined;
+            const id = (body?.id ?? "").trim();
+            const title = (body?.title ?? "").trim();
+            if (!title) return json(400, { ok: false, error: "Title can't be empty." });
+            if (title.length > 200) return json(400, { ok: false, error: "Title is too long (max 200 characters)." });
+            if (!mayMutateApp(id)) return;
+            const ok = store.renamePublished(id, title);
+            store.audit(session.identity, "rename_app", { id, ok });
+            return json(200, { ok, title, flash: "Renamed." });
+          }
+
+          // Restore an archived app. Author-or-admin, but (unlike the other
+          // per-app mutations) it operates on an ARCHIVED row, so it gates
+          // here rather than via mayMutateApp (which 404s archived rows).
           if (api === "unarchive") {
             const body = (await readBody(req)) as { id?: string } | undefined;
             const id = (body?.id ?? "").trim();
             const rep = id ? store.getPublishedMeta(id) : null;
-            if (!rep || !rep.archivedAt) return json(404, { ok: false, error: "No archived dashboard with that id." });
+            if (!rep || !rep.archivedAt) return json(404, { ok: false, error: "No archived app with that id." });
             if (rep.createdBy !== session.identity && !canApprove(session.role)) {
               store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
-              return json(403, { ok: false, error: "Only the dashboard's author or an admin can restore it." });
+              return json(403, { ok: false, error: "Only the app's author or an admin can restore it." });
             }
             const ok = store.unarchivePublished(id);
-            store.audit(session.identity, "unarchive_dashboard", { id, ok });
+            store.audit(session.identity, "unarchive_app", { id, ok });
             return json(ok ? 200 : 409, {
               ok,
               flash: ok ? "Restored as team-only — an admin can make it public again." : "Already restored.",
@@ -1088,22 +1229,22 @@ const httpServer = http.createServer(async (req, res) => {
             const visibility = body?.visibility;
             if (visibility !== "team" && visibility !== "public")
               return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
-            if (!mayMutateDashboard(id)) return;
-            // Making a dashboard PUBLIC (a credential-free link) is an ADMIN action
+            if (!mayMutateApp(id)) return;
+            // Making an app PUBLIC (a credential-free link) is an ADMIN action
             // (I9) — an author can take it back to team-only, but not expose it.
             if (visibility === "public" && !canApprove(session.role)) {
               store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
-              return json(403, { ok: false, error: "Only an admin can make a dashboard public." });
+              return json(403, { ok: false, error: "Only an admin can make an app public." });
             }
             const ok = store.setReportVisibility(id, visibility);
-            store.audit(session.identity, "dashboard_visibility_set", { id, visibility, ok });
+            store.audit(session.identity, "app_visibility_set", { id, visibility, ok });
             return json(ok ? 200 : 404, {
               ok,
               flash: ok
                 ? visibility === "public"
                   ? "Now PUBLIC — anyone with the /p link can open it, no login required."
                   : "Now team-only."
-                : "No active dashboard with that id.",
+                : "No active app with that id.",
             });
           }
 
@@ -1256,7 +1397,7 @@ const httpServer = http.createServer(async (req, res) => {
         return json(404, { ok: false, error: "unknown endpoint" });
       }
 
-      // A logged-OUT visitor to /admin/p/<id> for a PUBLIC dashboard should see
+      // A logged-OUT visitor to /admin/p/<id> for a PUBLIC app should see
       // the public view, not the login wall — bounce them to /p/<id>. (Signed-in
       // users fall through to the SPA, which renders the full team view.)
       const pm = reqPath.match(/^\/admin\/p\/([^/]+)$/);
