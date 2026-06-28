@@ -637,6 +637,7 @@ function appProvenance(
     format: meta.format,
     visibility: meta.visibility,
     refreshSeconds: meta.refreshSeconds,
+    params: meta.params ?? [],
     createdBy: meta.createdBy,
     createdAt: meta.createdAt,
     archivedAt: meta.archivedAt,

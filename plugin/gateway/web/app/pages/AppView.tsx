@@ -11,7 +11,7 @@ import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
 import { appShareUrl, relTime } from "../format";
-import type { AppData, PanelProvenance } from "../types";
+import type { AppData, AppParam, PanelProvenance } from "../types";
 
 /** A refresh interval as a compact label: 30s · 5m · 1h (rolls up the units). */
 function fmtInterval(s: number): string {
@@ -51,6 +51,22 @@ export function AppView() {
   const cancelRename = useRef(false);
   const refreshing = useRef(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  // Current values of the app's interactive params (the control bar). Seeded from
+  // the declared defaults; a change re-runs the panels bound to the new value.
+  const [paramVals, setParamVals] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!data?.params?.length) return;
+    setParamVals((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      for (const p of data.params) if (!(p.name in next)) ((next[p.name] = String(p.default)), (changed = true));
+      return changed ? next : prev;
+    });
+  }, [data?.params]);
+  // ?p.<name>=… for the frame src, so /admin/frame re-runs bound to the selection.
+  const paramQuery = (data?.params ?? [])
+    .map((p) => `p.${encodeURIComponent(p.name)}=${encodeURIComponent(paramVals[p.name] ?? String(p.default))}`)
+    .join("&");
 
   const visibility = data?.visibility ?? "team";
   const link = appShareUrl({ id, visibility });
@@ -248,6 +264,16 @@ export function AppView() {
           </Menu>
         </div>
       </header>
+      {data && data.params.length > 0 ? (
+        <ParamBar
+          params={data.params}
+          values={paramVals}
+          onChange={(name, val) => {
+            setParamVals((v) => ({ ...v, [name]: val }));
+            setNonce((n) => n + 1); // reload the frame bound to the new value
+          }}
+        />
+      ) : null}
       {loading ? (
         <div className="flex flex-1 items-center justify-center">
           <Loading />
@@ -264,7 +290,7 @@ export function AppView() {
             key={nonce}
             ref={frameRef}
             title={data.title}
-            src={`/admin/frame/${encodeURIComponent(id)}?t=${nonce}`}
+            src={`/admin/frame/${encodeURIComponent(id)}?${paramQuery ? paramQuery + "&" : ""}t=${nonce}`}
             // allow-forms so an app's <form> submit handler fires (the natural
             // app pattern); the frame CSP pins form-action 'none', so no actual
             // submission can leave the sandbox. Must match the response CSP's
@@ -305,6 +331,61 @@ export function AppView() {
  *  prompt (update_app, same link); anyone else can only duplicate it
  *  (get_app → publish_app a new copy), since update_app is
  *  author-gated. */
+/** The control bar: a stone strip of widgets for an app's declared params (chrome
+ *  — no accent color). Changing one re-runs the panels bound to the new value. */
+function ParamBar({
+  params,
+  values,
+  onChange,
+}: {
+  params: AppParam[];
+  values: Record<string, string>;
+  onChange: (name: string, value: string) => void;
+}) {
+  return (
+    <div className="flex flex-none flex-wrap items-center gap-x-4 gap-y-2 border-b border-stone-200 bg-stone-50/80 px-4 py-2">
+      {params.map((p) => (
+        <label key={p.name} className="flex items-center gap-1.5 text-xs text-stone-600">
+          <span>{p.label || p.name}</span>
+          <ParamControl p={p} value={values[p.name] ?? String(p.default)} onChange={(v) => onChange(p.name, v)} />
+        </label>
+      ))}
+    </div>
+  );
+}
+
+function ParamControl({ p, value, onChange }: { p: AppParam; value: string; onChange: (v: string) => void }) {
+  const cls =
+    "rounded-md border border-stone-300 bg-white px-2 py-0.5 text-xs text-stone-900 outline-none focus:border-stone-400 focus:ring-2 focus:ring-stone-200";
+  if (p.type === "enum")
+    return (
+      <select className={cls} value={value} onChange={(e) => onChange(e.target.value)}>
+        {(p.options ?? []).map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label || o.value}
+          </option>
+        ))}
+      </select>
+    );
+  if (p.type === "bool")
+    return (
+      <select className={cls} value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="true">Yes</option>
+        <option value="false">No</option>
+      </select>
+    );
+  return (
+    <input
+      type={p.type === "int" ? "number" : p.type === "date" ? "date" : "text"}
+      className={cls}
+      value={value}
+      min={p.type === "int" ? p.min : undefined}
+      max={p.type === "int" ? p.max : undefined}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
 function EditDialog({
   open,
   onClose,

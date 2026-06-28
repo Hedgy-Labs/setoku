@@ -155,6 +155,19 @@ export interface PanelProvenance {
   refreshError: string | null;
 }
 
+/** A declared interactive input (mirrors lib/params.ts AppParam). The viewer's
+ *  value is bound into a panel's SQL; the control bar renders one widget each. */
+export interface AppParam {
+  name: string;
+  label?: string;
+  type: "date" | "int" | "text" | "bool" | "enum";
+  default: string | number | boolean;
+  options?: { value: string; label?: string }[];
+  min?: number;
+  max?: number;
+  maxLength?: number;
+}
+
 /** The team viewer's data: app meta + freshly-rendered panel provenance.
  *  The panel ROWS render in the sandboxed /admin/frame/<id>; this is the chrome. */
 export interface AppData {
@@ -163,6 +176,7 @@ export interface AppData {
   format: "html" | "app";
   visibility: ReportVisibility;
   refreshSeconds: number | null;
+  params: AppParam[];
   createdBy: string;
   createdAt: string;
   archivedAt: string | null;
