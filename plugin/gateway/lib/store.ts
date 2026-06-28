@@ -356,6 +356,20 @@ export class KnowledgeStore {
       error TEXT,
       PRIMARY KEY (dashboard_id, panel_key)
     )`);
+    // Persisted doc embeddings (I8 opt-in hybrid retrieval). Lets a restart LOAD
+    // vectors instead of re-embedding every doc, so startup is O(changed docs) not
+    // O(corpus) — the thing that otherwise breaks at ~1000s of docs. Keyed by
+    // (type,name) + a content hash + model id: only docs whose text or the model
+    // changed are re-embedded. Cheap (a 384-d vector is ~1.5KB).
+    this.db.run(`CREATE TABLE IF NOT EXISTS doc_embeddings (
+      doc_type TEXT NOT NULL,
+      doc_name TEXT NOT NULL,
+      model TEXT NOT NULL,
+      dim INTEGER NOT NULL,
+      hash TEXT NOT NULL,
+      vec BLOB NOT NULL,
+      PRIMARY KEY (doc_type, doc_name)
+    )`);
   }
 
   /* ------------------------------- docs ------------------------------- */
@@ -448,6 +462,47 @@ export class KnowledgeStore {
     return this.listDocs()
       .filter((d) => d.type === "gotcha")
       .map((d) => d.body || d.name);
+  }
+
+  /* --------------------------- doc embeddings -------------------------- */
+
+  /** All persisted embeddings for a model, keyed by doc name (hash lets the
+   *  caller skip re-embedding unchanged docs). Empty if embeddings never ran. */
+  getDocEmbeddings(model: string): Map<string, { hash: string; vec: number[] }> {
+    const rows = this.db
+      .query("SELECT doc_name, hash, dim, vec FROM doc_embeddings WHERE model = ?")
+      .all(model) as { doc_name: string; hash: string; dim: number; vec: Uint8Array }[];
+    const out = new Map<string, { hash: string; vec: number[] }>();
+    for (const r of rows) {
+      // copy into a fresh, 4-byte-aligned buffer before viewing as Float32
+      const bytes = new Uint8Array(r.vec);
+      const f = new Float32Array(bytes.buffer, 0, r.dim);
+      out.set(r.doc_name, { hash: r.hash, vec: Array.from(f) });
+    }
+    return out;
+  }
+
+  /** Upsert one doc's embedding (vector stored as a compact Float32 BLOB). */
+  putDocEmbedding(
+    type: DocType,
+    name: string,
+    model: string,
+    hash: string,
+    vec: number[],
+  ): void {
+    const buf = Buffer.from(new Float32Array(vec).buffer);
+    this.db.run(
+      `INSERT INTO doc_embeddings (doc_type, doc_name, model, dim, hash, vec)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(doc_type, doc_name) DO UPDATE SET
+         model = excluded.model, dim = excluded.dim, hash = excluded.hash, vec = excluded.vec`,
+      [type, name, model, vec.length, hash, buf],
+    );
+  }
+
+  /** Drop a doc's embedding (on delete). */
+  deleteDocEmbedding(type: DocType, name: string): void {
+    this.db.run("DELETE FROM doc_embeddings WHERE doc_type = ? AND doc_name = ?", [type, name]);
   }
 
   /* ---------------------------- corrections ---------------------------- */

@@ -229,7 +229,7 @@ if (store.empty) {
 // background so startup isn't blocked; find_context falls back to keyword
 // retrieval until (and unless) it's ready. Inert when SETOKU_EMBEDDINGS!=1.
 const embedIndex = EmbedIndex.create();
-embedIndex.start(() => store.listDocs());
+embedIndex.start(() => store.listDocs(), store);
 
 if (store.accountCount === 0) {
   console.error(

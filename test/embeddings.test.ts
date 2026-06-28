@@ -6,9 +6,13 @@
  * present: disabled → null embedder, inert index, keyword retrieval unchanged.
  */
 import { describe, expect, it } from "bun:test";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fuseRRF, retrieve, type ScorableDoc } from "../plugin/gateway/lib/search";
 import { embeddingsEnabled, getEmbedder } from "../plugin/gateway/lib/embeddings";
 import { EmbedIndex } from "../plugin/gateway/lib/embed-index";
+import { KnowledgeStore } from "../plugin/gateway/lib/store";
 
 const DOCS: ScorableDoc[] = [
   { type: "metric", name: "ticket_revenue", meta: { keywords: ["tickets", "seats"] }, body: "seat sales" },
@@ -50,6 +54,22 @@ describe("reciprocal-rank fusion", () => {
     // disjoint lists: the heavy list's top (c) must outrank the light list's top (a)
     const fused = fuseRRF([["c"], ["a"]], 60, [5, 1]);
     expect(fused[0]).toBe("c");
+  });
+});
+
+describe("vector persistence (startup is O(changed docs), not O(corpus))", () => {
+  it("round-trips embeddings as Float32 BLOBs, scoped by model", () => {
+    const db = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "emb-store-")), "k.db");
+    const s = new KnowledgeStore(db);
+    const vec = [0.1, -0.25, 0.5, 0.75];
+    s.putDocEmbedding("metric", "revenue", "bge-small-en-v1.5", "h1", vec);
+    const got = s.getDocEmbeddings("bge-small-en-v1.5");
+    expect(got.get("revenue")?.hash).toBe("h1");
+    const r = got.get("revenue")!.vec;
+    expect(r.length).toBe(4);
+    for (let i = 0; i < vec.length; i++) expect(r[i]).toBeCloseTo(vec[i], 5);
+    expect(s.getDocEmbeddings("some-other-model").size).toBe(0); // model-scoped
+    s.db.close();
   });
 });
 
