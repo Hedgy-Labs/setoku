@@ -43,7 +43,10 @@ export interface CorrectionDraft {
   meta: Record<string, string | string[]>;
 }
 
-export interface Correction {
+export type CorrectionStatus = "pending" | "accepted" | "rejected";
+
+/** Fields every correction has, regardless of lifecycle stage. */
+interface CorrectionBase {
   id: number;
   ts: string;
   user: string;
@@ -55,21 +58,38 @@ export interface Correction {
    *  proposals, where `content` is used as the savable text instead. */
   fact: string | null;
   relatesTo: string | null;
-  status: "pending" | "accepted" | "rejected";
-  /** The drafted doc-edit approving this would commit (cockpit). Null = undrafted.
-   *  Optional on the in-memory shape (test fixtures omit it); rowToCorrection
-   *  always populates it from the DB. */
+}
+
+/**
+ * A correction is a discriminated union on `status`, so the status-dependent
+ * fields can't disagree with the lifecycle stage (#34): a *pending* item may
+ * carry a draft + advisory flags; a *rejected* item ALWAYS has a reason; an
+ * *accepted* item carries neither. "Rejected with no reason" / "pending with a
+ * reject reason" / "accepted still carrying a draft" are unrepresentable. The
+ * sole constructor is `rowToCorrection`; the JSON served to the admin UI is
+ * flattened back to one shape at the wire boundary, so this is gateway-internal.
+ */
+export interface PendingCorrection extends CorrectionBase {
+  status: "pending";
+  /** The drafted doc-edit approving this would commit (cockpit). Null = undrafted. */
   draft?: CorrectionDraft | null;
   /** Advisory flags from the auto-draft/lint pass: dupe, contradiction, lint, provenance. */
   flags?: string[];
   /** Who drafted (the draft-only janitor identity), and when. Null = undrafted. */
   draftedBy?: string | null;
   draftedTs?: string | null;
-  /** True when the auto-reject janitor (not a human) rejected it — soft + reversible. */
-  rejectedByBot?: boolean;
-  /** Why it was rejected (janitor reason or human reason). */
-  rejectReason?: string | null;
 }
+export interface AcceptedCorrection extends CorrectionBase {
+  status: "accepted";
+}
+export interface RejectedCorrection extends CorrectionBase {
+  status: "rejected";
+  /** Why it was rejected — REQUIRED (a rejected correction always has a reason). */
+  rejectReason: string;
+  /** True when the auto-reject janitor (not a human) rejected it — soft + reversible. */
+  rejectedByBot: boolean;
+}
+export type Correction = PendingCorrection | AcceptedCorrection | RejectedCorrection;
 
 /** A local account for the web admin surface (Phase 5.1). */
 export interface Account {
@@ -548,6 +568,12 @@ export class KnowledgeStore {
     );
   }
 
+  // Overloads narrow the result to the variant matching the requested status, so
+  // callers get e.g. PendingCorrection[] (with `draft`) without re-narrowing.
+  listCorrections(status: "pending"): PendingCorrection[];
+  listCorrections(status: "accepted"): AcceptedCorrection[];
+  listCorrections(status: "rejected"): RejectedCorrection[];
+  listCorrections(status?: string): Correction[];
   listCorrections(status: string = "pending"): Correction[] {
     const rows = this.db
       .query(
@@ -1208,6 +1234,25 @@ function rowToCorrection(row: Record<string, unknown>): Correction {
       return fallback;
     }
   };
+  const base: CorrectionBase = {
+    id: Number(row.id),
+    ts: String(row.ts),
+    user: String(row.user),
+    kind: String(row.kind),
+    content: String(row.content ?? ""),
+    fact: (row.fact as string) ?? null,
+    relatesTo: (row.relates_to as string) ?? null,
+  };
+  const status = row.status as CorrectionStatus;
+  if (status === "rejected")
+    return {
+      ...base,
+      status,
+      // rejectCorrection always sets a reason; default keeps the type honest.
+      rejectReason: (row.reject_reason as string) ?? "",
+      rejectedByBot: !!row.rejected_by_bot,
+    };
+  if (status === "accepted") return { ...base, status };
   const draftName = row.draft_name as string | null;
   const draft: CorrectionDraft | null =
     row.draft_type && draftName
@@ -1219,20 +1264,12 @@ function rowToCorrection(row: Record<string, unknown>): Correction {
         }
       : null;
   return {
-    id: Number(row.id),
-    ts: String(row.ts),
-    user: String(row.user),
-    kind: String(row.kind),
-    content: String(row.content ?? ""),
-    fact: (row.fact as string) ?? null,
-    relatesTo: (row.relates_to as string) ?? null,
-    status: row.status as Correction["status"],
+    ...base,
+    status: "pending",
     draft,
     flags: parse<string[]>(row.flags, []),
     draftedBy: (row.drafted_by as string) ?? null,
     draftedTs: (row.drafted_ts as string) ?? null,
-    rejectedByBot: !!row.rejected_by_bot,
-    rejectReason: (row.reject_reason as string) ?? null,
   };
 }
 

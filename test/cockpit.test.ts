@@ -93,8 +93,8 @@ describe("cockpit: draft + flags persistence (piece B)", () => {
     );
     expect(ok).toBe(true);
     expect(store.docCount).toBe(0); // a draft commits nothing
-    const corr = store.getCorrection(id)!;
-    expect(corr.status).toBe("pending");
+    const corr = store.getCorrection(id);
+    if (corr?.status !== "pending") throw new Error("expected a pending correction");
     expect(corr.draft?.body).toBe("SELECT 1");
     expect(corr.flags).toEqual(["lint", "dupe"]);
     expect(corr.draftedBy).toBe("janitor@bot");
@@ -108,8 +108,8 @@ describe("cockpit: reject is soft, audited, reversible (piece C)", () => {
     const store = freshStore();
     const id = store.addCorrection({ user: "a", kind: "gotcha", fact: "noise" });
     applyApprovalAction(store, "boss", { id, action: "rejected", reason: "duplicate of existing" });
-    const corr = store.getCorrection(id)!;
-    expect(corr.status).toBe("rejected");
+    const corr = store.getCorrection(id);
+    if (corr?.status !== "rejected") throw new Error("expected a rejected correction");
     expect(corr.rejectReason).toBe("duplicate of existing");
     expect(corr.rejectedByBot).toBe(false);
   });
@@ -118,14 +118,13 @@ describe("cockpit: reject is soft, audited, reversible (piece C)", () => {
     const store = freshStore();
     const id = store.addCorrection({ user: "a", kind: "gotcha", fact: "maybe good" });
     expect(store.rejectCorrection(id, "drafted SQL errors", "janitor@bot", true)).toBe(true);
-    let corr = store.getCorrection(id)!;
-    expect(corr.status).toBe("rejected");
-    expect(corr.rejectedByBot).toBe(true);
+    const rejected = store.getCorrection(id);
+    if (rejected?.status !== "rejected") throw new Error("expected a rejected correction");
+    expect(rejected.rejectedByBot).toBe(true);
 
     expect(store.unrejectCorrection(id, "boss")).toBe(true);
-    corr = store.getCorrection(id)!;
-    expect(corr.status).toBe("pending");
-    expect(corr.rejectedByBot).toBe(false);
-    expect(corr.rejectReason).toBeNull();
+    // back to pending — a pending correction simply has no reject info (the union
+    // makes "pending with a reject reason" unrepresentable).
+    expect(store.getCorrection(id)?.status).toBe("pending");
   });
 });

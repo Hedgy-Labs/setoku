@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { KnowledgeStore, type Correction, type KnowledgeDoc } from "../plugin/gateway/lib/store";
+import { KnowledgeStore, type PendingCorrection, type KnowledgeDoc } from "../plugin/gateway/lib/store";
 import {
   buildKnowledgeView,
   compact,
@@ -33,7 +33,7 @@ function doc(over: Partial<KnowledgeDoc> & { name: string; type: KnowledgeDoc["t
   };
 }
 
-function correction(over: Partial<Correction> & { id: number; content: string }): Correction {
+function correction(over: Partial<PendingCorrection> & { id: number; content: string }): PendingCorrection {
   return {
     ts: "2026-01-02T00:00:00Z",
     user: "analyst@example.com",

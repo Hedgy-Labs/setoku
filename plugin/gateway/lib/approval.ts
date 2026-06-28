@@ -51,7 +51,7 @@ function gotchaDocName(relatesTo: string | null | undefined, fact: string): stri
  * RENDERING the pending queue (the cockpit shows this as the editable draft).
  */
 export function defaultDraft(corr: Correction): CorrectionDraft | null {
-  if (corr.draft) return corr.draft;
+  if (corr.status === "pending" && corr.draft) return corr.draft;
   if (corr.kind === "gotcha") {
     // store only the concise FACT as knowledge (#10, avenue 1); the supporting
     // context stays in the corrections record, not the gotcha doc.
