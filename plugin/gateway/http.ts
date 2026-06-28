@@ -28,6 +28,7 @@ import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
 import { buildServer } from "./app";
+import { EmbedIndex } from "./lib/embed-index";
 import { loadConfig, resolveProjectDir } from "./lib/config";
 import {
   KnowledgeStore,
@@ -224,6 +225,12 @@ if (store.empty) {
   const imported = seedFromFiles(store, projectDir);
   if (imported > 0) store.audit("system", "seed_from_files", { imported });
 }
+// Semantic index for hybrid retrieval (I8 opt-in local embeddings). Built in the
+// background so startup isn't blocked; find_context falls back to keyword
+// retrieval until (and unless) it's ready. Inert when SETOKU_EMBEDDINGS!=1.
+const embedIndex = EmbedIndex.create();
+embedIndex.start(() => store.listDocs(), store);
+
 if (store.accountCount === 0) {
   console.error(
     "setoku gateway: no admin accounts yet — the approval surface (/admin) has no one who can sign in.\n" +
@@ -1302,6 +1309,7 @@ const httpServer = http.createServer(async (req, res) => {
       // can read untrusted pending content without ever committing knowledge.
       canDraft: auth.janitor === true,
       canReject: auth.janitor === true,
+      embedIndex,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

@@ -3,6 +3,7 @@ name: CrmContact
 table: crm.contact
 summary: Salesforce-style marketing contacts. NOT unique per person — duplicates and dirty emails by design. is_test__c flags internal records.
 keywords: [crm, contact, contacts, salesforce, fan, customer, marketing list, email, duplicate, dedupe, do not email, notes, cs notes, service notes, complaints, preferences, feedback]
+links: [unique_fans, identity_resolution, TicketingAccount]
 ---
 
 ## Semantics

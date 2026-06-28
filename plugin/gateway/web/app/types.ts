@@ -72,11 +72,16 @@ export interface KnowledgeMember {
   claim: string;
   body: string;
   verified: boolean;
+  /** Per-doc flags: "conflict", "duplicate", "verbose", "orphan". */
   flags: string[];
   updatedBy: string | null;
   updatedAt: string | null;
   proposedBy: string | null;
   uses: number;
+  /** Outbound links (doc names this one references). */
+  links: string[];
+  /** Backlinks (doc names that reference this one). */
+  backlinks: string[];
 }
 
 export interface SubjectGroup {
@@ -87,12 +92,28 @@ export interface SubjectGroup {
   flags: string[];
 }
 
+export interface KnowledgeHealth {
+  contradictions: number;
+  duplicates: number;
+  verbose: number;
+  stale: number;
+  /** Canonical docs disconnected from the link graph. */
+  orphans: number;
+  /** Doc pairs that look like they should link but don't. */
+  suggestedLinks: number;
+  /** Declared links that point at no existing doc. */
+  brokenLinks: number;
+}
+
 export interface KnowledgeView {
   docs: number;
   subjects: SubjectGroup[];
-  health: { contradictions: number; duplicates: number; verbose: number; stale: number };
+  health: KnowledgeHealth;
   contradictions: { kind: "contradiction"; subject: string; a: string; b: string; reason: string }[];
   merges: { kind: "merge"; a: string; b: string; subject: string; similarity: number; reason: string }[];
+  orphans: { kind: "orphan"; ref: string; subject: string; reason: string }[];
+  connections: { kind: "connection"; a: string; b: string; similarity: number; reason: string }[];
+  brokenLinks: { from: string; ref: string }[];
 }
 
 export interface KnowledgeDoc {

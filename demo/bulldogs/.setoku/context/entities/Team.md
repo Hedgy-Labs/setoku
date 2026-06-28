@@ -3,6 +3,7 @@ name: Team
 table: ticketing.team
 summary: The league dimension — the 29 opponents the Bonita Bulldogs face (30 teams total). Maps the 3-letter opponent_cd used on events to a full team name and city.
 keywords: [team, teams, opponent, opponents, league, who did we play, rivals, matchup, opponent code, schedule]
+links: [Event]
 ---
 
 ## Semantics

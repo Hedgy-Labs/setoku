@@ -3,6 +3,7 @@ name: GamedayIncident
 table: ops.incident
 summary: Gameday incident log from the operations/security system — cleanups, fan ejections, medical calls, lost & found, missing items/children, security breaches, weather delays. One row per incident, completed games only. No money.
 keywords: [incident, incidents, gameday ops, operations, security, ejection, fan ejection, missing child, lost child, lost and found, missing item, security breach, medical, cleanup, weather delay, safety]
+links: [Event]
 ---
 
 ## Semantics

@@ -2,6 +2,7 @@
 name: overview
 summary: Bonita Bulldogs — REAL-WORLD shape. The club's data lives across several disconnected vendor systems (one Postgres schema each), with no shared keys, mixed money units, 3 seasons of history, and real mess (duplicate CRM contacts, dirty emails, refunds, resale, vendor staff, partial merch). Media rights are the single biggest revenue line.
 keywords: [overview, what data, source systems, schemas, vendors, ticketing, crm, sponsorship, pos, concessions, merch, hr, marketing, ops, incidents, media, broadcast, how is data organized, where does X live]
+links: [Event, SeatTxn, MediaRights, total_revenue, media_rights_revenue, ticket_revenue, fnb_per_cap, sponsorship_revenue, identity_resolution, unique_fans]
 ---
 
 # Bonita Bulldogs — how the data actually lives
