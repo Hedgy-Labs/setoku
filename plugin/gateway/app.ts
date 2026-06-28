@@ -17,7 +17,7 @@ import {
 } from "./lib/config";
 import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
-import { matchByTokens, retrieve, selectGotchas } from "./lib/search";
+import { buildLinkGraph, matchByTokens, retrieve, selectGotchas } from "./lib/search";
 import { synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
 import { KnowledgeStore, type DashboardPanel, type DocType } from "./lib/store";
@@ -525,10 +525,12 @@ server.registerTool(
     },
   },
   async ({ type, name, body, meta }) => {
-    store.upsertDoc({ type, name, meta: meta ?? {}, body }, user);
-    store.audit(user, "upsert_context", { type, name });
-    // keep the semantic index fresh (no-op if embeddings disabled)
-    await embedIndex?.upsert({
+    // Links must resolve to exactly one existing doc, validated HERE so a dangling
+    // or ambiguous link can never enter the store (bad data unrepresentable, not
+    // checked-for after the fact). Build the graph over the prospective doc set
+    // (existing docs with this one applied) and reject if this doc has any
+    // unresolved link.
+    const incoming = {
       type,
       name,
       meta: meta ?? {},
@@ -536,7 +538,21 @@ server.registerTool(
       verified: true,
       updatedBy: user,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    const prospective = [
+      ...store.listDocs().filter((d) => !(d.type === type && d.name === name)),
+      incoming,
+    ];
+    const bad = buildLinkGraph(prospective).unresolved.filter((u) => u.from === name);
+    if (bad.length)
+      return errorText(
+        `Won't save: ${bad.length} link(s) don't resolve to a doc — ${bad.map((b) => `"${b.ref}"`).join(", ")}. ` +
+          "Use an exact doc name (or type:name if the name is shared across types). Fix or drop them in meta.links.",
+      );
+    store.upsertDoc({ type, name, meta: meta ?? {}, body }, user);
+    store.audit(user, "upsert_context", { type, name });
+    // keep the semantic index fresh (no-op if embeddings disabled)
+    await embedIndex?.upsert(incoming);
     return text(
       `Saved [${type}] ${name} to the knowledge store (attributed to ${user}; revision recorded).`,
     );

@@ -16,7 +16,7 @@
  *
  * Quality is measured by lib/quality.ts and gated by the #11 harness.
  */
-import { buildLinkGraph, jaccard, type LinkGraph, tokenize } from "./search";
+import { buildLinkGraph, docRef, jaccard, type LinkGraph, tokenize } from "./search";
 import type { Correction, DocType, KnowledgeDoc } from "./store";
 
 /* --------------------------------- types --------------------------------- */
@@ -480,8 +480,8 @@ export function findOrphans(docs: KnowledgeDoc[], graph?: LinkGraph): OrphanCand
   const out: OrphanCandidate[] = [];
   for (const d of docs) {
     if (ORPHAN_EXEMPT.has(d.type)) continue;
-    const outDeg = g.out.get(d.name)?.size ?? 0;
-    const inDeg = g.back.get(d.name)?.size ?? 0;
+    const outDeg = g.out.get(docRef(d))?.size ?? 0;
+    const inDeg = g.back.get(docRef(d))?.size ?? 0;
     if (outDeg === 0 && inDeg === 0)
       out.push({
         kind: "orphan",
@@ -522,7 +522,7 @@ export function suggestConnections(
   const out: ConnectionCandidate[] = [];
   for (let i = 0; i < canon.length; i++) {
     for (let j = i + 1; j < canon.length; j++) {
-      if (linked(canon[i].name, canon[j].name)) continue;
+      if (linked(docRef(canon[i]), docRef(canon[j]))) continue;
       const sim = jaccard(toks[i], toks[j]);
       if (sim >= threshold && sim < mergeThreshold)
         out.push({
@@ -715,8 +715,9 @@ export function buildKnowledgeView(
       updatedAt: d.updatedAt,
       proposedBy,
       uses: usage[d.name] ?? 0,
-      links: [...(graph.out.get(d.name) ?? [])].sort(),
-      backlinks: [...(graph.back.get(d.name) ?? [])].sort(),
+      // graph is keyed by DocRef; show the readable target names in the browser
+      links: [...(graph.out.get(docRef(d)) ?? [])].map((r) => graph.nameOf.get(r) ?? r).sort(),
+      backlinks: [...(graph.back.get(docRef(d)) ?? [])].map((r) => graph.nameOf.get(r) ?? r).sort(),
     };
   };
 

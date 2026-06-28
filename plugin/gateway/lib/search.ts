@@ -139,6 +139,17 @@ function lc(s: unknown): string {
   return String(s ?? "").trim().toLowerCase();
 }
 
+/**
+ * Canonical doc identity. The store's primary key is (type, name) — two docs may
+ * share a name across types (entity `revenue` + metric `revenue`). Keying any
+ * retrieval structure by name alone silently merges them; keying by this DocRef
+ * makes that collision impossible by construction. Case-insensitive for stable
+ * matching; the doc object (with its original-case name) is the map VALUE.
+ */
+export function docRef(d: { type: string; name: string }): string {
+  return `${lc(d.type)}:${lc(d.name)}`;
+}
+
 /** The raw, unresolved link refs a doc declares (meta.links + a gotcha's
  *  relates_to). Targets are doc names/tables; resolution happens in buildLinkGraph. */
 export function rawLinks(doc: ScorableDoc): string[] {
@@ -153,62 +164,84 @@ export function rawLinks(doc: ScorableDoc): string[] {
 }
 
 export interface LinkGraph {
-  /** doc name → resolved out-link target doc names. */
+  /** DocRef → resolved out-link target DocRefs. */
   out: Map<string, Set<string>>;
-  /** doc name → doc names that link TO it (inbound / backlinks). */
+  /** DocRef → DocRefs that link TO it (inbound / backlinks). */
   back: Map<string, Set<string>>;
-  /** Declared refs that resolved to no doc — surfaced by lint as broken links. */
+  /** Declared refs that resolved to no doc OR were ambiguous — broken links. */
   unresolved: { from: string; ref: string }[];
+  /** DocRef → original-case doc name, for display. */
+  nameOf: Map<string, string>;
 }
 
 /**
- * Build the link graph over a doc set. A ref resolves to a doc by exact name,
- * then by meta.table, then by a unique substring of a name (the same tolerance
- * as store.getDoc). Self-links and unresolved refs are dropped from the graph
- * (the latter recorded in `unresolved` for lint). Pure + model-free.
+ * Resolve a link ref against a doc set. Exact only — a full `type:name` ref, a
+ * unique name, or a unique meta.table. An ambiguous name/table (collides across
+ * types) resolves to nothing, so it surfaces as a broken link rather than
+ * silently pointing at one of them. (Substring matching was removed — it
+ * mis-linked under other naming conventions.) Returns a DocRef or null.
+ */
+export function resolveLinkRef(
+  ref: string,
+  byName: Map<string, string[]>,
+  byTable: Map<string, string[]>,
+  refs: Set<string>,
+): string | null {
+  const r = lc(ref);
+  if (r.includes(":") && refs.has(r)) return r; // explicit type:name
+  const n = byName.get(r);
+  if (n) return n.length === 1 ? n[0] : null; // ambiguous name → unresolved
+  const t = byTable.get(r);
+  if (t) return t.length === 1 ? t[0] : null;
+  return null;
+}
+
+/**
+ * Build the link graph over a doc set, keyed by DocRef so same-named docs across
+ * types never merge. Self-links, ambiguous, and unresolved refs are excluded from
+ * the graph (the latter two recorded in `unresolved` for lint). Pure, model-free.
  */
 export function buildLinkGraph(docs: ScorableDoc[]): LinkGraph {
-  const byName = new Map<string, string>(); // lc(name) → canonical name
-  const byTable = new Map<string, string>();
+  const byName = new Map<string, string[]>(); // lc(name) → DocRef[] (>1 = ambiguous)
+  const byTable = new Map<string, string[]>();
+  const refs = new Set<string>();
+  const nameOf = new Map<string, string>();
   for (const d of docs) {
-    byName.set(lc(d.name), d.name);
+    const ref = docRef(d);
+    refs.add(ref);
+    nameOf.set(ref, d.name);
+    (byName.get(lc(d.name)) ?? byName.set(lc(d.name), []).get(lc(d.name))!).push(ref);
     const tbl = lc(d.meta.table);
-    if (tbl && !byTable.has(tbl)) byTable.set(tbl, d.name);
+    if (tbl) (byTable.get(tbl) ?? byTable.set(tbl, []).get(tbl)!).push(ref);
   }
-  const resolve = (ref: string): string | null => {
-    const n = lc(ref);
-    if (byName.has(n)) return byName.get(n)!;
-    if (byTable.has(n)) return byTable.get(n)!;
-    const hits = [...byName.entries()].filter(([k]) => k.includes(n));
-    return hits.length === 1 ? hits[0][1] : null;
-  };
 
   const out = new Map<string, Set<string>>();
   const back = new Map<string, Set<string>>();
   const unresolved: { from: string; ref: string }[] = [];
   for (const d of docs) {
-    out.set(d.name, out.get(d.name) ?? new Set());
-    back.set(d.name, back.get(d.name) ?? new Set());
+    out.set(docRef(d), new Set());
+    back.set(docRef(d), new Set());
   }
   for (const d of docs) {
+    const from = docRef(d);
     for (const ref of rawLinks(d)) {
-      const target = resolve(ref);
-      if (!target || target === d.name) {
+      const target = resolveLinkRef(ref, byName, byTable, refs);
+      if (!target || target === from) {
         if (!target) unresolved.push({ from: d.name, ref });
         continue;
       }
-      out.get(d.name)!.add(target);
-      back.get(target)!.add(d.name);
+      out.get(from)!.add(target);
+      back.get(target)!.add(from);
     }
   }
-  return { out, back, unresolved };
+  return { out, back, unresolved, nameOf };
 }
 
-/** A doc's 1-hop neighbors (out-links ∪ backlinks), undirected. */
-export function neighbors(graph: LinkGraph, name: string): string[] {
+/** A doc's 1-hop neighbors (out-links ∪ backlinks), undirected. Keyed by DocRef. */
+export function neighbors(graph: LinkGraph, ref: string): string[] {
   return [
-    ...(graph.out.get(name) ?? []),
-    ...(graph.back.get(name) ?? []),
+    ...(graph.out.get(ref) ?? []),
+    ...(graph.back.get(ref) ?? []),
   ].filter((v, i, a) => a.indexOf(v) === i);
 }
 
@@ -281,25 +314,27 @@ export function retrieve<T extends ScorableDoc>(
     synonyms: opts.synonyms,
     synonymDiscount: opts.synonymDiscount,
   });
-  const scoreByName = new Map(scored.map((s) => [s.doc.name, s.score]));
+  // All keyed by DocRef (type:name), never bare name — so two docs sharing a name
+  // across types can't collapse into one (the store's PK is (type,name)).
+  const byRef = new Map(docs.map((d) => [docRef(d), d]));
+  const scoreByRef = new Map(scored.map((s) => [docRef(s.doc), s.score]));
   // Direct ranking: keyword(+synonym) top-k, OR — when embedding scores are
-  // supplied — a reciprocal-rank fusion of the keyword and embedding rankings
-  // (hybrid). Fusion only reorders/augments which docs are "direct"; the rest of
-  // the pipeline (link expansion, gotchas) is unchanged.
+  // supplied (keyed by DocRef) — a reciprocal-rank fusion of the keyword and
+  // embedding rankings (hybrid). Fusion only reorders/augments which docs are
+  // "direct"; the rest of the pipeline (link expansion, gotchas) is unchanged.
   let direct: { doc: T; score: number }[];
   if (opts.embedScores && opts.embedScores.size) {
-    const byName = new Map(docs.map((d) => [d.name, d]));
-    const kwRanked = scored.map((s) => s.doc.name);
+    const kwRanked = scored.map((s) => docRef(s.doc));
     const emRanked = [...opts.embedScores.entries()]
       .sort((a, b) => b[1] - a[1])
       .map((e) => e[0]);
     direct = fuseRRF([kwRanked, emRanked], 60, [opts.keywordWeight ?? 5, 1])
       .slice(0, k)
-      .map((name) => byName.get(name))
+      .map((ref) => byRef.get(ref))
       .filter((d): d is T => !!d)
       .map((doc) => ({
         doc,
-        score: scoreByName.get(doc.name) ?? opts.embedScores!.get(doc.name) ?? 0,
+        score: scoreByRef.get(docRef(doc)) ?? opts.embedScores!.get(docRef(doc)) ?? 0,
       }));
   } else {
     direct = scored.slice(0, k);
@@ -312,9 +347,7 @@ export function retrieve<T extends ScorableDoc>(
   if (!opts.expandLinks) return result;
 
   const graph = opts.graph ?? buildLinkGraph(docs);
-  const byName = new Map(docs.map((d) => [d.name, d]));
-  const inResult = new Set(result.map((r) => r.doc.name));
-  const seen = new Set(inResult);
+  const seen = new Set(result.map((r) => docRef(r.doc)));
   // Split neighbors: ones that ALSO matched the query (keep their real score —
   // genuinely relevant, earn recall) vs purely structural ones (inherit a damped
   // fraction of the parent's score — "related context", but the source of the
@@ -322,12 +355,12 @@ export function retrieve<T extends ScorableDoc>(
   const relevant: RetrievedDoc<T>[] = [];
   const structural: RetrievedDoc<T>[] = [];
   for (const d of direct) {
-    for (const nbr of neighbors(graph, d.doc.name)) {
+    for (const nbr of neighbors(graph, docRef(d.doc))) {
       if (seen.has(nbr)) continue;
-      const doc = byName.get(nbr);
+      const doc = byRef.get(nbr);
       if (!doc) continue;
       seen.add(nbr);
-      const own = scoreByName.get(nbr) ?? 0;
+      const own = scoreByRef.get(nbr) ?? 0;
       if (own > 0) relevant.push({ doc, score: own, via: "linked", from: d.doc.name });
       else structural.push({ doc, score: d.score * 0.4, via: "linked", from: d.doc.name });
     }

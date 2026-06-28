@@ -15,7 +15,7 @@
  * vector is ~1.5KB, so even 100k docs is ~150MB; the model+runtime dominates RAM.
  */
 import { cosine, getEmbedder, type Embedder } from "./embeddings";
-import type { ScorableDoc } from "./search";
+import { docRef, type ScorableDoc } from "./search";
 import type { KnowledgeDoc, KnowledgeStore } from "./store";
 
 /** Identifies the embedding space; changing the model invalidates persisted vecs. */
@@ -36,7 +36,7 @@ function textHash(text: string): string {
 }
 
 export class EmbedIndex {
-  private vecs = new Map<string, number[]>(); // doc name → embedding
+  private vecs = new Map<string, number[]>(); // DocRef (type:name) → embedding
   private embedder: Embedder | null = null;
   private store: KnowledgeStore | null = null;
   /** True only once the model loaded AND docs are embedded. */
@@ -65,21 +65,30 @@ export class EmbedIndex {
 
   private async rebuild(docs: KnowledgeDoc[]): Promise<void> {
     if (!this.embedder) return;
-    const persisted = this.store?.getDocEmbeddings(MODEL_ID) ?? new Map();
+    // The index is a pure projection of the current docs. Load persisted vectors
+    // (keyed by DocRef), reuse unchanged ones, and PRUNE any whose doc no longer
+    // exists — so renames/deletes can't leave orphan vectors behind.
+    const persisted = new Map(
+      (this.store?.getDocEmbeddings(MODEL_ID) ?? []).map((r) => [docRef(r), r]),
+    );
     const indexable = docs.filter((d) => d.type !== "gotcha");
+    const currentRefs = new Set(indexable.map(docRef));
+    for (const [ref, r] of persisted)
+      if (!currentRefs.has(ref)) this.store?.deleteDocEmbedding(r.type, r.name);
+
     const toEmbed: { doc: KnowledgeDoc; hash: string; text: string }[] = [];
     this.vecs = new Map();
     for (const d of indexable) {
       const text = docTextForEmbedding(d);
       const hash = textHash(text);
-      const hit = persisted.get(d.name);
-      if (hit && hit.hash === hash) this.vecs.set(d.name, hit.vec); // unchanged → reuse
+      const hit = persisted.get(docRef(d));
+      if (hit && hit.hash === hash) this.vecs.set(docRef(d), hit.vec); // unchanged → reuse
       else toEmbed.push({ doc: d, hash, text });
     }
     if (toEmbed.length) {
       const vecs = await this.embedder.embedDocs(toEmbed.map((t) => t.text));
       toEmbed.forEach((t, i) => {
-        this.vecs.set(t.doc.name, vecs[i]);
+        this.vecs.set(docRef(t.doc), vecs[i]);
         this.store?.putDocEmbedding(t.doc.type, t.doc.name, MODEL_ID, t.hash, vecs[i]);
       });
     }
@@ -96,7 +105,7 @@ export class EmbedIndex {
       const text = docTextForEmbedding(doc);
       const [v] = await this.embedder.embedDocs([text]);
       if (v) {
-        this.vecs.set(doc.name, v);
+        this.vecs.set(docRef(doc), v);
         this.store?.putDocEmbedding(doc.type, doc.name, MODEL_ID, textHash(text), v);
       }
     } catch (e) {
@@ -104,8 +113,10 @@ export class EmbedIndex {
     }
   }
 
-  remove(name: string): void {
-    this.vecs.delete(name);
+  /** Drop a doc's vector (in-memory + persisted) when it's deleted. */
+  remove(doc: { type: string; name: string }): void {
+    this.vecs.delete(docRef(doc));
+    this.store?.deleteDocEmbedding(doc.type as KnowledgeDoc["type"], doc.name);
   }
 
   /** Cosine score for every indexed doc, or null when unavailable (→ fall back). */

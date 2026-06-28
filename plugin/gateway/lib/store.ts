@@ -466,20 +466,26 @@ export class KnowledgeStore {
 
   /* --------------------------- doc embeddings -------------------------- */
 
-  /** All persisted embeddings for a model, keyed by doc name (hash lets the
-   *  caller skip re-embedding unchanged docs). Empty if embeddings never ran. */
-  getDocEmbeddings(model: string): Map<string, { hash: string; vec: number[] }> {
+  /** All persisted embeddings for a model, each tagged with its (type, name) so
+   *  the caller keys by canonical DocRef and can prune rows for docs that no
+   *  longer exist. The hash lets it skip re-embedding unchanged docs. */
+  getDocEmbeddings(
+    model: string,
+  ): { type: DocType; name: string; hash: string; vec: number[] }[] {
     const rows = this.db
-      .query("SELECT doc_name, hash, dim, vec FROM doc_embeddings WHERE model = ?")
-      .all(model) as { doc_name: string; hash: string; dim: number; vec: Uint8Array }[];
-    const out = new Map<string, { hash: string; vec: number[] }>();
-    for (const r of rows) {
+      .query("SELECT doc_type, doc_name, hash, dim, vec FROM doc_embeddings WHERE model = ?")
+      .all(model) as {
+      doc_type: string;
+      doc_name: string;
+      hash: string;
+      dim: number;
+      vec: Uint8Array;
+    }[];
+    return rows.map((r) => {
       // copy into a fresh, 4-byte-aligned buffer before viewing as Float32
-      const bytes = new Uint8Array(r.vec);
-      const f = new Float32Array(bytes.buffer, 0, r.dim);
-      out.set(r.doc_name, { hash: r.hash, vec: Array.from(f) });
-    }
-    return out;
+      const f = new Float32Array(new Uint8Array(r.vec).buffer, 0, r.dim);
+      return { type: r.doc_type as DocType, name: r.doc_name, hash: r.hash, vec: Array.from(f) };
+    });
   }
 
   /** Upsert one doc's embedding (vector stored as a compact Float32 BLOB). */

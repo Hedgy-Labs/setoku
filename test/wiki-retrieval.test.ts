@@ -29,19 +29,19 @@ const SPEC = JSON.parse(
 );
 const DOCS: ScorableDoc[] = SPEC.docs;
 
-describe("buildLinkGraph", () => {
+describe("buildLinkGraph (keyed by DocRef)", () => {
   it("resolves declared meta.links and computes backlinks", () => {
     const g = buildLinkGraph(DOCS);
-    // revenue links to Order/refunds-excluded/money-is-cents
-    expect([...(g.out.get("revenue") ?? [])].sort()).toEqual([
-      "Order",
-      "money-is-cents",
-      "refunds-excluded",
+    expect([...(g.out.get("metric:revenue") ?? [])].sort()).toEqual([
+      "entity:order",
+      "gotcha:money-is-cents",
+      "gotcha:refunds-excluded",
     ]);
-    // Order links back to revenue (revenue → Order is also an out-edge from rev)
-    expect(g.back.get("Order")?.has("revenue")).toBe(true);
+    expect(g.back.get("entity:order")?.has("metric:revenue")).toBe(true);
     // a gotcha's relates_to is an implicit link
-    expect(g.out.get("refunds-excluded")?.has("revenue")).toBe(true);
+    expect(g.out.get("gotcha:refunds-excluded")?.has("metric:revenue")).toBe(true);
+    // nameOf maps refs back to readable names for display
+    expect(g.nameOf.get("metric:revenue")).toBe("revenue");
   });
 
   it("records a declared link that resolves to no doc as broken", () => {
@@ -51,9 +51,37 @@ describe("buildLinkGraph", () => {
 
   it("neighbors() is the undirected 1-hop set", () => {
     const g = buildLinkGraph(DOCS);
-    const n = neighbors(g, "revenue");
-    expect(n).toContain("Order"); // out
-    expect(n).toContain("net_revenue"); // back (net_revenue → revenue)
+    const n = neighbors(g, "metric:revenue");
+    expect(n).toContain("entity:order"); // out
+    expect(n).toContain("metric:net_revenue"); // back (net_revenue → revenue)
+  });
+});
+
+describe("DocRef identity — same name across types can't merge", () => {
+  const collide: ScorableDoc[] = [
+    { type: "entity", name: "revenue", meta: { keywords: ["revenue", "ledger"] }, body: "the revenue ledger table" },
+    { type: "metric", name: "revenue", meta: { keywords: ["revenue", "money"] }, body: "sum of paid revenue" },
+  ];
+
+  it("retrieve returns BOTH same-named docs (name-keyed Maps would drop one)", () => {
+    const out = retrieve(collide, "revenue", { k: 5 });
+    const refs = out.map((r) => `${r.doc.type}:${r.doc.name}`);
+    expect(refs).toContain("entity:revenue");
+    expect(refs).toContain("metric:revenue");
+    expect(out.length).toBe(2);
+  });
+
+  it("an ambiguous link is unresolved (not silently pointed at one); type:name resolves", () => {
+    const ambiguous: ScorableDoc[] = [
+      ...collide,
+      { type: "query", name: "q", meta: { links: ["revenue"] }, body: "" },
+    ];
+    expect(buildLinkGraph(ambiguous).unresolved).toContainEqual({ from: "q", ref: "revenue" });
+    const explicit: ScorableDoc[] = [
+      ...collide,
+      { type: "query", name: "q", meta: { links: ["metric:revenue"] }, body: "" },
+    ];
+    expect(buildLinkGraph(explicit).out.get("query:q")?.has("metric:revenue")).toBe(true);
   });
 });
 

@@ -64,11 +64,12 @@ describe("vector persistence (startup is O(changed docs), not O(corpus))", () =>
     const vec = [0.1, -0.25, 0.5, 0.75];
     s.putDocEmbedding("metric", "revenue", "bge-small-en-v1.5", "h1", vec);
     const got = s.getDocEmbeddings("bge-small-en-v1.5");
-    expect(got.get("revenue")?.hash).toBe("h1");
-    const r = got.get("revenue")!.vec;
-    expect(r.length).toBe(4);
-    for (let i = 0; i < vec.length; i++) expect(r[i]).toBeCloseTo(vec[i], 5);
-    expect(s.getDocEmbeddings("some-other-model").size).toBe(0); // model-scoped
+    expect(got.length).toBe(1);
+    expect(got[0].name).toBe("revenue");
+    expect(got[0].type).toBe("metric");
+    expect(got[0].hash).toBe("h1");
+    for (let i = 0; i < vec.length; i++) expect(got[0].vec[i]).toBeCloseTo(vec[i], 5);
+    expect(s.getDocEmbeddings("some-other-model").length).toBe(0); // model-scoped
     s.db.close();
   });
 });
@@ -76,8 +77,9 @@ describe("vector persistence (startup is O(changed docs), not O(corpus))", () =>
 describe("embedding rescue (hybrid)", () => {
   it("surfaces an embedding-favored doc the keyword scorer misses entirely", () => {
     // query matches NO keyword in any doc → keyword ranking is empty; embedScores
-    // promote fan_count, which must still be retrieved via fusion.
-    const embedScores = new Map([["fan_count", 0.9], ["ticket_revenue", 0.1]]);
+    // (keyed by DocRef, as EmbedIndex.scores produces) promote fan_count, which
+    // must still be retrieved via fusion.
+    const embedScores = new Map([["metric:fan_count", 0.9], ["metric:ticket_revenue", 0.1]]);
     const out = retrieve(DOCS, "zzz nomatch", { k: 5, embedScores }).map((r) => r.doc.name);
     expect(out).toContain("fan_count");
   });
