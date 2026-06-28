@@ -19,14 +19,15 @@ COPY plugin/gateway ./gateway
 # surfaced in MCP serverInfo + /health so a deploy is verifiable from a session.
 COPY plugin/.claude-plugin/plugin.json ./plugin.json
 
-# Optionally bake the local embedding model into the image so the box never has to
-# download it at runtime (deterministic, offline startup). OFF by default to keep
-# non-embedding images lean. Enable per-build: docker build --build-arg BAKE_EMBEDDINGS=1
-ARG BAKE_EMBEDDINGS=0
+# Bake the local embedding model into the image so the box never downloads it at
+# runtime (deterministic, offline startup). Embeddings are required, so this is ON
+# by default; pass --build-arg BAKE_EMBEDDINGS=0 only for a deliberately
+# keyword-only build.
+ARG BAKE_EMBEDDINGS=1
 ENV SETOKU_EMBED_CACHE=/app/.fastembed
 RUN if [ "$BAKE_EMBEDDINGS" = "1" ]; then \
       echo "baking bge-small-en-v1.5 into the image…" && \
-      SETOKU_EMBEDDINGS=1 bun -e 'import { FlagEmbedding, EmbeddingModel } from "fastembed"; await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: "/app/.fastembed" }); console.log("baked")'; \
+      bun -e 'import { FlagEmbedding, EmbeddingModel } from "fastembed"; await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: "/app/.fastembed" }); console.log("baked")'; \
     fi
 
 # Project dir: config + (optionally) a context seed baked into the image.
