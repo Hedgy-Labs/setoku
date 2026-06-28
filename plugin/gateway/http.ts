@@ -40,7 +40,7 @@ import {
 import { newestComputedAt, renderApp, type RenderedPanel } from "./lib/apps";
 import { APP_RUNTIME } from "./lib/app-runtime";
 import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
-import type { AppParam } from "./lib/params";
+import { resolveParams, type AppParam } from "./lib/params";
 import {
   type Invite,
   applyApprovalAction,
@@ -580,7 +580,7 @@ function jsonForScript(value: unknown): string {
  *  capRenderBytes (shared with the provenance drawer so the two agree). `team`
  *  gates raw error text: a public frame must NOT inject a raw DB error (it can
  *  name tables/columns/env vars) — same scrub the public /data path applies. */
-function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { team: boolean }): string {
+function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { team: boolean; params?: Record<string, string> }): string {
   // A legacy full HTML document (pre-app report) is served as-is. But a
   // FRAGMENT with no panels — e.g. an app the author turned static while
   // keeping a Setoku.*/__SETOKU__ template — still gets the runtime + empty data
@@ -591,6 +591,10 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
   const data = {
     title: dash.title,
     refreshSeconds: dash.refreshSeconds,
+    // The RESOLVED param values actually used for this render (a rejected viewer
+    // value shows as the default here). The runtime echoes these to the parent so
+    // the control bar reflects what ran — see the params echo in app-runtime.ts.
+    params: opts.params ?? {},
     panels: Object.fromEntries(
       panels.map((p) => [
         p.key,
@@ -697,14 +701,38 @@ function paramControlsHtml(params: AppParam[]): string {
     if (p.type === "bool")
       return `<select data-pname="${nm}"><option value="true"${p.default === true ? " selected" : ""}>Yes</option><option value="false"${p.default !== true ? " selected" : ""}>No</option></select>`;
     const type = p.type === "int" ? "number" : p.type === "date" ? "date" : "text";
-    const mm = p.type === "int" ? `${p.min != null ? ` min="${p.min}"` : ""}${p.max != null ? ` max="${p.max}"` : ""}` : "";
-    return `<input type="${type}" data-pname="${nm}"${mm} value="${escapeHtml(String(p.default ?? ""))}">`;
+    const extra =
+      p.type === "int"
+        ? ` step="1"${p.min != null ? ` min="${p.min}"` : ""}${p.max != null ? ` max="${p.max}"` : ""}`
+        : p.type === "text" && p.maxLength != null
+          ? ` maxlength="${p.maxLength}"`
+          : "";
+    return `<input type="${type}" data-pname="${nm}"${extra} value="${escapeHtml(String(p.default ?? ""))}">`;
   };
   return (
     `<div id="controls">` +
     params.map((p) => `<label class="pc"><span>${escapeHtml(p.label || p.name)}</span>${ctrl(p)}</label>`).join("") +
     `</div>`
   );
+}
+
+/** The RESOLVED param values for a render, as control-display strings: the
+ *  viewer's raw value when it coerces, else the default (so a rejected value
+ *  shows as the fallback, not what they typed). Injected into the frame and
+ *  echoed to the control bar so the controls always reflect what actually ran. */
+function resolvedParamValues(declared: AppParam[], rawParams: Record<string, string>): Record<string, string> {
+  if (!declared.length) return {};
+  try {
+    const resolved = resolveParams(declared, rawParams);
+    const out: Record<string, string> = {};
+    for (const p of declared) {
+      const v = resolved.get(p.name);
+      out[p.name] = v instanceof Date ? v.toISOString().slice(0, 10) : v == null ? "" : String(v);
+    }
+    return out;
+  } catch {
+    return {}; // published params are validated; defensive only
+  }
 }
 
 /** Viewer-supplied param values from a frame/shell request: `?p.<name>=value`.
@@ -772,8 +800,13 @@ function publicAppShell(opts: {
   var VKEY='setoku_av_'+location.pathname, viewerId;
   try{ viewerId=localStorage.getItem(VKEY); if(!viewerId){ viewerId='v'+Date.now().toString(36)+Math.random().toString(36).slice(2,8); localStorage.setItem(VKEY,viewerId);} }catch(e){ viewerId='anon'; }
   window.addEventListener('message', function(e){
-    var m=e.data; if(!m||m.__setoku_state_req!==true) return;
+    var m=e.data; if(!m) return;
     if(e.source!==frame.contentWindow) return; // only OUR iframe
+    // Resolved-param echo: reset each control to the value the server actually
+    // used, so a rejected input snaps back to the default instead of lingering.
+    if(m.__setoku_params_echo===true){ document.querySelectorAll('[data-pname]').forEach(function(el){
+      var v=m.params&&m.params[el.getAttribute('data-pname')]; if(v!==undefined&&v!==null) el.value=v; }); return; }
+    if(m.__setoku_state_req!==true) return;
     var scope=m.scope==='viewer'?'viewer':'app', owner=scope==='viewer'?viewerId:'';
     var reply=function(b){ b.__setoku_state_res=true; b.id=m.id; frame.contentWindow.postMessage(b,'*'); };
     function done(p){ p.then(function(r){return r.json()}).then(function(d){
@@ -947,7 +980,8 @@ const httpServer = http.createServer(async (req, res) => {
       if (sub === "frame") {
         const rep = store.getPublished(id);
         if (!rep) return notFound();
-        const panels = await renderApp(store, projectDir, rep, { rawParams: parseFrameParams(req.url) });
+        const raw = parseFrameParams(req.url);
+        const panels = await renderApp(store, projectDir, rep, { rawParams: raw });
         store.audit("public", "app_frame_public", { id });
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
@@ -955,7 +989,7 @@ const httpServer = http.createServer(async (req, res) => {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(frameDocument(rep, panels, { team: false }));
+        res.end(frameDocument(rep, panels, { team: false, params: resolvedParamValues(rep.params ?? [], raw) }));
         return;
       }
 
@@ -1049,7 +1083,8 @@ const httpServer = http.createServer(async (req, res) => {
         // An app (with or without panels) renders via the runtime path; only a
         // legacy frozen report (format "html") keeps the loose sandbox-only CSP.
         const isApp = rep.format === "app";
-        const panels = isApp && (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: parseFrameParams(req.url) }) : [];
+        const raw = parseFrameParams(req.url);
+        const panels = isApp && (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw }) : [];
         store.audit(session.identity, "app_frame_viewed", { id });
         // A live app's template needs no network (data is injected) → strict
         // CSP. A LEGACY report predates that contract and may inline a CDN script
@@ -1060,7 +1095,7 @@ const httpServer = http.createServer(async (req, res) => {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(frameDocument(rep, panels, { team: true }));
+        res.end(frameDocument(rep, panels, { team: true, params: resolvedParamValues(rep.params ?? [], raw) }));
         return;
       }
 

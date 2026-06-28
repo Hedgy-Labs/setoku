@@ -147,6 +147,13 @@ export const APP_RUNTIME = `(function () {
   })();
   window.Setoku = { bar: bar, table: table, stat: stat, line: line, fmt: fmt, num: num,
     rows: function (k) { return resolve(k).rows; }, state: state };
+  // Echo the RESOLVED param values to the parent shell so the control bar reflects
+  // what actually ran — a viewer value the server rejected shows as the default
+  // here, not what was typed. The parent resets its controls to these.
+  try {
+    var ep = window.__SETOKU__ && window.__SETOKU__.params;
+    if (ep) parent.postMessage({ __setoku_params_echo: true, params: ep }, "*");
+  } catch (e) { /* no parent / no params */ }
 })();`;
 
 /**

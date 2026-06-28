@@ -30,7 +30,10 @@ let tmp = "";
 const idOf = (text: string): string => text.match(/update_app\("([^"]+)"/)?.[1] ?? "";
 
 /** Parse the injected window.__SETOKU__ from a rendered frame document. */
-function setokuOf(html: string): { panels: Record<string, { rows: Record<string, unknown>[]; error: string | null }> } {
+function setokuOf(html: string): {
+  panels: Record<string, { rows: Record<string, unknown>[]; error: string | null }>;
+  params: Record<string, string>;
+} {
   const json = html.split("window.__SETOKU__=")[1]?.split("</script>")[0]?.replace(/;\s*$/, "") ?? "{}";
   return JSON.parse(json);
 }
@@ -129,6 +132,15 @@ describe("param binding — a viewer value changes the result", () => {
     const { cookie } = await login();
     const html = await (await fetch(`${BASE}/admin/frame/${id}?p.region=${encodeURIComponent("NA'; DROP TABLE metrics;--")}`, { headers: { cookie } })).text();
     expect(String(setokuOf(html).panels.kpi.rows[0].total)).toBe("300"); // rejected → default NA, table intact
+  });
+  it("echoes the RESOLVED value into the frame (rejected input → default, for the control bar)", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "echo", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const { cookie } = await login();
+    const echo = async (region: string): Promise<string> =>
+      setokuOf(await (await fetch(`${BASE}/admin/frame/${id}?p.region=${encodeURIComponent(region)}`, { headers: { cookie } })).text()).params.region;
+    expect(await echo("EMEA")).toBe("EMEA"); // valid → as chosen
+    expect(await echo("BOGUS")).toBe("NA"); // rejected → echoes the default, so the control snaps back
   });
 });
 

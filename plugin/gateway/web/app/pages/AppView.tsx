@@ -98,10 +98,26 @@ export function AppView() {
   // result back. `Setoku.state.*` inside the template rides this channel.
   useEffect(() => {
     async function onMessage(e: MessageEvent) {
-      const m = e.data as { __setoku_state_req?: boolean; id?: number; op?: string; scope?: string; key?: unknown; value?: unknown };
-      if (!m || m.__setoku_state_req !== true) return;
+      const m = e.data as {
+        __setoku_state_req?: boolean;
+        __setoku_params_echo?: boolean;
+        params?: Record<string, string>;
+        id?: number;
+        op?: string;
+        scope?: string;
+        key?: unknown;
+        value?: unknown;
+      };
+      if (!m) return;
       const frame = frameRef.current;
       if (!frame || e.source !== frame.contentWindow) return; // only OUR iframe
+      // Resolved-param echo: snap the controls to what the server actually ran
+      // (a rejected viewer value shows as the default, not what was typed).
+      if (m.__setoku_params_echo === true) {
+        if (m.params) setParamVals((v) => ({ ...v, ...m.params }));
+        return;
+      }
+      if (m.__setoku_state_req !== true) return;
       const reply = (body: { result?: unknown; error?: string }) =>
         frame.contentWindow?.postMessage({ __setoku_state_res: true, id: m.id, ...body }, "*");
       const scope = m.scope === "viewer" ? "viewer" : "app";
@@ -381,6 +397,8 @@ function ParamControl({ p, value, onChange }: { p: AppParam; value: string; onCh
       value={value}
       min={p.type === "int" ? p.min : undefined}
       max={p.type === "int" ? p.max : undefined}
+      step={p.type === "int" ? 1 : undefined}
+      maxLength={p.type === "text" ? p.maxLength : undefined}
       onChange={(e) => onChange(e.target.value)}
     />
   );
