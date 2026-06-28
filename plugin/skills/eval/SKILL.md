@@ -51,7 +51,8 @@ bun run eval:knowledge --spec <spec.json> [--db <knowledge.db>] [--gate]
 
 The spec (see `test/fixtures/eval/knowledge.json` for the shape) carries frozen, representation-agnostic ground truth — questions and doc **names**, never internal ids, so the goldens survive a migration of the fact representation. Dimensions:
 
-- **Retrieval** — `precision/recall@k`, hit rate, MRR against labeled `question → relevant doc names`. Catches retrieval misses and coverage gaps.
+- **Retrieval** — `precision/recall@k`, hit rate, MRR against labeled `question → relevant doc names`, scored **two ways**: baseline (keyword top-k) and **map-first** (top-k + 1-hop link-graph neighbors). The A/B is the guardrail for the interlink layer — map-first must lift recall without dropping the baseline's precision/MRR (gate knobs `minRecallAtKExpanded`, `minPrecisionAtKExpanded`). See [llm-wiki.md](../../../docs/llm-wiki.md).
+- **Wiki structure** — link count, **orphans** (docs disconnected from the graph), **suggested connections** (overlapping-but-unlinked pairs), and **broken links** (refs to no doc). Gradable against planted `orphan:` / `connection:` / `broken:` ground truth; gate with `maxBrokenLinks`. Linked corpus fixture: `test/fixtures/eval/wiki.json`.
 - **Redundancy** — near-duplicate doc pairs (Jaccard); the deterministic signal behind "merge repetitive facts".
 - **Auto-judgement** — confusion matrix vs human-gold accept/reject labels. The headline is **false-accept rate** (FP/(FP+TN)): the I2/I9 number, since false-accepts are an agent waving bad knowledge past the human-click membrane.
 - **Defect detection** — precision/recall of the compaction ("REM sleep") pass against **planted** contradictions/duplicates (ground truth you seeded).
@@ -59,6 +60,22 @@ The spec (see `test/fixtures/eval/knowledge.json` for the shape) carries frozen,
 `--gate` enforces threshold floors (`minHitRate`, `maxFalseAcceptRate`, …) and exits non-zero — wire it into CI alongside the fast suite.
 
 **Cost split.** The structural metrics are free (deterministic, automatable in CI). The *fuzzy detectors that produce the labels* — does fact X contradict fact Y? did the auto-judge decide right? — run in **this session on the Max subscription** (no server-side inference, I8). Reserve those for interactive runs after a structural change; gate the deterministic metrics continuously.
+
+## Value: gotcha-trap answer-lift (does Setoku change the answer?)
+
+The metrics above ask "is the right context retrievable." This asks the product question: **does Setoku actually make the answer right?** A "trap" is a question where the naive (schema-only) answer is wrong and only a curated fact saves it (refunds excluded, cents→dollars, dedupe-by-email, …). The trap set lives in `demo/eval/value-traps.json` (Bulldogs demo).
+
+**Deterministic half (free, CI):**
+```bash
+bun run eval:value [--gate]
+```
+Reproduces what `find_context` would surface for each trap and checks whether the trap-avoiding fact is reachable — the **necessary condition** for value. Reports grounded-vs-ungrounded **coverage lift** (ungrounded is 0 by construction) and the **context cost** (docs + gotchas surfaced per trap — high coverage bought by flooding gotchas is a precision problem, not a win). Uncovered traps print as a punch-list (add a keyword / `relates_to` link).
+
+**In-session half (the real answer-lift, on Max — I8):** for each trap, answer it **twice**, scoring whether the answer avoids the trap:
+1. **Ungrounded** — do NOT call `find_context`/`get_metric`; answer from `get_schema` only.
+2. **Grounded** — answer per the analyst skill (find_context → get_metric → run_query).
+
+Scorecard: per trap, ungrounded ✓/✗ and grounded ✓/✗; the **answer-lift = grounded − ungrounded** correct rate. That single number is the closest thing to "is Setoku worth it" — a trap the agent gets right *only* when grounded is Setoku earning its keep. A trap it gets right *both* ways means the curated fact added nothing (drop it or harden the trap); wrong *both* ways means the fact is missing or unreachable (see the deterministic punch-list).
 
 ## Compaction (the companion pass — issue #10)
 

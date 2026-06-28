@@ -3,6 +3,10 @@ plugin/node_modules/
 *.log
 .DS_Store
 license-report.tsv
+
+# local embedding-model cache (fastembed downloads; never committed)
+local_cache/
+.fastembed/
 .env
 backups/
 

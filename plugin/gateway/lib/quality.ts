@@ -24,7 +24,17 @@
  * sets survive the very migration they measure (free-text docs → a more formal
  * fact structure).
  */
-import { jaccard, scoreDocs, tokenize, type ScorableDoc } from "./search";
+import {
+  buildLinkGraph,
+  jaccard,
+  retrieve,
+  scoreDocs,
+  selectGotchas,
+  tokenize,
+  type LinkGraph,
+  type ScorableDoc,
+} from "./search";
+import { synonymsOf } from "./synonyms";
 
 /* --------------------------------- types --------------------------------- */
 
@@ -45,6 +55,8 @@ export interface RetrievalMetrics {
   mrr: number;
   /** Fraction of cases with at least one relevant doc in the top-k. */
   hitRate: number;
+  /** Whether link-expansion ("map-first") was applied to the returned set. */
+  expandedLinks: boolean;
   /** Per-case detail, in input order. */
   perCase: {
     question: string;
@@ -53,6 +65,17 @@ export interface RetrievalMetrics {
     hit: boolean;
     firstRelevantRank: number | null;
   }[];
+}
+
+export interface RetrievalOpts {
+  /** Append 1-hop link-graph neighbors of the direct top-k to the returned set. */
+  expandLinks?: boolean;
+  /** Cap on linked neighbors added per case (default = k). */
+  maxLinked?: number;
+  /** Precomputed graph (built from `docs` if omitted). */
+  graph?: LinkGraph;
+  /** I8-clean semantic query expansion via the static synonym table. */
+  expandSynonyms?: boolean;
 }
 
 /** A pair of docs that look like near-duplicates (candidates for "merge repetitive facts"). */
@@ -123,16 +146,30 @@ export function retrievalMetrics<T extends ScorableDoc>(
   docs: T[],
   cases: RetrievalCase[],
   k = 5,
+  opts: RetrievalOpts = {},
 ): RetrievalMetrics {
   const perCase: RetrievalMetrics["perCase"] = [];
   let precisionSum = 0;
   let recallSum = 0;
   let rrSum = 0;
   let hits = 0;
-
+  // The eval scores the SAME retrieve() the gateway uses (one code path, so the
+  // metric can't drift from production). `retrieve` returns the direct top-k plus
+  // its capped link-graph neighbors; the full keyword ranking (for MRR /
+  // firstRelevantRank) still comes from scoreDocs, whose direct order retrieve
+  // preserves — so a recall gain can't come from reshuffling, only from surfacing
+  // genuinely linked/expanded context.
+  const graph = opts.expandLinks ? (opts.graph ?? buildLinkGraph(docs)) : undefined;
+  const scoreOpts = opts.expandSynonyms ? { synonyms: synonymsOf } : {};
   for (const c of cases) {
-    const ranked = scoreDocs(docs, c.question).map((s) => s.doc.name);
-    const topk = ranked.slice(0, k);
+    const ranked = scoreDocs(docs, c.question, scoreOpts).map((s) => s.doc.name);
+    const topk = retrieve(docs, c.question, {
+      k,
+      expandLinks: opts.expandLinks,
+      maxLinked: opts.maxLinked ?? k,
+      graph,
+      synonyms: opts.expandSynonyms ? synonymsOf : undefined,
+    }).map((r) => r.doc.name);
     const relevant = new Set(c.relevant);
     const matched = topk.filter((n) => relevant.has(n));
 
@@ -177,6 +214,128 @@ export function retrievalMetrics<T extends ScorableDoc>(
     recallAtK: recallSum / n,
     mrr: rrSum / n,
     hitRate: hits / n,
+    expandedLinks: !!graph,
+    perCase,
+  };
+}
+
+/* ---------------------------- gotcha-trap value -------------------------- */
+
+/**
+ * A "trap" question: one where the NAIVE answer is wrong, and only a curated
+ * fact saves it (refunds excluded, cents→dollars, dedupe-by-email, …). This is
+ * how we measure Setoku's *value*, not just its retrieval: does the trap-avoiding
+ * fact actually reach the agent's context when the real question is asked?
+ */
+export interface TrapCase {
+  question: string;
+  /** What the naive (no-Setoku) answer gets wrong — for the report, not scoring. */
+  trap: string;
+  /** Distinctive substrings of the trap-avoiding fact; ALL must appear in the
+   *  surfaced context for the trap to count as "covered" (case-insensitive). */
+  signature: string[];
+  /** Optional doc names that must be surfaced (in addition to the signature). */
+  requires?: string[];
+  /** Plain-language rubric for the in-session answer-lift check (not used here). */
+  expect?: string;
+}
+
+export interface TrapMetrics {
+  cases: number;
+  covered: number;
+  /** Fraction of traps whose fix reached the surfaced context. */
+  coverageRate: number;
+  expandedLinks: boolean;
+  /** Context cost: mean docs + gotchas surfaced per trap. High coverage bought
+   *  by flooding the context with gotchas is a precision/token problem, not a
+   *  win — so the value scorecard reports the cost alongside the coverage. */
+  avgDocsSurfaced: number;
+  avgGotchasSurfaced: number;
+  perCase: {
+    question: string;
+    covered: boolean;
+    docsSurfaced: number;
+    gotchasSurfaced: number;
+    /** Signature terms / required docs that did NOT surface. */
+    missing: string[];
+  }[];
+}
+
+/**
+ * Deterministic, model-free proxy for Setoku's value: for each trap question,
+ * reproduce what `find_context` would surface (map-first `retrieve` over the
+ * non-gotcha docs + `matchGotchas` token-overlap over the gotchas — exactly the
+ * production split in app.ts) and check whether the trap-avoiding fact is in it.
+ * It does NOT run the agent or grade an answer (that needs a model, I8 — see the
+ * in-session answer-lift protocol in the eval skill); it measures the NECESSARY
+ * condition: the fix is reachable. Ungrounded (no curated docs) is 0 by
+ * construction, so the coverage rate IS the grounded-vs-ungrounded lift.
+ */
+export function trapCoverage<T extends ScorableDoc>(
+  docs: T[],
+  traps: TrapCase[],
+  k = 5,
+  opts: RetrievalOpts = {},
+): TrapMetrics {
+  const nonGotcha = docs.filter((d) => d.type !== "gotcha");
+  const gotchaDocs = docs.filter((d) => d.type === "gotcha");
+  const graph =
+    opts.expandLinks ? (opts.graph ?? buildLinkGraph(nonGotcha)) : undefined;
+
+  let covered = 0;
+  const perCase = traps.map((t) => {
+    // mirror find_context exactly: map-first retrieve over non-gotcha docs, then
+    // capped/attached gotcha selection against the DIRECT hits.
+    const retrieved = retrieve(nonGotcha, t.question, {
+      k,
+      expandLinks: opts.expandLinks,
+      maxLinked: opts.maxLinked ?? k,
+      graph,
+      synonyms: synonymsOf, // mirror find_context (I8-clean expansion)
+    });
+    const direct = retrieved.filter((r) => r.via === "direct");
+    const linked = retrieved.filter((r) => r.via === "linked");
+    const selected = selectGotchas(gotchaDocs, direct.map((d) => d.doc), t.question);
+    const surfacedNames = [
+      ...retrieved.map((r) => r.doc.name),
+      ...selected.map((g) => g.name),
+    ];
+    // the text the agent actually sees: direct docs in full, linked as one-liners
+    // (name+summary), selected gotchas as their body.
+    const surfacedText = [
+      ...direct.map((r) => `${r.doc.name} ${r.doc.meta.summary ?? ""} ${r.doc.body}`),
+      ...linked.map((r) => `${r.doc.name} ${r.doc.meta.summary ?? ""}`),
+      ...selected.map((g) => g.body || g.name),
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    const gotchasSurfaced = selected.length;
+    const missing = [
+      ...t.signature.filter((s) => !surfacedText.includes(s.toLowerCase())),
+      ...(t.requires ?? []).filter((r) => !surfacedNames.includes(r)),
+    ];
+    const isCovered = missing.length === 0;
+    if (isCovered) covered += 1;
+    return {
+      question: t.question,
+      covered: isCovered,
+      docsSurfaced: retrieved.length,
+      gotchasSurfaced,
+      missing,
+    };
+  });
+
+  const sum = (f: (c: TrapMetrics["perCase"][number]) => number) =>
+    perCase.reduce((n, c) => n + f(c), 0);
+  const denom = Math.max(1, perCase.length);
+  return {
+    cases: traps.length,
+    covered,
+    coverageRate: traps.length ? covered / traps.length : 0,
+    expandedLinks: !!graph,
+    avgDocsSurfaced: sum((c) => c.docsSurfaced) / denom,
+    avgGotchasSurfaced: sum((c) => c.gotchasSurfaced) / denom,
     perCase,
   };
 }

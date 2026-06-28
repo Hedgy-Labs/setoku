@@ -17,7 +17,9 @@ import {
 } from "./lib/config";
 import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
-import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
+import { matchByTokens, retrieve, selectGotchas } from "./lib/search";
+import { synonymsOf } from "./lib/synonyms";
+import type { EmbedIndex } from "./lib/embed-index";
 import { KnowledgeStore, type DashboardPanel, type DocType } from "./lib/store";
 import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/dashboards";
 import { lintDashboardTemplate } from "./lib/dashboard-runtime";
@@ -71,6 +73,13 @@ export interface GatewayDeps {
    * space is the whole safety argument; the janitor holds this, never accept.
    */
   canReject?: boolean;
+  /**
+   * The process-wide semantic index (I8 opt-in local embeddings). When present
+   * and enabled, `find_context` fuses embedding similarity with keyword retrieval
+   * (hybrid). Null/absent/disabled → keyword retrieval only (graceful fallback).
+   * Shared across per-request servers, like `store`.
+   */
+  embedIndex?: EmbedIndex | null;
 }
 
 export function buildServer({
@@ -81,6 +90,7 @@ export function buildServer({
   denyLakeRead,
   canDraft = false,
   canReject = false,
+  embedIndex = null,
 }: GatewayDeps): McpServer {
 const server = new McpServer({ name: "setoku", version: VERSION });
 
@@ -142,17 +152,47 @@ server.registerTool(
     const allDocs = store.listDocs();
     const docs = allDocs.filter((d) => d.type !== "gotcha");
     const gotchaDocs = allDocs.filter((d) => d.type === "gotcha");
-    const gotchas = gotchaDocs.map((d) => d.body || d.name);
     const pending = matchByTokens(
       store.listCorrections("pending"),
       (c) => `${c.fact ?? c.content} ${c.relatesTo ?? ""}`,
       question,
     ).slice(0, 5);
     const out: string[] = [];
-    const matchedGotchas = matchGotchas(gotchas, question);
-    if (matchedGotchas.length) {
+
+    // Map-first retrieval: the proven keyword top-k, PLUS 1-hop neighbors of
+    // those hits in the curated link graph. The direct hits are unchanged (so
+    // precision is preserved); linked neighbors add the related context a flat
+    // ranker misses — the metric/gotcha/entity that belong together (#wiki).
+    const k = max_results ?? 5;
+    // Hybrid: when the local embed index is live, fuse embedding similarity with
+    // keyword retrieval. Disabled/unavailable → embedScores is undefined and this
+    // is exactly the keyword(+synonym+map-first) path (I8 graceful fallback).
+    const embedScores = embedIndex
+      ? ((await embedIndex.scores(question)) ?? undefined)
+      : undefined;
+    const retrieved = retrieve(docs, question, {
+      k,
+      expandLinks: true,
+      maxLinked: k,
+      synonyms: synonymsOf, // I8-clean semantic expansion (static table, no inference)
+      embedScores,
+    });
+    const top = retrieved.filter((r) => r.via === "direct");
+    const linked = retrieved.filter((r) => r.via === "linked");
+
+    // Gotchas: surface those ATTACHED to the direct hits first (relevant by
+    // construction — their metric/entity is what was asked about), then fill the
+    // budget with the most query-relevant, capped. Beats dumping every gotcha
+    // that shares one word with the question (which floods context — measured by
+    // eval:value's context-cost metric).
+    const selectedGotchas = selectGotchas(
+      gotchaDocs,
+      top.map((t) => t.doc),
+      question,
+    );
+    if (selectedGotchas.length) {
       out.push("## Gotchas (read carefully — these prevent wrong answers)");
-      for (const g of matchedGotchas) out.push(`- ${g}`);
+      for (const g of selectedGotchas) out.push(`- ${g.body || g.name}`);
       out.push("");
     }
     if (pending.length) {
@@ -167,7 +207,6 @@ server.registerTool(
       }
       out.push("");
     }
-    const top = scoreDocs(docs, question).slice(0, max_results ?? 5);
     if (docs.length === 0 && !pending.length) {
       store.audit(user, "find_context", {
         question,
@@ -200,17 +239,30 @@ server.registerTool(
         );
       }
     }
-    // record the knowledge actually surfaced (docs + matched gotchas), by name,
-    // so per-doc usage can be tallied from the audit log.
-    const matchedSet = new Set(matchedGotchas);
+    // Related context: docs the top hits LINK to but that didn't rank on their
+    // own. Shown compact (one line + a pointer) so they cost little context but
+    // tell the agent what else it should read before answering.
+    if (linked.length) {
+      out.push("## Related context (linked from the above — read if relevant)");
+      for (const { doc } of linked) {
+        const summary = doc.meta.summary ?? doc.meta.question ?? "";
+        const fetch = doc.type === "metric" ? `get_metric("${doc.name}")` : `describe_entity("${doc.name}")`;
+        out.push(`- [${doc.type}] ${doc.name}${summary ? ` — ${summary}` : ""} (${fetch})`);
+      }
+      out.push("");
+    }
+    // record the knowledge actually surfaced (direct + linked docs + selected
+    // gotchas), by name, so per-doc usage can be tallied from the audit log.
     const surfaced = [
       ...top.map((t) => t.doc.name),
-      ...gotchaDocs.filter((d) => matchedSet.has(d.body || d.name)).map((d) => d.name),
+      ...linked.map((t) => t.doc.name),
+      ...selectedGotchas.map((d) => d.name),
     ];
     store.audit(user, "find_context", {
       question,
       results: top.length,
-      gotchas: matchedGotchas.length,
+      linked: linked.length,
+      gotchas: selectedGotchas.length,
       unverified: pending.length,
       docs: surfaced,
       ms: Date.now() - started,
@@ -475,6 +527,16 @@ server.registerTool(
   async ({ type, name, body, meta }) => {
     store.upsertDoc({ type, name, meta: meta ?? {}, body }, user);
     store.audit(user, "upsert_context", { type, name });
+    // keep the semantic index fresh (no-op if embeddings disabled)
+    await embedIndex?.upsert({
+      type,
+      name,
+      meta: meta ?? {},
+      body: body ?? "",
+      verified: true,
+      updatedBy: user,
+      updatedAt: new Date().toISOString(),
+    });
     return text(
       `Saved [${type}] ${name} to the knowledge store (attributed to ${user}; revision recorded).`,
     );

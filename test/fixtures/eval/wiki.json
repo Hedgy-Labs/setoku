@@ -1,0 +1,140 @@
+{
+  "_note": "Synthetic LINKED knowledge corpus for the wiki retrieval eval (experiment/llm-wiki). No real tenant data (I3). Docs declare meta.links to model an interlinked wiki; golden cases are written so the FULL relevant set spans linked docs — that's what map-first (link-expansion) retrieval is meant to recover and a flat ranker misses. `subscriptions` is a deliberate ORPHAN (no links in/out). `mrr_metric`+`arr_metric` are a deliberate missing-connection pair (high topic overlap, no link). `Order` links to a non-existent `Coupon` to exercise broken-link detection.",
+  "k": 5,
+  "redundancyThreshold": 0.6,
+  "docs": [
+    {
+      "type": "overview",
+      "name": "overview",
+      "meta": { "summary": "How this storefront models sales, customers, and money.", "links": ["Customer", "Order", "revenue", "refunds-excluded"] },
+      "body": "The business sells physical goods. Sales flow through orders; revenue is recognized on paid orders only. See the linked entities and metrics for specifics."
+    },
+    {
+      "type": "metric",
+      "name": "revenue",
+      "meta": {
+        "summary": "Recognized revenue — paid orders only; refunded orders excluded entirely.",
+        "keywords": ["sales", "income", "money", "earned", "revenue"],
+        "links": ["Order", "refunds-excluded", "money-is-cents"]
+      },
+      "body": "Sum of orders.total_cents where status = 'paid', divided by 100 for dollars. Refunded orders are excluded entirely, not netted."
+    },
+    {
+      "type": "metric",
+      "name": "net_revenue",
+      "meta": {
+        "summary": "Revenue net of refunds — paid minus refunded amounts.",
+        "keywords": ["net", "refunds", "revenue", "money"],
+        "links": ["revenue", "refunds-excluded"]
+      },
+      "body": "Recognized revenue minus refunded order amounts. Use when finance asks for net rather than gross recognized revenue."
+    },
+    {
+      "type": "entity",
+      "name": "Customer",
+      "meta": {
+        "table": "public.customers",
+        "summary": "A shopper account; soft-deleted via deleted_at.",
+        "keywords": ["customers", "active", "shopper", "account", "buyer"],
+        "links": ["Order", "soft-delete"]
+      },
+      "body": "One row per shopper. deleted_at IS NOT NULL means soft-deleted and must be excluded from active customer counts."
+    },
+    {
+      "type": "entity",
+      "name": "Order",
+      "meta": {
+        "table": "public.orders",
+        "summary": "A purchase; status drives revenue recognition.",
+        "keywords": ["orders", "paid", "refunded", "status", "purchase"],
+        "links": ["Customer", "revenue", "money-is-cents", "Coupon"]
+      },
+      "body": "One row per purchase. status = 'paid' counts toward revenue; 'refunded' is excluded. total_cents is integer cents. customer_id references the buyer."
+    },
+    {
+      "type": "metric",
+      "name": "active_customers",
+      "meta": {
+        "summary": "Distinct customers excluding soft-deleted accounts.",
+        "keywords": ["active", "customers", "count", "users"],
+        "links": ["Customer", "soft-delete"]
+      },
+      "body": "COUNT(DISTINCT id) FROM customers WHERE deleted_at IS NULL."
+    },
+    {
+      "type": "metric",
+      "name": "aov",
+      "meta": {
+        "summary": "Average order value — revenue divided by paid order count.",
+        "keywords": ["average", "order", "value", "basket"],
+        "links": ["Order", "revenue"]
+      },
+      "body": "SUM(total_cents) / COUNT(*) over paid orders, divided by 100 for dollars."
+    },
+    {
+      "type": "gotcha",
+      "name": "money-is-cents",
+      "meta": { "keywords": ["cents", "money", "dollars"], "relates_to": "revenue" },
+      "body": "All money columns are integer cents — divide by 100 for dollars."
+    },
+    {
+      "type": "gotcha",
+      "name": "refunds-excluded",
+      "meta": { "keywords": ["refund", "refunded", "excluded", "revenue"], "relates_to": "revenue" },
+      "body": "Refunded orders are excluded from recognized revenue entirely — never netted into the same figure."
+    },
+    {
+      "type": "gotcha",
+      "name": "soft-delete",
+      "meta": { "keywords": ["deleted", "soft", "active", "customers"], "relates_to": "Customer" },
+      "body": "Rows with deleted_at set are soft-deleted; exclude them from active counts and most reporting."
+    },
+    {
+      "type": "metric",
+      "name": "mrr_metric",
+      "meta": {
+        "summary": "Monthly recurring subscription revenue.",
+        "keywords": ["mrr", "monthly", "recurring", "revenue", "subscription"],
+        "links": ["revenue"]
+      },
+      "body": "Sum of monthly subscription amounts for active subscriptions, in dollars."
+    },
+    {
+      "type": "metric",
+      "name": "arr_metric",
+      "meta": {
+        "summary": "Annual recurring subscription revenue.",
+        "keywords": ["arr", "annual", "recurring", "revenue", "subscription"],
+        "links": ["revenue"]
+      },
+      "body": "Annual recurring revenue: monthly recurring revenue multiplied by 12. Reported annually to finance."
+    },
+    {
+      "type": "entity",
+      "name": "subscriptions",
+      "meta": {
+        "table": "public.subscriptions",
+        "summary": "A recurring billing plan a customer is enrolled in.",
+        "keywords": ["subscription", "plan", "billing", "recurring"]
+      },
+      "body": "One row per active or cancelled subscription. status and current_period_end drive billing."
+    }
+  ],
+  "retrieval": [
+    { "question": "How much revenue did we make, net of refunds?", "relevant": ["revenue", "net_revenue", "refunds-excluded"] },
+    { "question": "How many active customers do we have?", "relevant": ["active_customers", "Customer", "soft-delete"] },
+    { "question": "What's our average order value?", "relevant": ["aov", "Order", "revenue"] },
+    { "question": "How is recognized revenue calculated?", "relevant": ["revenue", "Order", "money-is-cents", "refunds-excluded"] }
+  ],
+  "defects": {
+    "planted": ["orphan:subscriptions", "connection:arr_metric|mrr_metric", "broken:Order|Coupon"]
+  },
+  "gate": {
+    "minHitRate": 1.0,
+    "minRecallAtK": 0.5,
+    "minRecallAtKExpanded": 0.9,
+    "minPrecisionAtKExpanded": 0.4,
+    "maxBrokenLinks": 1,
+    "minDefectRecall": 1.0
+  }
+}
