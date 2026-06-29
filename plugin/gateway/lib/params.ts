@@ -59,21 +59,98 @@ const TEXT_MAX = 1000;
 const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
 /**
- * Tokens in `sql` of the form `:name`. The `(?<![:\w])` guard skips Postgres
- * `::type` casts (the second colon is preceded by `:`, the cast keyword by a
- * word char) and avoids re-matching inside an identifier. Returns names in
- * first-appearance order, de-duplicated.
+ * One pass over `sql`, splitting it into literal text and `:name` token segments.
+ * `:name` is recognized ONLY as a real bind token — occurrences inside single-/
+ * double-quoted strings, line (`--`) and block (`/* … *\/`) comments, and Postgres
+ * `::casts` are left as literal text. So a colon-word inside a string literal
+ * (`LIKE '% :ref %'`) is never mistaken for a token. This is the SINGLE source of
+ * the token grammar: extraction and both compilers walk these same segments, so
+ * they can never drift apart.
  */
+type SqlSegment = string | { token: string };
+
+function scanSegments(sql: string): SqlSegment[] {
+  const segs: SqlSegment[] = [];
+  let buf = "";
+  const flush = (): void => {
+    if (buf) {
+      segs.push(buf);
+      buf = "";
+    }
+  };
+  const n = sql.length;
+  let i = 0;
+  while (i < n) {
+    const c = sql[i];
+    // line comment: -- … to end of line
+    if (c === "-" && sql[i + 1] === "-") {
+      const nl = sql.indexOf("\n", i);
+      const stop = nl === -1 ? n : nl;
+      buf += sql.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    // block comment: /* … */
+    if (c === "/" && sql[i + 1] === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      const stop = end === -1 ? n : end + 2;
+      buf += sql.slice(i, stop);
+      i = stop;
+      continue;
+    }
+    // string literal / quoted identifier: '…' or "…" (a doubled quote escapes it)
+    if (c === "'" || c === '"') {
+      let j = i + 1;
+      while (j < n) {
+        if (sql[j] === c) {
+          if (sql[j + 1] === c) {
+            j += 2;
+            continue;
+          }
+          j += 1;
+          break;
+        }
+        j += 1;
+      }
+      buf += sql.slice(i, j);
+      i = j;
+      continue;
+    }
+    // `::cast` — consume both colons as literal so the type after isn't a token
+    if (c === ":" && sql[i + 1] === ":") {
+      buf += "::";
+      i += 2;
+      continue;
+    }
+    // `:name` token — but not when the colon abuts a word char (e.g. an array
+    // slice `arr[a:b]`), preserving the original `(?<![:\w])` guard.
+    if (c === ":") {
+      const m = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(sql.slice(i + 1));
+      const prev = i > 0 ? sql[i - 1] : "";
+      if (m && !/[:\w]/.test(prev)) {
+        flush();
+        segs.push({ token: m[0] });
+        i += 1 + m[0].length;
+        continue;
+      }
+    }
+    buf += c;
+    i += 1;
+  }
+  flush();
+  return segs;
+}
+
+/** Param tokens referenced in `sql` (literal-aware), first-appearance order,
+ *  de-duplicated. */
 export function extractTokens(sql: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const m of sql.matchAll(/(?<![:\w]):([a-zA-Z_][a-zA-Z0-9_]*)/g)) {
-    const name = m[1];
-    if (!seen.has(name)) {
-      seen.add(name);
-      out.push(name);
+  for (const s of scanSegments(sql))
+    if (typeof s !== "string" && !seen.has(s.token)) {
+      seen.add(s.token);
+      out.push(s.token);
     }
-  }
   return out;
 }
 
@@ -96,6 +173,10 @@ export function coerce(param: AppParam, raw: unknown): ParamValue {
       throw new ParamCoercionError(`not a boolean: ${s}`);
     }
     case "int": {
+      // Reject empty/whitespace BEFORE Number() — Number("") is 0, which would
+      // silently bind 0 instead of falling back to the declared default.
+      if (typeof raw !== "number" && String(raw).trim() === "")
+        throw new ParamCoercionError("empty integer");
       const n = typeof raw === "number" ? raw : Number(String(raw).trim());
       if (!Number.isFinite(n) || !Number.isInteger(n))
         throw new ParamCoercionError(`not an integer: ${raw}`);
@@ -176,19 +257,24 @@ export function compilePostgres(
   sql: string,
   resolved: Map<string, ParamValue>,
 ): CompiledSql {
-  const tokens = extractTokens(sql);
+  const segs = scanSegments(sql);
+  // First-appearance order assigns each token its 1-based positional index ($n).
+  const index = new Map<string, number>();
+  const tokens: string[] = [];
+  for (const s of segs)
+    if (typeof s !== "string" && !index.has(s.token)) {
+      index.set(s.token, tokens.length + 1);
+      tokens.push(s.token);
+    }
   const values: ParamValue[] = [];
   for (const name of tokens) {
     if (!resolved.has(name))
       throw new Error(`panel references undeclared param :${name}`);
     values.push(resolved.get(name)!);
   }
-  // Replace every occurrence of each token with its 1-based positional index.
-  const index = new Map(tokens.map((t, i) => [t, i + 1]));
-  const text = sql.replace(
-    /(?<![:\w]):([a-zA-Z_][a-zA-Z0-9_]*)/g,
-    (_m, name: string) => `$${index.get(name)}`,
-  );
+  const text = segs
+    .map((s) => (typeof s === "string" ? s : `$${index.get(s.token)}`))
+    .join("");
   return { text, values, referenced: tokens };
 }
 
@@ -226,12 +312,20 @@ export function compileClickhouse(
   resolved: Map<string, ParamValue>,
 ): CompiledLakeSql {
   const byName = new Map(declared.map((p) => [p.name, p]));
-  const tokens = extractTokens(sql);
+  const segs = scanSegments(sql);
   const chParams: Record<string, string> = {};
-  for (const name of tokens) {
+  const seen = new Set<string>();
+  const referenced: string[] = [];
+  for (const s of segs) {
+    if (typeof s === "string") continue;
+    const name = s.token;
     const p = byName.get(name);
     if (!p || !resolved.has(name))
       throw new Error(`panel references undeclared param :${name}`);
+    if (!seen.has(name)) {
+      seen.add(name);
+      referenced.push(name);
+    }
     const v = resolved.get(name)!;
     chParams[name] =
       p.type === "date" && v instanceof Date
@@ -242,11 +336,10 @@ export function compileClickhouse(
             : "0"
           : String(v);
   }
-  const text = sql.replace(
-    /(?<![:\w]):([a-zA-Z_][a-zA-Z0-9_]*)/g,
-    (_m, name: string) => `{${name}:${chType(byName.get(name)!.type)}}`,
-  );
-  return { text, chParams, referenced: tokens };
+  const text = segs
+    .map((s) => (typeof s === "string" ? s : `{${s.token}:${chType(byName.get(s.token)!.type)}}`))
+    .join("");
+  return { text, chParams, referenced };
 }
 
 /**

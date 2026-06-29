@@ -1124,10 +1124,11 @@ server.registerTool(
     title: "Edit an app you published (in place, same link)",
     description:
       "Updates an app you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
-      "(new template), `panels` (REPLACES the whole panel set — re-validated + dry-run), and/or `refreshSeconds`. " +
+      "(new template), `panels` (REPLACES the whole panel set), `params` (REPLACES all inputs), and/or `refreshSeconds`. " +
+      "Changing `panels` or `params` re-validates and dry-runs every panel against the new params. " +
       "Only the app's AUTHOR can edit it. " +
-      "Note: changing `panels` on an app that's currently public reverts it to team-only — an admin must " +
-      "re-approve it for the public link, since the data it exposes changed. " +
+      "Note: changing `panels` or `params` on an app that's currently public reverts it to team-only — an admin " +
+      "must re-approve it for the public link, since the data it exposes changed. " +
       TEMPLATE_HELP,
     inputSchema: {
       id: z.string().describe("The app id (from publish_app / list_apps)"),
@@ -1154,13 +1155,24 @@ server.registerTool(
         return errorText(`Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap.`);
     }
 
-    // Use the new params if provided, else the app's existing declared params, so
-    // a panels-only edit still compiles its `:tokens`.
-    const declaredParams = params !== undefined ? (params as AppParam[]) : (meta.params ?? []);
+    // Panels AND params both determine what the panels compute (params bind into
+    // the SQL), so a change to EITHER must be validated and re-seeded — and, on a
+    // public app, re-gated (I9). Re-run the shared prep over the EFFECTIVE panel
+    // set against the EFFECTIVE params whenever either changes: this validates the
+    // new param defaults/names, re-checks every existing panel still compiles
+    // against the new params (a removed/renamed param would otherwise 500 the app
+    // at render), and re-seeds the default-variant cache.
+    const panelsChanged = panels !== undefined;
+    const paramsChanged = params !== undefined;
+    const dataChanged = panelsChanged || paramsChanged;
+    const declaredParams = paramsChanged ? (params as AppParam[]) : (meta.params ?? []);
     let normalized: AppPanel[] | undefined;
     let seeds: PanelSeed[] | undefined;
-    if (panels !== undefined) {
-      const prep = await prepPanels(panels, declaredParams);
+    if (dataChanged) {
+      const basePanels: PanelInput[] = panelsChanged
+        ? panels
+        : (meta.panels ?? []).map((p) => ({ key: p.key, title: p.title, description: p.description, sql: p.sql, dialect: p.dialect, metricId: p.metricId ?? undefined }));
+      const prep = await prepPanels(basePanels, declaredParams);
       if (!prep.ok) return errorText(prep.error);
       normalized = prep.normalized;
       seeds = prep.seeds;
@@ -1169,12 +1181,12 @@ server.registerTool(
     const willHavePanels = normalized ? normalized.length > 0 : (meta.panels?.length ?? 0) > 0;
     let refresh: number | null | undefined;
     if (refreshSeconds !== undefined) refresh = clampRefresh(refreshSeconds, willHavePanels);
-    else if (panels !== undefined) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
+    else if (panelsChanged) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
 
-    // When panels change, recompute format: panels → app; zero panels → "app" for
-    // a fragment (state app), "html" only for a full legacy document.
+    // When the panel set is re-derived, recompute format: panels → app; zero
+    // panels → "app" for a fragment (state app), "html" only for a full document.
     let format: "html" | "app" | undefined;
-    if (panels !== undefined) {
+    if (dataChanged) {
       if (willHavePanels) format = "app";
       else {
         const bodyToCheck = html ?? store.getPublished(tid)?.body ?? "";
@@ -1185,25 +1197,25 @@ server.registerTool(
     const ok = store.updatePublished(tid, {
       title: newTitle,
       body: html,
-      panels: normalized, // undefined → unchanged; [] → state-only/static (cache cleared)
-      params: params !== undefined ? (params as AppParam[]) : undefined,
+      panels: normalized, // undefined → unchanged; otherwise rewrites + clears cache
+      params: paramsChanged ? (params as AppParam[]) : undefined,
       format,
       refreshSeconds: refresh,
     });
     if (!ok) return errorText(`Update failed — no active app "${id}".`);
-    // Re-seed the cache for the new panels (updatePublished cleared the old rows).
+    // Re-seed the cache for the re-derived panels (updatePublished cleared the old rows).
     if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
 
-    // A panel change alters what the app exposes — if it was public, revert
-    // to team so an admin re-approves (the human public-promotion gate, I9).
+    // Panels OR params alter what the public link exposes — if it was public,
+    // revert to team so an admin re-approves (the human promotion gate, I9).
     let reverted = false;
-    if (panels !== undefined && meta.visibility === "public") {
+    if (dataChanged && meta.visibility === "public") {
       store.setReportVisibility(tid, "team");
       reverted = true;
     }
     store.audit(user, "update_app", {
       id: tid,
-      changed: [newTitle !== undefined && "title", html !== undefined && "html", panels !== undefined && "panels", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
+      changed: [newTitle !== undefined && "title", html !== undefined && "html", panelsChanged && "panels", paramsChanged && "params", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
       reverted,
     });
 
@@ -1211,7 +1223,7 @@ server.registerTool(
     const finalPanels = normalized ?? meta.panels ?? [];
     return text(
       `Updated "${meta.title}" → ${publishUrl(tid, reverted ? "team" : meta.visibility)} (same link).` +
-        (reverted ? "\n\n⚠ Panels changed on a PUBLIC app — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
+        (reverted ? "\n\n⚠ Panels or params changed on a PUBLIC app — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
         publishNotes(finalHtml, finalPanels),
     );
   },

@@ -137,16 +137,31 @@ export function renderApp(
   store: KnowledgeStore,
   projectDir: string,
   dash: RenderInput,
-  opts: { force?: boolean; denyLakeRead?: boolean; now?: number; rawParams?: Record<string, unknown> } = {},
+  opts: {
+    force?: boolean;
+    denyLakeRead?: boolean;
+    now?: number;
+    rawParams?: Record<string, unknown>;
+    /** Gate on EACH would-be fresh (cache-miss) panel execution: called right
+     *  before a panel runs its query; returning false skips the run and serves
+     *  cache-only (last good rows, else a soft "try later" error). The
+     *  credential-free surface passes a per-app token bucket here so viewer-
+     *  supplied params can't amplify load against prod without bound — and,
+     *  because it's charged per ACTUAL execution, cached hits never spend budget. */
+    tryFreshRun?: () => boolean;
+  } = {},
 ): Promise<RenderedPanel[]> {
   if (!(dash.panels ?? []).length) return Promise.resolve([]);
   // Resolve declared inputs once (viewer value when coercible, else default).
   const declared = dash.params ?? [];
   const resolved = resolveParams(declared, opts.rawParams ?? {});
-  // Key includes denyLakeRead AND a hash of the resolved params so two callers in
-  // different membrane modes / with different inputs never share one execution.
+  // Key includes denyLakeRead, the fresh-run mode, AND a hash of the resolved
+  // params so two callers in different membrane modes / budgets / with different
+  // inputs never share one execution.
   const pv = paramsVariant(declared.map((p) => p.name), resolved);
-  const key = `${dash.id}:${opts.force ? 1 : 0}:${opts.denyLakeRead ? 1 : 0}:${pv}`;
+  // The budget flag is part of the key so a budgeted (public) render never shares
+  // an execution with a non-budgeted (admin/dry-run) one.
+  const key = `${dash.id}:${opts.force ? 1 : 0}:${opts.denyLakeRead ? 1 : 0}:${opts.tryFreshRun ? 1 : 0}:${pv}`;
   const existing = inFlight.get(key);
   if (existing) return existing;
   const p = renderUncoalesced(store, projectDir, dash, resolved, opts).finally(() => inFlight.delete(key));
@@ -159,7 +174,7 @@ async function renderUncoalesced(
   projectDir: string,
   dash: RenderInput,
   resolved: Map<string, ParamValue>,
-  opts: { force?: boolean; denyLakeRead?: boolean; now?: number },
+  opts: { force?: boolean; denyLakeRead?: boolean; now?: number; tryFreshRun?: () => boolean },
 ): Promise<RenderedPanel[]> {
   const panels = dash.panels ?? [];
   const declared = dash.params ?? [];
@@ -192,6 +207,16 @@ async function renderUncoalesced(
         const fresh = !opts.force && cached != null && now - Date.parse(cached.computedAt) < cacheLimit;
         if (fresh && cached) {
           return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: cached.error };
+        }
+        // About to run a fresh query — but the caller may cap fresh executions
+        // (the public per-app budget). Charge ONLY here, on a real cache miss, so
+        // cached hits are free. Over budget → serve the last good rows if we have
+        // them (flagged stale), else a soft error, so a hammered public link with
+        // open-domain params can't keep missing the cache and re-hitting prod.
+        if (opts.tryFreshRun && !opts.tryFreshRun()) {
+          if (cached && !cached.error)
+            return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: "refresh rate-limited — showing the last cached result" };
+          return { ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: "Too many distinct queries on this link right now — try again shortly." };
         }
         // Keep last-good rows on a failed refresh ONLY while they're within the
         // stale ceiling; past that, the masked failure becomes a hard error.

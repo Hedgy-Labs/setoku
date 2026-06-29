@@ -565,6 +565,30 @@ async function gatherSources(): Promise<SourcesData> {
 const FRAME_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
 
+// Per-app FRESH-execution budget for the CREDENTIAL-FREE surface. The per-panel
+// cache shields repeated views, but viewer-supplied params (?p.<name>=) create
+// unbounded distinct cache variants — each a cache miss = a live prod query — so
+// an anonymous hammer could amplify load against the business DB/lake without
+// limit (the 256-variant cap even helps the attacker: it evicts+recomputes so the
+// cache never saturates as a shield). A token bucket caps the RATE of fresh runs
+// per app; once spent, the render is served cache-only (renderApp `noFreshRun`).
+// Authenticated /admin renders are NOT gated — a logged-in viewer is trusted and
+// audited, and ?force there is already author/admin-only.
+const PUBLIC_FRESH_BURST = 30; // bucket capacity (a real viewer changing filters)
+const PUBLIC_FRESH_PER_SEC = 0.5; // sustained refill: ~30 fresh runs/min/app
+const freshBudget = new Map<string, { tokens: number; last: number }>();
+/** Spend one token for a fresh (cache-miss) render of `appId` on the public
+ *  surface. Returns false when the bucket is empty → caller renders cache-only. */
+function spendFreshRun(appId: string, now: number): boolean {
+  const b = freshBudget.get(appId) ?? { tokens: PUBLIC_FRESH_BURST, last: now };
+  b.tokens = Math.min(PUBLIC_FRESH_BURST, b.tokens + ((now - b.last) / 1000) * PUBLIC_FRESH_PER_SEC);
+  b.last = now;
+  const ok = b.tokens >= 1;
+  if (ok) b.tokens -= 1;
+  freshBudget.set(appId, b);
+  return ok;
+}
+
 /** Escape a JSON string for safe inlining inside a <script> tag. */
 function jsonForScript(value: unknown): string {
   return JSON.stringify(value)
@@ -809,7 +833,11 @@ function publicAppShell(opts: {
     if(m.__setoku_state_req!==true) return;
     var scope=m.scope==='viewer'?'viewer':'app', owner=scope==='viewer'?viewerId:'';
     var reply=function(b){ b.__setoku_state_res=true; b.id=m.id; frame.contentWindow.postMessage(b,'*'); };
-    function done(p){ p.then(function(r){return r.json()}).then(function(d){
+    function done(p){ p.then(function(r){ return r.json().catch(function(){return {};}).then(function(d){
+        // A non-2xx (e.g. 413 over-quota, 404) must REJECT, not resolve undefined —
+        // otherwise Setoku.state.set() silently "succeeds" and the write vanishes.
+        if(!r.ok) throw new Error((d&&d.error)||('request failed ('+r.status+')'));
+        return d; }); }).then(function(d){
         if(m.op==='list') reply({result:d.entries||[]});
         else if(m.op==='get'){ var hit=(d.entries||[]).filter(function(x){return x.key===String(m.key)})[0]; reply({result:hit?hit.value:null}); }
         else if(m.op==='set') reply({result:d.entry});
@@ -981,7 +1009,14 @@ const httpServer = http.createServer(async (req, res) => {
         const rep = store.getPublished(id);
         if (!rep) return notFound();
         const raw = parseFrameParams(req.url);
-        const panels = await renderApp(store, projectDir, rep, { rawParams: raw });
+        // Bound prod load on this credential-free link: each would-be fresh (cache-
+        // miss) panel run spends from the app's token bucket; once empty, the panel
+        // renders cache-only, so distinct ?p.<name>= values can't keep missing the
+        // cache and re-hitting prod. Charged per execution → cached hits are free.
+        const panels = await renderApp(store, projectDir, rep, {
+          rawParams: raw,
+          tryFreshRun: () => spendFreshRun(id, Date.now()),
+        });
         store.audit("public", "app_frame_public", { id });
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
@@ -1308,7 +1343,7 @@ const httpServer = http.createServer(async (req, res) => {
             if (!title) return json(400, { ok: false, error: "Title can't be empty." });
             if (title.length > 200) return json(400, { ok: false, error: "Title is too long (max 200 characters)." });
             if (!mayMutateApp(id)) return;
-            const ok = store.renamePublished(id, title);
+            const ok = store.updatePublished(id, { title });
             store.audit(session.identity, "rename_app", { id, ok });
             return json(200, { ok, title, flash: "Renamed." });
           }

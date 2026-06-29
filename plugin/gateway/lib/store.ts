@@ -382,6 +382,19 @@ export class KnowledgeStore {
       error TEXT,
       PRIMARY KEY (app_id, panel_key)
     )`);
+    // Carry the pre-rename cache forward. dashboard_cache had an identical schema
+    // (only the first column's NAME differed: dashboard_id → app_id), so a
+    // positional `INSERT … SELECT *` migrates it cleanly. Without this an upgraded
+    // box cold-starts every app's cache — the first view of each re-runs all its
+    // panels against prod (the stampede the cache exists to prevent) and the
+    // "updated N ago" stamp is blank until then. Drop the orphan once copied.
+    const hasOldCache = this.db
+      .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_cache'")
+      .get();
+    if (hasOldCache) {
+      this.db.run("INSERT OR IGNORE INTO app_cache SELECT * FROM dashboard_cache");
+      this.db.run("DROP TABLE dashboard_cache");
+    }
   }
 
   /* ------------------------------- docs ------------------------------- */
@@ -983,14 +996,20 @@ export class KnowledgeStore {
     // Bound the cache per app: each panel/param VARIANT is a distinct panel_key,
     // so an open-domain param on a public link (?p.note=<random>) could otherwise
     // grow this table without limit. Keep the newest MAX_CACHE_ROWS_PER_APP rows
-    // (by last write) and evict the rest. A no-op under the cap; a re-view of an
-    // evicted variant just recomputes. The default-params variant stays warm
-    // because viewing the app re-stamps it.
-    this.db.run(
-      `DELETE FROM app_cache WHERE app_id = ? AND panel_key NOT IN (
-         SELECT panel_key FROM app_cache WHERE app_id = ? ORDER BY computed_at DESC LIMIT ?)`,
-      [appId, appId, MAX_CACHE_ROWS_PER_APP],
-    );
+    // (by last write) and evict the rest. A re-view of an evicted variant just
+    // recomputes; the default-params variant stays warm because viewing the app
+    // re-stamps it. Only RUN the eviction sort when actually over the cap — the
+    // count is a cheap PK-prefix scan, so the common (under-cap) write skips the
+    // ORDER BY entirely instead of paying it on every single panel write.
+    const cacheRows = (
+      this.db.query("SELECT COUNT(*) AS n FROM app_cache WHERE app_id = ?").get(appId) as { n: number }
+    ).n;
+    if (cacheRows > MAX_CACHE_ROWS_PER_APP)
+      this.db.run(
+        `DELETE FROM app_cache WHERE app_id = ? AND panel_key NOT IN (
+           SELECT panel_key FROM app_cache WHERE app_id = ? ORDER BY computed_at DESC LIMIT ?)`,
+        [appId, appId, MAX_CACHE_ROWS_PER_APP],
+      );
     return computedAt;
   }
 
@@ -1064,15 +1083,6 @@ export class KnowledgeStore {
       .query("SELECT MAX(computed_at) AS t FROM app_cache WHERE app_id = ?")
       .get(id) as { t: string | null } | null;
     return row?.t ?? null;
-  }
-
-  /** Rename a report (title only). Returns false for an unknown or archived
-   *  report. Author-or-admin gating is enforced upstream. */
-  renamePublished(id: string, title: string): boolean {
-    return (
-      this.db.run("UPDATE published SET title = ? WHERE id = ? AND archived_at IS NULL", [title, id])
-        .changes > 0
-    );
   }
 
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or

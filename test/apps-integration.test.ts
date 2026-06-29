@@ -12,6 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import pgPkg from "pg";
+import { Database } from "bun:sqlite";
 import { KnowledgeStore } from "../plugin/gateway/lib/store";
 import { hashPassword } from "../plugin/gateway/lib/accounts";
 import { spawnGateway, waitHealthy, connect as gwConnect, call, ROOT } from "./lib/gateway";
@@ -113,6 +114,76 @@ describe("publish_app — param validation", () => {
   });
 });
 
+describe("update_app — params are first-class (validate + I9 re-gate)", () => {
+  it("rejects a params-only update whose new default doesn't coerce", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "p1", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    // No `panels` passed — the old code skipped validation on this path.
+    const r = await call(c, "update_app", { id, params: [{ name: "region", type: "enum", default: "ZZZ", options: [{ value: "NA" }] }] });
+    expect(r.isError).toBeTruthy();
+  });
+  it("rejects a params-only update that strands an existing panel's :token", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "p2", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    // Drop the param the existing panel binds (:region) → must fail, not 500 later.
+    const r = await call(c, "update_app", { id, params: [] });
+    expect(r.isError).toBeTruthy();
+    expect(r.text.toLowerCase()).toContain("undeclared param");
+  });
+  it("reverts a PUBLIC app to team-only when params change (I9 human re-approval)", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "p3", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const { cookie, csrf } = await login();
+    const setVis = await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-csrf-token": csrf, cookie },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    expect((await setVis.json()).ok).toBe(true);
+    // A params-only edit widens what the public link exposes → must re-gate.
+    const r = await call(c, "update_app", { id, params: [{ ...REGION_PARAM, options: [{ value: "NA" }, { value: "EMEA" }, { value: "APAC" }, { value: "LATAM" }] }] });
+    expect(r.isError).toBeFalsy();
+    expect(r.text.toLowerCase()).toContain("reverted to team-only");
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // no longer public
+  });
+});
+
+describe("public /frame — fresh-execution budget bounds prod load", () => {
+  it("serves cache-only (soft error) once an app's budget is spent on distinct params", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const N_PARAM = { name: "n", type: "int", default: 0, min: 0, max: 1_000_000 };
+    const N_PANEL = { key: "kpi", title: "n", sql: "select :n n", dialect: "postgres" };
+    const id = idOf((await call(c, "publish_app", { title: "amp", html: "<div id=kpi></div>", panels: [N_PANEL], params: [N_PARAM] })).text);
+    const { cookie, csrf } = await login();
+    await fetch(`${BASE}/admin/api/set_visibility`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-csrf-token": csrf, cookie },
+      body: JSON.stringify({ id, visibility: "public" }),
+    });
+    const panelOf = async (n: number): Promise<{ rows: Record<string, unknown>[]; error: string | null }> => {
+      const html = await (await fetch(`${BASE}/p/${id}/frame?p.n=${n}`)).text();
+      return setokuOf(html).panels.kpi;
+    };
+    // First distinct value runs fresh against the DB (budget intact).
+    expect(String((await panelOf(1)).rows[0].n)).toBe("1");
+    // Burn the rest of the burst budget on distinct (uncached) variants, then one
+    // more must be rate-limited: cache-only, so the panel reports an error instead
+    // of a live query. The query (`select :n`) can't itself error, so any error
+    // here IS the budget kicking in (scrubbed to a generic message on the public
+    // surface — the un-scrubbed cause is the noFreshRun soft error).
+    let rateLimited = false;
+    for (let i = 2; i <= 60; i++) {
+      const p = await panelOf(i);
+      if (p.error) {
+        expect(p.error).toBe("data temporarily unavailable"); // scrubbed, not leaked
+        rateLimited = true;
+        break;
+      }
+    }
+    expect(rateLimited).toBe(true);
+  });
+});
+
 describe("param binding — a viewer value changes the result", () => {
   it("re-runs the panel bound to ?p.region", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");
@@ -205,5 +276,27 @@ describe("panel cache is bounded per app (open-domain param can't grow it foreve
     expect(store.getPanelCache("appX", "kpi::v399")).not.toBeNull();
     expect(store.getPanelCache("appX", "kpi::v0")).toBeNull();
     store.db.close();
+  });
+});
+
+describe("cache migration — pre-rename dashboard_cache carries forward", () => {
+  it("copies dashboard_cache rows into app_cache and drops the orphan", () => {
+    const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "setoku-mig-")), "knowledge.db");
+    // Stand up a box as it looked BEFORE the rename: a populated dashboard_cache.
+    const old = new Database(f);
+    old.run(`CREATE TABLE dashboard_cache (
+      dashboard_id TEXT NOT NULL, panel_key TEXT NOT NULL,
+      columns TEXT NOT NULL DEFAULT '[]', rows TEXT NOT NULL DEFAULT '[]',
+      row_count INTEGER NOT NULL DEFAULT 0, computed_at TEXT NOT NULL, error TEXT,
+      PRIMARY KEY (dashboard_id, panel_key))`);
+    old.run("INSERT INTO dashboard_cache VALUES ('appY','kpi','[]','[]',7,'2026-01-01T00:00:00.000Z',NULL)");
+    old.close();
+    // Opening the store runs the in-place migration.
+    const store = new KnowledgeStore(f);
+    const cached = store.getPanelCache("appY", "kpi");
+    expect(cached?.rowCount).toBe(7); // carried forward — no cold start
+    expect(store.db.query("SELECT 1 FROM sqlite_master WHERE name='dashboard_cache'").get()).toBeNull();
+    store.db.close();
+    fs.rmSync(path.dirname(f), { recursive: true, force: true });
   });
 });

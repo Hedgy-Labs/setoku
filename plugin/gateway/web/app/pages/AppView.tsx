@@ -38,7 +38,18 @@ export function AppView() {
   const { me } = useAuth();
   const navigate = useNavigate();
   const isAdmin = me?.role === "admin";
-  const { data, loading, error, reload } = useApi<AppData>(() => api.appData(id), [id]);
+  // Current values of the app's interactive params (the control bar). Seeded from
+  // the declared defaults once data loads; a change re-runs the panels bound to it.
+  // Declared BEFORE the data fetch (decoupled from `data`) so the fetch can depend
+  // on the selection without a cycle.
+  const [paramVals, setParamVals] = useState<Record<string, string>>({});
+  // ?p.<name>=… for the frame src AND the provenance fetch, so the iframe, the
+  // "how it's calculated" drawer, and the freshness stamp all reflect the SELECTED
+  // params (the variant actually shown) rather than the declared defaults.
+  const paramQuery = Object.entries(paramVals)
+    .map(([k, v]) => `p.${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join("&");
+  const { data, loading, error, reload } = useApi<AppData>(() => api.appData(id, false, paramQuery), [id, paramQuery]);
   // Bumping the nonce changes the iframe src → reloads the frame (re-renders the
   // panels server-side; within the refresh TTL that's a cache hit).
   const [nonce, setNonce] = useState(0);
@@ -51,9 +62,6 @@ export function AppView() {
   const cancelRename = useRef(false);
   const refreshing = useRef(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
-  // Current values of the app's interactive params (the control bar). Seeded from
-  // the declared defaults; a change re-runs the panels bound to the new value.
-  const [paramVals, setParamVals] = useState<Record<string, string>>({});
   useEffect(() => {
     if (!data?.params?.length) return;
     setParamVals((prev) => {
@@ -63,10 +71,6 @@ export function AppView() {
       return changed ? next : prev;
     });
   }, [data?.params]);
-  // ?p.<name>=… for the frame src, so /admin/frame re-runs bound to the selection.
-  const paramQuery = (data?.params ?? [])
-    .map((p) => `p.${encodeURIComponent(p.name)}=${encodeURIComponent(paramVals[p.name] ?? String(p.default))}`)
-    .join("&");
 
   const visibility = data?.visibility ?? "team";
   const link = appShareUrl({ id, visibility });
@@ -78,7 +82,9 @@ export function AppView() {
       if (refreshing.current) return;
       refreshing.current = true;
       try {
-        if (force) await api.appData(id, true);
+        // Force re-runs the SELECTED variant (paramQuery), not just the defaults,
+        // so a manual refresh actually re-computes what the viewer is looking at.
+        if (force) await api.appData(id, true, paramQuery);
         setNonce((n) => n + 1);
         reload();
         if (force) toast("Refreshed.");
@@ -88,7 +94,7 @@ export function AppView() {
         refreshing.current = false;
       }
     },
-    [id, reload],
+    [id, reload, paramQuery],
   );
 
   // App-state bridge (I9-style mediation): the sandboxed frame has no network, so
@@ -290,15 +296,18 @@ export function AppView() {
           }}
         />
       ) : null}
-      {loading ? (
+      {/* Spinner/error only BEFORE the first load. Once data exists, a param- or
+          refresh-driven refetch happens in the BACKGROUND (loading flips true but
+          data persists) so the iframe doesn't blank on every control change. */}
+      {!data && loading ? (
         <div className="flex flex-1 items-center justify-center">
           <Loading />
         </div>
-      ) : error ? (
+      ) : !data ? (
         <div className="p-4">
-          <ErrorMsg>{error}</ErrorMsg>
+          <ErrorMsg>{error ?? "Not found."}</ErrorMsg>
         </div>
-      ) : data ? (
+      ) : (
         // iframe fills the remaining height; the calc drawer toggles in as a footer
         // below it (and the iframe shrinks to make room), out for full height.
         <main className="flex min-h-0 flex-1 flex-col p-3">
@@ -317,7 +326,7 @@ export function AppView() {
           />
           {isApp && showCalc ? <Provenance panels={data.panels} onClose={() => setShowCalc(false)} /> : null}
         </main>
-      ) : null}
+      )}
       <EditDialog
         open={editOpen}
         onClose={() => setEditOpen(false)}
@@ -390,16 +399,30 @@ function ParamControl({ p, value, onChange }: { p: AppParam; value: string; onCh
         <option value="false">No</option>
       </select>
     );
+  // Free-text/number/date commit on blur or Enter — NOT per keystroke — so typing
+  // a value doesn't remount the iframe (a live DB query) on every character. A
+  // local draft holds the in-progress text; an external reset (the resolved-param
+  // echo) flows back in via the synced `value`. Mirrors the public shell, which
+  // commits on the DOM 'change' event.
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  const commit = (): void => {
+    if (draft !== value) onChange(draft);
+  };
   return (
     <input
       type={p.type === "int" ? "number" : p.type === "date" ? "date" : "text"}
       className={cls}
-      value={value}
+      value={draft}
       min={p.type === "int" ? p.min : undefined}
       max={p.type === "int" ? p.max : undefined}
       step={p.type === "int" ? 1 : undefined}
       maxLength={p.type === "text" ? p.maxLength : undefined}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+      }}
     />
   );
 }

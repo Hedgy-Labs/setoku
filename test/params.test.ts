@@ -36,6 +36,15 @@ describe("extractTokens", () => {
   it("does not match inside an identifier", () => {
     expect(extractTokens("SELECT a:b")).toEqual([]); // 'a:b' — colon after word char
   });
+  it("does NOT match a colon-word inside a string literal", () => {
+    // The literal ': not a param' must not be parsed as a :not token.
+    expect(extractTokens("WHERE note LIKE '% :ref %' AND x = :real")).toEqual(["real"]);
+    expect(extractTokens("SELECT ':active' AS s")).toEqual([]);
+  });
+  it("does NOT match inside line or block comments", () => {
+    expect(extractTokens("SELECT 1 -- :nope\nWHERE x=:yes")).toEqual(["yes"]);
+    expect(extractTokens("SELECT /* :nope */ x WHERE y=:yes")).toEqual(["yes"]);
+  });
 });
 
 describe("coerce — the whitelist", () => {
@@ -51,6 +60,10 @@ describe("coerce — the whitelist", () => {
     expect(() => coerce(P.status, "open'; DROP TABLE t;--")).toThrow(
       ParamCoercionError,
     );
+  });
+  it("int: an empty/blank value is rejected (not silently coerced to 0)", () => {
+    expect(() => coerce(P.limit, "")).toThrow(ParamCoercionError);
+    expect(() => coerce(P.limit, "   ")).toThrow(ParamCoercionError);
   });
   it("text: caps length so a hostile value stays bounded", () => {
     expect(coerce(P.q, "hello")).toBe("hello");
@@ -70,6 +83,9 @@ describe("resolveParams", () => {
   it("uses the default when a param is absent from viewer input", () => {
     const r = resolveParams([P.status], {});
     expect(r.get("status")).toBe("open");
+  });
+  it("falls back to the default for an emptied int (cleared input → declared default)", () => {
+    expect(resolveParams([P.limit], { limit: "" }).get("limit")).toBe(10);
   });
 });
 
@@ -97,6 +113,13 @@ describe("compilePostgres — bind, never splice", () => {
     expect(() => compilePostgres("WHERE x=:ghost", new Map())).toThrow(
       /undeclared param :ghost/,
     );
+  });
+  it("leaves a colon-word inside a string literal untouched (no false bind)", () => {
+    const resolved = resolveParams([P.status], { status: "closed" });
+    const c = compilePostgres("WHERE note = ': literal' AND status = :status", resolved);
+    expect(c.text).toBe("WHERE note = ': literal' AND status = $1");
+    expect(c.values).toEqual(["closed"]);
+    expect(c.referenced).toEqual(["status"]);
   });
 });
 

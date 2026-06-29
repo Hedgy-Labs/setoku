@@ -149,6 +149,16 @@ open-domain param (`text`, an unbounded `int`) could otherwise mint a fresh cach
 row per distinct value — the cache is **capped per app**: the newest ~256 rows
 are kept and the oldest are evicted on write.
 
+The cap bounds storage but not *execution* — distinct param values still miss the
+cache, and each miss is a live prod query. So the **credential-free** `/p/<id>`
+surface also bounds the *rate* of fresh runs with a per-app token bucket (`~30`
+burst, refilling `~30/min`): each would-be cache-miss panel run spends one token,
+and once empty a panel renders cache-only (last good rows, else "data temporarily
+unavailable") rather than hitting the DB. Charged per execution, so cached hits
+are free and a normal viewer never notices; an anonymous hammer streaming distinct
+`?p.<name>=` values can't amplify load against the business DB/lake. Authenticated
+`/admin` views are not rate-limited (the viewer is logged in and audited).
+
 ## Viewer params — interactive apps
 
 An app can declare typed **inputs** the viewer changes — a date range, a region
