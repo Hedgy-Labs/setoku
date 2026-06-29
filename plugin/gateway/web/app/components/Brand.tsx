@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 import { cn } from "../cn";
 
-/** The Setoku sprout mark + wordmark in the Bagel Fat One display font. */
+/** The Setoku sprout mark + wordmark, set in the neutral chrome (system) font. */
 export function Brand({ className }: { className?: string }) {
   return (
-    <span className={cn("inline-flex items-center gap-2 font-brand leading-none text-stone-900", className)}>
+    <span className={cn("inline-flex items-center gap-2 font-bold tracking-tight leading-none text-stone-900", className)}>
       <svg viewBox="0 0 64 64" className="h-[1.05em] w-[1.05em] shrink-0" fill="currentColor" aria-hidden="true">
         <path d="M32 35 Q24.8 27.88 11.47 25.91 A11 11 0 1 1 26.61 13.21 Q32.37 21.53 32 35 Z" />
         <path d="M32 35 Q32.37 25.88 35.79 19.33 A8 8 0 1 1 46.77 28.54 Q37.86 30.49 32 35 Z" />

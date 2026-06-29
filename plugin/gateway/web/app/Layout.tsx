@@ -22,7 +22,7 @@ export function Layout() {
       <header className="sticky top-0 z-10 border-b border-stone-200 bg-stone-50/80 backdrop-blur">
         <div className="mx-auto flex max-w-4xl items-center gap-x-4 px-5 py-3">
           <NavLink to="/" aria-label="Setoku">
-            <Brand className="text-2xl" />
+            <Brand className="gap-1 text-xl" />
           </NavLink>
 
           {/* wide screens: inline tabs + identity + sign-out */}
