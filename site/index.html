@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Setoku — open-source MCP server for company data</title>
+<title>Setoku · open-source MCP server for company data</title>
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
 <meta name="description" content="Setoku is an open-source MCP server that gives your AI a read-only view of your company's data, plus the context to use it correctly." />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -56,7 +56,7 @@
   section:first-of-type{border-top:none}
   h2{font-family:var(--serif);font-weight:500;font-size:24px;letter-spacing:-.01em;margin-bottom:6px;scroll-margin-top:70px}
   .diagram{margin-top:24px}
-  .diagram svg{width:100%;height:auto;max-width:600px;display:block;margin:0 auto}
+  .diagram svg{width:100%;height:auto;display:block;margin:0 auto}
   .diagram .node{fill:#fff;stroke:var(--ink);stroke-width:1.4}
   .diagram .box{fill:none;stroke:var(--ink-faint);stroke-width:1.2;stroke-dasharray:4 5}
   .diagram .t{font-family:var(--sans);font-size:13px;fill:var(--ink)}
@@ -71,6 +71,10 @@
   .uses b{color:var(--ink);font-weight:600}
   section > .wrap > p{color:var(--ink-soft);margin-top:8px;max-width:44em}
   .lead{margin-bottom:20px}
+  .irole{font-size:13px;color:var(--ink-faint);margin:2px 0 14px;max-width:40em}
+  .lakebox{border:1px dashed var(--line);border-radius:12px;padding:13px 14px 14px;display:inline-block}
+  .lakebox .lk{font-family:var(--mono);font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:11px;display:flex;align-items:center;gap:7px}
+  .lakebox .lk .dot{width:8px;height:8px;border-radius:50%;background:var(--sage)}
 
   /* code */
   pre{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:18px 20px;overflow-x:auto;margin-top:16px}
@@ -139,7 +143,7 @@
     <nav class="nav">
       <a class="hideable" href="#how">How it works</a>
       <a class="hideable" href="#apps">Apps</a>
-      <a class="hideable" href="#integrations">Integrations</a>
+      <a class="hideable" href="#connectors">Connectors</a>
       <a href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">GitHub ↗</a>
     </nav>
   </div>
@@ -150,7 +154,7 @@
   <div class="intro wrap">
     <span class="eyebrow">Open source · MCP server · Apache-2.0</span>
     <h1>Give your AI a read-only window into your company's data.</h1>
-    <p class="lede">Setoku is a small self-hosted MCP knowledge server + Claude Code skills for hooking up your data. It does two things: it gives your AI a read-only way to query your data, and it remembers what that data means (the metric definitions, the gotchas), getting better the more you use it. No model runs on the server; it works with whatever AI you already have.</p>
+    <p class="lede">Setoku is a small self-hosted MCP knowledge server + Claude Code skills for hooking up your data. It does two things: it gives your AI a read-only way to query your data, and it remembers what that data means (the metric definitions, the gotchas), getting better the more you use it. No model runs on the server, so it works with whatever AI you already have.</p>
     <div class="actions">
       <a class="btn" href="https://github.com/Hedgy-Labs/setoku" target="_blank" rel="noopener">View on GitHub ↗</a>
       <a class="btn ghost" href="#demo">Try the demo</a>
@@ -207,25 +211,27 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         <li><code>/setoku:generate</code> writes business context from your code.</li>
         <li><code>/setoku:curate</code> reviews and approves pending knowledge.</li>
       </ul>
-      <p class="note">Once it's set up, <b>any MCP client</b> can use it — Claude, Codex, or whatever you run. Just ask in plain language; the tools do the rest.</p>
+      <p class="note">Once it's set up, <b>any MCP client</b> can use it: Claude, Codex, or whatever you run. Just ask in plain language, and the tools do the rest.</p>
+    </div>
+  </section>
 
   <!-- APPS -->
   <section id="apps">
     <div class="wrap">
       <h2>Apps: build little tools on your data</h2>
-      <p class="lead">Once your AI can read and understand the data, ask it to <b>build</b> something on top — a dashboard, a poll, a triage list. It writes a self-contained app and gives you a link. Nothing to deploy, no frontend to maintain; a non-technical teammate just describes what they want.</p>
+      <p class="lead">Once your AI can read and understand the data, ask it to <b>build</b> something on top: a dashboard, a poll, a triage list. It writes a self-contained app and gives you a link. Nothing to deploy, no frontend to maintain. A non-technical teammate just describes what they want.</p>
       <div class="steps">
         <div class="row">
           <div class="k">Built by asking<span class="t">publish_app</span></div>
-          <div class="v">Describe it in plain language; the agent writes the app and publishes it to a URL. Edit it the same way — just ask for the change.</div>
+          <div class="v">Describe it in plain language; the agent writes the app and publishes it to a URL. Edit it the same way, just ask for the change.</div>
         </div>
         <div class="row">
           <div class="k">Backed by live data<span class="t">read-only</span></div>
-          <div class="v">Apps read through the same governed path — row caps, audit, a SELECT-only database role. They never get write access to your sources.</div>
+          <div class="v">Apps read through the same governed path: row caps, audit, a SELECT-only database role. They never get write access to your sources.</div>
         </div>
         <div class="row">
           <div class="k">Their own private state<span class="t">no writes to your data</span></div>
-          <div class="v">Each app keeps its own state — todos, votes, annotations — in a sandbox that belongs to the app, not your database. Worst case, an app messes up its own notes. A neat trick: tag a business row by its id to mark it "reviewed" without ever writing the source.</div>
+          <div class="v">Each app keeps its own state (todos, votes, annotations) in a sandbox that belongs to the app, not your database. Worst case, an app messes up its own notes. A neat trick: tag a business row by its id to mark it "reviewed" without ever writing the source.</div>
         </div>
         <div class="row">
           <div class="k">Share by link<span class="t">team or public</span></div>
@@ -239,69 +245,77 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
   <section id="architecture">
     <div class="wrap">
       <h2>What's in the box</h2>
-      <p class="lead">You can host this on whatever infra you like. We put it all on one small box (a ~$12/mo VPS). The <code>/setoku:connect</code> skill helps you add custom integrations. Only the proxy is public; your databases aren't exposed. Queries are read-only, and knowledge changes pass through a person.</p>
+      <p class="lead">You can host this on whatever infra you like. We put it all on one small box (a ~$12/mo VPS). The <code>/setoku:connect</code> skill helps you add custom integrations. Only the proxy is public, so your databases aren't exposed. Queries are read-only, and knowledge changes pass through a person.</p>
       <div class="diagram">
-        <svg viewBox="0 0 680 440" role="img" aria-label="Setoku architecture: you and your AI connect over MCP to the gateway, which reads your data read-only and proposes knowledge that a person approves.">
-          <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 Z" fill="#54615A"/></marker></defs>
-          <rect class="node" x="255" y="14" width="170" height="44" rx="10"/>
+        <svg viewBox="0 0 680 520" role="img" aria-label="Setoku architecture and data flow: you and your AI connect over MCP to the gateway on your box, which holds a ClickHouse lake, a knowledge store, and a person who approves. Below the box, your Postgres database is queried read-only and your sources (Vercel, Render, Slack, Mercury) are ingested into the lake.">
+          <defs><marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0 L6 3 L0 6 Z" fill="#54615A"/></marker></defs>
+
+          <!-- you + your AI -->
+          <rect class="node" x="250" y="14" width="180" height="44" rx="10"/>
           <text class="t" x="340" y="41" text-anchor="middle">You + your AI</text>
-          <path class="arr" d="M340 58 L340 98" marker-end="url(#ah)"/>
-          <text class="e" x="348" y="82">MCP</text>
-          <rect class="box" x="36" y="106" width="608" height="312" rx="14"/>
-          <text class="e" x="52" y="126" fill="#8E968C">your box · only the proxy is public</text>
-          <rect class="node" x="250" y="142" width="180" height="58" rx="10"/>
-          <text class="t" x="340" y="167" text-anchor="middle">Setoku gateway</text>
-          <text class="s" x="340" y="185" text-anchor="middle">context · query tools</text>
-          <rect class="node" x="448" y="146" width="160" height="46" rx="10"/>
-          <text class="t" x="528" y="174" text-anchor="middle">a person (admin)</text>
-          <rect class="node" x="70" y="330" width="200" height="62" rx="10"/>
-          <text class="t" x="170" y="358" text-anchor="middle">Your database</text>
-          <text class="s" x="170" y="376" text-anchor="middle">read-only · not copied</text>
-          <rect class="node" x="410" y="330" width="200" height="62" rx="10"/>
-          <text class="t" x="510" y="366" text-anchor="middle">Knowledge store</text>
-          <path class="arr" d="M305 200 L188 330" marker-end="url(#ah)"/>
-          <text class="e" x="205" y="262">read-only</text>
-          <path class="arr" d="M372 200 L468 330" marker-end="url(#ah)"/>
-          <text class="e" x="430" y="266">proposes</text>
-          <path class="arr" d="M528 192 L516 330" marker-end="url(#ah)"/>
-          <text class="e" x="536" y="266">approves</text>
+          <path class="arr" d="M340 58 L340 142" marker-start="url(#ah)" marker-end="url(#ah)"/>
+          <text class="e" x="348" y="86">MCP</text>
+
+          <!-- the box -->
+          <rect class="box" x="60" y="110" width="560" height="300" rx="14"/>
+          <text class="e" x="76" y="130" fill="#8E968C">your box · only the proxy is public</text>
+          <rect class="node" x="250" y="146" width="180" height="58" rx="10"/>
+          <text class="t" x="340" y="171" text-anchor="middle">Setoku gateway</text>
+          <text class="s" x="340" y="189" text-anchor="middle">context · query tools</text>
+          <rect class="node" x="452" y="150" width="150" height="50" rx="10"/>
+          <text class="t" x="527" y="179" text-anchor="middle">a person</text>
+          <rect class="node" x="92" y="322" width="180" height="66" rx="10"/>
+          <text class="t" x="182" y="350" text-anchor="middle">Lake (ClickHouse)</text>
+          <text class="s" x="182" y="368" text-anchor="middle">ingested logs · events</text>
+          <rect class="node" x="408" y="322" width="190" height="66" rx="10"/>
+          <text class="t" x="503" y="359" text-anchor="middle">Knowledge store</text>
+
+          <!-- your external data (below the box) -->
+          <rect class="node" x="92" y="440" width="180" height="64" rx="10"/>
+          <text class="t" x="182" y="468" text-anchor="middle">Your sources</text>
+          <text class="s" x="182" y="486" text-anchor="middle">Vercel · Render · Slack…</text>
+          <rect class="node" x="300" y="440" width="180" height="64" rx="10"/>
+          <text class="t" x="390" y="468" text-anchor="middle">Your database</text>
+          <text class="s" x="390" y="486" text-anchor="middle">Postgres · read-only</text>
+
+          <!-- flows -->
+          <path class="arr" d="M412 204 L508 322" marker-start="url(#ah)" marker-end="url(#ah)"/>
+          <text class="e" x="424" y="266" text-anchor="middle">reads ·</text>
+          <text class="e" x="424" y="282" text-anchor="middle">proposes</text>
+          <path class="arr" d="M527 200 L513 322" marker-end="url(#ah)"/>
+          <text class="e" x="534" y="262">approves</text>
+          <path class="arr" d="M210 322 L300 204" marker-end="url(#ah)"/>
+          <path class="arr" d="M182 440 L182 388" marker-end="url(#ah)"/>
+          <text class="e" x="190" y="420">ingest</text>
+          <path class="arr" d="M388 440 L366 206" marker-end="url(#ah)"/>
+          <text class="e" x="300" y="300">read-only</text>
         </svg>
       </div>
     </div>
   </section>
 
-  <!-- INTEGRATIONS -->
-  <section id="integrations">
+  <!-- CONNECTORS -->
+  <section id="connectors">
     <div class="wrap">
-      <h2>Integrations</h2>
-      <p class="lead">Point Setoku at the data you already have. Setup skills are included that help your coding agent wire everything up and add new integrations.</p>
+      <h2>Connectors</h2>
+      <p class="lead">Point Setoku at the data you already have. It queries some sources live and ingests others into a local lake.</p>
       <div class="integ">
         <div class="igroup">
-          <h3>Query live (read-only)</h3>
+          <h3>Queried live (read-only)</h3>
           <div class="chips">
             <div class="chip"><span class="dot"></span><b>PostgreSQL</b><span>your app database</span></div>
           </div>
         </div>
         <div class="igroup">
-          <h3>Lake — ingested logs &amp; events</h3>
-          <div class="chips">
-            <div class="chip"><span class="dot"></span><b>ClickHouse</b><span>logs · events · telemetry</span></div>
-          </div>
-        </div>
-        <div class="igroup">
-          <h3>Source connectors</h3>
-          <div class="chips">
-            <div class="chip"><span class="dot"></span><b>Vercel</b><span>deploys &amp; logs</span></div>
-            <div class="chip"><span class="dot"></span><b>Render</b><span>deploys &amp; logs</span></div>
-            <div class="chip"><span class="dot"></span><b>Slack</b><span>messages</span></div>
-            <div class="chip"><span class="dot"></span><b>Mercury</b><span>banking &amp; finance</span></div>
-          </div>
-        </div>
-        <div class="igroup">
-          <h3>AI clients (over MCP)</h3>
-          <div class="chips">
-            <div class="chip"><span class="dot"></span><b>Claude</b><span>claude.ai · Claude Code</span></div>
-            <div class="chip muted"><span class="dot"></span><b>Any MCP client</b></div>
+          <h3>Ingested into the lake</h3>
+          <div class="lakebox">
+            <div class="lk"><span class="dot"></span>ClickHouse · the lake</div>
+            <div class="chips">
+              <div class="chip"><span class="dot"></span><b>Vercel</b><span>deploys &amp; logs</span></div>
+              <div class="chip"><span class="dot"></span><b>Render</b><span>deploys &amp; logs</span></div>
+              <div class="chip"><span class="dot"></span><b>Slack</b><span>messages</span></div>
+              <div class="chip"><span class="dot"></span><b>Mercury</b><span>banking &amp; finance</span></div>
+            </div>
           </div>
         </div>
       </div>
