@@ -1,0 +1,73 @@
+{
+  "_note": "Gotcha-trap value eval for the Bulldogs demo. Each question is one where the NAIVE answer (DB schema only, no Setoku) is WRONG; only a curated fact saves it. `signature` = distinctive substrings of that trap-avoiding fact — ALL must appear in what find_context would surface for the trap to count as 'covered'. This measures Setoku's VALUE: is the fix reachable when the real question is asked? Ungrounded coverage is 0 by construction, so the rate is the grounded-vs-ungrounded lift. `expect` is the rubric for the in-session answer-lift run (eval skill).",
+  "k": 5,
+  "traps": [
+    {
+      "question": "What is our total annual revenue across all systems?",
+      "trap": "Sums ticketing (integer cents) together with the dollar systems without converting, and/or omits media rights (~$90M, the biggest line).",
+      "signature": ["cents", "dollars"],
+      "expect": "~$180–200M/season; explicitly converts ticketing cents→dollars and includes media rights."
+    },
+    {
+      "question": "How many unique fans do we have?",
+      "trap": "Counts crm.contact rows, which contain duplicates per person — overcounts.",
+      "signature": ["dedupe", "email"],
+      "expect": "Dedupes by normalized email before counting; ~98k, not the raw row count."
+    },
+    {
+      "question": "What is our ticket revenue this season?",
+      "trap": "Sums all seat_txn rows, including refunds (RF), exchanges (XCH), comps, and unsold inventory.",
+      "signature": ["refunded", "comp"],
+      "expect": "Restricts to status_cd IN ('SD','SC'); excludes RF/XCH and COMP accounts."
+    },
+    {
+      "question": "What's our food and beverage per-cap?",
+      "trap": "Divides POS dollars by all events including upcoming games that have no concession rows yet.",
+      "signature": ["completed"],
+      "expect": "Divides F&B dollars by paid attendance of completed games only."
+    },
+    {
+      "question": "How much do media rights bring in per year?",
+      "trap": "Treats annual_value as per-game and multiplies by games or attendance.",
+      "signature": ["per-season"],
+      "expect": "Sums annual_value per season_yr; never multiplies by games (~$90M/yr)."
+    },
+    {
+      "question": "What is our total merchandise revenue?",
+      "trap": "Reports merch.online_order as total merch — but that's online only; in-venue/retail (Fanatics) isn't in the DB.",
+      "signature": ["online", "fanatics"],
+      "expect": "States the figure is online-only and that total merch is not knowable from this DB."
+    },
+    {
+      "question": "What's our gameday labor cost?",
+      "trap": "Uses hr.worker, which omits vendor-employed gameday staff (worker_id NULL) — undercounts.",
+      "signature": ["vendor", "hr.shift"],
+      "expect": "Uses hr.shift (with pay_rate), not hr.worker headcount."
+    },
+    {
+      "question": "How many ticketing accounts are there?",
+      "trap": "Counts all accounts including test/internal records (@bonita.test, VOID/TEST names).",
+      "signature": ["test", "bonita.test"],
+      "expect": "Excludes test/internal accounts."
+    },
+    {
+      "question": "What's our booked sponsorship revenue?",
+      "trap": "Includes 'proposed' deals that aren't closed.",
+      "signature": ["proposed"],
+      "expect": "Excludes status='proposed'; counts signed/active/expired."
+    },
+    {
+      "question": "How many opponents do we face each season?",
+      "trap": "Answers 29 (all league teams) rather than the ~22 actually played each season.",
+      "signature": ["22 of 29"],
+      "expect": "~22 of 29 opponents per season."
+    },
+    {
+      "question": "How do we link a fan's ticket purchases to their concession spending?",
+      "trap": "Assumes a shared person key / foreign key exists across vendor systems.",
+      "signature": ["loyalty", "15%"],
+      "expect": "No cross-system FK; join by normalized email; pos.loyalty_id ties only ~15% of F&B to a fan."
+    }
+  ],
+  "gate": { "minTrapCoverage": 0.7 }
+}

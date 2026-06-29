@@ -2,6 +2,7 @@
 name: ticket_revenue
 summary: Ticket revenue from the ticketing system — sum of price_paid for SOLD/SCANNED seats (in cents), excluding refunds, exchanges, comps, and test accounts.
 keywords: [ticket revenue, ticket sales, gate revenue, tickets sold, income, by season]
+links: [SeatTxn, Event, TicketingAccount, total_revenue]
 ---
 
 ## Definition

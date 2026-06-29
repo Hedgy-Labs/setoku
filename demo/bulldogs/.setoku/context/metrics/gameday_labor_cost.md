@@ -2,6 +2,7 @@
 name: gameday_labor_cost
 summary: Actual gameday labor cost — clocked hours × pay_rate (dollars) from hr.shift, for completed games. Includes both team and vendor staff.
 keywords: [labor cost, gameday labor, staffing cost, payroll gameday, hours worked, wages, shifts, vendor staff]
+links: [Workforce, Event]
 ---
 
 ## Definition

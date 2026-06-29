@@ -3,6 +3,7 @@ name: MerchAndMarketing
 table: merch.online_order
 summary: Merch online orders (PARTIAL — team online store only; in-venue/retail is Fanatics, not present) and marketing.ad_spend (per-platform spend, no sales attribution). Dollars.
 keywords: [merch, merchandise, store, online order, fanatics, marketing, ad spend, campaign, channel, platform, cpm, roi, jersey, hat]
+links: [identity_resolution, total_revenue]
 ---
 
 ## Semantics

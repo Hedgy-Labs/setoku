@@ -2,6 +2,7 @@
 name: total_revenue
 summary: Total club revenue per season — media rights + ticketing + F&B + sponsorship + merch, combined across systems with correct units (ticketing is cents, the rest dollars). Lands ~$180–200M/season.
 keywords: [total revenue, total income, all revenue, how much money do we make, annual revenue, club revenue, top line, combined revenue, revenue by source]
+links: [media_rights_revenue, ticket_revenue, fnb_per_cap, sponsorship_revenue, MerchAndMarketing, MediaRights]
 ---
 
 ## Definition

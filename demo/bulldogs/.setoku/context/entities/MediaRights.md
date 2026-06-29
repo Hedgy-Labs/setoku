@@ -3,6 +3,7 @@ name: MediaRights
 table: media.rights_deal
 summary: Broadcast / media-rights contracts — the club's single biggest revenue line (~$90M/yr). One row per rights package per season (regional/RSN, national, streaming, radio). Annual fees in DOLLARS, NOT per-game.
 keywords: [media, media rights, broadcast, tv, television, rsn, regional sports network, national, streaming, radio, rights fee, biggest revenue, broadcast revenue]
+links: [media_rights_revenue, total_revenue]
 ---
 
 ## Semantics

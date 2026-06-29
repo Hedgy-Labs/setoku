@@ -15,7 +15,8 @@
  * may be an in-session LLM (run on Max), but the scoring here stays free.
  */
 import fs from "node:fs";
-import { KnowledgeStore } from "./lib/store";
+import { findOrphans, suggestConnections } from "./lib/facts";
+import { KnowledgeStore, type KnowledgeDoc } from "./lib/store";
 import {
   defectMetrics,
   judgementMetrics,
@@ -25,7 +26,7 @@ import {
   type JudgementRow,
   type RetrievalCase,
 } from "./lib/quality";
-import type { ScorableDoc } from "./lib/search";
+import { buildLinkGraph, type ScorableDoc } from "./lib/search";
 
 interface QualitySpec {
   /** Inline docs for self-contained runs; ignored when --db is supplied. */
@@ -40,12 +41,21 @@ interface QualitySpec {
    * from the deterministic redundancy report (the detector IS model-free there).
    */
   defects?: { planted: string[]; found?: string[] };
+  /** Cap on linked neighbors added per case in the expanded ("map-first") run. */
+  maxLinked?: number;
   /** Optional CI gate thresholds (checked only with --gate). */
   gate?: {
     minHitRate?: number;
     minRecallAtK?: number;
+    /** Floor on recall@k for the map-first (link-expanded) retrieval. */
+    minRecallAtKExpanded?: number;
+    /** Floor on precision@k for map-first — guards against flooding the result
+     *  with low-value linked neighbors (recall must not be bought too cheaply). */
+    minPrecisionAtKExpanded?: number;
     maxFalseAcceptRate?: number;
     minDefectRecall?: number;
+    /** Ceiling on declared links that resolve to no doc. */
+    maxBrokenLinks?: number;
   };
 }
 
@@ -55,6 +65,10 @@ function pct(x: number): string {
 
 function dupKey(a: string, b: string): string {
   return `dup:${[a, b].sort().join("|")}`;
+}
+
+function connKey(a: string, b: string): string {
+  return `connection:${[a, b].sort().join("|")}`;
 }
 
 function parseArgs(argv: string[]) {
@@ -78,38 +92,70 @@ export function runQuality(spec: QualitySpec, docs: ScorableDoc[]) {
 
   const redundant = redundancyReport(docs, threshold);
   const stats = knowledgeStats(docs, threshold, redundant.length);
+
+  // Wiki structure: the link graph + its two structural lint signals. All
+  // model-free (I8). `docs` may be ScorableDoc (inline spec) or KnowledgeDoc
+  // (--db) — both carry type/name/meta, which is all the detectors read.
+  const graph = buildLinkGraph(docs);
+  const kdocs = docs as KnowledgeDoc[];
+  const orphans = findOrphans(kdocs, graph);
+  const connections = suggestConnections(kdocs, graph);
+  const linkCount = [...graph.out.values()].reduce((n, s) => n + s.size, 0);
+  const link = {
+    links: linkCount,
+    orphans: orphans.map((o) => o.ref),
+    connections: connections.map((c) => ({ a: c.a, b: c.b, similarity: c.similarity })),
+    broken: graph.unresolved,
+  };
+
+  // Retrieval, scored two ways from the SAME keyword ranker: baseline (top-k)
+  // and map-first (top-k + 1-hop link neighbors). The A/B is the guardrail —
+  // link-expansion must lift recall without dropping the baseline's precision.
   const retrieval = spec.retrieval?.length
     ? retrievalMetrics(docs, spec.retrieval, k)
     : null;
+  const retrievalExpanded = spec.retrieval?.length
+    ? retrievalMetrics(docs, spec.retrieval, k, {
+        expandLinks: true,
+        maxLinked: spec.maxLinked ?? k,
+        graph,
+      })
+    : null;
+
   const judgement = spec.judgement?.length
     ? judgementMetrics(spec.judgement)
     : null;
 
   let defects = null;
-  // When `found` is omitted we can only auto-derive the DUPLICATE detector
-  // (redundancyReport is model-free). Scoring non-`dup:` planted defects
-  // (contradictions, stale) against that derived set would count them all as
-  // missed — misleading. So without explicit `found`, score only the dup-kind
-  // planted defects and report the rest as unscored (no detector supplied).
+  // Detectors are auto-derived from the model-free passes: duplicates
+  // (redundancy), orphans + missing connections (link graph), broken links.
+  // So orphan:/connection:/broken:/dup: planted keys are all gradable here with
+  // no supplied `found`. Any OTHER planted kind (e.g. contradiction:) needs an
+  // explicit detector output and is reported unscored.
   let defectsUnscored: string[] = [];
   if (spec.defects?.planted?.length) {
     if (spec.defects.found) {
       defects = defectMetrics(spec.defects.found, spec.defects.planted);
     } else {
-      const derived = redundant.map((p) => dupKey(p.a, p.b));
-      const plantedDup = spec.defects.planted.filter((key) =>
-        key.startsWith("dup:"),
-      );
-      defectsUnscored = spec.defects.planted.filter(
-        (key) => !key.startsWith("dup:"),
-      );
-      defects = defectMetrics(derived, plantedDup);
+      const derived = [
+        ...redundant.map((p) => dupKey(p.a, p.b)),
+        ...orphans.map((o) => `orphan:${o.ref}`),
+        ...connections.map((c) => connKey(c.a, c.b)),
+        ...graph.unresolved.map((u) => `broken:${u.from}|${u.ref}`),
+      ];
+      const gradable = (key: string) =>
+        ["dup:", "orphan:", "connection:", "broken:"].some((p) => key.startsWith(p));
+      const planted = spec.defects.planted.filter(gradable);
+      defectsUnscored = spec.defects.planted.filter((key) => !gradable(key));
+      defects = defectMetrics(derived, planted);
     }
   }
 
   return {
     stats,
+    link,
     retrieval,
+    retrievalExpanded,
     redundant,
     judgement,
     defects,
@@ -132,17 +178,30 @@ function renderScorecard(r: QualityResult): string {
       .join(", ") || "—"
   })`);
   lines.push(`- tokens: **${r.stats.totalTokens}** (avg ${r.stats.avgTokensPerDoc.toFixed(1)}/doc)`);
-  lines.push(`- near-duplicate pairs (≥${r.threshold}): **${r.stats.redundantPairs}**\n`);
+  lines.push(`- near-duplicate pairs (≥${r.threshold}): **${r.stats.redundantPairs}**`);
+  lines.push(
+    `- links: **${r.link.links}** · orphans: **${r.link.orphans.length}** · suggested connections: **${r.link.connections.length}** · broken links: **${r.link.broken.length}**`,
+  );
+  if (r.link.orphans.length) lines.push(`  - orphaned: ${r.link.orphans.join(", ")}`);
+  if (r.link.broken.length)
+    lines.push(`  - broken: ${r.link.broken.map((b) => `${b.from}→${b.ref}`).join(", ")}`);
+  lines.push("");
 
   if (r.retrieval) {
     const m = r.retrieval;
+    const e = r.retrievalExpanded;
+    const delta = (a: number, b: number) => {
+      const d = b - a;
+      return d === 0 ? "±0" : `${d > 0 ? "+" : ""}${pct(d)}`;
+    };
     lines.push(`## Retrieval (k=${m.k}, ${m.cases} cases)`);
-    lines.push(`| metric | value |`);
-    lines.push(`| --- | --- |`);
-    lines.push(`| hit rate | ${pct(m.hitRate)} |`);
-    lines.push(`| recall@${m.k} | ${pct(m.recallAtK)} |`);
-    lines.push(`| precision@${m.k} | ${pct(m.precisionAtK)} |`);
-    lines.push(`| MRR | ${m.mrr.toFixed(3)} |`);
+    lines.push(`map-first = keyword top-k + 1-hop link neighbors of those hits.\n`);
+    lines.push(`| metric | baseline | map-first | Δ |`);
+    lines.push(`| --- | --- | --- | --- |`);
+    lines.push(`| hit rate | ${pct(m.hitRate)} | ${e ? pct(e.hitRate) : "—"} | ${e ? delta(m.hitRate, e.hitRate) : ""} |`);
+    lines.push(`| recall@${m.k} | ${pct(m.recallAtK)} | ${e ? pct(e.recallAtK) : "—"} | ${e ? delta(m.recallAtK, e.recallAtK) : ""} |`);
+    lines.push(`| precision@${m.k} | ${pct(m.precisionAtK)} | ${e ? pct(e.precisionAtK) : "—"} | ${e ? delta(m.precisionAtK, e.precisionAtK) : ""} |`);
+    lines.push(`| MRR | ${m.mrr.toFixed(3)} | ${e ? e.mrr.toFixed(3) : "—"} | |`);
     const misses = m.perCase.filter((c) => !c.hit);
     if (misses.length) {
       lines.push(`\nRetrieval misses (no relevant doc in top-${m.k}):`);
@@ -211,6 +270,24 @@ export function checkGate(spec: QualitySpec, r: QualityResult): string[] {
     else if (r.retrieval.recallAtK < g.minRecallAtK)
       fails.push(`recall@k ${pct(r.retrieval.recallAtK)} < ${pct(g.minRecallAtK)}`);
   }
+  if (g.minRecallAtKExpanded != null) {
+    if (!r.retrievalExpanded)
+      fails.push("minRecallAtKExpanded set but no retrieval cases ran");
+    else if (r.retrievalExpanded.recallAtK < g.minRecallAtKExpanded)
+      fails.push(
+        `map-first recall@k ${pct(r.retrievalExpanded.recallAtK)} < ${pct(g.minRecallAtKExpanded)}`,
+      );
+  }
+  if (g.minPrecisionAtKExpanded != null) {
+    if (!r.retrievalExpanded)
+      fails.push("minPrecisionAtKExpanded set but no retrieval cases ran");
+    else if (r.retrievalExpanded.precisionAtK < g.minPrecisionAtKExpanded)
+      fails.push(
+        `map-first precision@k ${pct(r.retrievalExpanded.precisionAtK)} < ${pct(g.minPrecisionAtKExpanded)}`,
+      );
+  }
+  if (g.maxBrokenLinks != null && r.link.broken.length > g.maxBrokenLinks)
+    fails.push(`broken links ${r.link.broken.length} > ${g.maxBrokenLinks}`);
   if (g.maxFalseAcceptRate != null) {
     if (!r.judgement)
       fails.push("maxFalseAcceptRate set but no judgement decisions ran");

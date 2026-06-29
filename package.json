@@ -8,6 +8,9 @@
     "test": "bun test test/ ingest/",
     "test:e2e": "bun test e2e/",
     "eval:knowledge": "bun plugin/gateway/quality-cli.ts",
+    "eval:value": "bun demo/eval/value.ts",
+    "eval:retrieval": "bun demo/eval/retrieval.ts",
+    "eval:embed": "bun demo/eval/embed-retrieval.ts",
     "knowledge-lint": "bun plugin/gateway/knowledge-lint.ts",
     "setup:hooks": "git config core.hooksPath scripts/hooks",
     "typecheck": "tsc --noEmit",
@@ -38,8 +41,14 @@
     "@types/pg": "^8.15.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "fastembed": "^2.1.0",
     "playwright-core": "^1.61.0",
     "tailwindcss": "^4.3.1",
     "typescript": "^5.8.0"
-  }
+  },
+  "trustedDependencies": [
+    "@parcel/watcher",
+    "onnxruntime-node",
+    "protobufjs"
+  ]
 }

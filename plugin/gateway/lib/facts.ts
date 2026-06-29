@@ -16,7 +16,7 @@
  *
  * Quality is measured by lib/quality.ts and gated by the #11 harness.
  */
-import { jaccard, tokenize } from "./search";
+import { buildLinkGraph, docRef, jaccard, type LinkGraph, tokenize } from "./search";
 import type { Correction, DocType, KnowledgeDoc } from "./store";
 
 /* --------------------------------- types --------------------------------- */
@@ -87,6 +87,10 @@ export interface CompactionReport {
   merges: MergeCandidate[];
   contradictions: ContradictionCandidate[];
   flags: FlagCandidate[];
+  /** Docs disconnected from the link graph (populated when docs are passed). */
+  orphans: OrphanCandidate[];
+  /** Doc pairs that look like they should link but don't. */
+  connections: ConnectionCandidate[];
   stats: { facts: number; subjects: number };
 }
 
@@ -438,17 +442,125 @@ export function findStale(facts: Fact[], knownSources?: Set<string>): FlagCandid
   return out;
 }
 
+/* ----------------- wiki structure: orphans & connections ----------------- */
+//
+// The store is an interlinked wiki (links live in meta.links — see search.ts).
+// Two structural lint signals fall straight out of the link graph, and they are
+// exactly the ones Karpathy's "lint" step calls out: orphan pages (no links in
+// or out) and missing connections (two docs that clearly belong linked but
+// aren't). Both are model-free and RECOMMEND-ONLY (I8/I9): they surface in the
+// health bar and can be turned into pending corrections, but a human commits the
+// actual `meta.links` edit through the membrane.
+
+export interface OrphanCandidate {
+  kind: "orphan";
+  ref: string;
+  subject: string;
+  reason: string;
+}
+
+export interface ConnectionCandidate {
+  kind: "connection";
+  a: string;
+  b: string;
+  similarity: number;
+  reason: string;
+}
+
+/** Doc types that are expected to stand alone — never flagged as orphans. The
+ *  overview/index is the hub (links radiate from it); gotchas attach by
+ *  relates_to, handled in buildKnowledgeView, not here. */
+const ORPHAN_EXEMPT = new Set<DocType>(["overview", "gotcha"]);
+
+/** Canonical docs with no inbound AND no outbound links — disconnected from the
+ *  wiki. A growing store fragments into these without anyone noticing; this is
+ *  the cheap structural alarm. */
+export function findOrphans(docs: KnowledgeDoc[], graph?: LinkGraph): OrphanCandidate[] {
+  const g = graph ?? buildLinkGraph(docs);
+  const out: OrphanCandidate[] = [];
+  for (const d of docs) {
+    if (ORPHAN_EXEMPT.has(d.type)) continue;
+    const outDeg = g.out.get(docRef(d))?.size ?? 0;
+    const inDeg = g.back.get(docRef(d))?.size ?? 0;
+    if (outDeg === 0 && inDeg === 0)
+      out.push({
+        kind: "orphan",
+        ref: d.name,
+        subject: `${d.type}:${normalize(d.name)}`,
+        reason: "no links in or out — disconnected from the wiki",
+      });
+  }
+  return out;
+}
+
+/**
+ * Pairs of canonical docs that look like they belong linked but aren't — strong
+ * token overlap (name + summary + keywords) yet no edge in either direction, and
+ * NOT similar enough to be a merge candidate (those go to findDuplicates). The
+ * `mergeThreshold` ceiling keeps "these are the same fact" out of "these should
+ * link". Recommend-only.
+ */
+export function suggestConnections(
+  docs: KnowledgeDoc[],
+  graph?: LinkGraph,
+  threshold = 0.4,
+  mergeThreshold = 0.6,
+): ConnectionCandidate[] {
+  const g = graph ?? buildLinkGraph(docs);
+  const canon = docs.filter((d) => d.type !== "gotcha");
+  const text = (d: KnowledgeDoc) =>
+    new Set(
+      tokenize(
+        `${d.name} ${d.meta.summary ?? ""} ${
+          Array.isArray(d.meta.keywords) ? d.meta.keywords.join(" ") : d.meta.keywords ?? ""
+        }`,
+      ),
+    );
+  const toks = canon.map(text);
+  const linked = (a: string, b: string) =>
+    g.out.get(a)?.has(b) || g.out.get(b)?.has(a);
+  const out: ConnectionCandidate[] = [];
+  for (let i = 0; i < canon.length; i++) {
+    for (let j = i + 1; j < canon.length; j++) {
+      if (linked(docRef(canon[i]), docRef(canon[j]))) continue;
+      const sim = jaccard(toks[i], toks[j]);
+      if (sim >= threshold && sim < mergeThreshold)
+        out.push({
+          kind: "connection",
+          a: canon[i].name,
+          b: canon[j].name,
+          similarity: sim,
+          reason: `${(sim * 100).toFixed(0)}% topic overlap but no link between them`,
+        });
+    }
+  }
+  return out.sort((x, y) => y.similarity - x.similarity);
+}
+
 export interface CompactOpts {
   duplicateThreshold?: number;
   knownSources?: Set<string>;
+  /** Precomputed link graph, reused for orphan/connection detection. */
+  graph?: LinkGraph;
+  /** Min token overlap to suggest a connection (default 0.4). */
+  connectionThreshold?: number;
 }
 
 /** The full compaction ("REM sleep") pass — a report of PROPOSED actions. */
-export function compact(facts: Fact[], opts: CompactOpts = {}): CompactionReport {
+export function compact(
+  facts: Fact[],
+  opts: CompactOpts = {},
+  docs?: KnowledgeDoc[],
+): CompactionReport {
+  const graph = opts.graph;
   return {
     merges: findDuplicates(facts, opts.duplicateThreshold ?? 0.6),
     contradictions: findContradictions(facts),
     flags: findStale(facts, opts.knownSources),
+    orphans: docs ? findOrphans(docs, graph) : [],
+    connections: docs
+      ? suggestConnections(docs, graph, opts.connectionThreshold ?? 0.4)
+      : [],
     stats: {
       facts: facts.length,
       subjects: new Set(facts.map((f) => f.subject)).size,
@@ -465,7 +577,7 @@ export interface KnowledgeMember {
   claim: string;
   body: string;
   verified: boolean;
-  /** Per-doc flags: "conflict", "duplicate", "verbose". */
+  /** Per-doc flags: "conflict", "duplicate", "verbose", "orphan". */
   flags: string[];
   /** Who committed/approved it into curated context, and when. */
   updatedBy: string | null;
@@ -474,6 +586,10 @@ export interface KnowledgeMember {
   proposedBy: string | null;
   /** How often it's been surfaced (find_context + direct lookups). */
   uses: number;
+  /** Outbound links (doc names this one references). */
+  links: string[];
+  /** Backlinks (doc names that reference this one). */
+  backlinks: string[];
 }
 
 export interface SubjectGroup {
@@ -491,6 +607,12 @@ export interface KnowledgeHealth {
   duplicates: number;
   verbose: number;
   stale: number;
+  /** Canonical docs disconnected from the link graph. */
+  orphans: number;
+  /** Doc pairs that look like they should link but don't. */
+  suggestedLinks: number;
+  /** Declared links that point at no existing doc. */
+  brokenLinks: number;
 }
 
 export interface KnowledgeView {
@@ -500,6 +622,9 @@ export interface KnowledgeView {
   /** Drill-in detail for the health bar. */
   contradictions: ContradictionCandidate[];
   merges: MergeCandidate[];
+  orphans: OrphanCandidate[];
+  connections: ConnectionCandidate[];
+  brokenLinks: { from: string; ref: string }[];
 }
 
 /** A body longer than this (tokens) carries detail beyond its concise fact. */
@@ -550,6 +675,9 @@ export function buildKnowledgeView(
   pending: Correction[] = [],
   usage: Record<string, number> = {},
 ): KnowledgeView {
+  // the interlink graph (links live in meta.links; gotcha relates_to is implicit)
+  const graph = buildLinkGraph(docs);
+
   // canonical subjects + a lookup from name/table to subject key
   const groups = new Map<string, SubjectGroup>();
   const keyByRef = new Map<string, string>(); // normalized name/table → subject key
@@ -587,6 +715,9 @@ export function buildKnowledgeView(
       updatedAt: d.updatedAt,
       proposedBy,
       uses: usage[d.name] ?? 0,
+      // graph is keyed by DocRef; show the readable target names in the browser
+      links: [...(graph.out.get(docRef(d)) ?? [])].map((r) => graph.nameOf.get(r) ?? r).sort(),
+      backlinks: [...(graph.back.get(docRef(d)) ?? [])].map((r) => graph.nameOf.get(r) ?? r).sort(),
     };
   };
 
@@ -621,8 +752,9 @@ export function buildKnowledgeView(
     groups.get(key)!.members.push(member);
   }
 
-  // fold in compaction flags (contradictions can involve a pending correction)
-  const report = compact(extractFacts(docs, pending));
+  // fold in compaction flags (contradictions can involve a pending correction);
+  // pass docs + the prebuilt graph so the same pass also reports orphans/links.
+  const report = compact(extractFacts(docs, pending), { graph }, docs);
   const flagRef = (ref: string, flag: string) => {
     for (const g of groups.values())
       for (const m of g.members)
@@ -639,6 +771,7 @@ export function buildKnowledgeView(
     flagRef(m.a, "duplicate");
     flagRef(m.b, "duplicate");
   }
+  for (const o of report.orphans) flagRef(o.ref, "orphan");
 
   const subjects = [...groups.values()].sort(
     (a, b) =>
@@ -659,9 +792,15 @@ export function buildKnowledgeView(
       duplicates: report.merges.length,
       verbose,
       stale: report.flags.length,
+      orphans: report.orphans.length,
+      suggestedLinks: report.connections.length,
+      brokenLinks: graph.unresolved.length,
     },
     contradictions: report.contradictions,
     merges: report.merges,
+    orphans: report.orphans,
+    connections: report.connections,
+    brokenLinks: graph.unresolved,
   };
 }
 

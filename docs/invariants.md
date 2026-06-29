@@ -32,10 +32,23 @@ README) so the references resolve without bloating the front page.
 - **I7 — Verify vendor facts at build time.** Slack rate limits, Vercel/Render plan
   gating and APIs, and prices churn; re-verify against official docs before encoding
   behavior around them.
-- **I8 — No server-side inference; zero AI keys required.** Setoku never calls an
-  LLM or embedding API. `find_context` works fully on Postgres FTS + trigram alone.
-  Opt-in, clearly-labeled upgrades: a bundled local CPU embedding model, then
-  bring-your-own-key embeddings. The default deploy needs no AI credentials.
+- **I8 — No *external* inference; zero AI keys required.** Setoku never calls an
+  LLM or a hosted embedding API, and never sends business data off the box for
+  inference. The load-bearing guarantee: **no business data to an external service,
+  no required credentials.** Hybrid retrieval uses a **bundled, local, CPU-only,
+  non-LLM embedding model** that runs *in-process on the box* — data never leaves
+  the machine, no network at query time, no key. It is **on by default and
+  required** (not an opt-in); `SETOKU_EMBEDDINGS=0` is a diagnostics/test
+  kill-switch only (CI uses it so the suite stays model-free). It still **degrades
+  gracefully**: if the model genuinely can't load, the gateway falls back to
+  keyword retrieval and keeps serving — that's resilience, not a config choice. A
+  future bring-your-own-key *hosted* embedding tier would be the only external,
+  opt-in rung.
+  *Amended (experiment/llm-wiki, then "require embeddings" follow-up): the original
+  wording already named a "bundled local CPU embedding model"; a local model is
+  technically on-box inference, so the local-vs-external line is now explicit, and
+  embeddings moved from opt-in to default/required. Evidence: cross-domain recall
+  held 88% with embeddings vs 13% for a hand-tuned synonym table (docs/llm-wiki.md).*
 - **I9 — Authority changes pass through a human, outside the agent loop.** No MCP
   tool may create users, change roles, grant data access, or commit curated
   knowledge — the defense is a human action the agent *cannot perform* (a click on

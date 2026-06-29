@@ -2,6 +2,7 @@
 name: sponsorship_revenue
 summary: Booked sponsorship revenue — sum of contracted deal value (dollars) by season, excluding proposed deals — plus how far below rate card inventory sells.
 keywords: [sponsorship revenue, partnership revenue, sponsor sales, contracted, deals, booked, corporate partners, by season, rate card, discount, below rate card, realization]
+links: [SponsorshipDeal, total_revenue]
 ---
 
 ## Definition

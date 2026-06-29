@@ -2,6 +2,7 @@
 name: unique_fans
 summary: Count of unique fans — distinct NORMALIZED email across CRM, deduped and excluding test records. Naive COUNT(*) over crm.contact overcounts because of duplicates.
 keywords: [unique fans, distinct fans, how many fans, contacts, customers, audience size, deduped, count people]
+links: [CrmContact, identity_resolution, TicketingAccount, MerchAndMarketing]
 ---
 
 ## Definition

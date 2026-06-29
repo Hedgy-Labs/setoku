@@ -17,7 +17,9 @@ import {
 } from "./lib/config";
 import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
-import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
+import { buildLinkGraph, matchByTokens, retrieve, selectGotchas } from "./lib/search";
+import { synonymsOf } from "./lib/synonyms";
+import type { EmbedIndex } from "./lib/embed-index";
 import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
 import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel, compilePanel, isFullDoc } from "./lib/apps";
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
@@ -25,64 +27,72 @@ import { lintAppTemplate } from "./lib/app-runtime";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
+/**
+ * A token's capability role — the I2/I9 membrane, made a type. A session is
+ * EXACTLY one of these; capabilities are derived (capabilitiesFor), never passed
+ * as free booleans. This is what makes the dangerous combination — commit
+ * knowledge AND read the untrusted lake on one session — *unrepresentable*:
+ *
+ *   • analyst — reads the lake (untrusted bulk text); propose-only, no write tool.
+ *   • curator — commits curated knowledge; CANNOT read the lake.
+ *   • janitor — draft + reject only (zero authority); reads untrusted pending text.
+ *
+ * An agent reading untrusted content is prompt-injectable, so it must never hold a
+ * tool that commits knowledge. With a single role there is no way to construct a
+ * session that both writes and reads the lake — the boolean soup that previously
+ * left that one careless call-site away.
+ */
+export type TokenRole = "analyst" | "curator" | "janitor";
+
+export interface Capabilities {
+  /** Expose curated-write tools (upsert_context, resolve_correction). */
+  canWrite: boolean;
+  /** Block run_query on the lake (clickhouse) — true exactly when canWrite. */
+  denyLakeRead: boolean;
+  /** Expose draft_correction (draft-only, zero authority). */
+  canDraft: boolean;
+  /** Expose reject_correction (reject-only, zero authority). */
+  canReject: boolean;
+}
+
+/** Derive a role's capabilities. The ONLY place capabilities are decided, so the
+ *  membrane is one switch, not a convention spread across call sites. By
+ *  construction no role yields `canWrite && !denyLakeRead`. */
+export function capabilitiesFor(role: TokenRole): Capabilities {
+  switch (role) {
+    case "curator":
+      return { canWrite: true, denyLakeRead: true, canDraft: false, canReject: false };
+    case "janitor":
+      return { canWrite: false, denyLakeRead: false, canDraft: true, canReject: true };
+    case "analyst":
+      return { canWrite: false, denyLakeRead: false, canDraft: false, canReject: false };
+  }
+}
+
 export interface GatewayDeps {
   projectDir: string;
   store: KnowledgeStore;
   user: string;
+  /** The session's capability role (the membrane). Capabilities are derived from
+   *  it, so the forbidden write+lake-read combination can't be constructed. */
+  role: TokenRole;
   /**
-   * Whether to expose the curated-write tools (upsert_context,
-   * resolve_correction). FALSE = propose-only: the agent surface is read
-   * tools + report_correction, whose proposals are inert (pending) until a
-   * human accepts them. This is the membrane (I2/I9): an agent reading
-   * untrusted lake/Slack content is prompt-injectable, so it must not hold a
-   * tool that COMMITS curated knowledge — injection attacks the agent's
-   * decision, not its credential. Analyst tokens are always propose-only;
-   * `canWrite` is granted only to a separate **curator token**, which is in
-   * turn forbidden from reading the lake (see `denyLakeRead`). The two
-   * capabilities — commit knowledge, read untrusted bulk text — never coexist
-   * on one session, by enforcement. The human accept path is the web approval
-   * surface; curator tokens drive /setoku:generate and /setoku:curate.
+   * The process-wide semantic index (local embeddings). When enabled,
+   * `find_context` fuses embedding similarity with keyword retrieval (hybrid).
+   * Null/disabled → keyword retrieval only (graceful fallback). Shared across
+   * per-request servers, like `store`.
    */
-  canWrite: boolean;
-  /**
-   * Block `run_query` on the `clickhouse` dialect (the lake). Set TRUE for
-   * curator sessions: a session that can COMMIT curated knowledge must not be
-   * able to READ the bulk, attacker-controlled free text in the lake — that
-   * removes the injection vector that could weaponize the write tools. Curator
-   * sessions read only the business Postgres (to validate metric SQL) and the
-   * agent's own codebase (outside the gateway). Analyst sessions are the
-   * inverse: they read the lake but hold no write tool.
-   */
-  denyLakeRead: boolean;
-  /**
-   * Expose `draft_correction` — a DRAFT-ONLY capability (curation-cockpit piece
-   * B). It writes a drafted doc-edit + advisory flags onto a pending correction
-   * but touches NO curated doc: a draft grants zero authority. This is the
-   * auto-draft janitor's only write. Crucially it is NOT `upsert_context`: even
-   * though the drafting agent reads untrusted pending content, the worst it can
-   * do is propose a draft a human must still bless. Granted to the janitor
-   * token, never the analyst (no write at all) or the curator (commits directly).
-   */
-  canDraft?: boolean;
-  /**
-   * Expose `reject_correction` — a REJECT-ONLY capability (curation-cockpit piece
-   * C). It resolves a pending correction to `rejected` and nothing else: removing
-   * from the queue grants no authority (unlike accept, which commits knowledge —
-   * deliberately NOT an MCP tool). Splitting reject out of the accept-or-reject
-   * space is the whole safety argument; the janitor holds this, never accept.
-   */
-  canReject?: boolean;
+  embedIndex?: EmbedIndex | null;
 }
 
 export function buildServer({
   projectDir,
   store,
   user,
-  canWrite,
-  denyLakeRead,
-  canDraft = false,
-  canReject = false,
+  role,
+  embedIndex = null,
 }: GatewayDeps): McpServer {
+const { canWrite, denyLakeRead, canDraft, canReject } = capabilitiesFor(role);
 const server = new McpServer({ name: "setoku", version: VERSION });
 
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
@@ -143,17 +153,47 @@ server.registerTool(
     const allDocs = store.listDocs();
     const docs = allDocs.filter((d) => d.type !== "gotcha");
     const gotchaDocs = allDocs.filter((d) => d.type === "gotcha");
-    const gotchas = gotchaDocs.map((d) => d.body || d.name);
     const pending = matchByTokens(
       store.listCorrections("pending"),
       (c) => `${c.fact ?? c.content} ${c.relatesTo ?? ""}`,
       question,
     ).slice(0, 5);
     const out: string[] = [];
-    const matchedGotchas = matchGotchas(gotchas, question);
-    if (matchedGotchas.length) {
+
+    // Map-first retrieval: the proven keyword top-k, PLUS 1-hop neighbors of
+    // those hits in the curated link graph. The direct hits are unchanged (so
+    // precision is preserved); linked neighbors add the related context a flat
+    // ranker misses — the metric/gotcha/entity that belong together (#wiki).
+    const k = max_results ?? 5;
+    // Hybrid: when the local embed index is live, fuse embedding similarity with
+    // keyword retrieval. Disabled/unavailable → embedScores is undefined and this
+    // is exactly the keyword(+synonym+map-first) path (I8 graceful fallback).
+    const embedScores = embedIndex
+      ? ((await embedIndex.scores(question)) ?? undefined)
+      : undefined;
+    const retrieved = retrieve(docs, question, {
+      k,
+      expandLinks: true,
+      maxLinked: k,
+      synonyms: synonymsOf, // I8-clean semantic expansion (static table, no inference)
+      embedScores,
+    });
+    const top = retrieved.filter((r) => r.via === "direct");
+    const linked = retrieved.filter((r) => r.via === "linked");
+
+    // Gotchas: surface those ATTACHED to the direct hits first (relevant by
+    // construction — their metric/entity is what was asked about), then fill the
+    // budget with the most query-relevant, capped. Beats dumping every gotcha
+    // that shares one word with the question (which floods context — measured by
+    // eval:value's context-cost metric).
+    const selectedGotchas = selectGotchas(
+      gotchaDocs,
+      top.map((t) => t.doc),
+      question,
+    );
+    if (selectedGotchas.length) {
       out.push("## Gotchas (read carefully — these prevent wrong answers)");
-      for (const g of matchedGotchas) out.push(`- ${g}`);
+      for (const g of selectedGotchas) out.push(`- ${g.body || g.name}`);
       out.push("");
     }
     if (pending.length) {
@@ -168,7 +208,6 @@ server.registerTool(
       }
       out.push("");
     }
-    const top = scoreDocs(docs, question).slice(0, max_results ?? 5);
     if (docs.length === 0 && !pending.length) {
       store.audit(user, "find_context", {
         question,
@@ -201,17 +240,30 @@ server.registerTool(
         );
       }
     }
-    // record the knowledge actually surfaced (docs + matched gotchas), by name,
-    // so per-doc usage can be tallied from the audit log.
-    const matchedSet = new Set(matchedGotchas);
+    // Related context: docs the top hits LINK to but that didn't rank on their
+    // own. Shown compact (one line + a pointer) so they cost little context but
+    // tell the agent what else it should read before answering.
+    if (linked.length) {
+      out.push("## Related context (linked from the above — read if relevant)");
+      for (const { doc } of linked) {
+        const summary = doc.meta.summary ?? doc.meta.question ?? "";
+        const fetch = doc.type === "metric" ? `get_metric("${doc.name}")` : `describe_entity("${doc.name}")`;
+        out.push(`- [${doc.type}] ${doc.name}${summary ? ` — ${summary}` : ""} (${fetch})`);
+      }
+      out.push("");
+    }
+    // record the knowledge actually surfaced (direct + linked docs + selected
+    // gotchas), by name, so per-doc usage can be tallied from the audit log.
     const surfaced = [
       ...top.map((t) => t.doc.name),
-      ...gotchaDocs.filter((d) => matchedSet.has(d.body || d.name)).map((d) => d.name),
+      ...linked.map((t) => t.doc.name),
+      ...selectedGotchas.map((d) => d.name),
     ];
     store.audit(user, "find_context", {
       question,
       results: top.length,
-      gotchas: matchedGotchas.length,
+      linked: linked.length,
+      gotchas: selectedGotchas.length,
       unverified: pending.length,
       docs: surfaced,
       ms: Date.now() - started,
@@ -474,8 +526,34 @@ server.registerTool(
     },
   },
   async ({ type, name, body, meta }) => {
+    // Links must resolve to exactly one existing doc, validated HERE so a dangling
+    // or ambiguous link can never enter the store (bad data unrepresentable, not
+    // checked-for after the fact). Build the graph over the prospective doc set
+    // (existing docs with this one applied) and reject if this doc has any
+    // unresolved link.
+    const incoming = {
+      type,
+      name,
+      meta: meta ?? {},
+      body: body ?? "",
+      verified: true,
+      updatedBy: user,
+      updatedAt: new Date().toISOString(),
+    };
+    const prospective = [
+      ...store.listDocs().filter((d) => !(d.type === type && d.name === name)),
+      incoming,
+    ];
+    const bad = buildLinkGraph(prospective).unresolved.filter((u) => u.from === name);
+    if (bad.length)
+      return errorText(
+        `Won't save: ${bad.length} link(s) don't resolve to a doc — ${bad.map((b) => `"${b.ref}"`).join(", ")}. ` +
+          "Use an exact doc name (or type:name if the name is shared across types). Fix or drop them in meta.links.",
+      );
     store.upsertDoc({ type, name, meta: meta ?? {}, body }, user);
     store.audit(user, "upsert_context", { type, name });
+    // keep the semantic index fresh (no-op if embeddings disabled)
+    await embedIndex?.upsert(incoming);
     return text(
       `Saved [${type}] ${name} to the knowledge store (attributed to ${user}; revision recorded).`,
     );
