@@ -1130,8 +1130,14 @@ const httpServer = http.createServer(async (req, res) => {
         // legacy frozen report (format "html") keeps the loose sandbox-only CSP.
         const isApp = rep.format === "app";
         const raw = parseFrameParams(req.url);
-        const panels = isApp && (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw }) : [];
-        store.audit(session.identity, "app_frame_viewed", { id });
+        // ?force=1 bypasses the cache and re-runs the selected variant — author or
+        // admin only, so a member (or a stale tab) can't hammer prod through the
+        // iframe. The React viewer adds it for an explicit "Refresh data".
+        const force =
+          new URL(req.url ?? "", "http://x").searchParams.get("force") === "1" &&
+          (rep.createdBy === session.identity || canApprove(session.role));
+        const panels = isApp && (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw, force }) : [];
+        store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
         // A live app's template needs no network (data is injected) → strict
         // CSP. A LEGACY report predates that contract and may inline a CDN script
         // or remote image; keep its original sandbox-only CSP so it still renders.
@@ -1249,15 +1255,13 @@ const httpServer = http.createServer(async (req, res) => {
           const id = url.searchParams.get("id") ?? "";
           const meta = store.getPublishedMeta(id);
           if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found or archived" });
-          // ?force=1 bypasses the cache and re-runs every panel — restrict it to
-          // the author or an admin so a member (or a stale tab, or a credentialed
-          // cross-site GET) can't hammer the prod DB the cache exists to protect.
-          const force =
-            url.searchParams.get("force") === "1" &&
-            (meta.createdBy === session.identity || canApprove(session.role));
-          // Renders from `meta` — provenance + frame don't need the report body.
-          const panels = await renderApp(store, projectDir, meta, { force, rawParams: parseFrameParams(req.url) });
-          store.audit(session.identity, force ? "app_refreshed" : "app_viewed", { id });
+          // Param-INDEPENDENT metadata (titles, SQL, descriptions) + the initial
+          // freshness stamp, from a cheap cached DEFAULT-variant render. The live
+          // per-variant numbers come from the frame's provenance echo, and a forced
+          // re-run is the iframe's job (/admin/frame?force=1), so this endpoint
+          // neither takes params nor forces — keeping it off the prod-hammer path.
+          const panels = await renderApp(store, projectDir, meta, {});
+          store.audit(session.identity, "app_viewed", { id });
           return json(200, appProvenance(store, meta, panels));
         }
 

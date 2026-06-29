@@ -154,6 +154,24 @@ export const APP_RUNTIME = `(function () {
     var ep = window.__SETOKU__ && window.__SETOKU__.params;
     if (ep) parent.postMessage({ __setoku_params_echo: true, params: ep }, "*");
   } catch (e) { /* no parent / no params */ }
+  // Echo this render's per-panel provenance (row count + freshness + error) so the
+  // trusted parent's "how it's calculated" drawer reflects EXACTLY what THIS frame
+  // rendered — the same variant the viewer sees — instead of re-running the panels
+  // in a second fetch. t is the parent's reload nonce (read from our own URL) so the
+  // parent can ignore a stale echo from a superseded frame.
+  try {
+    var sp = window.__SETOKU__ && window.__SETOKU__.panels;
+    if (sp) {
+      var prov = {};
+      for (var pk in sp) if (Object.prototype.hasOwnProperty.call(sp, pk)) {
+        var pv = sp[pk];
+        prov[pk] = { rowCount: pv.rowCount, computedAt: pv.computedAt, error: pv.error, refreshError: pv.refreshError };
+      }
+      var t = null;
+      try { t = new URLSearchParams(location.search).get("t"); } catch (e2) { /* no location */ }
+      parent.postMessage({ __setoku_provenance: true, t: t, panels: prov }, "*");
+    }
+  } catch (e) { /* no parent / no panels */ }
 })();`;
 
 /**

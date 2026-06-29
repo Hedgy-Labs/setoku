@@ -5,21 +5,29 @@
 import { describe, it, expect } from "bun:test";
 import { APP_RUNTIME, lintAppTemplate } from "../plugin/gateway/lib/app-runtime";
 
-function runRuntime(panels: Record<string, unknown>) {
+function runRuntime(
+  panels: Record<string, unknown>,
+  opts: { params?: Record<string, string>; search?: string } = {},
+) {
   const els: Record<string, { innerHTML: string }> = {};
+  const messages: Record<string, unknown>[] = [];
   // The runtime registers a message listener for the Setoku.state bridge at load;
-  // stub the browser globals it touches (no state op is invoked in these tests).
+  // stub the browser globals it touches. `parent`/`location` are bare globals in
+  // the runtime — pass them as Function params so they're captured here (not the
+  // real globals) and the parent-bound echoes are observable.
   const win = {
-    __SETOKU__: { panels },
+    __SETOKU__: { panels, params: opts.params },
     addEventListener: () => {},
-    parent: { postMessage: () => {} },
   } as Record<string, unknown>;
   const doc = { getElementById: (id: string) => (els[id] ||= { innerHTML: "" }) };
+  const parentStub = { postMessage: (m: Record<string, unknown>) => messages.push(m) };
+  const location = { search: opts.search ?? "" };
   // eslint-disable-next-line no-new-func
-  new Function("window", "document", APP_RUNTIME)(win, doc);
+  new Function("window", "document", "parent", "location", APP_RUNTIME)(win, doc, parentStub, location);
   return {
     Setoku: win.Setoku as Record<string, (...a: unknown[]) => void>,
     html: (id: string) => (els[id] ||= { innerHTML: "" }).innerHTML,
+    messages,
   };
 }
 
@@ -43,6 +51,23 @@ describe("Setoku chart runtime", () => {
     const errored = runRuntime({ p: { rows: [], error: "relation does not exist" } });
     errored.Setoku.bar("c", "p", {});
     expect(errored.html("c")).toContain("relation does not exist");
+  });
+
+  it("echoes per-panel provenance to the parent, tagged with the reload nonce (t)", () => {
+    const { messages } = runRuntime(
+      {
+        rev: { rows: [{ v: 1 }], rowCount: 1, computedAt: "2026-01-01T00:00:00Z", error: null },
+        cnt: { rows: [], rowCount: 0, computedAt: "2026-01-01T00:00:00Z", error: "boom", refreshError: null },
+      },
+      { search: "?p.region=NA&t=7" },
+    );
+    const prov = messages.find((m) => m.__setoku_provenance === true) as
+      | { t: string; panels: Record<string, { rowCount: number; error: string | null }> }
+      | undefined;
+    expect(prov).toBeTruthy();
+    expect(prov!.t).toBe("7"); // correlation token from the frame's own URL
+    expect(prov!.panels.rev.rowCount).toBe(1);
+    expect(prov!.panels.cnt.error).toBe("boom"); // per-panel error rides along
   });
 
   it("stat + table coerce and render", () => {

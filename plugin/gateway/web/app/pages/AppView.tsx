@@ -13,6 +13,15 @@ import { Confirm } from "../components/Confirm";
 import { appShareUrl, relTime } from "../format";
 import type { AppData, AppParam, PanelProvenance } from "../types";
 
+/** The per-panel numbers the frame echoes up for the variant it rendered — the
+ *  param-DEPENDENT half of provenance (the SQL/description come from metadata). */
+interface LivePanel {
+  rowCount: number;
+  computedAt: string;
+  error: string | null;
+  refreshError?: string | null;
+}
+
 /** A refresh interval as a compact label: 30s · 5m · 1h (rolls up the units). */
 function fmtInterval(s: number): string {
   if (s < 60) return `${s}s`;
@@ -38,14 +47,11 @@ export function AppView() {
   const { me } = useAuth();
   const navigate = useNavigate();
   const isAdmin = me?.role === "admin";
-  // The MAIN fetch is param-INDEPENDENT (dep [id]): app metadata + the default
-  // variant's provenance. Keeping it off the param selection means a control change
-  // never re-runs this fetch (no flicker/double-load) and its error gate behaves
-  // exactly as before.
+  // app metadata + per-panel SQL/description (param-INDEPENDENT). Fetched once per
+  // id; the LIVE per-variant numbers (row count / freshness) come from the frame's
+  // own echo below — not a second server render — so the drawer can't disagree with
+  // what the iframe shows.
   const { data, loading, error, reload } = useApi<AppData>(() => api.appData(id), [id]);
-  // Bumping the nonce changes the iframe src → reloads the frame (re-renders the
-  // panels server-side; within the refresh TTL that's a cache hit).
-  const [nonce, setNonce] = useState(0);
   // The calc drawer toggles in/out; collapsed lets the iframe take full height.
   const [showCalc, setShowCalc] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
@@ -53,111 +59,70 @@ export function AppView() {
   // null = not editing the title; a string = the in-progress new title.
   const [titleEdit, setTitleEdit] = useState<string | null>(null);
   const cancelRename = useRef(false);
-  const refreshing = useRef(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
   // The control-bar values (overrides only — an unset param shows/uses its default).
   const [paramVals, setParamVals] = useState<Record<string, string>>({});
   // Params the USER explicitly changed. Drives what goes on the wire by an explicit
   // signal rather than value-equality — robust to the echo writing server-canonical
   // values (e.g. a non-zero-padded date default), so paramQuery never flips on the
-  // happy path (no redundant reload / double-fetch).
+  // happy path.
   const touched = useRef<Set<string>>(new Set());
-  const [prov, setProv] = useState<AppData | null>(null);
-  const [provErr, setProvErr] = useState(false);
+  // Drives the iframe reload: `n` is the cache-busting nonce AND the echo-correlation
+  // token; `force` re-runs the selected variant server-side for ONE load.
+  const [frame, setFrame] = useState<{ n: number; force: boolean }>({ n: 0, force: false });
+  // Per-panel provenance ECHOED UP by the frame for the variant it actually rendered.
+  // `t` ties it to the reload nonce so a stale echo from a superseded frame is
+  // dropped. The single source for the drawer's live numbers + the freshness stamp.
+  const [framePanels, setFramePanels] = useState<{ t: string | null; panels: Record<string, LivePanel> } | null>(null);
+  // Reload the frame: drop the now-stale echo, bump the nonce, optionally force.
+  const reloadFrame = useCallback((force = false) => {
+    setFramePanels(null);
+    setFrame((f) => ({ n: f.n + 1, force }));
+  }, []);
   // Reset everything app-scoped when navigating to a different app (one AppView
-  // instance is reused across /admin/p/:id routes) — otherwise the prior app's
-  // overrides / stale provenance / error banner bleed onto the next.
+  // instance is reused across /admin/p/:id routes).
   useEffect(() => {
     touched.current = new Set();
     setParamVals({});
-    setProv(null);
-    setProvErr(false);
+    setFramePanels(null);
   }, [id]);
+
   // Only user-touched params go on the wire; untouched ones fall to the server
-  // default. "Nothing touched" === "" === the cold first paint. Built only from
-  // FRESH data (data.id === id) so it can't bleed the previous app's overrides onto
-  // the new app's frame during the transitional render before the reset effect.
+  // default. Built from FRESH data (data.id === id) so it can't bleed the previous
+  // app's overrides onto the new app's frame during the transitional render.
   const fresh = data?.id === id ? data : null;
   const paramQuery = (fresh?.params ?? [])
     .filter((p) => touched.current.has(p.name))
     .map((p) => `p.${encodeURIComponent(p.name)}=${encodeURIComponent(paramVals[p.name] ?? String(p.default))}`)
     .join("&");
 
-  // Param-aware provenance for the SELECTED variant (drawer row counts + freshness),
-  // fetched in the BACKGROUND so a param change never blanks the iframe. An empty
-  // selection (all defaults) reuses the main `data` fetch — no extra request. A
-  // sequence guard drops out-of-order responses so a slow earlier variant can't
-  // overwrite a newer one.
-  const provSeq = useRef(0);
-  // Drop the prior variant's provenance the moment the selection changes, so the
-  // window before the new fetch resolves shows "updating…" rather than the OLD
-  // variant's numbers as if they were current.
-  useEffect(() => {
-    setProv(null);
-    setProvErr(false);
-  }, [paramQuery, id]);
-  const loadProv = useCallback(
-    async (force: boolean): Promise<void> => {
-      if (!paramQuery) {
-        setProv(null);
-        setProvErr(false);
-        return;
-      }
-      const seq = ++provSeq.current;
-      try {
-        const d = await api.appData(id, force, paramQuery);
-        if (seq === provSeq.current) {
-          setProv(d);
-          setProvErr(false);
-        }
-      } catch (e) {
-        if (seq === provSeq.current) setProvErr(true); // non-blocking strip; keep last good
-        throw e; // let an explicit refresh report the failure
-      }
-    },
-    [id, paramQuery],
-  );
-  useEffect(() => {
-    void loadProv(false).catch(() => {}); // background load: error already in provErr
-  }, [loadProv]);
-  // The data backing the drawer + freshness stamp: the SELECTED variant's provenance
-  // when a param is overridden, else the main (default) fetch. No fall-through to
-  // `data` while an override's provenance is in-flight/errored — better to show
-  // nothing variant-specific than the WRONG variant's numbers on the trusted surface.
-  const view = paramQuery ? prov : data;
-  // ok → show numbers; pending → loading the selection; error → fetch failed.
-  const provStatus: "ok" | "pending" | "error" = view ? "ok" : provErr ? "error" : "pending";
-
   const visibility = data?.visibility ?? "team";
   const link = appShareUrl({ id, visibility });
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
 
+  // Live numbers for the CURRENT frame only (echo token must match the nonce) — null
+  // while a reload is in flight, so the drawer says "updating…" rather than showing
+  // the previous variant's numbers on the trusted surface.
+  const livePanels = framePanels && framePanels.t === String(frame.n) ? framePanels.panels : null;
+  // Freshness stamp: newest computed_at the live frame reported, else the metadata
+  // fetch's default-variant timestamp until the first echo lands.
+  const stampAt = livePanels
+    ? (Object.values(livePanels)
+        .map((p) => p.computedAt)
+        .filter(Boolean)
+        .sort()
+        .pop() ?? null)
+    : (data?.updatedAt ?? null);
+
+  // Refresh = reload the frame (force bypasses the server cache); the frame re-runs,
+  // shows the result, and echoes fresh numbers up. No second fetch to keep in sync.
   const refresh = useCallback(
-    async (force: boolean) => {
-      if (refreshing.current) return;
-      refreshing.current = true;
-      try {
-        // Refresh the variant actually shown: the selected one (loadProv, which on
-        // force re-runs it AND rethrows on failure) when overridden, else the
-        // default via the main fetch.
-        if (paramQuery) await loadProv(force);
-        else {
-          if (force) await api.appData(id, true);
-          reload();
-        }
-        setNonce((n) => n + 1);
-        if (force) toast("Refreshed.");
-      } catch (e) {
-        // Only an EXPLICIT refresh toasts a failure. A silent auto-refresh tick
-        // (force=false) stays quiet — the error is already shown by the banner —
-        // so a flaky backend doesn't pop a toast every interval.
-        if (force) toast(e instanceof Error ? e.message : "Refresh failed.");
-      } finally {
-        refreshing.current = false;
-      }
+    (force: boolean) => {
+      reloadFrame(force);
+      if (force) toast("Refreshed.");
     },
-    [id, reload, paramQuery, loadProv],
+    [reloadFrame],
   );
   // Hold the latest refresh in a ref so the auto-refresh interval doesn't depend on
   // its (param-changing) identity — otherwise every control change tears down and
@@ -175,6 +140,9 @@ export function AppView() {
       const m = e.data as {
         __setoku_state_req?: boolean;
         __setoku_params_echo?: boolean;
+        __setoku_provenance?: boolean;
+        t?: string | null;
+        panels?: Record<string, LivePanel>;
         params?: Record<string, string>;
         id?: number;
         op?: string;
@@ -185,6 +153,13 @@ export function AppView() {
       if (!m) return;
       const frame = frameRef.current;
       if (!frame || e.source !== frame.contentWindow) return; // only OUR iframe
+      // Provenance echo: the frame reports the row counts / freshness / errors it
+      // actually rendered, tagged with the reload nonce (t). Store it; the render
+      // gates display on t === current nonce so a superseded frame's echo is ignored.
+      if (m.__setoku_provenance === true) {
+        setFramePanels({ t: m.t ?? null, panels: m.panels ?? {} });
+        return;
+      }
       // Resolved-param echo: snap a TOUCHED control to what the server actually ran
       // (a rejected value shows as the default, not what was typed). Only touched
       // params are reconciled — echoing every default into paramVals would otherwise
@@ -336,7 +311,7 @@ export function AppView() {
         {data ? (
           <span className="hidden text-xs text-stone-500 sm:inline">
             published by {data.createdBy}
-            {isApp && view?.updatedAt ? ` · data updated ${relTime(view.updatedAt)}` : ""}
+            {isApp && stampAt ? ` · data updated ${relTime(stampAt)}` : ""}
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
           </span>
         ) : null}
@@ -371,13 +346,12 @@ export function AppView() {
           onChange={(name, val) => {
             touched.current.add(name); // an explicit user change → goes on the wire
             setParamVals((v) => ({ ...v, [name]: val }));
-            setNonce((n) => n + 1); // reload the frame bound to the new value
+            reloadFrame(); // reload the frame bound to the new value (drops stale numbers)
           }}
         />
       ) : null}
-      {/* Spinner/error only BEFORE the first load. Once data exists, a param- or
-          refresh-driven refetch happens in the BACKGROUND (loading flips true but
-          data persists) so the iframe doesn't blank on every control change. */}
+      {/* Spinner/error only BEFORE the first metadata load. The iframe reloads on
+          param/refresh without blanking the page; live numbers arrive via the echo. */}
       {!data && loading ? (
         <div className="flex flex-1 items-center justify-center">
           <Loading />
@@ -390,20 +364,19 @@ export function AppView() {
         // iframe fills the remaining height; the calc drawer toggles in as a footer
         // below it (and the iframe shrinks to make room), out for full height.
         <main className="flex min-h-0 flex-1 flex-col p-3">
-          {/* A background refetch failed (param change, auto-reload, or session
-              drop) — surface it WITHOUT blanking the still-shown last-good view, so
-              the stamp/drawer aren't silently trusted as current. Gated on !loading
-              so a prior app's lingering error doesn't flash during navigation. */}
-          {!loading && (error || provErr) ? (
+          {/* The metadata fetch failed on a reload (e.g. session drop after a
+              rename) — surface it WITHOUT blanking the still-shown view. Gated on
+              !loading so a prior app's lingering error doesn't flash on navigation. */}
+          {!loading && error ? (
             <div className="mb-2 flex-none rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
-              Couldn't refresh — showing the last loaded data.
+              Couldn't refresh app details — showing the last loaded data.
             </div>
           ) : null}
           <iframe
-            key={nonce}
+            key={frame.n}
             ref={frameRef}
             title={data.title}
-            src={`/admin/frame/${encodeURIComponent(id)}?${paramQuery ? paramQuery + "&" : ""}t=${nonce}`}
+            src={`/admin/frame/${encodeURIComponent(id)}?${paramQuery ? paramQuery + "&" : ""}${frame.force ? "force=1&" : ""}t=${frame.n}`}
             // allow-forms so an app's <form> submit handler fires (the natural
             // app pattern); the frame CSP pins form-action 'none', so no actual
             // submission can leave the sandbox. Must match the response CSP's
@@ -414,10 +387,9 @@ export function AppView() {
           />
           {isApp && showCalc ? (
             // SQL/description are param-independent (from data); the per-variant row
-            // counts/freshness show only when the SELECTED variant's provenance has
-            // loaded (status ok) — "updating…" while it loads, "unavailable" if it
-            // failed — never the default variant's numbers labelled as the selection.
-            <Provenance panels={(view ?? data).panels} status={provStatus} onClose={() => setShowCalc(false)} />
+            // counts/freshness come from the frame's own echo (live) — "updating…"
+            // until it arrives, never the default variant's numbers as the selection.
+            <Provenance panels={data.panels} live={livePanels} onClose={() => setShowCalc(false)} />
           ) : null}
         </main>
       )}
@@ -584,11 +556,14 @@ function EditDialog({
  *  exact SQL it runs, and freshness. */
 function Provenance({
   panels,
-  status = "ok",
+  live,
   onClose,
 }: {
+  // Param-independent metadata (title, SQL, description, dialect, metricId).
   panels: PanelProvenance[];
-  status?: "ok" | "pending" | "error";
+  // Per-panel live numbers echoed by the frame for the variant on screen, or null
+  // while a reload is in flight (→ "updating…", never a stale variant's numbers).
+  live: Record<string, LivePanel> | null;
   onClose: () => void;
 }) {
   return (
@@ -600,39 +575,41 @@ function Provenance({
         </button>
       </div>
       <div className="divide-y divide-stone-100 overflow-auto">
-        {panels.map((p) => (
-          <div key={p.key} className="px-4 py-3">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-stone-900">{p.title || humanizeKey(p.key)}</span>
-              {p.metricId ? <Badge tone="ok">metric: {p.metricId}</Badge> : null}
-              <span className="ml-auto text-xs text-stone-400">
-                {/* The SQL/desc below are param-independent, but the row count and
-                    freshness are per-variant: show them only once the selected
-                    variant's provenance has loaded (ok); otherwise say so rather
-                    than display the default variant's stale numbers. */}
-                {status === "pending" ? (
-                  <span className="italic">updating…</span>
-                ) : status === "error" ? (
-                  <span className="text-amber-700">selection unavailable</span>
-                ) : p.error ? (
-                  <span className="text-red-700">error</span>
-                ) : (
-                  <>
-                    {p.dialect} · {p.rowCount} row(s)
-                    {p.computedAt ? ` · ${relTime(p.computedAt)}` : ""}
-                    {p.refreshError ? <span className="text-amber-700"> · refresh failed</span> : null}
-                  </>
-                )}
-              </span>
+        {panels.map((p) => {
+          const lp = live?.[p.key]; // live numbers for the variant on screen
+          return (
+            <div key={p.key} className="px-4 py-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-stone-900">{p.title || humanizeKey(p.key)}</span>
+                {p.metricId ? <Badge tone="ok">metric: {p.metricId}</Badge> : null}
+                <span className="ml-auto text-xs text-stone-400">
+                  {/* The SQL/desc below are param-independent; the row count and
+                      freshness are per-variant and come from the live echo — shown
+                      only once it lands, never the default variant's stale numbers. */}
+                  {!live ? (
+                    <span className="italic">updating…</span>
+                  ) : lp?.error ? (
+                    <span className="text-red-700">error</span>
+                  ) : lp ? (
+                    <>
+                      {p.dialect} · {lp.rowCount} row(s)
+                      {lp.computedAt ? ` · ${relTime(lp.computedAt)}` : ""}
+                      {lp.refreshError ? <span className="text-amber-700"> · refresh failed</span> : null}
+                    </>
+                  ) : (
+                    <span className="italic">no data</span>
+                  )}
+                </span>
+              </div>
+              {p.description || p.metricSummary ? (
+                <p className="mt-0.5 text-xs text-stone-600">{p.description || p.metricSummary}</p>
+              ) : null}
+              <pre className="mt-2 overflow-x-auto rounded bg-stone-50 p-2 text-[11px] leading-relaxed text-stone-700">
+                {lp?.error ? lp.error : p.sql}
+              </pre>
             </div>
-            {p.description || p.metricSummary ? (
-              <p className="mt-0.5 text-xs text-stone-600">{p.description || p.metricSummary}</p>
-            ) : null}
-            <pre className="mt-2 overflow-x-auto rounded bg-stone-50 p-2 text-[11px] leading-relaxed text-stone-700">
-              {p.error ? p.error : p.sql}
-            </pre>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

@@ -103,12 +103,10 @@ export const api = {
   users: (op: string, username: string, role?: string) =>
     req<MutationResult>("users", { method: "POST", body: { op, username, role } }),
   apps: () => req<PublishedMeta[]>("published"),
-  // paramQuery is the `p.<name>=…&…` selection so provenance/refresh reflect the
-  // viewer's chosen params (the variant the iframe shows), not the declared defaults.
-  appData: (id: string, force = false, paramQuery = "") =>
-    req<AppData>(
-      `app_data?id=${encodeURIComponent(id)}${force ? "&force=1" : ""}${paramQuery ? `&${paramQuery}` : ""}`,
-    ),
+  // App metadata + per-panel SQL/description (param-independent). The LIVE per-variant
+  // numbers come from the frame's own provenance echo (postMessage), not this
+  // endpoint, so the drawer can't disagree with what the iframe actually renders.
+  appData: (id: string) => req<AppData>(`app_data?id=${encodeURIComponent(id)}`),
   rename: (id: string, title: string) =>
     req<MutationResult & { title?: string }>("rename", { method: "POST", body: { id, title } }),
   archive: (id: string) => req<MutationResult>("archive", { method: "POST", body: { id } }),

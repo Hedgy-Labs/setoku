@@ -803,13 +803,14 @@ describe("live apps (end-to-end render path)", () => {
     expect(n0).toBeGreaterThan(0);
 
     // 4. Mutate the DB, force a refresh → the rendered data reflects the change
-    //    (this is the whole point: the data is live, not frozen at publish).
+    //    (this is the whole point: the data is live, not frozen at publish). The
+    //    force lives on the frame now (?force=1), author/admin-gated, so the iframe
+    //    itself bypasses the cache and re-runs the query.
     const pg = new PgClient({ host: PG_HOST, database: DB_NAME });
     await pg.connect();
     await pg.query("INSERT INTO orders (customer_id, status, total_cents) VALUES (1, 'paid', 100)");
     await pg.end();
-    await fetch(`${BASE}/admin/api/app_data?id=${id}&force=1`, { headers: { cookie: boss.cookie } });
-    const frame2 = await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).text();
+    const frame2 = await (await fetch(`${BASE}/admin/frame/${id}?force=1`, { headers: { cookie: boss.cookie } })).text();
     expect(countIn(frame2)).toBe((n0 ?? 0) + 1);
 
     // 5. Public surface is blocked until a human promotes it (membrane).
