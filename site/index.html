@@ -6,21 +6,26 @@
 <title>Setoku · open-source MCP server for company data</title>
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
 <meta name="description" content="Setoku is an open-source MCP server that gives your AI a read-only view of your company's data, plus the context to use it correctly." />
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400..600;1,9..144,400..500&family=Hanken+Grotesk:wght@400;500;600&family=Bagel+Fat+One&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="preconnect" href="https://use.typekit.net" crossorigin />
+<!-- Degular (OH no Type Co) via Adobe Fonts -->
+<link rel="stylesheet" href="https://use.typekit.net/vpu1hqu.css" />
 <style>
   :root{
     --cream:#FAF6EC; --cream-2:#F1EADB; --paper:#FFFFFF;
-    --ink:#212E26; --ink-soft:#54615A; --ink-faint:#8E968C;
+    /* AAA (≥7:1 on cream/white) for all body, faint, and link text. */
+    --ink:#212E26; --ink-soft:#3F4A43; --ink-faint:#4C554E;
     --line:rgba(33,46,38,.13); --line-soft:rgba(33,46,38,.07);
-    --sage:#5F8C6B; --sage-d:#487256;
-    --serif:"Fraunces",Georgia,serif; --sans:"Hanken Grotesk",system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,monospace;
+    --sage:#5F8C6B; --sage-d:#33543D;
+    /* All-sans Degular (OH no Type Co), generic system fallbacks only.
+       --serif is the DISPLAY voice (var name kept to avoid churn across the headline rules). */
+    --serif:"degular-display",sans-serif;
+    --sans:"degular-text",sans-serif;
+    --mono:"degular-mono",monospace;
     --w:760px;
-    --brand:"Bagel Fat One",system-ui,sans-serif;
+    --brand:"degular-display",sans-serif;
   }
   *{box-sizing:border-box;margin:0;padding:0}
-  html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased}
+  html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased;font-optical-sizing:auto;text-rendering:optimizeLegibility}
   body{background:var(--cream);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.65}
   a{color:var(--sage-d);text-decoration:none}
   a:hover{text-decoration:underline;text-underline-offset:3px}
@@ -32,7 +37,7 @@
   /* header */
   header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--cream) 86%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line-soft)}
   .bar{max-width:var(--w);margin:0 auto;padding:13px 24px;display:flex;align-items:center;justify-content:space-between}
-  .brand{display:flex;align-items:center;gap:8px;color:var(--ink);font-weight:600;font-size:17px}
+  .brand{display:flex;align-items:center;gap:8px;color:var(--ink);font-family:var(--brand);font-weight:700;font-size:17px;letter-spacing:-.02em}
   .brand:hover{text-decoration:none}
   .brand .mark{width:22px;height:22px;color:#1A1A19}
   .nav{display:flex;gap:22px;align-items:center}
@@ -43,7 +48,7 @@
   /* intro */
   .intro{padding-block:56px 12px}
   .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.06em;color:var(--sage-d)}
-  h1{font-family:var(--serif);font-weight:500;font-size:clamp(30px,5vw,42px);line-height:1.12;letter-spacing:-.02em;margin:16px 0 0;max-width:18em}
+  h1{font-family:var(--serif);font-weight:700;font-size:clamp(33px,5.6vw,50px);line-height:1.05;letter-spacing:-.02em;margin:16px 0 0;max-width:15em}
   .intro p.lede{color:var(--ink-soft);font-size:18px;margin-top:18px;max-width:42em}
   .actions{margin-top:24px;display:flex;gap:10px;flex-wrap:wrap}
   .btn{display:inline-flex;align-items:center;gap:7px;font-size:14.5px;font-weight:600;padding:9px 16px;border-radius:9px;border:1px solid var(--ink);background:var(--ink);color:var(--cream)}
@@ -54,7 +59,7 @@
   /* sections */
   section{padding:40px 0;border-top:1px solid var(--line-soft);scroll-margin-top:80px}
   section:first-of-type{border-top:none}
-  h2{font-family:var(--serif);font-weight:500;font-size:24px;letter-spacing:-.01em;margin-bottom:6px;scroll-margin-top:70px}
+  h2{font-family:var(--serif);font-weight:600;font-size:25px;letter-spacing:-.02em;margin-bottom:6px;scroll-margin-top:70px}
   .diagram{margin-top:24px}
   .diagram svg{width:100%;height:auto;display:block;margin:0 auto}
   .diagram .node{fill:#fff;stroke:var(--ink);stroke-width:1.4}
@@ -81,9 +86,12 @@
   pre code{font-family:var(--mono);font-size:13.5px;line-height:1.8;background:none;padding:0;color:var(--ink);white-space:pre}
   pre code .c{color:var(--ink-faint)}
   .note{font-size:14.5px;color:var(--ink-soft);margin-top:14px}
+  .step{margin-top:26px}
+  .step-h{display:flex;align-items:center;gap:12px;font-family:var(--serif);font-weight:700;font-size:20px;letter-spacing:-.02em;margin-bottom:10px}
+  .step-n{display:inline-flex;align-items:center;justify-content:center;width:27px;height:27px;border-radius:50%;background:var(--ink);color:var(--cream);font-size:14px;font-weight:700;flex:0 0 auto}
   .say{background:var(--paper);border:1px solid var(--line);border-left:3px solid var(--sage);border-radius:10px;padding:15px 18px;margin-top:16px}
   .say-label{display:block;font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--sage-d);margin-bottom:7px}
-  .say-text{font-family:var(--serif);font-style:italic;font-size:17px;color:var(--ink);line-height:1.4;word-break:break-word}
+  .say-text{font-family:var(--serif);font-weight:500;font-size:17px;letter-spacing:-.015em;color:var(--ink);line-height:1.4;word-break:break-word}
   .manual{margin-top:18px}
   .manual summary{cursor:pointer;font-size:14px;color:var(--sage-d);font-weight:600;list-style:none;display:inline-flex;align-items:center;gap:6px}
   .manual summary::-webkit-details-marker{display:none}
@@ -115,9 +123,9 @@
   .examples{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:20px}
   @media(max-width:560px){.examples{grid-template-columns:1fr}}
   .ex{border:1px solid var(--line);border-radius:12px;background:var(--paper);padding:14px 16px;display:flex;flex-direction:column}
-  .ex .q{font-family:var(--serif);font-style:italic;font-size:15.5px;line-height:1.3}
+  .ex .q{font-family:var(--serif);font-weight:500;font-size:15.5px;letter-spacing:-.015em;line-height:1.25}
   .ex .a{display:flex;align-items:baseline;gap:9px;margin-top:auto;padding-top:9px;border-top:1px solid var(--line-soft)}
-  .ex .a b{font-family:var(--serif);font-size:22px;line-height:1}
+  .ex .a b{font-family:var(--serif);font-weight:700;font-size:23px;letter-spacing:-.03em;line-height:1}
   .ex .a span{color:var(--ink-soft);font-size:12.5px;line-height:1.35}
   .chart{border:1px solid var(--line);border-radius:12px;background:var(--paper);padding:16px 18px 12px;margin-top:12px}
   .chart .cl{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:10px}
@@ -125,7 +133,7 @@
 
   /* footer */
   footer{border-top:1px solid var(--line);margin-top:24px;padding:30px 0 0;overflow:hidden}
-  .foot-brand{display:flex;align-items:center;justify-content:center;gap:.06em;font-family:var(--brand);color:#FFFFFF;font-size:clamp(74px,21vw,290px);line-height:.9;letter-spacing:.005em;margin:34px 0 -0.06em;user-select:none}
+  .foot-brand{display:flex;align-items:center;justify-content:center;gap:.02em;font-family:var(--brand);font-weight:800;font-variation-settings:'opsz' 96;color:#FFFFFF;font-size:clamp(74px,21vw,290px);line-height:.9;letter-spacing:-.05em;margin:34px 0 -0.04em;user-select:none}
   .foot-brand svg{width:.6em;height:.6em;color:#FFFFFF;flex:0 0 auto}
   .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center;font-size:13.5px;color:var(--ink-faint)}
   .foot .l{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
@@ -328,9 +336,16 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
     <div class="wrap">
       <h2>Try it on real-ish data</h2>
       <p class="lead">There's a live demo wired to a fictional pro sports club, the Bonita Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast rights).</p>
-      <p class="note" style="margin-top:0"><b style="color:var(--ink)">Connect it:</b> in Claude (or any MCP client) open Settings → Connectors → Add custom connector, and paste this URL. The token rides in the URL, so there's no separate key to enter.</p>
-      <pre><code>https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</code></pre>
-      <p class="lead" style="margin-top:24px">Then ask in plain English:</p>
+
+      <div class="step">
+        <h3 class="step-h"><span class="step-n">1</span>Connect it</h3>
+        <p class="note" style="margin-top:0">In Claude (or any MCP client) open Settings → Connectors → Add custom connector, and paste this URL. The token rides in the URL, so there's no separate key to enter.</p>
+        <pre><code>https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</code></pre>
+      </div>
+
+      <div class="step">
+        <h3 class="step-h"><span class="step-n">2</span>Ask a question</h3>
+        <p class="note" style="margin-top:0">In plain English. For example:</p>
       <div class="examples">
       <div class="ex">
         <div class="q">"How many unique fans do we have?"</div>
@@ -365,7 +380,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             <rect x="148" y="150" width="36" height="16" rx="3"/>
             <rect x="148" y="184" width="22" height="16" rx="3"/>
           </g>
-          <g font-family="Hanken Grotesk,system-ui,sans-serif" font-size="12.5" fill="#54615A">
+          <g font-family="degular-text,sans-serif" font-size="12.5" fill="#54615A">
             <text x="8" y="26">Media rights</text>
             <text x="8" y="60">Ticketing</text>
             <text x="8" y="94">Sponsorship</text>
@@ -373,7 +388,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             <text x="8" y="162">Merch</text>
             <text x="8" y="196">Other</text>
           </g>
-          <g font-family="JetBrains Mono,ui-monospace,monospace" font-size="12" fill="#212E26">
+          <g font-family="degular-mono,monospace" font-size="12" fill="#212E26">
             <text x="555" y="26">$90M</text>
             <text x="364" y="60">$47M</text>
             <text x="279" y="94">$28M</text>
@@ -382,6 +397,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             <text x="177" y="196">$5M</text>
           </g>
         </svg>
+      </div>
       </div>
     </div>
   </section>
