@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "./artifact";
 import { setokuDir } from "./config";
+import type { AppParam } from "./params";
 
 export type DocType = "entity" | "metric" | "query" | "overview" | "gotcha";
 
@@ -124,12 +125,12 @@ export type ReportVisibility = "team" | "public";
 export type PanelDialect = "postgres" | "clickhouse";
 
 /**
- * One live data binding on a dashboard. `sql` is the executable binding (a
+ * One live data binding on an app. `sql` is the executable binding (a
  * validated read-only statement); `metricId` is provenance-only — it links the
  * panel to a curated metric doc so the "how is this calculated" drawer can show
  * the team's verified definition. We never re-parse SQL out of a metric body.
  */
-export interface DashboardPanel {
+export interface AppPanel {
   key: string;
   title?: string;
   /** One-line, plain-language explanation of what this panel computes — shown in
@@ -144,12 +145,15 @@ export interface DashboardPanel {
 export interface PublishedReport {
   id: string;
   title: string;
-  /** "html" = a frozen, self-contained report (legacy / zero-panel). "dashboard"
+  /** "html" = a frozen, self-contained report (legacy / zero-panel). "app"
    *  = a template whose panels the box re-runs live. */
-  format: "html" | "dashboard";
+  format: "html" | "app";
   body: string;
   /** Live data bindings; null/[] for a frozen report. */
-  panels: DashboardPanel[] | null;
+  panels: AppPanel[] | null;
+  /** Declared interactive inputs (date/int/text/bool/enum) a panel's SQL binds
+   *  via `:name`. null/[] for a non-interactive app. See lib/params.ts. */
+  params: AppParam[] | null;
   /** TTL (seconds) for cached panel data; null on frozen reports. */
   refreshSeconds: number | null;
   /** "team" = session-gated (default); "public" = served credential-free at
@@ -163,7 +167,7 @@ export interface PublishedReport {
 
 export type PublishedMeta = Omit<PublishedReport, "body">;
 
-/** One panel's last-executed result, cached for the dashboard's refresh TTL. */
+/** One panel's last-executed result, cached for the app's refresh TTL. */
 export interface PanelCacheRow {
   columns: string[];
   rows: Record<string, unknown>[];
@@ -173,11 +177,22 @@ export interface PanelCacheRow {
 }
 
 /** Parse the stored panels JSON; tolerates null/garbage (legacy rows). */
-function parsePanels(json: string | null): DashboardPanel[] | null {
+function parsePanels(json: string | null): AppPanel[] | null {
   if (!json) return null;
   try {
     const v = JSON.parse(json);
-    return Array.isArray(v) ? (v as DashboardPanel[]) : null;
+    return Array.isArray(v) ? (v as AppPanel[]) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Parse the stored params JSON; tolerates null/garbage (legacy rows). */
+function parseParams(json: string | null): AppParam[] | null {
+  if (!json) return null;
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? (v as AppParam[]) : null;
   } catch {
     return null;
   }
@@ -231,6 +246,11 @@ export function defaultDbPath(projectDir: string): string {
     "knowledge.db",
   );
 }
+
+/** Cap on cached panel/param-variant rows per app. Bounds app_cache so an
+ *  open-domain param on a public link can't grow it without limit (a few panels
+ *  × many variants stays well under this in normal use). */
+const MAX_CACHE_ROWS_PER_APP = 256;
 
 export class KnowledgeStore {
   db: Database;
@@ -357,25 +377,47 @@ export class KnowledgeStore {
       archived_at TEXT
     )`);
     // Brought the table forward in-place for boxes created before visibility /
-    // the revoked→archived rename / live dashboards landed (idempotent). A
-    // pre-dashboard row stays format='html' with panels NULL and keeps rendering.
+    // the revoked→archived rename / live apps landed (idempotent). A
+    // pre-app row stays format='html' with panels NULL and keeps rendering.
     this.ensureColumn("published", "visibility", "TEXT NOT NULL DEFAULT 'team'");
     this.ensureColumn("published", "archived_at", "TEXT");
     this.ensureColumn("published", "panels", "TEXT");
+    this.ensureColumn("published", "params", "TEXT");
     this.ensureColumn("published", "refresh_seconds", "INTEGER");
-    // Per-panel result cache. A dashboard view serves cached rows within the
-    // dashboard's refresh TTL and re-runs the query when stale — bounding DB load
+    // Dashboards→Apps rename: the live-render format value was 'dashboard'. Boxes
+    // that published before the rename hold rows with format='dashboard'; the new
+    // code gates the runtime path on format='app', so backfill them in place (a
+    // no-op on a fresh box). Legacy v0.11 frozen reports stay format='html'.
+    this.db.run("UPDATE published SET format = 'app' WHERE format = 'dashboard'");
+    // Per-panel result cache. A app view serves cached rows within the
+    // app's refresh TTL and re-runs the query when stale — bounding DB load
     // on a hammered public link and giving an honest "updated N ago" stamp.
-    this.db.run(`CREATE TABLE IF NOT EXISTS dashboard_cache (
-      dashboard_id TEXT NOT NULL,
+    this.db.run(`CREATE TABLE IF NOT EXISTS app_cache (
+      app_id TEXT NOT NULL,
       panel_key TEXT NOT NULL,
       columns TEXT NOT NULL DEFAULT '[]',
       rows TEXT NOT NULL DEFAULT '[]',
       row_count INTEGER NOT NULL DEFAULT 0,
       computed_at TEXT NOT NULL,
       error TEXT,
-      PRIMARY KEY (dashboard_id, panel_key)
+      PRIMARY KEY (app_id, panel_key)
     )`);
+    // Carry the pre-rename cache forward (dashboard_cache → app_cache, same shape
+    // but for the renamed key column). Without this an upgraded box cold-starts
+    // every app's cache — the first view of each re-runs all its panels against
+    // prod (the stampede the cache exists to prevent) and the "updated N ago"
+    // stamp is blank until then. Columns are mapped EXPLICITLY (not SELECT *) so a
+    // future column add/reorder can't silently land values in the wrong column.
+    const hasOldCache = this.db
+      .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_cache'")
+      .get();
+    if (hasOldCache) {
+      this.db.run(
+        `INSERT OR IGNORE INTO app_cache (app_id, panel_key, columns, rows, row_count, computed_at, error)
+         SELECT dashboard_id, panel_key, columns, rows, row_count, computed_at, error FROM dashboard_cache`,
+      );
+      this.db.run("DROP TABLE dashboard_cache");
+    }
     // Persisted doc embeddings (I8 opt-in hybrid retrieval). Lets a restart LOAD
     // vectors instead of re-embedding every doc, so startup is O(changed docs) not
     // O(corpus) — the thing that otherwise breaks at ~1000s of docs. Keyed by
@@ -927,27 +969,30 @@ export class KnowledgeStore {
 
   /* ------------------------------- published ---------------------------- */
 
-  /** Store a published report or dashboard. `id` must already be a minted opaque
+  /** Store a published report or app. `id` must already be a minted opaque
    *  token. Visibility defaults to "team" — the agent never publishes public. */
   createPublished(rec: {
     id: string;
     title: string;
-    format?: "html" | "dashboard";
+    format?: "html" | "app";
     body: string;
-    panels?: DashboardPanel[] | null;
+    panels?: AppPanel[] | null;
+    params?: AppParam[] | null;
     refreshSeconds?: number | null;
     visibility?: ReportVisibility;
     createdBy: string;
   }): void {
     const panels = rec.panels && rec.panels.length ? JSON.stringify(rec.panels) : null;
+    const params = rec.params && rec.params.length ? JSON.stringify(rec.params) : null;
     this.db.run(
-      "INSERT INTO published (id, title, format, body, panels, refresh_seconds, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO published (id, title, format, body, panels, params, refresh_seconds, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
         rec.id,
         rec.title,
-        rec.format ?? (panels ? "dashboard" : "html"),
+        rec.format ?? (panels ? "app" : "html"),
         rec.body,
         panels,
+        params,
         rec.refreshSeconds ?? null,
         rec.visibility ?? "team",
         rec.createdBy,
@@ -956,15 +1001,15 @@ export class KnowledgeStore {
     );
   }
 
-  /** Fetch one published report/dashboard (incl. body + panels). Returns archived
+  /** Fetch one published report/app (incl. body + panels). Returns archived
    *  rows too — the caller decides how to treat `archivedAt` (the viewer 404s). */
   getPublished(id: string): PublishedReport | null {
     const row = this.db
       .query(
-        "SELECT id, title, format, body, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+        "SELECT id, title, format, body, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
       )
-      .get(id) as (Omit<PublishedReport, "panels"> & { panels: string | null }) | null;
-    return row ? { ...row, panels: parsePanels(row.panels) } : null;
+      .get(id) as (Omit<PublishedReport, "panels" | "params"> & { panels: string | null; params: string | null }) | null;
+    return row ? { ...row, panels: parsePanels(row.panels), params: parseParams(row.params) } : null;
   }
 
   /** One report's metadata WITHOUT its (up-to-2MB) body — for cheap 404/policy
@@ -972,23 +1017,23 @@ export class KnowledgeStore {
   getPublishedMeta(id: string): PublishedMeta | null {
     const row = this.db
       .query(
-        "SELECT id, title, format, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
       )
-      .get(id) as (Omit<PublishedMeta, "panels"> & { panels: string | null }) | null;
-    return row ? { ...row, panels: parsePanels(row.panels) } : null;
+      .get(id) as (Omit<PublishedMeta, "panels" | "params"> & { panels: string | null; params: string | null }) | null;
+    return row ? { ...row, panels: parsePanels(row.panels), params: parseParams(row.params) } : null;
   }
 
-  /** Published reports/dashboards without bodies, newest first (admin list). */
+  /** Published reports/apps without bodies, newest first (admin list). */
   listPublished(): PublishedMeta[] {
     const rows = this.db
       .query(
-        "SELECT id, title, format, panels, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published ORDER BY created_at DESC",
+        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published ORDER BY created_at DESC",
       )
-      .all() as unknown as (Omit<PublishedMeta, "panels"> & { panels: string | null })[];
-    return rows.map((r) => ({ ...r, panels: parsePanels(r.panels) }));
+      .all() as unknown as (Omit<PublishedMeta, "panels" | "params"> & { panels: string | null; params: string | null })[];
+    return rows.map((r) => ({ ...r, panels: parsePanels(r.panels), params: parseParams(r.params) }));
   }
 
-  /** Soft-delete (archive) a published report/dashboard. Returns false if already
+  /** Soft-delete (archive) a published report/app. Returns false if already
    *  archived or unknown. The row + audit trail survive; cached panel data is
    *  dropped (an archived link must stop serving live data immediately). */
   archivePublished(id: string): boolean {
@@ -997,19 +1042,19 @@ export class KnowledgeStore {
         new Date().toISOString(),
         id,
       ]).changes > 0;
-    if (archived) this.db.run("DELETE FROM dashboard_cache WHERE dashboard_id = ?", [id]);
+    if (archived) this.db.run("DELETE FROM app_cache WHERE app_id = ?", [id]);
     return archived;
   }
 
-  /* ------------------------- dashboard panel cache ---------------------- */
+  /* ------------------------- app panel cache ---------------------- */
 
   /** Cached result for one panel, or null if never computed. */
-  getPanelCache(dashboardId: string, panelKey: string): PanelCacheRow | null {
+  getPanelCache(appId: string, panelKey: string): PanelCacheRow | null {
     const row = this.db
       .query(
-        "SELECT columns, rows, row_count AS rowCount, computed_at AS computedAt, error FROM dashboard_cache WHERE dashboard_id = ? AND panel_key = ?",
+        "SELECT columns, rows, row_count AS rowCount, computed_at AS computedAt, error FROM app_cache WHERE app_id = ? AND panel_key = ?",
       )
-      .get(dashboardId, panelKey) as
+      .get(appId, panelKey) as
       | { columns: string; rows: string; rowCount: number; computedAt: string; error: string | null }
       | null;
     if (!row) return null;
@@ -1024,19 +1069,19 @@ export class KnowledgeStore {
 
   /** Upsert one panel's cached result (success or error), stamped now. */
   putPanelCache(
-    dashboardId: string,
+    appId: string,
     panelKey: string,
     data: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string | null },
   ): string {
     const computedAt = new Date().toISOString();
     this.db.run(
-      `INSERT INTO dashboard_cache (dashboard_id, panel_key, columns, rows, row_count, computed_at, error)
+      `INSERT INTO app_cache (app_id, panel_key, columns, rows, row_count, computed_at, error)
        VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(dashboard_id, panel_key) DO UPDATE SET
+       ON CONFLICT(app_id, panel_key) DO UPDATE SET
          columns = excluded.columns, rows = excluded.rows, row_count = excluded.row_count,
          computed_at = excluded.computed_at, error = excluded.error`,
       [
-        dashboardId,
+        appId,
         panelKey,
         JSON.stringify(data.columns ?? []),
         JSON.stringify(data.rows ?? []),
@@ -1045,17 +1090,43 @@ export class KnowledgeStore {
         data.error ?? null,
       ],
     );
+    // Bound the cache per app: each panel/param VARIANT is a distinct panel_key,
+    // so an open-domain param on a public link (?p.note=<random>) could otherwise
+    // grow this table without limit. Keep the newest MAX_CACHE_ROWS_PER_APP rows
+    // (by last write) and evict the rest. A re-view of an evicted variant just
+    // recomputes; the default-params variant stays warm because viewing the app
+    // re-stamps it. Only RUN the eviction sort when actually over the cap — the
+    // count is a cheap PK-prefix scan, so the common (under-cap) write skips the
+    // ORDER BY entirely instead of paying it on every single panel write.
+    const cacheRows = (
+      this.db.query("SELECT COUNT(*) AS n FROM app_cache WHERE app_id = ?").get(appId) as { n: number }
+    ).n;
+    if (cacheRows > MAX_CACHE_ROWS_PER_APP)
+      this.db.run(
+        `DELETE FROM app_cache WHERE app_id = ? AND panel_key NOT IN (
+           SELECT panel_key FROM app_cache WHERE app_id = ? ORDER BY computed_at DESC LIMIT ?)`,
+        [appId, appId, MAX_CACHE_ROWS_PER_APP],
+      );
     return computedAt;
   }
 
-  /** Edit a published dashboard/report in place (same id/link) — author-gated
+  /** Edit a published app/report in place (same id/link) — author-gated
    *  upstream. Only provided fields change; id/createdBy/createdAt/visibility are
    *  preserved. Passing `panels` (incl. []) rewrites the panel set + format AND
    *  clears the panel cache (the old rows no longer apply). Returns false if the
    *  row is unknown or archived. */
   updatePublished(
     id: string,
-    fields: { title?: string; body?: string; panels?: DashboardPanel[]; refreshSeconds?: number | null },
+    fields: {
+      title?: string;
+      body?: string;
+      panels?: AppPanel[];
+      params?: AppParam[];
+      /** Explicit format — the caller (which has the body) decides app vs legacy
+       *  html; falls back to panels-based derivation when omitted. */
+      format?: "html" | "app";
+      refreshSeconds?: number | null;
+    },
   ): boolean {
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
@@ -1070,7 +1141,16 @@ export class KnowledgeStore {
     if (fields.panels !== undefined) {
       const json = fields.panels.length ? JSON.stringify(fields.panels) : null;
       sets.push("panels = ?", "format = ?");
-      vals.push(json, json ? "dashboard" : "html");
+      vals.push(json, fields.format ?? (json ? "app" : "html"));
+    } else if (fields.format !== undefined) {
+      // Format can change without the panel set — e.g. a panel-less app whose body
+      // flips between a fragment ("app") and a full legacy document ("html").
+      sets.push("format = ?");
+      vals.push(fields.format);
+    }
+    if (fields.params !== undefined) {
+      sets.push("params = ?");
+      vals.push(fields.params.length ? JSON.stringify(fields.params) : null);
     }
     if (fields.refreshSeconds !== undefined) {
       sets.push("refresh_seconds = ?");
@@ -1081,12 +1161,12 @@ export class KnowledgeStore {
     const changed =
       this.db.run(`UPDATE published SET ${sets.join(", ")} WHERE id = ? AND archived_at IS NULL`, vals).changes > 0;
     if (changed && fields.panels !== undefined)
-      this.db.run("DELETE FROM dashboard_cache WHERE dashboard_id = ?", [id]);
+      this.db.run("DELETE FROM app_cache WHERE app_id = ?", [id]);
     return changed;
   }
 
-  /** Restore an archived report/dashboard (clear the soft-delete) — and reset it to
-   *  team-only. A previously-PUBLIC dashboard must NOT silently come back on its
+  /** Restore an archived report/app (clear the soft-delete) — and reset it to
+   *  team-only. A previously-PUBLIC app must NOT silently come back on its
    *  credential-free link; re-going-public is a fresh admin action (I9). Returns
    *  false if unknown or not currently archived. */
   unarchivePublished(id: string): boolean {
@@ -1098,11 +1178,13 @@ export class KnowledgeStore {
     );
   }
 
-  /** Newest cached panel computed_at for a dashboard (the "data updated" stamp),
-   *  read straight from the cache WITHOUT re-running any query. */
+  /** Newest cached panel computed_at for an app (the "data updated" stamp), read
+   *  straight from the cache WITHOUT re-running any query. Counts only SUCCESSFUL
+   *  panels — an errored row is stamped with the (now) failure time, which would
+   *  otherwise read as "updated just now" while the data is actually stale/broken. */
   newestPanelComputedAt(id: string): string | null {
     const row = this.db
-      .query("SELECT MAX(computed_at) AS t FROM dashboard_cache WHERE dashboard_id = ?")
+      .query("SELECT MAX(computed_at) AS t FROM app_cache WHERE app_id = ? AND error IS NULL")
       .get(id) as { t: string | null } | null;
     return row?.t ?? null;
   }

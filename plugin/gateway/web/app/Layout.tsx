@@ -10,7 +10,7 @@ const TABS: { to: string; label: string }[] = [
   { to: "/knowledge", label: "Knowledge" },
   { to: "/sources", label: "Sources" },
   { to: "/team", label: "Team" },
-  { to: "/dashboards", label: "Dashboards" },
+  { to: "/apps", label: "Apps" },
   { to: "/audit", label: "Audit" },
 ];
 

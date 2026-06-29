@@ -45,6 +45,14 @@ The agent looks up the context first, then runs the query, so it answers the way
 
 It ships **tools, not models**. No AI runs on the server; the reasoning happens in the AI you already use. That means no AI API keys and no per-query AI cost: a whole deployment is one small VPS plus the AI seats your team already has.
 
+## Apps: build on the data, share a link
+
+Once your AI can read and *understand* the data, the natural next step is building little things on top of it. Ask your agent for a chart, a poll, a triage list — it writes a self-contained **app** (`publish_app`) and hands you a URL. Nothing to deploy, no frontend to maintain; a non-technical teammate just describes what they want and edits it the same way ("make the bars green, add last quarter").
+
+- **Backed by live data, read-only.** Apps query through the exact same governed path as everything else — row caps, audit, a SELECT-only database role. An app never gets write access to your sources.
+- **Their own private state.** Each app keeps its own state — todos, poll tallies, notes, annotations — in a sandbox that belongs to the *app*, not your database. So an app can be genuinely interactive (and a prompt-injected one still can't touch your data; worst case it messes up its own notes). The useful trick: tag a business row by its id to mark it "reviewed" or attach a note, an overlay on top of read-only data without ever writing the source.
+- **Shareable by link.** A team link is login-gated; an admin can flip one public for a credential-free URL. The page runs in a locked-down, no-network sandbox, so a published app can't phone home.
+
 ## Why we built it
 
 **We're curious.** There are plenty of AI memory stores, and plenty of data gateways. Stapling the two together, and nudging the agent to gather knowledge about the data as it goes, seemed worth trying and fun to tinker with.

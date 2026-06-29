@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Tested chart runtime injected into every dashboard frame, and a static linter
+ * Tested chart runtime injected into every app frame, and a static linter
  * for agent-authored templates. The agent kept hand-rolling SVG/CSS and tripping
  * the same traps (inline `<span>` ignores width/height; Postgres numerics arrive
  * as STRINGS so chart math silently NaNs to zero) — both invisible because it
  * publishes blind. `window.Setoku.*` gives it known-good primitives instead, and
- * `lintDashboardTemplate` turns the common footguns into publish-time warnings.
+ * `lintAppTemplate` turns the common footguns into publish-time warnings.
  *
  * The runtime is plain browser JS shipped as a string (it runs in the sandboxed,
- * no-network frame). Its behavior is covered by test/dashboard-runtime.test.ts
+ * no-network frame). Its behavior is covered by test/app-runtime.test.ts
  * via a minimal DOM stub.
  */
 
 /** Browser runtime: defines `window.Setoku` with bar/table/stat/line + fmt. Reads
  *  panel data lazily from `window.__SETOKU__` so it's injected after the data. */
-export const DASHBOARD_RUNTIME = `(function () {
+export const APP_RUNTIME = `(function () {
   // Coerce anything (incl. Postgres numeric strings like "98401245.89") to a number.
   function num(v) {
     if (typeof v === "number") return isFinite(v) ? v : 0;
@@ -117,8 +117,61 @@ export const DASHBOARD_RUNTIME = `(function () {
     s += "</svg>";
     el.innerHTML = s;
   }
+  // Per-app private state. The sandboxed frame has NO network (strict CSP), so it
+  // can't reach the state endpoint directly — it postMessages the trusted parent
+  // shell, which is the single policy gate: it injects the app id (the template
+  // never names it), checks the session, and calls the endpoint. Each call is a
+  // promise resolved when the parent replies. On a surface with no bridge (e.g. a
+  // public link, for now) calls reject after a timeout — the app still renders.
+  var state = (function () {
+    var seq = 0, pending = {};
+    window.addEventListener("message", function (e) {
+      var m = e.data;
+      if (!m || m.__setoku_state_res !== true) return;
+      var p = pending[m.id]; if (!p) return; delete pending[m.id];
+      if (m.error) p.rej(new Error(m.error)); else p.res(m.result);
+    });
+    function call(op, scope, key, value) {
+      return new Promise(function (ok, fail) {
+        var id = ++seq; pending[id] = { res: ok, rej: fail };
+        parent.postMessage({ __setoku_state_req: true, id: id, op: op, scope: scope || "app", key: key, value: value }, "*");
+        setTimeout(function () { if (pending[id]) { delete pending[id]; fail(new Error("state unavailable here")); } }, 8000);
+      });
+    }
+    return {
+      get: function (scope, key) { return call("get", scope, key); },
+      set: function (scope, key, value) { return call("set", scope, key, value); },
+      list: function (scope) { return call("list", scope); },
+      del: function (scope, key) { return call("delete", scope, key); }
+    };
+  })();
   window.Setoku = { bar: bar, table: table, stat: stat, line: line, fmt: fmt, num: num,
-    rows: function (k) { return resolve(k).rows; } };
+    rows: function (k) { return resolve(k).rows; }, state: state };
+  // Echo the RESOLVED param values to the parent shell so the control bar reflects
+  // what actually ran — a viewer value the server rejected shows as the default
+  // here, not what was typed. The parent resets its controls to these.
+  try {
+    var ep = window.__SETOKU__ && window.__SETOKU__.params;
+    if (ep) parent.postMessage({ __setoku_params_echo: true, params: ep }, "*");
+  } catch (e) { /* no parent / no params */ }
+  // Echo this render's per-panel provenance (row count + freshness + error) so the
+  // trusted parent's "how it's calculated" drawer reflects EXACTLY what THIS frame
+  // rendered — the same variant the viewer sees — instead of re-running the panels
+  // in a second fetch. t is the parent's reload nonce (read from our own URL) so the
+  // parent can ignore a stale echo from a superseded frame.
+  try {
+    var sp = window.__SETOKU__ && window.__SETOKU__.panels;
+    if (sp) {
+      var prov = {};
+      for (var pk in sp) if (Object.prototype.hasOwnProperty.call(sp, pk)) {
+        var pv = sp[pk];
+        prov[pk] = { rowCount: pv.rowCount, computedAt: pv.computedAt, error: pv.error, refreshError: pv.refreshError };
+      }
+      var t = null;
+      try { t = new URLSearchParams(location.search).get("t"); } catch (e2) { /* no location */ }
+      parent.postMessage({ __setoku_provenance: true, t: t, panels: prov }, "*");
+    }
+  } catch (e) { /* no parent / no panels */ }
 })();`;
 
 /**
@@ -128,7 +181,7 @@ export const DASHBOARD_RUNTIME = `(function () {
  * that doesn't exist, and a sized inline `<span>` (the exact bug that ships blank
  * bars). Returns [] when clean.
  */
-export function lintDashboardTemplate(html: string, panelKeys: string[]): string[] {
+export function lintAppTemplate(html: string, panelKeys: string[]): string[] {
   const warn: string[] = [];
   const keys = new Set(panelKeys);
 

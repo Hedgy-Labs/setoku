@@ -20,9 +20,10 @@ import { runLakeQuery } from "./lib/lake";
 import { buildLinkGraph, matchByTokens, retrieve, selectGotchas } from "./lib/search";
 import { synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
-import { KnowledgeStore, type DashboardPanel, type DocType } from "./lib/store";
-import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel } from "./lib/dashboards";
-import { lintDashboardTemplate } from "./lib/dashboard-runtime";
+import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel, compilePanel, isFullDoc } from "./lib/apps";
+import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
+import { lintAppTemplate } from "./lib/app-runtime";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
@@ -880,11 +881,12 @@ server.registerTool(
     try {
       const config = requireConfig();
       // Route + enforce the lake membrane (I2/I9) through the SAME helper the
-      // dashboard panels use, so there is one gate, not two divergent copies.
+      // app panels use, so there is one gate, not two divergent copies.
       const result = await runPanel(
         projectDir,
         config,
         { key: "run_query", sql, dialect: dialect ?? "postgres" },
+        { text: sql, referenced: [] }, // a direct query — no bound params
         { denyLakeRead },
       );
       store.audit(user, "run_query", {
@@ -951,12 +953,12 @@ server.registerTool(
   },
 );
 
-/* ------------------------------ dashboards ----------------------------- */
-// The agent publishes a DASHBOARD to the box and gets back a shareable URL. A
-// dashboard splits presentation (a frozen, agent-authored template) from data
+/* ------------------------------ apps ----------------------------- */
+// The agent publishes a APP to the box and gets back a shareable URL. A
+// app splits presentation (a frozen, agent-authored template) from data
 // (named panels, each a saved read-only query the box RE-RUNS live through the
 // governed run_query path). The template reads results off window.__SETOKU__.
-// A zero-panel dashboard is just a static report (back-compat).
+// A zero-panel app is just a static report (back-compat).
 //
 // v0 is TEAM-ONLY: the link (/admin/p/<id>) is session-gated, so only people who
 // hold a box login can view it — that's what keeps a (prompt-injectable) analyst
@@ -975,11 +977,11 @@ const mintShareId = (): string =>
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 
-// Where a published dashboard lives. SETOKU_PUBLIC_URL is the box's public origin
+// Where a published app lives. SETOKU_PUBLIC_URL is the box's public origin
 // (also used by the installer links); without it we return the path and tell the
 // agent to prefix its box URL.
 const publishBase = (process.env.SETOKU_PUBLIC_URL ?? "").replace(/\/+$/, "");
-// Team dashboards live in the session-gated SPA (/admin/p/<id>); public ones serve
+// Team apps live in the session-gated SPA (/admin/p/<id>); public ones serve
 // credential-free at /p/<id>. The link an agent hands out follows visibility.
 const publishUrl = (id: string, visibility: "team" | "public" = "team"): string => {
   const path = visibility === "public" ? `/p/${id}` : `/admin/p/${id}`;
@@ -996,9 +998,17 @@ type PanelSeed = { key: string; columns: string[]; rows: Record<string, unknown>
 // panel must run") can never drift between the two.
 async function prepPanels(
   list: PanelInput[],
-): Promise<{ ok: true; normalized: DashboardPanel[]; seeds: PanelSeed[] } | { ok: false; error: string }> {
+  declared: AppParam[] = [],
+  // seed=true (default) DRY-RUNS each panel and returns cache seeds — needed when
+  // the SQL is new/changed. seed=false only validates + compiles (param defaults
+  // coerce, every :token is declared) WITHOUT executing: used by a params-only
+  // edit, so adjusting a param can't be blocked by an unrelated transiently-broken
+  // panel and doesn't pay full query latency for a metadata-shaped change.
+  opts: { seed?: boolean } = {},
+): Promise<{ ok: true; normalized: AppPanel[]; seeds: PanelSeed[] } | { ok: false; error: string }> {
+  const seed = opts.seed ?? true;
   if (list.length > MAX_PANELS)
-    return { ok: false, error: `Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the dashboard.` };
+    return { ok: false, error: `Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the app.` };
   const keys = new Set<string>();
   for (const p of list) {
     if (!PANEL_KEY_RE.test(p.key ?? "")) return { ok: false, error: `Panel key "${p.key}" must be a 1–64 char slug ([A-Za-z0-9_-]).` };
@@ -1006,7 +1016,7 @@ async function prepPanels(
     keys.add(p.key);
     if (!p.sql?.trim()) return { ok: false, error: `Panel "${p.key}" has no sql.` };
   }
-  const normalized: DashboardPanel[] = list.map((p) => ({
+  const normalized: AppPanel[] = list.map((p) => ({
     key: p.key,
     title: p.title,
     description: p.description,
@@ -1020,11 +1030,28 @@ async function prepPanels(
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
+  // Resolve the declared inputs to their DEFAULTS to dry-run the panels (no viewer
+  // yet) — this also validates every :token is declared and every default coerces.
+  let resolved;
+  try {
+    resolved = resolveParams(declared, {});
+  } catch (e) {
+    return { ok: false, error: `Bad param default: ${(e as Error).message}` };
+  }
   const seeds: PanelSeed[] = [];
   for (const p of normalized) {
+    let compiled;
     try {
-      const r = await runPanel(projectDir, config, p, { denyLakeRead });
-      seeds.push({ key: p.key, columns: r.columns, rows: r.rows, rowCount: r.rowCount });
+      compiled = compilePanel(p, declared, resolved); // throws on an undeclared :param
+    } catch (e) {
+      return { ok: false, error: `Panel "${p.key}": ${(e as Error).message}\nDeclare it in params, or fix the token.` };
+    }
+    if (!seed) continue; // validate/compile only — don't execute
+    const variant = paramsVariant(compiled.referenced, resolved);
+    const cacheKey = variant ? `${p.key}::${variant}` : p.key; // seed the default-params variant
+    try {
+      const r = await runPanel(projectDir, config, p, compiled, { denyLakeRead });
+      seeds.push({ key: cacheKey, columns: r.columns, rows: r.rows, rowCount: r.rowCount });
     } catch (e) {
       return { ok: false, error: `Panel "${p.key}" failed to run: ${(e as Error).message}\nFix the query and try again.` };
     }
@@ -1039,7 +1066,7 @@ const clampRefresh = (refreshSeconds: number | undefined, hasPanels: boolean): n
 
 // Non-blocking warnings the agent can't see for itself (it publishes blind):
 // missing curated metric links + static render-lint of the template.
-function publishNotes(html: string, panels: DashboardPanel[]): string {
+function publishNotes(html: string, panels: AppPanel[]): string {
   const notes: string[] = [];
   const missing = panels.filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId))).map((p) => p.metricId);
   if (missing.length)
@@ -1052,7 +1079,7 @@ function publishNotes(html: string, panels: DashboardPanel[]): string {
   const noDesc = panels.filter((p) => !p.description?.trim()).map((p) => p.key);
   if (noDesc.length)
     notes.push(`panel(s) ${noDesc.map((k) => `"${k}"`).join(", ")} have no \`description\` — the drawer can't explain what they compute. Add a one-line description.`);
-  notes.push(...lintDashboardTemplate(html, panels.map((p) => p.key)));
+  notes.push(...lintAppTemplate(html, panels.map((p) => p.key)));
   return notes.length ? `\n\n⚠ Heads up (publishes anyway):\n- ${notes.join("\n- ")}` : "";
 }
 
@@ -1071,72 +1098,104 @@ const PANEL_SCHEMA = z.object({
   metricId: z.string().optional().describe("Name of a curated metric this panel computes — links provenance to the verified definition"),
 });
 
+// A declared interactive input. A panel's SQL references it as `:name`; the
+// viewer's value is type-coerced and ENGINE-BOUND (never string-interpolated),
+// so it's injection-safe and can't name a table/column or drive a write.
+const PARAM_SCHEMA = z.object({
+  name: z.string().describe("Identifier a panel's SQL binds as :name"),
+  label: z.string().optional().describe("Human label for the shell-rendered control"),
+  type: z.enum(["date", "int", "text", "bool", "enum"]),
+  default: z.union([z.string(), z.number(), z.boolean()]).describe("REQUIRED — the app must render with no viewer input"),
+  options: z.array(z.object({ value: z.string(), label: z.string().optional() })).optional().describe("enum only: the closed set of accepted values"),
+  min: z.number().optional().describe("int: inclusive minimum"),
+  max: z.number().optional().describe("int: inclusive maximum"),
+  maxLength: z.number().optional().describe("text: max length"),
+});
+
 const TEMPLATE_HELP =
   "Pass `html`: the presentation TEMPLATE — a self-contained HTML fragment (inline <style>/<script>, inline SVG; " +
   "NO external/CDN assets and NO network — data is injected, not fetched). A tested helper is preloaded: prefer " +
   "`Setoku.bar(targetElId, panelKey, {label, value, format})`, `Setoku.table`, `Setoku.stat`, `Setoku.line` over " +
   "hand-rolled SVG/CSS — they coerce numeric strings, size correctly, and render empty/error states. Raw data is " +
   "also at `window.__SETOKU__.panels[<key>]` = `{ columns, rows, rowCount, computedAt, error }` (DB numerics arrive " +
-  "as STRINGS — wrap in Number() before any math).";
+  "as STRINGS — wrap in Number() before any math). " +
+  "For INTERACTIVE apps, the app has its OWN private datastore (it can persist state but CANNOT write your data sources): " +
+  "`Setoku.state.get(scope, key)` / `set(scope, key, value)` / `list(scope)` / `del(scope, key)` — all return Promises. " +
+  "`scope` is \"app\" (shared by everyone who opens it — a team list, a poll tally) or \"viewer\" (private to each user). " +
+  "Read state on load and re-render after each change. Use it for todos, votes, notes, or an annotation OVERLAY keyed by a " +
+  "business row id (mark rows reviewed without writing the source).";
 
 server.registerTool(
-  "publish_dashboard",
+  "publish_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Publish a live dashboard to the box (team-shareable URL)",
+    title: "Publish a live app to the box (team-shareable URL)",
     description:
-      "Publishes a dashboard backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
+      "Publishes an app backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
       "the team as a link that stays current — not for answering in-session.\n" +
       TEMPLATE_HELP +
       "\nPass `panels`: the data bindings. Each panel's `sql` is a read-only query the box re-runs live (same path " +
       "as run_query — develop & validate it with run_query first). Set `dialect` to match. Set `metricId` to a " +
       "curated metric name to link its verified definition.\n" +
       "Omit `panels` for a static report. The link is TEAM-ONLY; an admin can later make it public. Every panel is " +
-      "dry-run at publish (broken query → rejected). Edit later with update_dashboard (same link); also " +
-      "list_dashboards / get_dashboard / unpublish_dashboard.",
+      "dry-run at publish (broken query → rejected). Edit later with update_app (same link); also " +
+      "list_apps / get_app / unpublish_app.",
     inputSchema: {
-      title: z.string().describe("Short human title (shown in the box's Dashboards list)"),
+      title: z.string().describe("Short human title (shown in the box's Apps list)"),
       html: z.string().describe("The presentation template (self-contained HTML fragment; use the Setoku.* helpers)."),
       panels: z.array(PANEL_SCHEMA).optional().describe("Live data bindings. Omit for a static report."),
+      params: z
+        .array(PARAM_SCHEMA)
+        .optional()
+        .describe(
+          "Interactive inputs the viewer can change. A panel's SQL references one as `:name` (e.g. `WHERE region = :region`); the box renders a control in the app's header and re-runs the panels with the value bound. Each needs a `default` so the app renders with no input.",
+        ),
       refreshSeconds: z
         .number()
         .optional()
         .describe(`How often the box re-runs panels (default ${DEFAULT_REFRESH_SECONDS}, ${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS})`),
     },
   },
-  async ({ title, html, panels, refreshSeconds }) => {
+  async ({ title, html, panels, params, refreshSeconds }) => {
     const bytes = Buffer.byteLength(html, "utf8");
     if (bytes > MAX_REPORT_BYTES)
       return errorText(
         `Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap. Keep it a self-contained ` +
           "fragment; the live data arrives via panels, so don't embed bulk data in the template.",
       );
-    const prep = await prepPanels(panels ?? []);
+    const declaredParams = (params ?? []) as AppParam[];
+    const prep = await prepPanels(panels ?? [], declaredParams);
     if (!prep.ok) return errorText(prep.error);
     const { normalized, seeds } = prep;
 
     const id = mintShareId();
     const refresh = clampRefresh(refreshSeconds, normalized.length > 0);
+    // An "app" renders via the runtime path (chart helpers + Setoku.state + the
+    // no-network app CSP). That's anything with panels OR a zero-panel FRAGMENT
+    // (e.g. a state-only app: a todo, a poll). Only a zero-panel full HTML
+    // DOCUMENT is a legacy frozen report (format "html"), served as-is.
+    const format = normalized.length > 0 || !isFullDoc(html) ? "app" : "html";
     store.createPublished({
       id,
-      title: title.trim() || "Untitled dashboard",
+      title: title.trim() || "Untitled app",
       body: html,
       panels: normalized,
+      params: declaredParams.length ? declaredParams : null,
       refreshSeconds: refresh,
-      format: normalized.length ? "dashboard" : "html",
+      format,
       createdBy: user,
     });
     for (const s of seeds)
       store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
-    store.audit(user, "publish_dashboard", { id, title, bytes, panels: normalized.length });
+    store.audit(user, "publish_app", { id, title, bytes, panels: normalized.length });
 
-    const noun = normalized.length ? "dashboard" : "report";
+    const noun = format === "app" ? "app" : "report";
     return text(
       `Published "${title}" → ${publishUrl(id)}\n\n` +
         (normalized.length ? `${normalized.length} live panel(s); the box re-runs them every ${refresh}s. ` : "") +
         "This link is TEAM-ONLY: anyone you share it with must sign in to the box to view it. " +
         (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
-        `\n\nEdit it with update_dashboard("${id}", …) — same link. Manage: get_dashboard / unpublish_dashboard("${id}"). ` +
+        `\n\nEdit it with update_app("${id}", …) — same link. Manage: get_app / unpublish_app("${id}"). ` +
         `(An admin can make this ${noun} public from /admin.)` +
         publishNotes(html, normalized),
     );
@@ -1144,45 +1203,64 @@ server.registerTool(
 );
 
 server.registerTool(
-  "update_dashboard",
+  "update_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Edit a dashboard you published (in place, same link)",
+    title: "Edit an app you published (in place, same link)",
     description:
-      "Updates a dashboard you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
-      "(new template), `panels` (REPLACES the whole panel set — re-validated + dry-run), and/or `refreshSeconds`. " +
-      "Only the dashboard's AUTHOR can edit it. " +
-      "Note: changing `panels` on a dashboard that's currently public reverts it to team-only — an admin must " +
-      "re-approve it for the public link, since the data it exposes changed. " +
+      "Updates an app you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
+      "(new template), `panels` (REPLACES the whole panel set), `params` (REPLACES all inputs), and/or `refreshSeconds`. " +
+      "Changing `panels` or `params` re-validates and dry-runs every panel against the new params. " +
+      "Only the app's AUTHOR can edit it. " +
+      "Note: changing `panels` or `params` on an app that's currently public reverts it to team-only — an admin " +
+      "must re-approve it for the public link, since the data it exposes changed. " +
       TEMPLATE_HELP,
     inputSchema: {
-      id: z.string().describe("The dashboard id (from publish_dashboard / list_dashboards)"),
+      id: z.string().describe("The app id (from publish_app / list_apps)"),
       title: z.string().optional().describe("New title"),
       html: z.string().optional().describe("New presentation template (replaces the current one)"),
-      panels: z.array(PANEL_SCHEMA).optional().describe("New panel set — REPLACES all panels. Pass [] to make it a static report."),
+      panels: z.array(PANEL_SCHEMA).optional().describe("New panel set — REPLACES all panels. Pass [] for a state-only or static app."),
+      params: z.array(PARAM_SCHEMA).optional().describe("New interactive inputs — REPLACES all params (pass [] to remove). See publish_app."),
       refreshSeconds: z.number().optional().describe(`New refresh interval (${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS})`),
     },
   },
-  async ({ id, title, html, panels, refreshSeconds }) => {
+  async ({ id, title, html, panels, params, refreshSeconds }) => {
     const tid = id.trim();
     const meta = store.getPublishedMeta(tid);
     if (!meta || meta.archivedAt)
-      return errorText(`No active dashboard "${id}" (archived or unknown). Call list_dashboards.`);
+      return errorText(`No active app "${id}" (archived or unknown). Call list_apps.`);
     if (meta.createdBy !== user)
-      return errorText(`Only the author (${meta.createdBy}) can edit this dashboard. Publish your own with publish_dashboard.`);
+      return errorText(`Only the author (${meta.createdBy}) can edit this app. Publish your own with publish_app.`);
     const newTitle = title?.trim() || undefined; // whitespace-only title is a no-op, not a change
-    if (newTitle === undefined && html === undefined && panels === undefined && refreshSeconds === undefined)
-      return errorText("Nothing to update — pass a non-empty title, or html / panels / refreshSeconds.");
+    if (newTitle === undefined && html === undefined && panels === undefined && params === undefined && refreshSeconds === undefined)
+      return errorText("Nothing to update — pass a non-empty title, or html / panels / params / refreshSeconds.");
     if (html !== undefined) {
       const bytes = Buffer.byteLength(html, "utf8");
       if (bytes > MAX_REPORT_BYTES)
         return errorText(`Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap.`);
     }
 
-    let normalized: DashboardPanel[] | undefined;
+    // Panels AND params both determine what the panels compute (params bind into
+    // the SQL), so a change to EITHER must be validated and re-seeded — and, on a
+    // public app, re-gated (I9). Re-run the shared prep over the EFFECTIVE panel
+    // set against the EFFECTIVE params whenever either changes: this validates the
+    // new param defaults/names, re-checks every existing panel still compiles
+    // against the new params (a removed/renamed param would otherwise 500 the app
+    // at render), and re-seeds the default-variant cache.
+    const panelsChanged = panels !== undefined;
+    const paramsChanged = params !== undefined;
+    const dataChanged = panelsChanged || paramsChanged;
+    const declaredParams = paramsChanged ? (params as AppParam[]) : (meta.params ?? []);
+    let normalized: AppPanel[] | undefined;
     let seeds: PanelSeed[] | undefined;
-    if (panels !== undefined) {
-      const prep = await prepPanels(panels);
+    if (dataChanged) {
+      const basePanels: PanelInput[] = panelsChanged
+        ? panels
+        : (meta.panels ?? []).map((p) => ({ key: p.key, title: p.title, description: p.description, sql: p.sql, dialect: p.dialect, metricId: p.metricId ?? undefined }));
+      // Only DRY-RUN (execute) when the SQL itself changed; a params-only edit just
+      // validates + recompiles existing panels against the new params (no prod hit,
+      // not blocked by an unrelated broken panel).
+      const prep = await prepPanels(basePanels, declaredParams, { seed: panelsChanged });
       if (!prep.ok) return errorText(prep.error);
       normalized = prep.normalized;
       seeds = prep.seeds;
@@ -1191,28 +1269,49 @@ server.registerTool(
     const willHavePanels = normalized ? normalized.length > 0 : (meta.panels?.length ?? 0) > 0;
     let refresh: number | null | undefined;
     if (refreshSeconds !== undefined) refresh = clampRefresh(refreshSeconds, willHavePanels);
-    else if (panels !== undefined) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
+    else if (panelsChanged) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
+
+    // Recompute format when the panel SET or the BODY changes: panels → app; zero
+    // panels → "app" for a fragment (state app), "html" only for a full document.
+    // The body matters for a panel-less app (a new full <!doctype> template must
+    // flip it to the legacy "html" path); a params-only edit touches neither, so
+    // format holds.
+    let format: "html" | "app" | undefined;
+    if (panelsChanged || html !== undefined) {
+      if (willHavePanels) format = "app";
+      else {
+        const bodyToCheck = html ?? store.getPublished(tid)?.body ?? "";
+        format = isFullDoc(bodyToCheck) ? "html" : "app";
+      }
+    }
 
     const ok = store.updatePublished(tid, {
       title: newTitle,
       body: html,
-      panels: normalized, // undefined → unchanged; [] → becomes a static report (cache cleared)
+      // Only rewrite panels (which clears the cache) when the SQL actually changed.
+      // A params-only edit leaves the cache intact: each panel/param VARIANT is a
+      // distinct cache key (the resolved values are hashed in), so the new default
+      // simply maps to a fresh key and recomputes lazily — no cold-start stampede,
+      // and untouched variants stay warm.
+      panels: panelsChanged ? normalized : undefined,
+      params: paramsChanged ? (params as AppParam[]) : undefined,
+      format,
       refreshSeconds: refresh,
     });
-    if (!ok) return errorText(`Update failed — no active dashboard "${id}".`);
-    // Re-seed the cache for the new panels (updatePublished cleared the old rows).
+    if (!ok) return errorText(`Update failed — no active app "${id}".`);
+    // Re-seed the cache for the re-derived panels (updatePublished cleared the old rows).
     if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
 
-    // A panel change alters what the dashboard exposes — if it was public, revert
-    // to team so an admin re-approves (the human public-promotion gate, I9).
+    // Panels OR params alter what the public link exposes — if it was public,
+    // revert to team so an admin re-approves (the human promotion gate, I9).
     let reverted = false;
-    if (panels !== undefined && meta.visibility === "public") {
+    if (dataChanged && meta.visibility === "public") {
       store.setReportVisibility(tid, "team");
       reverted = true;
     }
-    store.audit(user, "update_dashboard", {
+    store.audit(user, "update_app", {
       id: tid,
-      changed: [newTitle !== undefined && "title", html !== undefined && "html", panels !== undefined && "panels", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
+      changed: [newTitle !== undefined && "title", html !== undefined && "html", panelsChanged && "panels", paramsChanged && "params", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
       reverted,
     });
 
@@ -1220,26 +1319,26 @@ server.registerTool(
     const finalPanels = normalized ?? meta.panels ?? [];
     return text(
       `Updated "${meta.title}" → ${publishUrl(tid, reverted ? "team" : meta.visibility)} (same link).` +
-        (reverted ? "\n\n⚠ Panels changed on a PUBLIC dashboard — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
+        (reverted ? "\n\n⚠ Panels or params changed on a PUBLIC app — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
         publishNotes(finalHtml, finalPanels),
     );
   },
 );
 
 server.registerTool(
-  "list_dashboards",
+  "list_apps",
   {
     annotations: { readOnlyHint: true },
-    title: "List dashboards published to the box",
+    title: "List apps published to the box",
     description:
-      "Lists dashboards/reports published to this box (active first), with their shareable URLs, panel counts, " +
-      "and who published them. Use it to find a link again, or an id to inspect (get_dashboard) or revoke.",
+      "Lists apps/reports published to this box (active first), with their shareable URLs, panel counts, " +
+      "and who published them. Use it to find a link again, or an id to inspect (get_app) or revoke.",
     inputSchema: {},
   },
   async () => {
     const rows = store.listPublished();
-    store.audit(user, "list_dashboards", { count: rows.length });
-    if (!rows.length) return text("Nothing published yet. Create one with publish_dashboard.");
+    store.audit(user, "list_apps", { count: rows.length });
+    if (!rows.length) return text("Nothing published yet. Create one with publish_app.");
     const active = rows.filter((r) => !r.archivedAt);
     const archived = rows.filter((r) => r.archivedAt);
     const lines: string[] = [];
@@ -1253,7 +1352,7 @@ server.registerTool(
         );
       }
     } else {
-      lines.push("No active dashboards (all archived).");
+      lines.push("No active apps (all archived).");
     }
     if (archived.length) {
       lines.push("", "# archived", ...archived.map((r) => `- ${r.title} (id ${r.id})`));
@@ -1263,20 +1362,20 @@ server.registerTool(
 );
 
 server.registerTool(
-  "get_dashboard",
+  "get_app",
   {
     annotations: { readOnlyHint: true },
-    title: "Inspect a dashboard's panels (how it's calculated)",
+    title: "Inspect an app's panels (how it's calculated)",
     description:
-      "Returns a published dashboard's panel definitions — each panel's SQL, dialect, linked metric, and " +
+      "Returns a published app's panel definitions — each panel's SQL, dialect, linked metric, and " +
       "when it last ran — so you can audit or iterate how a number is computed. Read-only.",
-    inputSchema: { id: z.string().describe("The dashboard id from publish_dashboard / list_dashboards") },
+    inputSchema: { id: z.string().describe("The app id from publish_app / list_apps") },
   },
   async ({ id }) => {
     const dash = store.getPublishedMeta(id.trim());
-    store.audit(user, "get_dashboard", { id, ok: !!dash });
+    store.audit(user, "get_app", { id, ok: !!dash });
     if (!dash || dash.archivedAt)
-      return errorText(`No active dashboard "${id}" (archived or unknown). Call list_dashboards.`);
+      return errorText(`No active app "${id}" (archived or unknown). Call list_apps.`);
     const lines: string[] = [
       `# ${dash.title} [${dash.format}] — ${publishUrl(dash.id, dash.visibility)}`,
       `by ${dash.createdBy} · ${dash.createdAt.slice(0, 16)} · visibility ${dash.visibility}` +
@@ -1292,8 +1391,8 @@ server.registerTool(
       lines.push(
         `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${p.metricId ? ` · metric:${p.metricId}` : ""}`,
       );
-      // Surface description so a read-before-edit (get_dashboard → update_dashboard)
-      // round-trip can preserve it — update_dashboard REPLACES the whole panel set.
+      // Surface description so a read-before-edit (get_app → update_app)
+      // round-trip can preserve it — update_app REPLACES the whole panel set.
       if (p.description) lines.push(`description: ${p.description}`);
       if (cache)
         lines.push(
@@ -1306,21 +1405,21 @@ server.registerTool(
 );
 
 server.registerTool(
-  "unpublish_dashboard",
+  "unpublish_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: true },
-    title: "Archive a published dashboard",
+    title: "Archive a published app",
     description:
-      "Archives a published dashboard/report by its id (from list_dashboards). The link stops working " +
+      "Archives a published app/report by its id (from list_apps). The link stops working " +
       "immediately and its cached data is dropped; the record is kept for the audit trail.",
-    inputSchema: { id: z.string().describe("The dashboard id from publish_dashboard / list_dashboards") },
+    inputSchema: { id: z.string().describe("The app id from publish_app / list_apps") },
   },
   async ({ id }) => {
     const ok = store.archivePublished(id.trim());
-    store.audit(user, "unpublish_dashboard", { id, ok });
+    store.audit(user, "unpublish_app", { id, ok });
     return ok
       ? text(`Archived ${id} — its link no longer works.`)
-      : errorText(`No active dashboard with id "${id}" (already archived, or unknown id). Call list_dashboards to check.`);
+      : errorText(`No active app with id "${id}" (already archived, or unknown id). Call list_apps to check.`);
   },
 );
 
