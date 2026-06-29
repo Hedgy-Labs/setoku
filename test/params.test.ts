@@ -50,6 +50,14 @@ describe("extractTokens", () => {
     expect(extractTokens("WHERE col ~ $$x:foo$$ AND y=:yes")).toEqual(["yes"]);
     expect(extractTokens("WHERE col ~ $tag$a :b c$tag$ OR z=:yes")).toEqual(["yes"]);
   });
+  it("lexes per dialect: ClickHouse comments don't nest and have no dollar-quoting", () => {
+    // CH ends the comment at the FIRST */, so `:day` after it is a real token...
+    expect(extractTokens("/* a /* b */ WHERE d=:day", "clickhouse")).toEqual(["day"]);
+    // ...whereas Postgres nesting keeps the (unbalanced) comment open to EOL.
+    expect(extractTokens("/* a /* b */ WHERE d=:day", "postgres")).toEqual([]);
+    // `$$` isn't a CH literal, so a colon-word after it is still a token.
+    expect(extractTokens("x = $$ AND y=:yes", "clickhouse")).toEqual(["yes"]);
+  });
 });
 
 describe("coerce — the whitelist", () => {

@@ -1182,8 +1182,7 @@ server.registerTool(
         : (meta.panels ?? []).map((p) => ({ key: p.key, title: p.title, description: p.description, sql: p.sql, dialect: p.dialect, metricId: p.metricId ?? undefined }));
       // Only DRY-RUN (execute) when the SQL itself changed; a params-only edit just
       // validates + recompiles existing panels against the new params (no prod hit,
-      // not blocked by an unrelated broken panel). Either way the cache is cleared
-      // below, so the new params take effect on the next (lazy) render.
+      // not blocked by an unrelated broken panel).
       const prep = await prepPanels(basePanels, declaredParams, { seed: panelsChanged });
       if (!prep.ok) return errorText(prep.error);
       normalized = prep.normalized;
@@ -1195,10 +1194,11 @@ server.registerTool(
     if (refreshSeconds !== undefined) refresh = clampRefresh(refreshSeconds, willHavePanels);
     else if (panelsChanged) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
 
-    // When the panel set is re-derived, recompute format: panels → app; zero
-    // panels → "app" for a fragment (state app), "html" only for a full document.
+    // Recompute format only when the panel SET changes: panels → app; zero panels →
+    // "app" for a fragment (state app), "html" only for a full document. A
+    // params-only edit changes neither the panels nor the body, so format holds.
     let format: "html" | "app" | undefined;
-    if (dataChanged) {
+    if (panelsChanged) {
       if (willHavePanels) format = "app";
       else {
         const bodyToCheck = html ?? store.getPublished(tid)?.body ?? "";
@@ -1209,7 +1209,12 @@ server.registerTool(
     const ok = store.updatePublished(tid, {
       title: newTitle,
       body: html,
-      panels: normalized, // undefined → unchanged; otherwise rewrites + clears cache
+      // Only rewrite panels (which clears the cache) when the SQL actually changed.
+      // A params-only edit leaves the cache intact: each panel/param VARIANT is a
+      // distinct cache key (the resolved values are hashed in), so the new default
+      // simply maps to a fresh key and recomputes lazily — no cold-start stampede,
+      // and untouched variants stay warm.
+      panels: panelsChanged ? normalized : undefined,
       params: paramsChanged ? (params as AppParam[]) : undefined,
       format,
       refreshSeconds: refresh,

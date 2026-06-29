@@ -57,22 +57,35 @@ export function AppView() {
   const frameRef = useRef<HTMLIFrameElement>(null);
   // The control-bar values (overrides only — an unset param shows/uses its default).
   const [paramVals, setParamVals] = useState<Record<string, string>>({});
-  // Reset overrides when navigating to a different app (one AppView instance is
-  // reused across /admin/p/:id routes).
-  useEffect(() => setParamVals({}), [id]);
-  // Only params that DIFFER from their declared default go on the wire. So "all
-  // defaults" === "" === the cold first paint, and the resolved-param echo flowing
-  // values back (incl. defaults) causes NO redundant frame reload or refetch.
+  // Params the USER explicitly changed. Drives what goes on the wire by an explicit
+  // signal rather than value-equality — robust to the echo writing server-canonical
+  // values (e.g. a non-zero-padded date default), so paramQuery never flips on the
+  // happy path (no redundant reload / double-fetch).
+  const touched = useRef<Set<string>>(new Set());
+  const [prov, setProv] = useState<AppData | null>(null);
+  const [provErr, setProvErr] = useState(false);
+  // Reset everything app-scoped when navigating to a different app (one AppView
+  // instance is reused across /admin/p/:id routes) — otherwise the prior app's
+  // overrides / stale provenance / error banner bleed onto the next.
+  useEffect(() => {
+    touched.current = new Set();
+    setParamVals({});
+    setProv(null);
+    setProvErr(false);
+  }, [id]);
+  // Only user-touched params go on the wire; untouched ones fall to the server
+  // default. "Nothing touched" === "" === the cold first paint.
   const paramQuery = (data?.params ?? [])
-    .filter((p) => p.name in paramVals && paramVals[p.name] !== String(p.default))
-    .map((p) => `p.${encodeURIComponent(p.name)}=${encodeURIComponent(paramVals[p.name])}`)
+    .filter((p) => touched.current.has(p.name))
+    .map((p) => `p.${encodeURIComponent(p.name)}=${encodeURIComponent(paramVals[p.name] ?? String(p.default))}`)
     .join("&");
 
   // Param-aware provenance for the SELECTED variant (drawer row counts + freshness),
   // fetched in the BACKGROUND so a param change never blanks the iframe. An empty
-  // selection (all defaults) reuses the main `data` fetch — no extra request.
-  const [prov, setProv] = useState<AppData | null>(null);
-  const [provErr, setProvErr] = useState(false);
+  // selection (all defaults) reuses the main `data` fetch — no extra request. A
+  // sequence guard drops out-of-order responses so a slow earlier variant can't
+  // overwrite a newer one.
+  const provSeq = useRef(0);
   const loadProv = useCallback(
     async (force: boolean): Promise<void> => {
       if (!paramQuery) {
@@ -80,21 +93,28 @@ export function AppView() {
         setProvErr(false);
         return;
       }
+      const seq = ++provSeq.current;
       try {
-        setProv(await api.appData(id, force, paramQuery));
-        setProvErr(false);
-      } catch {
-        setProvErr(true); // surfaced as a non-blocking strip; keep showing last good
+        const d = await api.appData(id, force, paramQuery);
+        if (seq === provSeq.current) {
+          setProv(d);
+          setProvErr(false);
+        }
+      } catch (e) {
+        if (seq === provSeq.current) setProvErr(true); // non-blocking strip; keep last good
+        throw e; // let an explicit refresh report the failure
       }
     },
     [id, paramQuery],
   );
   useEffect(() => {
-    void loadProv(false);
+    void loadProv(false).catch(() => {}); // background load: error already in provErr
   }, [loadProv]);
-  // The data backing the drawer + freshness stamp: the selected variant when a
-  // param is overridden, else the param-independent main fetch.
-  const view = (paramQuery ? prov : data) ?? data;
+  // The data backing the drawer + freshness stamp: the SELECTED variant's provenance
+  // when a param is overridden, else the main (default) fetch. No fall-through to
+  // `data` while an override's provenance is in-flight — better to show nothing
+  // variant-specific than the WRONG variant's numbers on the trusted surface.
+  const view = paramQuery ? prov : data;
 
   const visibility = data?.visibility ?? "team";
   const link = appShareUrl({ id, visibility });
@@ -107,7 +127,8 @@ export function AppView() {
       refreshing.current = true;
       try {
         // Refresh the variant actually shown: the selected one (loadProv, which on
-        // force re-runs it) when overridden, else the default via the main fetch.
+        // force re-runs it AND rethrows on failure) when overridden, else the
+        // default via the main fetch.
         if (paramQuery) await loadProv(force);
         else {
           if (force) await api.appData(id, true);
@@ -123,6 +144,11 @@ export function AppView() {
     },
     [id, reload, paramQuery, loadProv],
   );
+  // Hold the latest refresh in a ref so the auto-refresh interval doesn't depend on
+  // its (param-changing) identity — otherwise every control change tears down and
+  // restarts the timer, resetting the countdown so the periodic refresh never fires.
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
 
   // App-state bridge (I9-style mediation): the sandboxed frame has no network, so
   // it postMessages state ops up to us; we are the policy gate. We inject the app
@@ -144,10 +170,18 @@ export function AppView() {
       if (!m) return;
       const frame = frameRef.current;
       if (!frame || e.source !== frame.contentWindow) return; // only OUR iframe
-      // Resolved-param echo: snap the controls to what the server actually ran
-      // (a rejected viewer value shows as the default, not what was typed).
+      // Resolved-param echo: snap a TOUCHED control to what the server actually ran
+      // (a rejected value shows as the default, not what was typed). Only touched
+      // params are reconciled — echoing every default into paramVals would otherwise
+      // mark untouched params as overrides on the wire.
       if (m.__setoku_params_echo === true) {
-        if (m.params) setParamVals((v) => ({ ...v, ...m.params }));
+        const echoed = m.params;
+        if (echoed)
+          setParamVals((v) => {
+            const next = { ...v };
+            for (const k of Object.keys(echoed)) if (touched.current.has(k)) next[k] = echoed[k];
+            return next;
+          });
         return;
       }
       if (m.__setoku_state_req !== true) return;
@@ -177,13 +211,15 @@ export function AppView() {
     return () => window.removeEventListener("message", onMessage);
   }, [id]);
 
-  // Auto-refresh on the app's interval (cache-bounded server-side).
+  // Auto-refresh on the app's interval (cache-bounded server-side). Depends only on
+  // isApp + the interval, NOT on `refresh` (called via the ref) — so changing a
+  // param doesn't restart the timer and starve the periodic refresh.
   useEffect(() => {
     if (!isApp) return;
     const secs = Math.max(30, data?.refreshSeconds ?? 300);
-    const t = setInterval(() => void refresh(false), secs * 1000);
+    const t = setInterval(() => void refreshRef.current(false), secs * 1000);
     return () => clearInterval(t);
-  }, [isApp, data?.refreshSeconds, refresh]);
+  }, [isApp, data?.refreshSeconds]);
 
   const copy = async () => {
     try {
@@ -318,6 +354,7 @@ export function AppView() {
           params={data.params}
           values={paramVals}
           onChange={(name, val) => {
+            touched.current.add(name); // an explicit user change → goes on the wire
             setParamVals((v) => ({ ...v, [name]: val }));
             setNonce((n) => n + 1); // reload the frame bound to the new value
           }}
@@ -340,8 +377,9 @@ export function AppView() {
         <main className="flex min-h-0 flex-1 flex-col p-3">
           {/* A background refetch failed (param change, auto-reload, or session
               drop) — surface it WITHOUT blanking the still-shown last-good view, so
-              the stamp/drawer aren't silently trusted as current. */}
-          {error || provErr ? (
+              the stamp/drawer aren't silently trusted as current. Gated on !loading
+              so a prior app's lingering error doesn't flash during navigation. */}
+          {!loading && (error || provErr) ? (
             <div className="mb-2 flex-none rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
               Couldn't refresh — showing the last loaded data.
             </div>
@@ -359,7 +397,13 @@ export function AppView() {
             referrerPolicy="no-referrer"
             className="min-h-0 w-full flex-1 rounded-lg border border-stone-200 bg-white"
           />
-          {isApp && showCalc ? <Provenance panels={view?.panels ?? data.panels} onClose={() => setShowCalc(false)} /> : null}
+          {isApp && showCalc ? (
+            // view is null only while an override's provenance is in-flight — show
+            // the SQL/description (param-independent, from data) with the selected
+            // variant's row counts/freshness once they arrive, never the default
+            // variant's numbers labelled as the selection.
+            <Provenance panels={(view ?? data).panels} pending={!view} onClose={() => setShowCalc(false)} />
+          ) : null}
         </main>
       )}
       <EditDialog
@@ -523,7 +567,7 @@ function EditDialog({
 /** "How this is calculated" — a collapsible footer (team-only; the public surface
  *  shows no calculations). Per panel: title, plain-language description, the
  *  exact SQL it runs, and freshness. */
-function Provenance({ panels, onClose }: { panels: PanelProvenance[]; onClose: () => void }) {
+function Provenance({ panels, pending, onClose }: { panels: PanelProvenance[]; pending?: boolean; onClose: () => void }) {
   return (
     <div className="card mt-2 flex max-h-[42vh] shrink-0 flex-col overflow-hidden p-0">
       <div className="flex items-center justify-between border-b border-stone-100 px-4 py-2">
@@ -539,7 +583,12 @@ function Provenance({ panels, onClose }: { panels: PanelProvenance[]; onClose: (
               <span className="text-sm font-medium text-stone-900">{p.title || humanizeKey(p.key)}</span>
               {p.metricId ? <Badge tone="ok">metric: {p.metricId}</Badge> : null}
               <span className="ml-auto text-xs text-stone-400">
-                {p.error ? (
+                {/* While a new param selection's provenance is loading, the SQL/desc
+                    below are still valid (param-independent) but the row count and
+                    freshness aren't yet for THIS variant — so don't show stale ones. */}
+                {pending ? (
+                  <span className="italic">updating…</span>
+                ) : p.error ? (
                   <span className="text-red-700">error</span>
                 ) : (
                   <>

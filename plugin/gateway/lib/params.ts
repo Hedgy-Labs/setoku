@@ -61,15 +61,31 @@ const NAME_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 /**
  * One pass over `sql`, splitting it into literal text and `:name` token segments.
  * `:name` is recognized ONLY as a real bind token — occurrences inside single-/
- * double-quoted strings, line (`--`) and block (`/* … *\/`) comments, and Postgres
- * `::casts` are left as literal text. So a colon-word inside a string literal
+ * double-quoted strings, line (`--`) and block (`/* … *\/`) comments, and `::casts`
+ * are left as literal text. So a colon-word inside a string literal
  * (`LIKE '% :ref %'`) is never mistaken for a token. This is the SINGLE source of
  * the token grammar: extraction and both compilers walk these same segments, so
  * they can never drift apart.
+ *
+ * Dialect-specific literal forms are opt-in (`opts`), because the rules differ:
+ * Postgres nests block comments and has dollar-quoted strings (`$$…$$`); ClickHouse
+ * does NEITHER (its block comment ends at the first close), so applying the Postgres
+ * rules to lake SQL would mis-lex it. Callers pass the dialect's flags (I5).
  */
 type SqlSegment = string | { token: string };
+interface ScanOpts {
+  /** Block comments nest (Postgres) vs. end at the first `*​/` (ClickHouse). */
+  nestedComments: boolean;
+  /** `$$…$$` / `$tag$…$tag$` dollar-quoted strings exist (Postgres only). */
+  dollarQuote: boolean;
+}
 
-function scanSegments(sql: string): SqlSegment[] {
+// Sticky (`y`) regexes anchored via lastIndex — match at a position without
+// allocating a slice per character in the scan loop.
+const NAME_AT = /[a-zA-Z_][a-zA-Z0-9_]*/y;
+const DOLLAR_AT = /\$([a-zA-Z_]\w*)?\$/y;
+
+function scanSegments(sql: string, opts: ScanOpts): SqlSegment[] {
   const segs: SqlSegment[] = [];
   let buf = "";
   const flush = (): void => {
@@ -90,12 +106,12 @@ function scanSegments(sql: string): SqlSegment[] {
       i = stop;
       continue;
     }
-    // block comment: /* … */ — Postgres nests them, so track depth.
+    // block comment: /* … */ — depth-tracked when the dialect nests them.
     if (c === "/" && sql[i + 1] === "*") {
       let depth = 1;
       let j = i + 2;
       while (j < n && depth > 0) {
-        if (sql[j] === "/" && sql[j + 1] === "*") {
+        if (opts.nestedComments && sql[j] === "/" && sql[j + 1] === "*") {
           depth++;
           j += 2;
         } else if (sql[j] === "*" && sql[j + 1] === "/") {
@@ -107,10 +123,11 @@ function scanSegments(sql: string): SqlSegment[] {
       i = j;
       continue;
     }
-    // dollar-quoted string: $$…$$ or $tag$…$tag$ (Postgres) — everything to the
-    // matching closing tag is literal, so a colon-word inside isn't a token.
-    if (c === "$") {
-      const m = /^\$([a-zA-Z_]\w*)?\$/.exec(sql.slice(i));
+    // dollar-quoted string: $$…$$ or $tag$…$tag$ — everything to the matching
+    // closing tag is literal, so a colon-word inside isn't a token.
+    if (c === "$" && opts.dollarQuote) {
+      DOLLAR_AT.lastIndex = i;
+      const m = DOLLAR_AT.exec(sql);
       if (m) {
         const tag = m[0];
         const close = sql.indexOf(tag, i + tag.length);
@@ -147,9 +164,10 @@ function scanSegments(sql: string): SqlSegment[] {
     // `:name` token — but not when the colon abuts a word char (e.g. an array
     // slice `arr[a:b]`), preserving the original `(?<![:\w])` guard.
     if (c === ":") {
-      const m = /^[a-zA-Z_][a-zA-Z0-9_]*/.exec(sql.slice(i + 1));
+      NAME_AT.lastIndex = i + 1;
+      const m = NAME_AT.exec(sql);
       const prev = i > 0 ? sql[i - 1] : "";
-      if (m && !/[:\w]/.test(prev)) {
+      if (m && m.index === i + 1 && !/[:\w]/.test(prev)) {
         flush();
         segs.push({ token: m[0] });
         i += 1 + m[0].length;
@@ -162,6 +180,11 @@ function scanSegments(sql: string): SqlSegment[] {
   flush();
   return segs;
 }
+
+/** Postgres lexing: nested block comments + dollar-quoted strings. */
+const PG_SCAN: ScanOpts = { nestedComments: true, dollarQuote: true };
+/** ClickHouse lexing: non-nesting comments, no dollar-quoting. */
+const CH_SCAN: ScanOpts = { nestedComments: false, dollarQuote: false };
 
 /** Token names in segment order, first-appearance, de-duplicated. The ONE place
  *  that defines "which params does this SQL reference" — extraction and both
@@ -178,9 +201,9 @@ function uniqueTokens(segs: SqlSegment[]): string[] {
 }
 
 /** Param tokens referenced in `sql` (literal-aware), first-appearance order,
- *  de-duplicated. */
-export function extractTokens(sql: string): string[] {
-  return uniqueTokens(scanSegments(sql));
+ *  de-duplicated. Postgres lexing by default; pass a dialect for lake SQL. */
+export function extractTokens(sql: string, dialect: "postgres" | "clickhouse" = "postgres"): string[] {
+  return uniqueTokens(scanSegments(sql, dialect === "clickhouse" ? CH_SCAN : PG_SCAN));
 }
 
 /** Thrown when a viewer value can't be coerced to its declared type. The caller
@@ -286,7 +309,7 @@ export function compilePostgres(
   sql: string,
   resolved: Map<string, ParamValue>,
 ): CompiledSql {
-  const segs = scanSegments(sql);
+  const segs = scanSegments(sql, PG_SCAN);
   // First-appearance order assigns each token its 1-based positional index ($n).
   const tokens = uniqueTokens(segs);
   const index = new Map(tokens.map((t, i) => [t, i + 1]));
@@ -336,7 +359,7 @@ export function compileClickhouse(
   resolved: Map<string, ParamValue>,
 ): CompiledLakeSql {
   const byName = new Map(declared.map((p) => [p.name, p]));
-  const segs = scanSegments(sql);
+  const segs = scanSegments(sql, CH_SCAN);
   const referenced = uniqueTokens(segs);
   const chParams: Record<string, string> = {};
   for (const name of referenced) {
