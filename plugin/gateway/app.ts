@@ -896,7 +896,8 @@ server.registerTool(
         ok: true,
         rows: result.rowCount,
         truncated: result.truncated,
-        ms: result.ms,
+        ms: result.ms, // SQL-transaction time only (db.ts) — kept for back-compat trends
+        totalMs: Date.now() - started, // full handler wall-clock: connect + SQL + serialize
       });
       const lines: string[] = [];
       lines.push(result.columns.join(" | ") || "(no columns)");
@@ -946,7 +947,8 @@ server.registerTool(
         sql: sqlForAudit,
         ok: false,
         error: msg,
-        ms: Date.now() - started,
+        ms: Date.now() - started, // no SQL completed — wall-clock is all we have
+        totalMs: Date.now() - started,
       });
       return errorText(`run_query failed: ${msg}`);
     }
