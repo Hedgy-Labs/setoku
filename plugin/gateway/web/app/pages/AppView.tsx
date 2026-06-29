@@ -74,8 +74,11 @@ export function AppView() {
     setProvErr(false);
   }, [id]);
   // Only user-touched params go on the wire; untouched ones fall to the server
-  // default. "Nothing touched" === "" === the cold first paint.
-  const paramQuery = (data?.params ?? [])
+  // default. "Nothing touched" === "" === the cold first paint. Built only from
+  // FRESH data (data.id === id) so it can't bleed the previous app's overrides onto
+  // the new app's frame during the transitional render before the reset effect.
+  const fresh = data?.id === id ? data : null;
+  const paramQuery = (fresh?.params ?? [])
     .filter((p) => touched.current.has(p.name))
     .map((p) => `p.${encodeURIComponent(p.name)}=${encodeURIComponent(paramVals[p.name] ?? String(p.default))}`)
     .join("&");
@@ -86,6 +89,13 @@ export function AppView() {
   // sequence guard drops out-of-order responses so a slow earlier variant can't
   // overwrite a newer one.
   const provSeq = useRef(0);
+  // Drop the prior variant's provenance the moment the selection changes, so the
+  // window before the new fetch resolves shows "updating…" rather than the OLD
+  // variant's numbers as if they were current.
+  useEffect(() => {
+    setProv(null);
+    setProvErr(false);
+  }, [paramQuery, id]);
   const loadProv = useCallback(
     async (force: boolean): Promise<void> => {
       if (!paramQuery) {
@@ -112,9 +122,11 @@ export function AppView() {
   }, [loadProv]);
   // The data backing the drawer + freshness stamp: the SELECTED variant's provenance
   // when a param is overridden, else the main (default) fetch. No fall-through to
-  // `data` while an override's provenance is in-flight — better to show nothing
-  // variant-specific than the WRONG variant's numbers on the trusted surface.
+  // `data` while an override's provenance is in-flight/errored — better to show
+  // nothing variant-specific than the WRONG variant's numbers on the trusted surface.
   const view = paramQuery ? prov : data;
+  // ok → show numbers; pending → loading the selection; error → fetch failed.
+  const provStatus: "ok" | "pending" | "error" = view ? "ok" : provErr ? "error" : "pending";
 
   const visibility = data?.visibility ?? "team";
   const link = appShareUrl({ id, visibility });
@@ -137,7 +149,10 @@ export function AppView() {
         setNonce((n) => n + 1);
         if (force) toast("Refreshed.");
       } catch (e) {
-        toast(e instanceof Error ? e.message : "Refresh failed.");
+        // Only an EXPLICIT refresh toasts a failure. A silent auto-refresh tick
+        // (force=false) stays quiet — the error is already shown by the banner —
+        // so a flaky backend doesn't pop a toast every interval.
+        if (force) toast(e instanceof Error ? e.message : "Refresh failed.");
       } finally {
         refreshing.current = false;
       }
@@ -398,11 +413,11 @@ export function AppView() {
             className="min-h-0 w-full flex-1 rounded-lg border border-stone-200 bg-white"
           />
           {isApp && showCalc ? (
-            // view is null only while an override's provenance is in-flight — show
-            // the SQL/description (param-independent, from data) with the selected
-            // variant's row counts/freshness once they arrive, never the default
-            // variant's numbers labelled as the selection.
-            <Provenance panels={(view ?? data).panels} pending={!view} onClose={() => setShowCalc(false)} />
+            // SQL/description are param-independent (from data); the per-variant row
+            // counts/freshness show only when the SELECTED variant's provenance has
+            // loaded (status ok) — "updating…" while it loads, "unavailable" if it
+            // failed — never the default variant's numbers labelled as the selection.
+            <Provenance panels={(view ?? data).panels} status={provStatus} onClose={() => setShowCalc(false)} />
           ) : null}
         </main>
       )}
@@ -567,7 +582,15 @@ function EditDialog({
 /** "How this is calculated" — a collapsible footer (team-only; the public surface
  *  shows no calculations). Per panel: title, plain-language description, the
  *  exact SQL it runs, and freshness. */
-function Provenance({ panels, pending, onClose }: { panels: PanelProvenance[]; pending?: boolean; onClose: () => void }) {
+function Provenance({
+  panels,
+  status = "ok",
+  onClose,
+}: {
+  panels: PanelProvenance[];
+  status?: "ok" | "pending" | "error";
+  onClose: () => void;
+}) {
   return (
     <div className="card mt-2 flex max-h-[42vh] shrink-0 flex-col overflow-hidden p-0">
       <div className="flex items-center justify-between border-b border-stone-100 px-4 py-2">
@@ -583,11 +606,14 @@ function Provenance({ panels, pending, onClose }: { panels: PanelProvenance[]; p
               <span className="text-sm font-medium text-stone-900">{p.title || humanizeKey(p.key)}</span>
               {p.metricId ? <Badge tone="ok">metric: {p.metricId}</Badge> : null}
               <span className="ml-auto text-xs text-stone-400">
-                {/* While a new param selection's provenance is loading, the SQL/desc
-                    below are still valid (param-independent) but the row count and
-                    freshness aren't yet for THIS variant — so don't show stale ones. */}
-                {pending ? (
+                {/* The SQL/desc below are param-independent, but the row count and
+                    freshness are per-variant: show them only once the selected
+                    variant's provenance has loaded (ok); otherwise say so rather
+                    than display the default variant's stale numbers. */}
+                {status === "pending" ? (
                   <span className="italic">updating…</span>
+                ) : status === "error" ? (
+                  <span className="text-amber-700">selection unavailable</span>
                 ) : p.error ? (
                   <span className="text-red-700">error</span>
                 ) : (

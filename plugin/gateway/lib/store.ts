@@ -1048,6 +1048,11 @@ export class KnowledgeStore {
       const json = fields.panels.length ? JSON.stringify(fields.panels) : null;
       sets.push("panels = ?", "format = ?");
       vals.push(json, fields.format ?? (json ? "app" : "html"));
+    } else if (fields.format !== undefined) {
+      // Format can change without the panel set — e.g. a panel-less app whose body
+      // flips between a fragment ("app") and a full legacy document ("html").
+      sets.push("format = ?");
+      vals.push(fields.format);
     }
     if (fields.params !== undefined) {
       sets.push("params = ?");

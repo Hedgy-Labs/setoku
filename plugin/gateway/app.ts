@@ -1194,11 +1194,13 @@ server.registerTool(
     if (refreshSeconds !== undefined) refresh = clampRefresh(refreshSeconds, willHavePanels);
     else if (panelsChanged) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
 
-    // Recompute format only when the panel SET changes: panels → app; zero panels →
-    // "app" for a fragment (state app), "html" only for a full document. A
-    // params-only edit changes neither the panels nor the body, so format holds.
+    // Recompute format when the panel SET or the BODY changes: panels → app; zero
+    // panels → "app" for a fragment (state app), "html" only for a full document.
+    // The body matters for a panel-less app (a new full <!doctype> template must
+    // flip it to the legacy "html" path); a params-only edit touches neither, so
+    // format holds.
     let format: "html" | "app" | undefined;
-    if (panelsChanged) {
+    if (panelsChanged || html !== undefined) {
       if (willHavePanels) format = "app";
       else {
         const bodyToCheck = html ?? store.getPublished(tid)?.body ?? "";
