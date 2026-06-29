@@ -14,13 +14,9 @@ import { appShareUrl, relTime } from "../format";
 import type { AppData, AppParam, PanelProvenance } from "../types";
 
 /** The per-panel numbers the frame echoes up for the variant it rendered — the
- *  param-DEPENDENT half of provenance (the SQL/description come from metadata). */
-interface LivePanel {
-  rowCount: number;
-  computedAt: string;
-  error: string | null;
-  refreshError?: string | null;
-}
+ *  param-DEPENDENT half of provenance (the SQL/description come from metadata).
+ *  A subset of PanelProvenance so the two can't drift on these fields. */
+type LivePanel = Pick<PanelProvenance, "rowCount" | "computedAt" | "error" | "refreshError">;
 
 /** A refresh interval as a compact label: 30s · 5m · 1h (rolls up the units). */
 function fmtInterval(s: number): string {
@@ -60,32 +56,57 @@ export function AppView() {
   const [titleEdit, setTitleEdit] = useState<string | null>(null);
   const cancelRename = useRef(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
-  // The control-bar values (overrides only — an unset param shows/uses its default).
+  // SENT param values — these drive the iframe src. Updated ONLY by a user control
+  // change, so the src changes solely via reloadFrame and a one-shot `force` can't
+  // linger into an unintended re-navigation.
   const [paramVals, setParamVals] = useState<Record<string, string>>({});
-  // Params the USER explicitly changed. Drives what goes on the wire by an explicit
-  // signal rather than value-equality — robust to the echo writing server-canonical
-  // values (e.g. a non-zero-padded date default), so paramQuery never flips on the
-  // happy path.
+  // DISPLAY overlay — the resolved values the server echoed back, shown in the
+  // controls (a rejected value snaps to the default) WITHOUT touching the sent
+  // values or the src. Decoupling display from src is what stops an echo from
+  // silently re-navigating the frame.
+  const [echoed, setEchoed] = useState<Record<string, string>>({});
+  // Params the USER explicitly changed — drives what's on the wire.
   const touched = useRef<Set<string>>(new Set());
-  // Drives the iframe reload: `n` is the cache-busting nonce AND the echo-correlation
-  // token; `force` re-runs the selected variant server-side for ONE load.
+  // iframe reload control: `n` is the cache-busting nonce AND the echo-correlation
+  // token; `force` is a ONE-SHOT cache bypass consumed by exactly the load it's set
+  // for (the next reloadFrame resets it).
   const [frame, setFrame] = useState<{ n: number; force: boolean }>({ n: 0, force: false });
+  const frameNRef = useRef(0);
+  frameNRef.current = frame.n;
   // Per-panel provenance ECHOED UP by the frame for the variant it actually rendered.
-  // `t` ties it to the reload nonce so a stale echo from a superseded frame is
-  // dropped. The single source for the drawer's live numbers + the freshness stamp.
-  const [framePanels, setFramePanels] = useState<{ t: string | null; panels: Record<string, LivePanel> } | null>(null);
-  // Reload the frame: drop the now-stale echo, bump the nonce, optionally force.
-  const reloadFrame = useCallback((force = false) => {
-    setFramePanels(null);
-    setFrame((f) => ({ n: f.n + 1, force }));
+  const [framePanels, setFramePanels] = useState<{ t: string; panels: Record<string, LivePanel> } | null>(null);
+  const framePanelsRef = useRef(framePanels);
+  framePanelsRef.current = framePanels;
+  const [frameErr, setFrameErr] = useState(false); // frame load failed (no echo)
+  const refreshing = useRef(false); // single-flight guard for an explicit refresh
+  const forceToast = useRef(false); // an explicit refresh awaiting its echo to report
+  const echoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Reload the frame. clearLive=true (the VARIANT changed) drops the old numbers so
+  // the drawer says "updating…" instead of showing a different variant's numbers;
+  // false (a same-variant refresh) keeps them until the new echo so the stamp/drawer
+  // don't flicker every auto-refresh tick.
+  const reloadFrame = useCallback((opts: { force?: boolean; clearLive?: boolean } = {}) => {
+    if (opts.clearLive) setFramePanels(null);
+    setFrameErr(false);
+    setFrame((f) => ({ n: f.n + 1, force: !!opts.force }));
   }, []);
-  // Reset everything app-scoped when navigating to a different app (one AppView
-  // instance is reused across /admin/p/:id routes).
+
+  // Reset per-app state on navigation (one AppView instance is reused across
+  // /admin/p/:id). reloadFrame bumps the nonce so a late echo from the PREVIOUS
+  // app's frame can't match the new one, and clears any lingering force.
   useEffect(() => {
     touched.current = new Set();
+    refreshing.current = false;
+    forceToast.current = false;
+    if (echoTimer.current) {
+      clearTimeout(echoTimer.current);
+      echoTimer.current = null;
+    }
     setParamVals({});
-    setFramePanels(null);
-  }, [id]);
+    setEchoed({});
+    reloadFrame({ clearLive: true });
+  }, [id, reloadFrame]);
 
   // Only user-touched params go on the wire; untouched ones fall to the server
   // default. Built from FRESH data (data.id === id) so it can't bleed the previous
@@ -100,29 +121,33 @@ export function AppView() {
   const link = appShareUrl({ id, visibility });
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
+  const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
 
-  // Live numbers for the CURRENT frame only (echo token must match the nonce) — null
-  // while a reload is in flight, so the drawer says "updating…" rather than showing
-  // the previous variant's numbers on the trusted surface.
+  // Live numbers for the CURRENT frame only (echo token must match the nonce).
   const livePanels = framePanels && framePanels.t === String(frame.n) ? framePanels.panels : null;
-  // Freshness stamp: newest computed_at the live frame reported, else the metadata
-  // fetch's default-variant timestamp until the first echo lands.
+  // Freshness stamp: newest computed_at among SUCCESSFUL panels (an errored panel is
+  // stamped "now" server-side, which would falsely read as fresh) — else the
+  // metadata fetch's cached timestamp until the first echo lands.
   const stampAt = livePanels
     ? (Object.values(livePanels)
+        .filter((p) => !p.error)
         .map((p) => p.computedAt)
         .filter(Boolean)
         .sort()
         .pop() ?? null)
-    : (data?.updatedAt ?? null);
+    : (fresh?.updatedAt ?? null);
 
-  // Refresh = reload the frame (force bypasses the server cache); the frame re-runs,
-  // shows the result, and echoes fresh numbers up. No second fetch to keep in sync.
+  // Refresh = reload the frame (force bypasses the server cache, author/admin only).
+  // Single-flight: ignored until the in-flight load echoes (or times out), so rapid
+  // clicks / a click landing on an auto-tick can't multiply forced prod queries.
   const refresh = useCallback(
     (force: boolean) => {
-      reloadFrame(force);
-      if (force) toast("Refreshed.");
+      if (refreshing.current) return;
+      refreshing.current = true;
+      if (force && canForce) forceToast.current = true; // report after the echo confirms
+      reloadFrame({ force: force && canForce, clearLive: false });
     },
-    [reloadFrame],
+    [reloadFrame, canForce],
   );
   // Hold the latest refresh in a ref so the auto-refresh interval doesn't depend on
   // its (param-changing) identity — otherwise every control change tears down and
@@ -154,22 +179,34 @@ export function AppView() {
       const frame = frameRef.current;
       if (!frame || e.source !== frame.contentWindow) return; // only OUR iframe
       // Provenance echo: the frame reports the row counts / freshness / errors it
-      // actually rendered, tagged with the reload nonce (t). Store it; the render
-      // gates display on t === current nonce so a superseded frame's echo is ignored.
+      // actually rendered, tagged with the reload nonce (t). RECEIPT-guarded on the
+      // current nonce so a stale echo from a superseded frame is dropped outright
+      // (never stored) — otherwise a late echo could blank or freeze the drawer.
       if (m.__setoku_provenance === true) {
-        setFramePanels({ t: m.t ?? null, panels: m.panels ?? {} });
+        if (m.t !== String(frameNRef.current)) return; // stale frame → ignore
+        if (echoTimer.current) {
+          clearTimeout(echoTimer.current);
+          echoTimer.current = null;
+        }
+        setFramePanels({ t: m.t, panels: m.panels ?? {} });
+        setFrameErr(false);
+        refreshing.current = false; // this load completed → a new refresh may start
+        if (forceToast.current) {
+          forceToast.current = false;
+          const failed = Object.values(m.panels ?? {}).some((p) => p?.error);
+          toast(failed ? "Refresh failed — a panel errored." : "Refreshed.");
+        }
         return;
       }
       // Resolved-param echo: snap a TOUCHED control to what the server actually ran
-      // (a rejected value shows as the default, not what was typed). Only touched
-      // params are reconciled — echoing every default into paramVals would otherwise
-      // mark untouched params as overrides on the wire.
+      // (a rejected value shows as the default). Reconciled into the DISPLAY overlay
+      // only — never the sent values / src — so it can't trigger a re-navigation.
       if (m.__setoku_params_echo === true) {
-        const echoed = m.params;
-        if (echoed)
-          setParamVals((v) => {
+        const params = m.params;
+        if (params)
+          setEchoed((v) => {
             const next = { ...v };
-            for (const k of Object.keys(echoed)) if (touched.current.has(k)) next[k] = echoed[k];
+            for (const k of Object.keys(params)) if (touched.current.has(k)) next[k] = params[k];
             return next;
           });
         return;
@@ -210,6 +247,29 @@ export function AppView() {
     const t = setInterval(() => void refreshRef.current(false), secs * 1000);
     return () => clearInterval(t);
   }, [isApp, data?.refreshSeconds]);
+
+  // A live app's frame echoes its provenance right after loading. If the frame
+  // finishes loading but NO matching echo lands shortly, it served an error page
+  // (401/404/500 — no __SETOKU__): surface it instead of leaving the drawer stuck on
+  // "updating…". Only armed for app frames (a legacy "html" report never echoes).
+  const expectsEcho = data?.format === "app";
+  const onFrameLoad = useCallback(() => {
+    if (echoTimer.current) clearTimeout(echoTimer.current);
+    if (!expectsEcho) {
+      refreshing.current = false;
+      return;
+    }
+    echoTimer.current = setTimeout(() => {
+      echoTimer.current = null;
+      const fp = framePanelsRef.current;
+      if (!fp || fp.t !== String(frameNRef.current)) {
+        setFrameErr(true);
+        refreshing.current = false; // unstick the single-flight guard on failure
+      }
+    }, 2500);
+  }, [expectsEcho]);
+  // Drop a pending echo-watchdog on unmount so it can't fire after the view is gone.
+  useEffect(() => () => void (echoTimer.current && clearTimeout(echoTimer.current)), []);
 
   const copy = async () => {
     try {
@@ -342,11 +402,19 @@ export function AppView() {
       {data && data.params.length > 0 ? (
         <ParamBar
           params={data.params}
-          values={paramVals}
+          // Controls show the echoed (server-resolved) value when present, else the
+          // sent value, else the default — display overlaid on the sent state.
+          values={{ ...paramVals, ...echoed }}
           onChange={(name, val) => {
             touched.current.add(name); // an explicit user change → goes on the wire
             setParamVals((v) => ({ ...v, [name]: val }));
-            reloadFrame(); // reload the frame bound to the new value (drops stale numbers)
+            setEchoed((v) => {
+              if (!(name in v)) return v;
+              const next = { ...v };
+              delete next[name]; // user input supersedes the prior server echo
+              return next;
+            });
+            reloadFrame({ clearLive: true }); // new variant → drop the old numbers
           }}
         />
       ) : null}
@@ -364,18 +432,20 @@ export function AppView() {
         // iframe fills the remaining height; the calc drawer toggles in as a footer
         // below it (and the iframe shrinks to make room), out for full height.
         <main className="flex min-h-0 flex-1 flex-col p-3">
-          {/* The metadata fetch failed on a reload (e.g. session drop after a
-              rename) — surface it WITHOUT blanking the still-shown view. Gated on
-              !loading so a prior app's lingering error doesn't flash on navigation. */}
-          {!loading && error ? (
+          {/* The metadata fetch failed on a reload, or the frame itself failed to
+              load (session drop / archived) — surface it WITHOUT blanking the
+              still-shown view. Gated on !loading so a prior app's lingering error
+              doesn't flash on navigation. */}
+          {!loading && (error || frameErr) ? (
             <div className="mb-2 flex-none rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
-              Couldn't refresh app details — showing the last loaded data.
+              Couldn't load the latest data — showing the last view. Try refreshing.
             </div>
           ) : null}
           <iframe
             key={frame.n}
             ref={frameRef}
             title={data.title}
+            onLoad={onFrameLoad}
             src={`/admin/frame/${encodeURIComponent(id)}?${paramQuery ? paramQuery + "&" : ""}${frame.force ? "force=1&" : ""}t=${frame.n}`}
             // allow-forms so an app's <form> submit handler fires (the natural
             // app pattern); the frame CSP pins form-action 'none', so no actual
@@ -388,8 +458,9 @@ export function AppView() {
           {isApp && showCalc ? (
             // SQL/description are param-independent (from data); the per-variant row
             // counts/freshness come from the frame's own echo (live) — "updating…"
-            // until it arrives, never the default variant's numbers as the selection.
-            <Provenance panels={data.panels} live={livePanels} onClose={() => setShowCalc(false)} />
+            // until it arrives, "unavailable" if the frame failed to load, never the
+            // default variant's numbers labelled as the selection.
+            <Provenance panels={data.panels} live={livePanels} failed={frameErr} onClose={() => setShowCalc(false)} />
           ) : null}
         </main>
       )}
@@ -557,6 +628,7 @@ function EditDialog({
 function Provenance({
   panels,
   live,
+  failed,
   onClose,
 }: {
   // Param-independent metadata (title, SQL, description, dialect, metricId).
@@ -564,6 +636,8 @@ function Provenance({
   // Per-panel live numbers echoed by the frame for the variant on screen, or null
   // while a reload is in flight (→ "updating…", never a stale variant's numbers).
   live: Record<string, LivePanel> | null;
+  // The frame failed to load → show "unavailable" instead of a perpetual "updating…".
+  failed?: boolean;
   onClose: () => void;
 }) {
   return (
@@ -587,7 +661,11 @@ function Provenance({
                       freshness are per-variant and come from the live echo — shown
                       only once it lands, never the default variant's stale numbers. */}
                   {!live ? (
-                    <span className="italic">updating…</span>
+                    failed ? (
+                      <span className="text-amber-700">unavailable</span>
+                    ) : (
+                      <span className="italic">updating…</span>
+                    )
                   ) : lp?.error ? (
                     <span className="text-red-700">error</span>
                   ) : lp ? (

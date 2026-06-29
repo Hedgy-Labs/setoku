@@ -1255,14 +1255,14 @@ const httpServer = http.createServer(async (req, res) => {
           const id = url.searchParams.get("id") ?? "";
           const meta = store.getPublishedMeta(id);
           if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found or archived" });
-          // Param-INDEPENDENT metadata (titles, SQL, descriptions) + the initial
-          // freshness stamp, from a cheap cached DEFAULT-variant render. The live
-          // per-variant numbers come from the frame's provenance echo, and a forced
-          // re-run is the iframe's job (/admin/frame?force=1), so this endpoint
-          // neither takes params nor forces — keeping it off the prod-hammer path.
-          const panels = await renderApp(store, projectDir, meta, {});
+          // Param-INDEPENDENT metadata only (titles, SQL, descriptions). The live
+          // per-variant numbers come from the frame's provenance echo, so this
+          // endpoint does NOT render any panel — it just reads the freshness stamp
+          // from the cache (no query). Keeps the metadata fetch off the DB entirely.
+          const prov = appProvenance(store, meta, []);
+          prov.updatedAt = store.newestPanelComputedAt(id);
           store.audit(session.identity, "app_viewed", { id });
-          return json(200, appProvenance(store, meta, panels));
+          return json(200, prov);
         }
 
         // ---- app state (per-app private datastore) ----

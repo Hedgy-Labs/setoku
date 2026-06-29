@@ -783,16 +783,18 @@ describe("live apps (end-to-end render path)", () => {
     expect(id).toBeTruthy();
     await alice.close();
 
-    // 2. An admin reads the provenance: SQL is present on the team surface, the
-    //    metric link resolved, and the panel actually ran (rowCount).
+    // 2. An admin reads the provenance metadata: SQL is present on the team surface,
+    //    the metric link resolved, the author is named. (app_data is metadata-only
+    //    now — the live row counts come from the frame echo, asserted via the frame
+    //    render below — so it no longer runs the panels itself.)
     const boss = await session("boss", "s3cret-pass");
     const dd = (await (
       await fetch(`${BASE}/admin/api/app_data?id=${id}`, { headers: { cookie: boss.cookie } })
-    ).json()) as { createdBy?: string; panels: { sql?: string; metricSummary: string | null; rowCount: number }[] };
+    ).json()) as { createdBy?: string; updatedAt?: string | null; panels: { sql?: string; metricSummary: string | null }[] };
     expect(dd.panels[0].sql).toContain("count(*)"); // team drawer shows the query it runs
     expect(dd.panels[0].metricSummary).toBeTruthy(); // "revenue" metric summary resolved
     expect(dd.createdBy).toBeTruthy(); // and the author
-    expect(dd.panels[0].rowCount).toBe(1);
+    expect(dd.updatedAt).toBeTruthy(); // freshness stamp read from the seeded cache
 
     // 3. The sandboxed frame carries the injected data + the no-network CSP.
     const frameRes = await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } });
