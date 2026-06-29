@@ -19,7 +19,7 @@ import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { matchByTokens, matchGotchas, scoreDocs } from "./lib/search";
 import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
-import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel, compilePanel } from "./lib/apps";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel, compilePanel, isFullDoc } from "./lib/apps";
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { LAKE_SOURCES } from "./lib/sources";
@@ -1096,8 +1096,7 @@ server.registerTool(
     // no-network app CSP). That's anything with panels OR a zero-panel FRAGMENT
     // (e.g. a state-only app: a todo, a poll). Only a zero-panel full HTML
     // DOCUMENT is a legacy frozen report (format "html"), served as-is.
-    const isFullDoc = /<!doctype|<html[\s>]/i.test(html);
-    const format = normalized.length > 0 || !isFullDoc ? "app" : "html";
+    const format = normalized.length > 0 || !isFullDoc(html) ? "app" : "html";
     store.createPublished({
       id,
       title: title.trim() || "Untitled app",
@@ -1204,7 +1203,7 @@ server.registerTool(
       if (willHavePanels) format = "app";
       else {
         const bodyToCheck = html ?? store.getPublished(tid)?.body ?? "";
-        format = /<!doctype|<html[\s>]/i.test(bodyToCheck) ? "html" : "app";
+        format = isFullDoc(bodyToCheck) ? "html" : "app";
       }
     }
 

@@ -47,6 +47,18 @@ export const MAX_PANELS = 12;
  *  injected frame document + the cached/served JSON regardless of rowCap × panels. */
 export const MAX_RENDER_ROW_BYTES = 3_500_000;
 
+/**
+ * Whether a published body is a FULL HTML document (legacy "html" format, served
+ * as-is) vs a fragment the app runtime wraps. A real document STARTS with the
+ * doctype/`<html>` tag — anchored to the start of the (whitespace-trimmed) body so
+ * a fragment that merely CONTAINS the literal `<html` (e.g. a code snippet, or
+ * `<html` inside a template string) is NOT misclassified. One definition shared by
+ * publish, update, and render so the three always agree on the format of a body.
+ */
+export function isFullDoc(body: string): boolean {
+  return /^\s*(?:<!doctype|<html[\s>])/i.test(body);
+}
+
 // One membrane gate, shared by run_query and app panel execution (I2/I9):
 // a session that can commit curated knowledge must not read the untrusted bulk
 // text in the lake. Reads cleanly for either caller.

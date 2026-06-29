@@ -37,7 +37,7 @@ import {
   type PublishedMeta,
   type PublishedReport,
 } from "./lib/store";
-import { newestComputedAt, renderApp, type RenderedPanel } from "./lib/apps";
+import { newestComputedAt, renderApp, isFullDoc, type RenderedPanel } from "./lib/apps";
 import { APP_RUNTIME } from "./lib/app-runtime";
 import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
 import { resolveParams, type AppParam } from "./lib/params";
@@ -571,7 +571,7 @@ const FRAME_CSP =
 // an anonymous hammer could amplify load against the business DB/lake without
 // limit (the 256-variant cap even helps the attacker: it evicts+recomputes so the
 // cache never saturates as a shield). A token bucket caps the RATE of fresh runs
-// per app; once spent, the render is served cache-only (renderApp `noFreshRun`).
+// per app; once spent, the render is served cache-only (renderApp `tryFreshRun`).
 // Authenticated /admin renders are NOT gated — a logged-in viewer is trusted and
 // audited, and ?force there is already author/admin-only.
 // Sized to comfortably cover human filter-changing (a team poking different date
@@ -620,7 +620,7 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
   // FRAGMENT with no panels — e.g. an app the author turned static while
   // keeping a Setoku.*/__SETOKU__ template — still gets the runtime + empty data
   // injected, so those calls degrade ("No data") instead of ReferenceError.
-  if (!panels.length && /<!doctype|<html[\s>]/i.test(dash.body)) return dash.body;
+  if (!panels.length && isFullDoc(dash.body)) return dash.body;
   const scrub = (e: string | null | undefined): string | null =>
     e ? (opts.team ? e : "data temporarily unavailable") : null;
   const data = {
