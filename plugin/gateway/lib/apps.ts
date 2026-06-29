@@ -49,14 +49,24 @@ export const MAX_RENDER_ROW_BYTES = 3_500_000;
 
 /**
  * Whether a published body is a FULL HTML document (legacy "html" format, served
- * as-is) vs a fragment the app runtime wraps. A real document STARTS with the
- * doctype/`<html>` tag — anchored to the start of the (whitespace-trimmed) body so
- * a fragment that merely CONTAINS the literal `<html` (e.g. a code snippet, or
- * `<html` inside a template string) is NOT misclassified. One definition shared by
- * publish, update, and render so the three always agree on the format of a body.
+ * as-is) vs a fragment the app runtime wraps. A real document OPENS with the
+ * doctype/`<html>` tag — possibly behind a leading banner comment or `<?xml ?>`
+ * prolog. We skip that leading whitespace/comment/prolog and then require the tag
+ * AT that position, so:
+ *   - a fragment that merely CONTAINS `<html` elsewhere (a code snippet, a template
+ *     string) is NOT misclassified as a document, and
+ *   - a document that opens with `<!-- generated -->` or `<?xml ?>` before the
+ *     doctype still IS one.
+ * One definition shared by publish, update, and render so they always agree.
  */
 export function isFullDoc(body: string): boolean {
-  return /^\s*(?:<!doctype|<html[\s>])/i.test(body);
+  let s = body.replace(/^\s+/, "");
+  let prev: string;
+  do {
+    prev = s;
+    s = s.replace(/^<!--[\s\S]*?-->\s*/, "").replace(/^<\?xml\b[\s\S]*?\?>\s*/i, "");
+  } while (s !== prev); // strip any run of leading comments / xml prologs
+  return /^(?:<!doctype|<html[\s>])/i.test(s);
 }
 
 // One membrane gate, shared by run_query and app panel execution (I2/I9):
