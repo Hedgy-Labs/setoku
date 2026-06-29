@@ -107,6 +107,7 @@ export function AppView() {
   // app's frame can't match the new one, and clears any lingering force.
   useEffect(() => {
     touched.current = new Set();
+    lastRefresh.current = 0; // a fresh app's first Refresh click must not be debounced
     setParamVals({});
     setEchoed({});
     reloadFrame({ clearLive: true });
@@ -148,11 +149,17 @@ export function AppView() {
   // surface (the public DoS path is the token bucket, which has no force), so it
   // needs no concurrency machinery. The frame visibly reloads; the drawer + the
   // load watchdog surface the outcome.
+  // Bumped by a manual refresh to RESTART the auto-refresh countdown — so a periodic
+  // tick can't fire right after (and supersede) a manual force, and so "refresh now"
+  // resets "next auto refresh in N". (Only manual refresh bumps it; param changes
+  // don't, so they can't starve the interval.)
+  const [manualTick, setManualTick] = useState(0);
   const manualRefresh = useCallback(() => {
     const now = Date.now();
     if (now - lastRefresh.current < 1500) return; // ignore an accidental double-click
     lastRefresh.current = now;
     reloadFrame({ force: canForce, clearLive: false });
+    setManualTick((t) => t + 1);
     toast("Refreshing…");
   }, [reloadFrame, canForce]);
 
@@ -231,13 +238,15 @@ export function AppView() {
   }, [id]);
 
   // Auto-refresh on the app's interval — a plain cache-bounded frame reload (no
-  // force). reloadFrame is stable, so the timer isn't torn down by param changes.
+  // force). reloadFrame is stable, so param changes don't tear down the timer; a
+  // manual refresh (manualTick) DOES restart it, so an auto tick can't supersede an
+  // in-flight manual force and the countdown resets when you refresh by hand.
   useEffect(() => {
     if (!isApp) return;
     const secs = Math.max(30, data?.refreshSeconds ?? 300);
     const t = setInterval(() => reloadFrame({ force: false, clearLive: false }), secs * 1000);
     return () => clearInterval(t);
-  }, [isApp, data?.refreshSeconds, reloadFrame]);
+  }, [isApp, data?.refreshSeconds, reloadFrame, manualTick]);
 
   // A live app's frame echoes its provenance right after loading. If the frame
   // finishes loading but NO matching echo lands shortly, it served an error page
