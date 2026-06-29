@@ -871,7 +871,9 @@ function publicAppShell(opts: {
   function refresh(){ fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
     var secs=d.refreshSeconds||CFG.refresh;
     var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
-    stamp.textContent='data updated '+rel(d.updatedAt)+' · auto-refreshes every '+iv;
+    // Omit the "data updated …" clause when there's no successful data yet (null
+    // stamp — e.g. every panel currently errored) rather than render a blank time.
+    stamp.textContent=(d.updatedAt?'data updated '+rel(d.updatedAt)+' · ':'')+'auto-refreshes every '+iv;
   }).catch(function(){}); }
   // Reveal the Admin link only if this viewer has a box session (the cookie is
   // Path=/admin, so it rides along to /admin/api/session but not to /p/*).

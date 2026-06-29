@@ -81,7 +81,12 @@ export function AppView() {
   // The nonce a forced refresh is awaiting an echo for, so we report ONLY that
   // load's outcome (a superseded/failed force never matches → no spurious toast).
   const forceToastN = useRef<number | null>(null);
-  const lastForce = useRef(0); // debounce timestamp for the Refresh button
+  // The nonce of an IN-FLIGHT forced refresh. While it equals the current nonce, a
+  // second force is blocked (no concurrent cache-bypass queries) and auto-refresh
+  // yields to it. Cleared on its echo / watchdog / supersession, so it can't wedge.
+  const forcing = useRef<number | null>(null);
+  // Live format for the watchdog's fire-time decision (see onFrameLoad).
+  const formatRef = useRef<string | undefined>(undefined);
   const echoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const clearEchoTimer = (): void => {
     if (echoTimer.current) {
@@ -109,6 +114,7 @@ export function AppView() {
   useEffect(() => {
     touched.current = new Set();
     forceToastN.current = null;
+    forcing.current = null;
     setParamVals({});
     setEchoed({});
     reloadFrame({ clearLive: true });
@@ -128,6 +134,7 @@ export function AppView() {
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
   const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
+  formatRef.current = fresh?.format; // for the watchdog's fire-time decision
 
   // Live numbers for the CURRENT frame only (echo token must match the nonce).
   const livePanels = framePanels && framePanels.t === String(frame.n) ? framePanels.panels : null;
@@ -143,21 +150,25 @@ export function AppView() {
         .pop() ?? null)
     : (fresh?.updatedAt ?? null);
 
-  // Refresh = reload the frame. A non-force tick (auto-refresh) just reloads (cheap,
-  // cache-bounded). An explicit force bypasses the server cache (author/admin only)
-  // and is DEBOUNCED — a second click within 1.5s is ignored — so a double-click or
-  // a click landing on an auto-tick can't multiply the expensive prod query. The
-  // forced load's nonce is recorded so its outcome is reported once it echoes.
+  // Refresh = reload the frame. An explicit force bypasses the server cache
+  // (author/admin only); while one is genuinely in flight (forcing === current
+  // nonce) a second force is ignored, so concurrent cache-bypass prod queries can't
+  // stack. A non-force tick (auto-refresh) just reloads (cheap, cache-bounded) and
+  // YIELDS to an in-flight force so the force isn't superseded before it echoes.
   const refresh = useCallback(
     (force: boolean) => {
+      const inFlightForce = forcing.current !== null && forcing.current === nonceRef.current;
       if (force) {
         if (!canForce) return;
-        const now = Date.now();
-        if (now - lastForce.current < 1500) return; // debounce
-        lastForce.current = now;
+        if (inFlightForce) {
+          toast("Refresh already in progress…");
+          return;
+        }
         reloadFrame({ force: true, clearLive: false });
-        forceToastN.current = nonceRef.current; // the nonce reloadFrame just set
+        forcing.current = nonceRef.current; // the nonce reloadFrame just set
+        forceToastN.current = nonceRef.current;
       } else {
+        if (inFlightForce) return; // yield to the in-flight force
         reloadFrame({ force: false, clearLive: false });
       }
     },
@@ -201,6 +212,7 @@ export function AppView() {
         clearEchoTimer();
         setFramePanels({ t: m.t, panels: m.panels ?? {} });
         setFrameErr(false);
+        if (forcing.current !== null && m.t === String(forcing.current)) forcing.current = null; // force done
         // Report ONLY the forced load we're awaiting (nonce match). A superseded or
         // failed force never matches, so no spurious toast fires later.
         if (forceToastN.current !== null && m.t === String(forceToastN.current)) {
@@ -263,23 +275,24 @@ export function AppView() {
   // A live app's frame echoes its provenance right after loading. If the frame
   // finishes loading but NO matching echo lands shortly, it served an error page
   // (401/404/500 — no __SETOKU__): surface it instead of leaving the drawer stuck on
-  // "updating…". Only armed for app frames of the CURRENT app (a legacy "html"
-  // report never echoes; `fresh` guards against the previous app's stale format
-  // during navigation).
-  const expectsEcho = fresh?.format === "app";
+  // "updating…". Armed unconditionally on load (metadata may not have resolved yet
+  // during navigation); the FIRE-TIME check reads formatRef — by then the current
+  // app's metadata has resolved, so a legacy "html" report (which never echoes) and
+  // a not-yet-known format don't trip a false error.
   const onFrameLoad = useCallback(() => {
     clearEchoTimer();
-    if (!expectsEcho) return;
     const loadedN = nonceRef.current;
     echoTimer.current = setTimeout(() => {
       echoTimer.current = null;
+      if (forcing.current === loadedN) forcing.current = null; // unblock a forced load that never echoed
+      if (formatRef.current !== "app") return; // not an app frame → no echo expected
       const fp = framePanelsRef.current;
       // Only flag failure if THIS load is still current and never echoed.
       if (nonceRef.current === loadedN && (!fp || fp.t !== String(loadedN))) setFrameErr(true);
     }, 2500);
-  }, [expectsEcho]);
+  }, []);
   // Drop a pending echo-watchdog on unmount so it can't fire after the view is gone.
-  useEffect(() => () => void (echoTimer.current && clearTimeout(echoTimer.current)), []);
+  useEffect(() => () => clearEchoTimer(), []);
 
   const copy = async () => {
     try {
