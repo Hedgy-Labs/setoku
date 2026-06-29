@@ -921,7 +921,14 @@ type PanelSeed = { key: string; columns: string[]; rows: Record<string, unknown>
 async function prepPanels(
   list: PanelInput[],
   declared: AppParam[] = [],
+  // seed=true (default) DRY-RUNS each panel and returns cache seeds — needed when
+  // the SQL is new/changed. seed=false only validates + compiles (param defaults
+  // coerce, every :token is declared) WITHOUT executing: used by a params-only
+  // edit, so adjusting a param can't be blocked by an unrelated transiently-broken
+  // panel and doesn't pay full query latency for a metadata-shaped change.
+  opts: { seed?: boolean } = {},
 ): Promise<{ ok: true; normalized: AppPanel[]; seeds: PanelSeed[] } | { ok: false; error: string }> {
+  const seed = opts.seed ?? true;
   if (list.length > MAX_PANELS)
     return { ok: false, error: `Too many panels (${list.length} > ${MAX_PANELS}). Aggregate or split the app.` };
   const keys = new Set<string>();
@@ -961,6 +968,7 @@ async function prepPanels(
     } catch (e) {
       return { ok: false, error: `Panel "${p.key}": ${(e as Error).message}\nDeclare it in params, or fix the token.` };
     }
+    if (!seed) continue; // validate/compile only — don't execute
     const variant = paramsVariant(compiled.referenced, resolved);
     const cacheKey = variant ? `${p.key}::${variant}` : p.key; // seed the default-params variant
     try {
@@ -1172,7 +1180,11 @@ server.registerTool(
       const basePanels: PanelInput[] = panelsChanged
         ? panels
         : (meta.panels ?? []).map((p) => ({ key: p.key, title: p.title, description: p.description, sql: p.sql, dialect: p.dialect, metricId: p.metricId ?? undefined }));
-      const prep = await prepPanels(basePanels, declaredParams);
+      // Only DRY-RUN (execute) when the SQL itself changed; a params-only edit just
+      // validates + recompiles existing panels against the new params (no prod hit,
+      // not blocked by an unrelated broken panel). Either way the cache is cleared
+      // below, so the new params take effect on the next (lazy) render.
+      const prep = await prepPanels(basePanels, declaredParams, { seed: panelsChanged });
       if (!prep.ok) return errorText(prep.error);
       normalized = prep.normalized;
       seeds = prep.seeds;

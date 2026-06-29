@@ -45,6 +45,11 @@ describe("extractTokens", () => {
     expect(extractTokens("SELECT 1 -- :nope\nWHERE x=:yes")).toEqual(["yes"]);
     expect(extractTokens("SELECT /* :nope */ x WHERE y=:yes")).toEqual(["yes"]);
   });
+  it("handles NESTED block comments (Postgres) and dollar-quoted strings", () => {
+    expect(extractTokens("/* outer /* :inner */ still comment */ WHERE x=:yes")).toEqual(["yes"]);
+    expect(extractTokens("WHERE col ~ $$x:foo$$ AND y=:yes")).toEqual(["yes"]);
+    expect(extractTokens("WHERE col ~ $tag$a :b c$tag$ OR z=:yes")).toEqual(["yes"]);
+  });
 });
 
 describe("coerce — the whitelist", () => {

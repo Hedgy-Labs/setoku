@@ -90,13 +90,35 @@ function scanSegments(sql: string): SqlSegment[] {
       i = stop;
       continue;
     }
-    // block comment: /* … */
+    // block comment: /* … */ — Postgres nests them, so track depth.
     if (c === "/" && sql[i + 1] === "*") {
-      const end = sql.indexOf("*/", i + 2);
-      const stop = end === -1 ? n : end + 2;
-      buf += sql.slice(i, stop);
-      i = stop;
+      let depth = 1;
+      let j = i + 2;
+      while (j < n && depth > 0) {
+        if (sql[j] === "/" && sql[j + 1] === "*") {
+          depth++;
+          j += 2;
+        } else if (sql[j] === "*" && sql[j + 1] === "/") {
+          depth--;
+          j += 2;
+        } else j++;
+      }
+      buf += sql.slice(i, j);
+      i = j;
       continue;
+    }
+    // dollar-quoted string: $$…$$ or $tag$…$tag$ (Postgres) — everything to the
+    // matching closing tag is literal, so a colon-word inside isn't a token.
+    if (c === "$") {
+      const m = /^\$([a-zA-Z_]\w*)?\$/.exec(sql.slice(i));
+      if (m) {
+        const tag = m[0];
+        const close = sql.indexOf(tag, i + tag.length);
+        const stop = close === -1 ? n : close + tag.length;
+        buf += sql.slice(i, stop);
+        i = stop;
+        continue;
+      }
     }
     // string literal / quoted identifier: '…' or "…" (a doubled quote escapes it)
     if (c === "'" || c === '"') {
@@ -141,17 +163,24 @@ function scanSegments(sql: string): SqlSegment[] {
   return segs;
 }
 
-/** Param tokens referenced in `sql` (literal-aware), first-appearance order,
- *  de-duplicated. */
-export function extractTokens(sql: string): string[] {
+/** Token names in segment order, first-appearance, de-duplicated. The ONE place
+ *  that defines "which params does this SQL reference" — extraction and both
+ *  compilers call it, so their notion of referenced params can't drift. */
+function uniqueTokens(segs: SqlSegment[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const s of scanSegments(sql))
+  for (const s of segs)
     if (typeof s !== "string" && !seen.has(s.token)) {
       seen.add(s.token);
       out.push(s.token);
     }
   return out;
+}
+
+/** Param tokens referenced in `sql` (literal-aware), first-appearance order,
+ *  de-duplicated. */
+export function extractTokens(sql: string): string[] {
+  return uniqueTokens(scanSegments(sql));
 }
 
 /** Thrown when a viewer value can't be coerced to its declared type. The caller
@@ -259,13 +288,8 @@ export function compilePostgres(
 ): CompiledSql {
   const segs = scanSegments(sql);
   // First-appearance order assigns each token its 1-based positional index ($n).
-  const index = new Map<string, number>();
-  const tokens: string[] = [];
-  for (const s of segs)
-    if (typeof s !== "string" && !index.has(s.token)) {
-      index.set(s.token, tokens.length + 1);
-      tokens.push(s.token);
-    }
+  const tokens = uniqueTokens(segs);
+  const index = new Map(tokens.map((t, i) => [t, i + 1]));
   const values: ParamValue[] = [];
   for (const name of tokens) {
     if (!resolved.has(name))
@@ -313,19 +337,12 @@ export function compileClickhouse(
 ): CompiledLakeSql {
   const byName = new Map(declared.map((p) => [p.name, p]));
   const segs = scanSegments(sql);
+  const referenced = uniqueTokens(segs);
   const chParams: Record<string, string> = {};
-  const seen = new Set<string>();
-  const referenced: string[] = [];
-  for (const s of segs) {
-    if (typeof s === "string") continue;
-    const name = s.token;
+  for (const name of referenced) {
     const p = byName.get(name);
     if (!p || !resolved.has(name))
       throw new Error(`panel references undeclared param :${name}`);
-    if (!seen.has(name)) {
-      seen.add(name);
-      referenced.push(name);
-    }
     const v = resolved.get(name)!;
     chParams[name] =
       p.type === "date" && v instanceof Date

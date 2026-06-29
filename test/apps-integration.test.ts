@@ -170,9 +170,9 @@ describe("public /frame — fresh-execution budget bounds prod load", () => {
     // more must be rate-limited: cache-only, so the panel reports an error instead
     // of a live query. The query (`select :n`) can't itself error, so any error
     // here IS the budget kicking in (scrubbed to a generic message on the public
-    // surface — the un-scrubbed cause is the noFreshRun soft error).
+    // surface — the un-scrubbed cause is the over-budget soft error).
     let rateLimited = false;
-    for (let i = 2; i <= 60; i++) {
+    for (let i = 2; i <= 120; i++) {
       const p = await panelOf(i);
       if (p.error) {
         expect(p.error).toBe("data temporarily unavailable"); // scrubbed, not leaked

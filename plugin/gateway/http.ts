@@ -574,18 +574,29 @@ const FRAME_CSP =
 // per app; once spent, the render is served cache-only (renderApp `noFreshRun`).
 // Authenticated /admin renders are NOT gated — a logged-in viewer is trusted and
 // audited, and ?force there is already author/admin-only.
-const PUBLIC_FRESH_BURST = 30; // bucket capacity (a real viewer changing filters)
-const PUBLIC_FRESH_PER_SEC = 0.5; // sustained refill: ~30 fresh runs/min/app
+// Sized to comfortably cover human filter-changing (a team poking different date
+// ranges) while still capping an automated hammer: ~60 fresh runs/min/app, burst
+// 60. Charged per cache-MISS execution, so a normal viewer (cache hits) never
+// spends from it; only never-seen variants do.
+const PUBLIC_FRESH_BURST = 60; // bucket capacity
+const PUBLIC_FRESH_PER_SEC = 1; // sustained refill: ~60 fresh runs/min/app
 const freshBudget = new Map<string, { tokens: number; last: number }>();
+const refill = (b: { tokens: number; last: number }, now: number): number =>
+  Math.min(PUBLIC_FRESH_BURST, b.tokens + ((now - b.last) / 1000) * PUBLIC_FRESH_PER_SEC);
 /** Spend one token for a fresh (cache-miss) render of `appId` on the public
  *  surface. Returns false when the bucket is empty → caller renders cache-only. */
 function spendFreshRun(appId: string, now: number): boolean {
   const b = freshBudget.get(appId) ?? { tokens: PUBLIC_FRESH_BURST, last: now };
-  b.tokens = Math.min(PUBLIC_FRESH_BURST, b.tokens + ((now - b.last) / 1000) * PUBLIC_FRESH_PER_SEC);
+  b.tokens = refill(b, now);
   b.last = now;
   const ok = b.tokens >= 1;
   if (ok) b.tokens -= 1;
   freshBudget.set(appId, b);
+  // Opportunistic GC: a long-idle app refills to full and is then indistinguishable
+  // from a fresh bucket, so drop fully-refilled entries once the map grows. Bounds
+  // it to recently-active apps rather than every app ever publicly viewed.
+  if (freshBudget.size > 512)
+    for (const [k, v] of freshBudget) if (k !== appId && refill(v, now) >= PUBLIC_FRESH_BURST) freshBudget.delete(k);
   return ok;
 }
 

@@ -38,18 +38,11 @@ export function AppView() {
   const { me } = useAuth();
   const navigate = useNavigate();
   const isAdmin = me?.role === "admin";
-  // Current values of the app's interactive params (the control bar). Seeded from
-  // the declared defaults once data loads; a change re-runs the panels bound to it.
-  // Declared BEFORE the data fetch (decoupled from `data`) so the fetch can depend
-  // on the selection without a cycle.
-  const [paramVals, setParamVals] = useState<Record<string, string>>({});
-  // ?p.<name>=… for the frame src AND the provenance fetch, so the iframe, the
-  // "how it's calculated" drawer, and the freshness stamp all reflect the SELECTED
-  // params (the variant actually shown) rather than the declared defaults.
-  const paramQuery = Object.entries(paramVals)
-    .map(([k, v]) => `p.${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
-    .join("&");
-  const { data, loading, error, reload } = useApi<AppData>(() => api.appData(id, false, paramQuery), [id, paramQuery]);
+  // The MAIN fetch is param-INDEPENDENT (dep [id]): app metadata + the default
+  // variant's provenance. Keeping it off the param selection means a control change
+  // never re-runs this fetch (no flicker/double-load) and its error gate behaves
+  // exactly as before.
+  const { data, loading, error, reload } = useApi<AppData>(() => api.appData(id), [id]);
   // Bumping the nonce changes the iframe src → reloads the frame (re-renders the
   // panels server-side; within the refresh TTL that's a cache hit).
   const [nonce, setNonce] = useState(0);
@@ -62,15 +55,46 @@ export function AppView() {
   const cancelRename = useRef(false);
   const refreshing = useRef(false);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  // The control-bar values (overrides only — an unset param shows/uses its default).
+  const [paramVals, setParamVals] = useState<Record<string, string>>({});
+  // Reset overrides when navigating to a different app (one AppView instance is
+  // reused across /admin/p/:id routes).
+  useEffect(() => setParamVals({}), [id]);
+  // Only params that DIFFER from their declared default go on the wire. So "all
+  // defaults" === "" === the cold first paint, and the resolved-param echo flowing
+  // values back (incl. defaults) causes NO redundant frame reload or refetch.
+  const paramQuery = (data?.params ?? [])
+    .filter((p) => p.name in paramVals && paramVals[p.name] !== String(p.default))
+    .map((p) => `p.${encodeURIComponent(p.name)}=${encodeURIComponent(paramVals[p.name])}`)
+    .join("&");
+
+  // Param-aware provenance for the SELECTED variant (drawer row counts + freshness),
+  // fetched in the BACKGROUND so a param change never blanks the iframe. An empty
+  // selection (all defaults) reuses the main `data` fetch — no extra request.
+  const [prov, setProv] = useState<AppData | null>(null);
+  const [provErr, setProvErr] = useState(false);
+  const loadProv = useCallback(
+    async (force: boolean): Promise<void> => {
+      if (!paramQuery) {
+        setProv(null);
+        setProvErr(false);
+        return;
+      }
+      try {
+        setProv(await api.appData(id, force, paramQuery));
+        setProvErr(false);
+      } catch {
+        setProvErr(true); // surfaced as a non-blocking strip; keep showing last good
+      }
+    },
+    [id, paramQuery],
+  );
   useEffect(() => {
-    if (!data?.params?.length) return;
-    setParamVals((prev) => {
-      const next = { ...prev };
-      let changed = false;
-      for (const p of data.params) if (!(p.name in next)) ((next[p.name] = String(p.default)), (changed = true));
-      return changed ? next : prev;
-    });
-  }, [data?.params]);
+    void loadProv(false);
+  }, [loadProv]);
+  // The data backing the drawer + freshness stamp: the selected variant when a
+  // param is overridden, else the param-independent main fetch.
+  const view = (paramQuery ? prov : data) ?? data;
 
   const visibility = data?.visibility ?? "team";
   const link = appShareUrl({ id, visibility });
@@ -82,11 +106,14 @@ export function AppView() {
       if (refreshing.current) return;
       refreshing.current = true;
       try {
-        // Force re-runs the SELECTED variant (paramQuery), not just the defaults,
-        // so a manual refresh actually re-computes what the viewer is looking at.
-        if (force) await api.appData(id, true, paramQuery);
+        // Refresh the variant actually shown: the selected one (loadProv, which on
+        // force re-runs it) when overridden, else the default via the main fetch.
+        if (paramQuery) await loadProv(force);
+        else {
+          if (force) await api.appData(id, true);
+          reload();
+        }
         setNonce((n) => n + 1);
-        reload();
         if (force) toast("Refreshed.");
       } catch (e) {
         toast(e instanceof Error ? e.message : "Refresh failed.");
@@ -94,7 +121,7 @@ export function AppView() {
         refreshing.current = false;
       }
     },
-    [id, reload, paramQuery],
+    [id, reload, paramQuery, loadProv],
   );
 
   // App-state bridge (I9-style mediation): the sandboxed frame has no network, so
@@ -258,7 +285,7 @@ export function AppView() {
         {data ? (
           <span className="hidden text-xs text-stone-500 sm:inline">
             published by {data.createdBy}
-            {isApp && data.updatedAt ? ` · data updated ${relTime(data.updatedAt)}` : ""}
+            {isApp && view?.updatedAt ? ` · data updated ${relTime(view.updatedAt)}` : ""}
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
           </span>
         ) : null}
@@ -311,6 +338,14 @@ export function AppView() {
         // iframe fills the remaining height; the calc drawer toggles in as a footer
         // below it (and the iframe shrinks to make room), out for full height.
         <main className="flex min-h-0 flex-1 flex-col p-3">
+          {/* A background refetch failed (param change, auto-reload, or session
+              drop) — surface it WITHOUT blanking the still-shown last-good view, so
+              the stamp/drawer aren't silently trusted as current. */}
+          {error || provErr ? (
+            <div className="mb-2 flex-none rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
+              Couldn't refresh — showing the last loaded data.
+            </div>
+          ) : null}
           <iframe
             key={nonce}
             ref={frameRef}
@@ -324,7 +359,7 @@ export function AppView() {
             referrerPolicy="no-referrer"
             className="min-h-0 w-full flex-1 rounded-lg border border-stone-200 bg-white"
           />
-          {isApp && showCalc ? <Provenance panels={data.panels} onClose={() => setShowCalc(false)} /> : null}
+          {isApp && showCalc ? <Provenance panels={view?.panels ?? data.panels} onClose={() => setShowCalc(false)} /> : null}
         </main>
       )}
       <EditDialog

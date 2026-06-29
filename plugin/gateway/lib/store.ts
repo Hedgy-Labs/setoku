@@ -382,17 +382,20 @@ export class KnowledgeStore {
       error TEXT,
       PRIMARY KEY (app_id, panel_key)
     )`);
-    // Carry the pre-rename cache forward. dashboard_cache had an identical schema
-    // (only the first column's NAME differed: dashboard_id → app_id), so a
-    // positional `INSERT … SELECT *` migrates it cleanly. Without this an upgraded
-    // box cold-starts every app's cache — the first view of each re-runs all its
-    // panels against prod (the stampede the cache exists to prevent) and the
-    // "updated N ago" stamp is blank until then. Drop the orphan once copied.
+    // Carry the pre-rename cache forward (dashboard_cache → app_cache, same shape
+    // but for the renamed key column). Without this an upgraded box cold-starts
+    // every app's cache — the first view of each re-runs all its panels against
+    // prod (the stampede the cache exists to prevent) and the "updated N ago"
+    // stamp is blank until then. Columns are mapped EXPLICITLY (not SELECT *) so a
+    // future column add/reorder can't silently land values in the wrong column.
     const hasOldCache = this.db
       .query("SELECT 1 FROM sqlite_master WHERE type='table' AND name='dashboard_cache'")
       .get();
     if (hasOldCache) {
-      this.db.run("INSERT OR IGNORE INTO app_cache SELECT * FROM dashboard_cache");
+      this.db.run(
+        `INSERT OR IGNORE INTO app_cache (app_id, panel_key, columns, rows, row_count, computed_at, error)
+         SELECT dashboard_id, panel_key, columns, rows, row_count, computed_at, error FROM dashboard_cache`,
+      );
       this.db.run("DROP TABLE dashboard_cache");
     }
   }
