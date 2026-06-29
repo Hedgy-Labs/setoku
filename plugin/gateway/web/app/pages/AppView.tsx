@@ -67,29 +67,40 @@ export function AppView() {
   const [echoed, setEchoed] = useState<Record<string, string>>({});
   // Params the USER explicitly changed — drives what's on the wire.
   const touched = useRef<Set<string>>(new Set());
-  // iframe reload control: `n` is the cache-busting nonce AND the echo-correlation
+  // iframe reload control. `n` is the cache-busting nonce AND the echo-correlation
   // token; `force` is a ONE-SHOT cache bypass consumed by exactly the load it's set
-  // for (the next reloadFrame resets it).
+  // for. `nonceRef` mirrors `n` SYNCHRONOUSLY so callbacks can read/predict it
+  // without waiting for a render.
   const [frame, setFrame] = useState<{ n: number; force: boolean }>({ n: 0, force: false });
-  const frameNRef = useRef(0);
-  frameNRef.current = frame.n;
+  const nonceRef = useRef(0);
   // Per-panel provenance ECHOED UP by the frame for the variant it actually rendered.
   const [framePanels, setFramePanels] = useState<{ t: string; panels: Record<string, LivePanel> } | null>(null);
   const framePanelsRef = useRef(framePanels);
   framePanelsRef.current = framePanels;
   const [frameErr, setFrameErr] = useState(false); // frame load failed (no echo)
-  const refreshing = useRef(false); // single-flight guard for an explicit refresh
-  const forceToast = useRef(false); // an explicit refresh awaiting its echo to report
+  // The nonce a forced refresh is awaiting an echo for, so we report ONLY that
+  // load's outcome (a superseded/failed force never matches → no spurious toast).
+  const forceToastN = useRef<number | null>(null);
+  const lastForce = useRef(0); // debounce timestamp for the Refresh button
   const echoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const clearEchoTimer = (): void => {
+    if (echoTimer.current) {
+      clearTimeout(echoTimer.current);
+      echoTimer.current = null;
+    }
+  };
 
   // Reload the frame. clearLive=true (the VARIANT changed) drops the old numbers so
   // the drawer says "updating…" instead of showing a different variant's numbers;
   // false (a same-variant refresh) keeps them until the new echo so the stamp/drawer
-  // don't flicker every auto-refresh tick.
+  // don't flicker every auto-refresh tick. Always clears a pending watchdog so a
+  // superseded frame's timer can't fire a false error over the new load.
   const reloadFrame = useCallback((opts: { force?: boolean; clearLive?: boolean } = {}) => {
     if (opts.clearLive) setFramePanels(null);
     setFrameErr(false);
-    setFrame((f) => ({ n: f.n + 1, force: !!opts.force }));
+    clearEchoTimer();
+    nonceRef.current += 1;
+    setFrame({ n: nonceRef.current, force: !!opts.force });
   }, []);
 
   // Reset per-app state on navigation (one AppView instance is reused across
@@ -97,12 +108,7 @@ export function AppView() {
   // app's frame can't match the new one, and clears any lingering force.
   useEffect(() => {
     touched.current = new Set();
-    refreshing.current = false;
-    forceToast.current = false;
-    if (echoTimer.current) {
-      clearTimeout(echoTimer.current);
-      echoTimer.current = null;
-    }
+    forceToastN.current = null;
     setParamVals({});
     setEchoed({});
     reloadFrame({ clearLive: true });
@@ -137,15 +143,23 @@ export function AppView() {
         .pop() ?? null)
     : (fresh?.updatedAt ?? null);
 
-  // Refresh = reload the frame (force bypasses the server cache, author/admin only).
-  // Single-flight: ignored until the in-flight load echoes (or times out), so rapid
-  // clicks / a click landing on an auto-tick can't multiply forced prod queries.
+  // Refresh = reload the frame. A non-force tick (auto-refresh) just reloads (cheap,
+  // cache-bounded). An explicit force bypasses the server cache (author/admin only)
+  // and is DEBOUNCED — a second click within 1.5s is ignored — so a double-click or
+  // a click landing on an auto-tick can't multiply the expensive prod query. The
+  // forced load's nonce is recorded so its outcome is reported once it echoes.
   const refresh = useCallback(
     (force: boolean) => {
-      if (refreshing.current) return;
-      refreshing.current = true;
-      if (force && canForce) forceToast.current = true; // report after the echo confirms
-      reloadFrame({ force: force && canForce, clearLive: false });
+      if (force) {
+        if (!canForce) return;
+        const now = Date.now();
+        if (now - lastForce.current < 1500) return; // debounce
+        lastForce.current = now;
+        reloadFrame({ force: true, clearLive: false });
+        forceToastN.current = nonceRef.current; // the nonce reloadFrame just set
+      } else {
+        reloadFrame({ force: false, clearLive: false });
+      }
     },
     [reloadFrame, canForce],
   );
@@ -183,16 +197,14 @@ export function AppView() {
       // current nonce so a stale echo from a superseded frame is dropped outright
       // (never stored) — otherwise a late echo could blank or freeze the drawer.
       if (m.__setoku_provenance === true) {
-        if (m.t !== String(frameNRef.current)) return; // stale frame → ignore
-        if (echoTimer.current) {
-          clearTimeout(echoTimer.current);
-          echoTimer.current = null;
-        }
+        if (m.t !== String(nonceRef.current)) return; // stale frame → ignore
+        clearEchoTimer();
         setFramePanels({ t: m.t, panels: m.panels ?? {} });
         setFrameErr(false);
-        refreshing.current = false; // this load completed → a new refresh may start
-        if (forceToast.current) {
-          forceToast.current = false;
+        // Report ONLY the forced load we're awaiting (nonce match). A superseded or
+        // failed force never matches, so no spurious toast fires later.
+        if (forceToastN.current !== null && m.t === String(forceToastN.current)) {
+          forceToastN.current = null;
           const failed = Object.values(m.panels ?? {}).some((p) => p?.error);
           toast(failed ? "Refresh failed — a panel errored." : "Refreshed.");
         }
@@ -251,21 +263,19 @@ export function AppView() {
   // A live app's frame echoes its provenance right after loading. If the frame
   // finishes loading but NO matching echo lands shortly, it served an error page
   // (401/404/500 — no __SETOKU__): surface it instead of leaving the drawer stuck on
-  // "updating…". Only armed for app frames (a legacy "html" report never echoes).
-  const expectsEcho = data?.format === "app";
+  // "updating…". Only armed for app frames of the CURRENT app (a legacy "html"
+  // report never echoes; `fresh` guards against the previous app's stale format
+  // during navigation).
+  const expectsEcho = fresh?.format === "app";
   const onFrameLoad = useCallback(() => {
-    if (echoTimer.current) clearTimeout(echoTimer.current);
-    if (!expectsEcho) {
-      refreshing.current = false;
-      return;
-    }
+    clearEchoTimer();
+    if (!expectsEcho) return;
+    const loadedN = nonceRef.current;
     echoTimer.current = setTimeout(() => {
       echoTimer.current = null;
       const fp = framePanelsRef.current;
-      if (!fp || fp.t !== String(frameNRef.current)) {
-        setFrameErr(true);
-        refreshing.current = false; // unstick the single-flight guard on failure
-      }
+      // Only flag failure if THIS load is still current and never echoed.
+      if (nonceRef.current === loadedN && (!fp || fp.t !== String(loadedN))) setFrameErr(true);
     }, 2500);
   }, [expectsEcho]);
   // Drop a pending echo-watchdog on unmount so it can't fire after the view is gone.

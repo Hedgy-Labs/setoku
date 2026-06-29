@@ -1084,11 +1084,13 @@ export class KnowledgeStore {
     );
   }
 
-  /** Newest cached panel computed_at for an app (the "data updated" stamp),
-   *  read straight from the cache WITHOUT re-running any query. */
+  /** Newest cached panel computed_at for an app (the "data updated" stamp), read
+   *  straight from the cache WITHOUT re-running any query. Counts only SUCCESSFUL
+   *  panels — an errored row is stamped with the (now) failure time, which would
+   *  otherwise read as "updated just now" while the data is actually stale/broken. */
   newestPanelComputedAt(id: string): string | null {
     const row = this.db
-      .query("SELECT MAX(computed_at) AS t FROM app_cache WHERE app_id = ?")
+      .query("SELECT MAX(computed_at) AS t FROM app_cache WHERE app_id = ? AND error IS NULL")
       .get(id) as { t: string | null } | null;
     return row?.t ?? null;
   }

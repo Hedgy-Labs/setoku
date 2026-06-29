@@ -279,6 +279,21 @@ describe("panel cache is bounded per app (open-domain param can't grow it foreve
   });
 });
 
+describe("freshness stamp ignores errored panels", () => {
+  it("newestPanelComputedAt counts only SUCCESSFUL panels (an error stamps 'now')", () => {
+    const store = new KnowledgeStore(":memory:");
+    // An app whose only cached panel ERRORED — the row is stamped at failure time,
+    // which must NOT read as "data updated just now".
+    store.putPanelCache("appErr", "bad", { columns: [], rows: [], rowCount: 0, error: "boom" });
+    expect(store.newestPanelComputedAt("appErr")).toBeNull();
+    // With a good panel present, the stamp is that panel's time, not the errored one.
+    store.putPanelCache("appMix", "ok", { columns: [], rows: [], rowCount: 1, error: null });
+    store.putPanelCache("appMix", "bad", { columns: [], rows: [], rowCount: 0, error: "boom" });
+    expect(store.newestPanelComputedAt("appMix")).toBe(store.getPanelCache("appMix", "ok")!.computedAt);
+    store.db.close();
+  });
+});
+
 describe("cache migration — pre-rename dashboard_cache carries forward", () => {
   it("copies dashboard_cache rows into app_cache and drops the orphan", () => {
     const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "setoku-mig-")), "knowledge.db");
