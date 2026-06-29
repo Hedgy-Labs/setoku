@@ -78,13 +78,7 @@ export function AppView() {
   const framePanelsRef = useRef(framePanels);
   framePanelsRef.current = framePanels;
   const [frameErr, setFrameErr] = useState(false); // frame load failed (no echo)
-  // The nonce a forced refresh is awaiting an echo for, so we report ONLY that
-  // load's outcome (a superseded/failed force never matches → no spurious toast).
-  const forceToastN = useRef<number | null>(null);
-  // The nonce of an IN-FLIGHT forced refresh. While it equals the current nonce, a
-  // second force is blocked (no concurrent cache-bypass queries) and auto-refresh
-  // yields to it. Cleared on its echo / watchdog / supersession, so it can't wedge.
-  const forcing = useRef<number | null>(null);
+  const lastRefresh = useRef(0); // debounce for the manual Refresh button
   // Live format for the watchdog's fire-time decision (see onFrameLoad).
   const formatRef = useRef<string | undefined>(undefined);
   const echoTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -113,8 +107,6 @@ export function AppView() {
   // app's frame can't match the new one, and clears any lingering force.
   useEffect(() => {
     touched.current = new Set();
-    forceToastN.current = null;
-    forcing.current = null;
     setParamVals({});
     setEchoed({});
     reloadFrame({ clearLive: true });
@@ -150,35 +142,19 @@ export function AppView() {
         .pop() ?? null)
     : (fresh?.updatedAt ?? null);
 
-  // Refresh = reload the frame. An explicit force bypasses the server cache
-  // (author/admin only); while one is genuinely in flight (forcing === current
-  // nonce) a second force is ignored, so concurrent cache-bypass prod queries can't
-  // stack. A non-force tick (auto-refresh) just reloads (cheap, cache-bounded) and
-  // YIELDS to an in-flight force so the force isn't superseded before it echoes.
-  const refresh = useCallback(
-    (force: boolean) => {
-      const inFlightForce = forcing.current !== null && forcing.current === nonceRef.current;
-      if (force) {
-        if (!canForce) return;
-        if (inFlightForce) {
-          toast("Refresh already in progress…");
-          return;
-        }
-        reloadFrame({ force: true, clearLive: false });
-        forcing.current = nonceRef.current; // the nonce reloadFrame just set
-        forceToastN.current = nonceRef.current;
-      } else {
-        if (inFlightForce) return; // yield to the in-flight force
-        reloadFrame({ force: false, clearLive: false });
-      }
-    },
-    [reloadFrame, canForce],
-  );
-  // Hold the latest refresh in a ref so the auto-refresh interval doesn't depend on
-  // its (param-changing) identity — otherwise every control change tears down and
-  // restarts the timer, resetting the countdown so the periodic refresh never fires.
-  const refreshRef = useRef(refresh);
-  refreshRef.current = refresh;
+  // Manual "Refresh data": reload the frame — an author/admin bypasses the server
+  // cache (?force=1), anyone else gets a cache-bounded reload. Debounced only to
+  // swallow an accidental double-click; force is gated to a trusted, low-cardinality
+  // surface (the public DoS path is the token bucket, which has no force), so it
+  // needs no concurrency machinery. The frame visibly reloads; the drawer + the
+  // load watchdog surface the outcome.
+  const manualRefresh = useCallback(() => {
+    const now = Date.now();
+    if (now - lastRefresh.current < 1500) return; // ignore an accidental double-click
+    lastRefresh.current = now;
+    reloadFrame({ force: canForce, clearLive: false });
+    toast("Refreshing…");
+  }, [reloadFrame, canForce]);
 
   // App-state bridge (I9-style mediation): the sandboxed frame has no network, so
   // it postMessages state ops up to us; we are the policy gate. We inject the app
@@ -212,14 +188,6 @@ export function AppView() {
         clearEchoTimer();
         setFramePanels({ t: m.t, panels: m.panels ?? {} });
         setFrameErr(false);
-        if (forcing.current !== null && m.t === String(forcing.current)) forcing.current = null; // force done
-        // Report ONLY the forced load we're awaiting (nonce match). A superseded or
-        // failed force never matches, so no spurious toast fires later.
-        if (forceToastN.current !== null && m.t === String(forceToastN.current)) {
-          forceToastN.current = null;
-          const failed = Object.values(m.panels ?? {}).some((p) => p?.error);
-          toast(failed ? "Refresh failed — a panel errored." : "Refreshed.");
-        }
         return;
       }
       // Resolved-param echo: snap a TOUCHED control to what the server actually ran
@@ -262,15 +230,14 @@ export function AppView() {
     return () => window.removeEventListener("message", onMessage);
   }, [id]);
 
-  // Auto-refresh on the app's interval (cache-bounded server-side). Depends only on
-  // isApp + the interval, NOT on `refresh` (called via the ref) — so changing a
-  // param doesn't restart the timer and starve the periodic refresh.
+  // Auto-refresh on the app's interval — a plain cache-bounded frame reload (no
+  // force). reloadFrame is stable, so the timer isn't torn down by param changes.
   useEffect(() => {
     if (!isApp) return;
     const secs = Math.max(30, data?.refreshSeconds ?? 300);
-    const t = setInterval(() => void refreshRef.current(false), secs * 1000);
+    const t = setInterval(() => reloadFrame({ force: false, clearLive: false }), secs * 1000);
     return () => clearInterval(t);
-  }, [isApp, data?.refreshSeconds]);
+  }, [isApp, data?.refreshSeconds, reloadFrame]);
 
   // A live app's frame echoes its provenance right after loading. If the frame
   // finishes loading but NO matching echo lands shortly, it served an error page
@@ -284,7 +251,6 @@ export function AppView() {
     const loadedN = nonceRef.current;
     echoTimer.current = setTimeout(() => {
       echoTimer.current = null;
-      if (forcing.current === loadedN) forcing.current = null; // unblock a forced load that never echoed
       if (formatRef.current !== "app") return; // not an app frame → no echo expected
       const fp = framePanelsRef.current;
       // Only flag failure if THIS load is still current and never echoed.
@@ -405,7 +371,7 @@ export function AppView() {
                 {showCalc ? "Hide calculations" : "How it's calculated"}
               </MenuItem>
             ) : null}
-            {isApp ? <MenuItem onSelect={() => void refresh(true)}>Refresh data</MenuItem> : null}
+            {isApp ? <MenuItem onSelect={() => manualRefresh()}>Refresh data</MenuItem> : null}
             {isApp ? <MenuItem onSelect={() => setEditOpen(true)}>Edit…</MenuItem> : null}
             <MenuItem onSelect={() => void copy()}>Copy link</MenuItem>
             {data && !data.archivedAt && visibility === "public" && (isAdmin || mine) ? (
