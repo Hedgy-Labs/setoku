@@ -133,8 +133,20 @@
 
   /* footer */
   footer{border-top:1px solid var(--line);margin-top:24px;padding:30px 0 0;overflow:hidden}
-  .foot-brand{display:block;width:100%;margin:40px 0 -1.4vw;user-select:none}
-  .foot-brand text{fill:#FFFFFF;font-family:var(--brand);font-weight:950;font-variation-settings:"wght" 950}
+  .foot-brand{display:block;width:100%;margin:40px 0 -1.4vw;user-select:none;transform-origin:50% 100%;transform:translateZ(0);backface-visibility:hidden;will-change:transform}
+  .foot-brand text{font-family:var(--brand);font-weight:950;font-variation-settings:"wght" 950}
+  .foot-brand .gl{transition:stroke-width .5s cubic-bezier(.25,.6,.3,1)}
+  .foot-brand:hover .gl{stroke-width:9}
+  .foot-brand:hover{animation:footripple .9s cubic-bezier(.22,.61,.31,1)}
+  @keyframes footripple{
+    0%{transform:translateZ(0) scale(1,1) skewX(0)}
+    18%{transform:translateZ(0) scale(1.014,.964) skewX(-1.3deg)}
+    38%{transform:translateZ(0) scale(.987,1.023) skewX(.85deg)}
+    58%{transform:translateZ(0) scale(1.007,.991) skewX(-.45deg)}
+    78%{transform:translateZ(0) scale(.997,1.005) skewX(.22deg)}
+    100%{transform:translateZ(0) scale(1,1) skewX(0)}
+  }
+  @media(prefers-reduced-motion:reduce){.foot-brand:hover text{animation:none}}
   .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center;font-size:13.5px;color:var(--ink-faint)}
   .foot .l{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
   .foot a{color:var(--ink-soft)}
@@ -442,7 +454,15 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
     </div>
     <span class="jp">設 × 奥 · set (math) × oku (innermost)</span>
   </div>
-  <svg class="foot-brand" viewBox="0 0 1000 230" preserveAspectRatio="xMidYMax meet" aria-hidden="true"><text x="0" y="216" font-size="300" textLength="1000" lengthAdjust="spacingAndGlyphs">Setoku</text></svg>
+  <svg id="footmark" class="foot-brand" viewBox="0 0 1000 230" preserveAspectRatio="xMidYMax meet" aria-hidden="true">
+    <defs>
+      <pattern id="footgrid" width="30" height="30" patternUnits="userSpaceOnUse">
+        <rect width="30" height="30" fill="#FFFFFF"/>
+        <path class="gl" d="M30 0V30M0 30H30" stroke="var(--cream)" stroke-width="2.4"/>
+      </pattern>
+    </defs>
+    <text x="0" y="216" font-size="300" textLength="1000" lengthAdjust="spacingAndGlyphs" fill="url(#footgrid)">Setoku</text>
+  </svg>
 </footer>
 
 </body>
