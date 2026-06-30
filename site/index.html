@@ -7,8 +7,8 @@
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
 <meta name="description" content="Setoku is an open-source MCP server that gives your AI a read-only view of your company's data, plus the context to use it correctly." />
 <link rel="preconnect" href="https://use.typekit.net" crossorigin />
-<!-- Degular (OH no Type Co) via Adobe Fonts -->
-<link rel="stylesheet" href="https://use.typekit.net/vpu1hqu.css" />
+<!-- Display/body sans via Adobe Fonts (kit zcb5teq) -->
+<link rel="stylesheet" href="https://use.typekit.net/zcb5teq.css" />
 <style>
   :root{
     --cream:#FAF6EC; --cream-2:#F1EADB; --paper:#FFFFFF;
@@ -16,17 +16,17 @@
     --ink:#212E26; --ink-soft:#3F4A43; --ink-faint:#4C554E;
     --line:rgba(33,46,38,.13); --line-soft:rgba(33,46,38,.07);
     --sage:#5F8C6B; --sage-d:#33543D;
-    /* All-sans Degular (OH no Type Co), generic system fallbacks only.
+    /* Indivisible (variable sans, wght 110–900) for display/body/wordmark; Degular Mono for code.
        --serif is the DISPLAY voice (var name kept to avoid churn across the headline rules). */
-    --serif:"degular-display",sans-serif;
-    --sans:"degular-text",sans-serif;
+    --serif:"indivisible-variable",sans-serif;
+    --sans:"indivisible-variable",sans-serif;
     --mono:"degular-mono",monospace;
     --w:760px;
-    --brand:"degular-display",sans-serif;
+    --brand:"indivisible-variable",sans-serif;
   }
   *{box-sizing:border-box;margin:0;padding:0}
   html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased;font-optical-sizing:auto;text-rendering:optimizeLegibility}
-  body{background:var(--cream);color:var(--ink);font-family:var(--sans);font-size:16.5px;line-height:1.65}
+  body{background:var(--cream);color:var(--ink);font-family:var(--sans);font-weight:450;font-size:16.5px;line-height:1.65}
   a{color:var(--sage-d);text-decoration:none}
   a:hover{text-decoration:underline;text-underline-offset:3px}
   svg{display:block}
@@ -133,7 +133,7 @@
 
   /* footer */
   footer{border-top:1px solid var(--line);margin-top:24px;padding:30px 0 0;overflow:hidden}
-  .foot-brand{display:flex;align-items:center;justify-content:center;gap:.02em;font-family:var(--brand);font-weight:800;font-variation-settings:'opsz' 96;color:#FFFFFF;font-size:clamp(74px,21vw,290px);line-height:.9;letter-spacing:-.05em;margin:34px 0 -0.04em;user-select:none}
+  .foot-brand{display:flex;align-items:center;justify-content:center;gap:.02em;font-family:var(--brand);font-weight:800;color:#FFFFFF;font-size:clamp(74px,21vw,290px);line-height:.9;letter-spacing:-.05em;margin:34px 0 -0.04em;user-select:none}
   .foot-brand svg{width:.6em;height:.6em;color:#FFFFFF;flex:0 0 auto}
   .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center;font-size:13.5px;color:var(--ink-faint)}
   .foot .l{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
@@ -380,7 +380,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             <rect x="148" y="150" width="36" height="16" rx="3"/>
             <rect x="148" y="184" width="22" height="16" rx="3"/>
           </g>
-          <g font-family="degular-text,sans-serif" font-size="12.5" fill="#54615A">
+          <g font-family="indivisible-variable,sans-serif" font-size="12.5" fill="#54615A">
             <text x="8" y="26">Media rights</text>
             <text x="8" y="60">Ticketing</text>
             <text x="8" y="94">Sponsorship</text>
