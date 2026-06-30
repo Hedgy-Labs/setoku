@@ -94,6 +94,7 @@ describe("tool surface", () => {
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual(
       [
+        "app_guide",
         "describe_entity",
         "find_context",
         "get_app",

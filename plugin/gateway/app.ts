@@ -127,14 +127,12 @@ server.registerTool(
     annotations: { readOnlyHint: true },
     title: "Find business context (verified + unverified)",
     description:
-      "ALWAYS call this FIRST — the instant a data/business question arrives, before any planning, " +
-      "schema exploration, or reasoning about what a term means. Those are exactly what this returns, " +
-      "so deliberating before calling it is wasted effort and the main cause of a slow, 'thinking for " +
-      "a long time' feel; call it immediately with the question, THEN reason over what comes back. " +
-      "Retrieves verified business context (entity semantics, canonical metric definitions, known-good " +
-      "queries, gotchas, and pending unverified team knowledge) for a natural-language question. Trust " +
-      "this context over your own inference from table/column names — it encodes how this business " +
-      "actually computes things.",
+      "ALWAYS call FIRST, the instant a data/business question arrives — before any planning, schema " +
+      "exploration, or reasoning about what a term means; call it with the question, THEN reason over " +
+      "what it returns. Retrieves verified business context (entity semantics, canonical metric " +
+      "definitions, known-good queries, gotchas, and pending unverified team knowledge) for a " +
+      "natural-language question. Trust it over your own inference from table/column names — it encodes " +
+      "how this business actually computes things.",
     inputSchema: {
       question: z
         .string()
@@ -390,16 +388,11 @@ server.registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false },
     title: "Record a context correction / clarification",
     description:
-      "Records a candidate addition or correction to the knowledge store (a new gotcha, a metric " +
-      "definition the user clarified, an entity annotation fix). Call this whenever the user corrects you or " +
-      "resolves an ambiguity — that's how the whole team's answers improve. The candidate is live immediately " +
-      "as unverified knowledge; a curator later promotes or rejects it via /setoku:curate.\n\n" +
-      "Split what you record: `fact` is the SINGLE concise claim worth storing (one sentence, no reasoning); " +
-      "`context` is the supporting evidence / where you saw it — shown to the curator but NOT stored as the fact. " +
-      "Keep the fact tight; put the 'why' in context.\n\n" +
-      "ALWAYS set `relates_to` to the entity or metric this is about (e.g. \"revenue\", \"Customer\") — it's how " +
-      "the knowledge gets organized by subject and how conflicts with existing facts are detected. Only omit it " +
-      "for a genuinely cross-cutting fact that belongs to no single entity/metric.",
+      "Records a candidate correction/addition to the knowledge store (a gotcha, a clarified metric " +
+      "definition, an entity-annotation fix). Call this whenever the user corrects you or resolves an " +
+      "ambiguity — it's how the whole team's answers improve. Live immediately as unverified knowledge; a " +
+      "curator later promotes or rejects it via /setoku:curate. Keep `fact` to one concise claim, put the " +
+      "evidence in `context`, and set `relates_to` to the entity/metric it's about (see the field notes).",
     inputSchema: {
       kind: z.enum(["gotcha", "metric", "entity", "query", "other"]),
       fact: z
@@ -650,12 +643,10 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
     title: "List connected data sources (capabilities)",
     description:
-      "Lists the data Setoku can actually query RIGHT NOW: the business database tables, the data-lake " +
-      "tables (logs, product events, finance, chat) with what each holds, and the knowledge store. " +
-      "Capabilities are DYNAMIC — what's connected on the box changes — so call this whenever you're " +
-      "unsure whether Setoku has data for a question, BEFORE telling the user it isn't available. " +
-      'Logs, errors, product events, finance, and chat live in the LAKE (query run_query with ' +
-      'dialect:"clickhouse"), not the business Postgres.',
+      "Lists what Setoku can query RIGHT NOW: business database tables, data-lake tables (logs, product " +
+      "events, finance, chat) with what each holds, and the knowledge store. Capabilities are DYNAMIC, so " +
+      "call this whenever unsure whether Setoku has data for a question, BEFORE telling the user it isn't " +
+      'available. Logs/errors/events/finance/chat live in the LAKE (run_query dialect:"clickhouse"), not Postgres.',
     inputSchema: {},
   },
   async () => {
@@ -851,13 +842,12 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
     title: "Run a read-only SQL query (capped + audited)",
     description:
-      "Executes ONE read-only SQL statement, with a statement timeout and a row cap. Every call is audited " +
-      "with your identity. Routes by dialect (metric docs declare theirs): `postgres` (default) runs against " +
-      "the business database in a READ ONLY transaction; `clickhouse` runs against the bundled lake " +
-      "(logs/events/Slack archive) with engine-enforced readonly. " +
-      "Workflow: call find_context first, prefer canonical metric SQL via get_metric, include an explicit LIMIT, " +
-      "and never SELECT * on wide tables. Writes/DDL are rejected. " +
-      "Lake tables are discoverable with SHOW TABLES / DESCRIBE <table> on the clickhouse dialect.",
+      "Executes ONE read-only SQL statement (statement timeout + row cap; audited with your identity). " +
+      "Routes by dialect (metric docs declare theirs): `postgres` (default) = the business DB in a READ ONLY " +
+      "transaction; `clickhouse` = the bundled lake (logs/events/Slack archive), engine-enforced readonly. " +
+      "Workflow: find_context first, prefer canonical metric SQL via get_metric, always include an explicit " +
+      "LIMIT, never SELECT * on wide tables. Writes/DDL are rejected. Discover lake tables with " +
+      "SHOW TABLES / DESCRIBE <table> on the clickhouse dialect.",
     inputSchema: {
       sql: z.string().describe("A single SELECT/WITH/EXPLAIN statement"),
       dialect: z
@@ -1086,18 +1076,12 @@ function publishNotes(html: string, panels: AppPanel[]): string {
 }
 
 const PANEL_SCHEMA = z.object({
-  key: z.string().describe("Stable slug the template reads: window.__SETOKU__.panels[key]"),
-  title: z
-    .string()
-    .optional()
-    .describe("STRONGLY RECOMMENDED. Human label shown in the 'how is this calculated' drawer (e.g. 'Total revenue (2025)'). Without it viewers see the raw slug."),
-  description: z
-    .string()
-    .optional()
-    .describe("STRONGLY RECOMMENDED. One-line plain-language explanation of what this number is and how it's computed (e.g. 'Sum of paid ticket prices, comps/test excluded, cents→dollars'). The only calc explanation public viewers get."),
-  sql: z.string().describe("A single read-only SELECT/WITH statement (validate with run_query first)"),
-  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = the lake"),
-  metricId: z.string().optional().describe("Name of a curated metric this panel computes — links provenance to the verified definition"),
+  key: z.string().describe("Stable slug the template reads (window.__SETOKU__.panels[key])"),
+  title: z.string().optional().describe("Recommended — label shown in the calc drawer (see app_guide)"),
+  description: z.string().optional().describe("Recommended — one-line calc explanation; the only one public viewers get"),
+  sql: z.string().describe("A single read-only SELECT/WITH (validate with run_query first)"),
+  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = lake"),
+  metricId: z.string().optional().describe("Curated metric name this panel computes — links provenance"),
 });
 
 // A declared interactive input. A panel's SQL references it as `:name`; the
@@ -1114,18 +1098,79 @@ const PARAM_SCHEMA = z.object({
   maxLength: z.number().optional().describe("text: max length"),
 });
 
-const TEMPLATE_HELP =
-  "Pass `html`: the presentation TEMPLATE — a self-contained HTML fragment (inline <style>/<script>, inline SVG; " +
-  "NO external/CDN assets and NO network — data is injected, not fetched). A tested helper is preloaded: prefer " +
-  "`Setoku.bar(targetElId, panelKey, {label, value, format})`, `Setoku.table`, `Setoku.stat`, `Setoku.line` over " +
-  "hand-rolled SVG/CSS — they coerce numeric strings, size correctly, and render empty/error states. Raw data is " +
-  "also at `window.__SETOKU__.panels[<key>]` = `{ columns, rows, rowCount, computedAt, error }` (DB numerics arrive " +
-  "as STRINGS — wrap in Number() before any math). " +
-  "For INTERACTIVE apps, the app has its OWN private datastore (it can persist state but CANNOT write your data sources): " +
-  "`Setoku.state.get(scope, key)` / `set(scope, key, value)` / `list(scope)` / `del(scope, key)` — all return Promises. " +
-  "`scope` is \"app\" (shared by everyone who opens it — a team list, a poll tally) or \"viewer\" (private to each user). " +
-  "Read state on load and re-render after each change. Use it for todos, votes, notes, or an annotation OVERLAY keyed by a " +
-  "business row id (mark rows reviewed without writing the source).";
+// The full app-authoring contract. Served on demand by the app_guide tool rather
+// than carried in the publish_app/update_app definitions — so it costs context
+// only in conversations that actually build an app (like find_context, pulled
+// in-loop), not on every turn of every session that holds the connector. Being
+// lazy-loaded, it can afford to be richer than a crammed `.describe()` string.
+const APP_GUIDE = [
+  "# Building a Setoku app",
+  "",
+  "An app splits PRESENTATION (an HTML template you author) from DATA (named panels — saved",
+  "read-only queries the box re-runs live and injects). Validate every panel's SQL with run_query",
+  "FIRST, then publish_app; edit later with update_app (same link).",
+  "",
+  "## The template (`html`)",
+  "A self-contained HTML fragment: inline <style>/<script>, inline SVG. NO external/CDN assets and NO",
+  "network — data is injected, not fetched (the iframe runs under a no-network CSP).",
+  "",
+  "## Preloaded helpers — prefer these over hand-rolled SVG/CSS",
+  "`Setoku.stat(elId, panelKey, {label, value, format})` — `value` is the COLUMN NAME to read from the",
+  "panel's first row. Also `Setoku.bar` / `Setoku.line` (`value` = the numeric column) and",
+  "`Setoku.table(elId, panelKey, {format:{col:fmt}, labels:{col:'Label'}})`. They coerce numeric",
+  "strings, size correctly, and render empty/error states.",
+  "`format` is one of: money | int | num (default) | pct | raw — an unknown token renders unformatted.",
+  "",
+  "## Raw panel data",
+  "`window.__SETOKU__.panels[<key>]` = `{ columns, rows, rowCount, computedAt, error }`.",
+  "DB numerics arrive as STRINGS — wrap in Number() before any math.",
+  "",
+  "## Panels (the `panels` arg)",
+  "Each panel: `{ key, sql, dialect?, title?, description?, metricId? }`.",
+  "- `key` — stable slug the template reads (window.__SETOKU__.panels[key]).",
+  "- `sql` — ONE read-only SELECT/WITH; validate with run_query first.",
+  "- `dialect` — `postgres` (default, business DB) or `clickhouse` (the lake).",
+  "- `title` / `description` — STRONGLY RECOMMENDED: shown in the 'how is this calculated' drawer; the",
+  "  description is the ONLY calc explanation public viewers get. Without them viewers see the raw slug.",
+  "- `metricId` — name of a curated metric this panel computes; links provenance to the verified def.",
+  "Omit `panels` entirely for a static report.",
+  "",
+  "## Interactive inputs (the `params` arg)",
+  "Declared inputs the viewer can change. A panel's SQL references one as `:name` (e.g.",
+  "`WHERE region = :region`); the value is type-coerced and ENGINE-BOUND (never string-interpolated, so",
+  "injection-safe — it can't name a table/column or drive a write). Each param:",
+  "`{ name, type, default, label?, options?, min?, max?, maxLength? }` — `type` is date/int/text/bool/enum,",
+  "`default` is REQUIRED (the app must render with no viewer input), `options` is the closed set for enum.",
+  "",
+  "## App state (interactive apps)",
+  "The app has its OWN private datastore — it can persist state but CANNOT write your data sources:",
+  "`Setoku.state.get(scope, key)` / `set(scope, key, value)` / `list(scope)` / `del(scope, key)` — all Promises.",
+  "`scope` is \"app\" (shared by everyone who opens it — a team list, a poll tally) or \"viewer\" (private per user).",
+  "Read state on load and re-render after each change. Use it for todos, votes, notes, or an annotation",
+  "OVERLAY keyed by a business row id (mark rows reviewed without writing the source).",
+  "",
+  "## Minimal example",
+  'panels: [{ key: "rev", title: "Revenue (2025)", description: "Sum of paid ticket prices, test excluded",',
+  '          sql: "SELECT sum(amount_cents)/100.0 AS dollars FROM ..." }]',
+  "html:   `<div id=\"rev\"></div><script>Setoku.stat('rev','rev',{label:'Revenue',value:'dollars',format:'money'})</script>`",
+].join("\n");
+
+server.registerTool(
+  "app_guide",
+  {
+    annotations: { readOnlyHint: true },
+    title: "How to build a Setoku app (read before publish_app / update_app)",
+    description:
+      "Call this FIRST whenever you're about to author or edit an app — the same way you call find_context " +
+      "before querying. Returns the full template + Setoku.* helper + panels/params/state contract you need " +
+      "to write a working template on the first try. Cheap; skipping it tends to produce a broken app.",
+    inputSchema: {},
+  },
+  async () => {
+    store.audit(user, "app_guide", {});
+    return text(APP_GUIDE);
+  },
+);
 
 server.registerTool(
   "publish_app",
@@ -1134,14 +1179,12 @@ server.registerTool(
     title: "Publish a live app to the box (team-shareable URL)",
     description:
       "Publishes an app backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
-      "the team as a link that stays current — not for answering in-session.\n" +
-      TEMPLATE_HELP +
-      "\nPass `panels`: the data bindings. Each panel's `sql` is a read-only query the box re-runs live (same path " +
-      "as run_query — develop & validate it with run_query first). Set `dialect` to match. Set `metricId` to a " +
-      "curated metric name to link its verified definition.\n" +
-      "Omit `panels` for a static report. The link is TEAM-ONLY; an admin can later make it public. Every panel is " +
-      "dry-run at publish (broken query → rejected). Edit later with update_app (same link); also " +
-      "list_apps / get_app / unpublish_app.",
+      "the team as a link that stays current — not for answering in-session. " +
+      "If you haven't already, call app_guide FIRST for the template + Setoku.* helper + panels/params contract. " +
+      "`panels` are the live data bindings (each `sql` is a read-only query the box re-runs — validate with " +
+      "run_query first); omit them for a static report. The link is TEAM-ONLY; an admin can later make it public. " +
+      "Every panel is dry-run at publish (broken query → rejected). Edit later with update_app (same link); " +
+      "also list_apps / get_app / unpublish_app.",
     inputSchema: {
       title: z.string().describe("Short human title (shown in the box's Apps list)"),
       html: z.string().describe("The presentation template (self-contained HTML fragment; use the Setoku.* helpers)."),
@@ -1150,7 +1193,7 @@ server.registerTool(
         .array(PARAM_SCHEMA)
         .optional()
         .describe(
-          "Interactive inputs the viewer can change. A panel's SQL references one as `:name` (e.g. `WHERE region = :region`); the box renders a control in the app's header and re-runs the panels with the value bound. Each needs a `default` so the app renders with no input.",
+          "Interactive viewer inputs; a panel's SQL references each as `:name`. Each needs a `default` so the app renders with no input. See app_guide.",
         ),
       refreshSeconds: z
         .number()
@@ -1216,7 +1259,7 @@ server.registerTool(
       "Only the app's AUTHOR can edit it. " +
       "Note: changing `panels` or `params` on an app that's currently public reverts it to team-only — an admin " +
       "must re-approve it for the public link, since the data it exposes changed. " +
-      TEMPLATE_HELP,
+      "The `html` template + `Setoku.*` helper + panels/params contract is documented by app_guide — call it if you haven't.",
     inputSchema: {
       id: z.string().describe("The app id (from publish_app / list_apps)"),
       title: z.string().optional().describe("New title"),
