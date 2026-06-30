@@ -250,8 +250,8 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
           <div class="v">Apps read through the same governed path: row caps, audit, a SELECT-only database role. They never get write access to your sources.</div>
         </div>
         <div class="row">
-          <div class="k">Their own private state<span class="t">no writes to your data</span></div>
-          <div class="v">Each app keeps its own state (todos, votes, annotations) in a sandbox that belongs to the app, not your database. Worst case, an app messes up its own notes. A neat trick: tag a business row by its id to mark it "reviewed" without ever writing the source.</div>
+          <div class="k">App-private state<span class="t">no writes to your data</span></div>
+          <div class="v">Each app keeps its own state (todos, votes, annotations) in a sandbox that belongs to the app, not your database. Worst case, an app messes up its own notes.</div>
         </div>
         <div class="row">
           <div class="k">Share by link<span class="t">team or public</span></div>
