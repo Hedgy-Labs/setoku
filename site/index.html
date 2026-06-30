@@ -37,10 +37,10 @@
   /* header */
   header{position:sticky;top:0;z-index:10;background:color-mix(in srgb,var(--cream) 86%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line-soft)}
   .bar{max-width:var(--w);margin:0 auto;padding:13px 24px;display:flex;align-items:center;justify-content:space-between}
-  .brand{display:flex;align-items:center;gap:8px;color:var(--ink);font-family:var(--brand);font-weight:700;font-size:17px;letter-spacing:-.02em}
+  .brand{display:flex;align-items:center;gap:4px;color:var(--ink);font-family:var(--brand);font-weight:700;font-size:17px;letter-spacing:-.02em}
   .brand:hover{text-decoration:none}
-  .brand .mark{width:22px;height:22px;color:#1A1A19}
-  .nav{display:flex;gap:22px;align-items:center}
+  .brand .mark{width:22px;height:22px;margin-right:-2px;color:#1A1A19}
+  .nav{display:flex;gap:18px;align-items:center}
   .nav a{color:var(--ink-soft);font-size:14.5px}
   .nav a:hover{color:var(--ink);text-decoration:none}
   @media(max-width:560px){.nav a.hideable{display:none}}
@@ -133,8 +133,8 @@
 
   /* footer */
   footer{border-top:1px solid var(--line);margin-top:24px;padding:30px 0 0;overflow:hidden}
-  .foot-brand{display:flex;align-items:center;justify-content:center;gap:.02em;font-family:var(--brand);font-weight:800;color:#FFFFFF;font-size:clamp(74px,21vw,290px);line-height:.9;letter-spacing:-.05em;margin:34px 0 -0.04em;user-select:none}
-  .foot-brand svg{width:.6em;height:.6em;color:#FFFFFF;flex:0 0 auto}
+  .foot-brand{display:block;width:100%;margin:40px 0 -1.4vw;user-select:none}
+  .foot-brand text{fill:#FFFFFF;font-family:var(--brand);font-weight:950;font-variation-settings:"wght" 950}
   .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center;font-size:13.5px;color:var(--ink-faint)}
   .foot .l{display:flex;gap:18px;flex-wrap:wrap;align-items:center}
   .foot a{color:var(--ink-soft)}
@@ -442,7 +442,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
     </div>
     <span class="jp">設 × 奥 · set (math) × oku (innermost)</span>
   </div>
-  <div class="foot-brand" aria-hidden="true"><svg viewBox="0 0 64 64"><use href="#clover"/></svg>Setoku</div>
+  <svg class="foot-brand" viewBox="0 0 1000 230" preserveAspectRatio="xMidYMax meet" aria-hidden="true"><text x="0" y="216" font-size="300" textLength="1000" lengthAdjust="spacingAndGlyphs">Setoku</text></svg>
 </footer>
 
 </body>
