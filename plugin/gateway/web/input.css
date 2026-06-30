@@ -9,6 +9,24 @@
 @import "tailwindcss";
 @source "./app";
 
+/* UI typeface: Indivisible (Adobe Fonts kit zcb5teq), loaded via the <link> in the
+   admin shell (http.ts). It's an external request by deliberate choice; if the kit
+   doesn't load (offline self-host, kit gone), the stack falls back to the system UI
+   font and then sans-serif, so the chrome degrades cleanly. */
+@theme {
+  --font-sans: "indivisible-variable", ui-sans-serif, system-ui, sans-serif,
+    "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
+
+/* Indivisible's Regular (400) reads lighter than the system font it replaced, so
+   lift the base body weight slightly. Explicit font-medium/semibold/bold utilities
+   still win, so the type hierarchy is unchanged. */
+@layer base {
+  body {
+    font-weight: 450;
+  }
+}
+
 @layer components {
   .card {
     @apply rounded-xl border border-stone-200 bg-white;
