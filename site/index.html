@@ -525,42 +525,30 @@
         background: var(--ink-faint);
       }
 
-      /* demo example */
+      /* demo example — a Q&A transcript, not a grid of cards */
       .examples {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 14px;
-        margin-top: 20px;
-      }
-      @media (max-width: 560px) {
-        .examples {
-          grid-template-columns: 1fr;
-        }
+        margin-top: 22px;
+        border-top: 1px solid var(--line-soft);
       }
       .ex {
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: var(--paper);
-        padding: 14px 16px;
-        display: flex;
-        flex-direction: column;
+        padding: 16px 0 17px;
+        border-bottom: 1px solid var(--line-soft);
       }
       .ex .q {
         font-family: var(--serif);
-        font-weight: 500;
+        font-weight: 450;
         font-size: 15.5px;
-        letter-spacing: -0.015em;
-        line-height: 1.25;
+        color: var(--ink-soft);
+        letter-spacing: -0.012em;
+        line-height: 1.3;
       }
       .ex .a {
-        display: flex;
-        align-items: baseline;
-        gap: 9px;
-        margin-top: auto;
-        padding-top: 9px;
-        border-top: 1px solid var(--line-soft);
+        margin-top: 8px;
+        padding-left: 16px;
+        border-left: 2px solid var(--line);
       }
       .ex .a b {
+        display: block;
         font-family: var(--serif);
         font-weight: 700;
         font-size: 23px;
@@ -568,9 +556,11 @@
         line-height: 1;
       }
       .ex .a span {
+        display: block;
+        margin-top: 6px;
         color: var(--ink-soft);
-        font-size: 12.5px;
-        line-height: 1.35;
+        font-size: 13.5px;
+        line-height: 1.45;
       }
       .chart {
         border: 1px solid var(--line);
@@ -1142,7 +1132,9 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
           </p>
 
           <div class="step">
-            <h3 class="step-h"><span class="step-n">1</span>Connect it</h3>
+            <h3 class="step-h">
+              <span class="step-n">1</span>Connect to the demo MCP server
+            </h3>
             <p class="note" style="margin-top: 0">
               In Claude (or any MCP client) open Settings → Connectors → Add
               custom connector, and paste this URL. The token rides in the URL,
@@ -1153,15 +1145,12 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
 
           <div class="step">
             <h3 class="step-h"><span class="step-n">2</span>Ask a question</h3>
-            <p class="note" style="margin-top: 0">
-              In plain English. For example:
-            </p>
             <div class="examples">
               <div class="ex">
                 <div class="q">"How many unique fans do we have?"</div>
                 <div class="a">
-                  <b>71,204</b
-                  ><span
+                  <b>71,204</b>
+                  <span
                     >deduped by normalized email, internal accounts excluded.
                     Not the raw 92,118.</span
                   >
@@ -1173,8 +1162,8 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
                   rights?"
                 </div>
                 <div class="a">
-                  <b>$192M</b
-                  ><span
+                  <b>$192M</b>
+                  <span
                     >five systems reconciled to the same units. Media rights is
                     the biggest line, ~$90M.</span
                   >
@@ -1183,75 +1172,69 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
               <div class="ex">
                 <div class="q">"What was ticket revenue this season?"</div>
                 <div class="a">
-                  <b>$46.8M</b
-                  ><span
+                  <b>$46.8M</b>
+                  <span
                     >cents reconciled to dollars; refunds, exchanges, and comps
                     excluded.</span
                   >
                 </div>
               </div>
               <div class="ex">
-                <div class="q">"What's our season-ticket renewal rate?"</div>
-                <div class="a">
-                  <b>81%</b
-                  ><span>across three seasons of ticketing history.</span>
-                </div>
-              </div>
-              <div class="ex" style="grid-column: 1/-1">
                 <div class="q">"What's our total merchandise revenue?"</div>
                 <div class="a">
-                  <b style="font-size: 20px">It flags it</b
-                  ><span
+                  <b>It flags it</b>
+                  <span
                     >most merch is sold via Fanatics, not in this data, so it
                     says so instead of returning a wrong total.</span
                   >
                 </div>
               </div>
-            </div>
-            <p class="note" style="margin-top: 18px">
-              It charts, too. Ask "show me revenue by line" and you get a panel
-              like this:
-            </p>
-            <div class="chart">
-              <div class="cl">Annual revenue by line · ~$192M total</div>
-              <svg
-                viewBox="0 0 640 214"
-                role="img"
-                aria-label="Annual revenue by line: media rights $90M, ticketing $47M, sponsorship $28M, concessions $14M, merch $8M, other $5M."
-              >
-                <g fill="#5F8C6B">
-                  <rect x="148" y="14" width="400" height="16" rx="3" />
-                  <rect x="148" y="48" width="209" height="16" rx="3" />
-                  <rect x="148" y="82" width="124" height="16" rx="3" />
-                  <rect x="148" y="116" width="62" height="16" rx="3" />
-                  <rect x="148" y="150" width="36" height="16" rx="3" />
-                  <rect x="148" y="184" width="22" height="16" rx="3" />
-                </g>
-                <g
-                  font-family="indivisible-variable,sans-serif"
-                  font-size="12.5"
-                  fill="#54615A"
-                >
-                  <text x="8" y="26">Media rights</text>
-                  <text x="8" y="60">Ticketing</text>
-                  <text x="8" y="94">Sponsorship</text>
-                  <text x="8" y="128">Concessions</text>
-                  <text x="8" y="162">Merch</text>
-                  <text x="8" y="196">Other</text>
-                </g>
-                <g
-                  font-family="degular-mono,monospace"
-                  font-size="12"
-                  fill="#212E26"
-                >
-                  <text x="555" y="26">$90M</text>
-                  <text x="364" y="60">$47M</text>
-                  <text x="279" y="94">$28M</text>
-                  <text x="217" y="128">$14M</text>
-                  <text x="191" y="162">$8M</text>
-                  <text x="177" y="196">$5M</text>
-                </g>
-              </svg>
+              <div class="ex">
+                <div class="q">"Chart revenue by line."</div>
+                <div class="a">
+                  <div class="chart">
+                    <div class="cl">Annual revenue by line · ~$192M total</div>
+                    <svg
+                      viewBox="0 0 640 214"
+                      role="img"
+                      aria-label="Annual revenue by line: media rights $90M, ticketing $47M, sponsorship $28M, concessions $14M, merch $8M, other $5M."
+                    >
+                      <g fill="#5F8C6B">
+                        <rect x="148" y="14" width="400" height="16" rx="3" />
+                        <rect x="148" y="48" width="209" height="16" rx="3" />
+                        <rect x="148" y="82" width="124" height="16" rx="3" />
+                        <rect x="148" y="116" width="62" height="16" rx="3" />
+                        <rect x="148" y="150" width="36" height="16" rx="3" />
+                        <rect x="148" y="184" width="22" height="16" rx="3" />
+                      </g>
+                      <g
+                        font-family="indivisible-variable,sans-serif"
+                        font-size="12.5"
+                        fill="#54615A"
+                      >
+                        <text x="8" y="26">Media rights</text>
+                        <text x="8" y="60">Ticketing</text>
+                        <text x="8" y="94">Sponsorship</text>
+                        <text x="8" y="128">Concessions</text>
+                        <text x="8" y="162">Merch</text>
+                        <text x="8" y="196">Other</text>
+                      </g>
+                      <g
+                        font-family="degular-mono,monospace"
+                        font-size="12"
+                        fill="#212E26"
+                      >
+                        <text x="555" y="26">$90M</text>
+                        <text x="364" y="60">$47M</text>
+                        <text x="279" y="94">$28M</text>
+                        <text x="217" y="128">$14M</text>
+                        <text x="191" y="162">$8M</text>
+                        <text x="177" y="196">$5M</text>
+                      </g>
+                    </svg>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1265,8 +1248,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
           <p>
             There are plenty of AI memory stores, and plenty of data gateways.
             Stapling the two together, and nudging the agent to gather knowledge
-            about the data as it goes, seemed worth trying and fun to tinker
-            with.
+            about the data as it goes, seemed useful and fun to tinker with.
           </p>
           <h3>We're cheap.</h3>
           <p>
