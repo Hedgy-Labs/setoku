@@ -1,17 +1,21 @@
+<p align="center">
+  <img src="./site/assets/favicon.svg" alt="Setoku" width="72" height="72">
+</p>
+
 # Setoku
 
 **A tool for your AI to do two things: reach your data, and understand it better over time.**
 
 - **The problem.** What your company knows about itself lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
-- **What it does.** Setoku is the shared, curated memory of what your data and operations *mean*. It remembers those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
+- **What it does.** Setoku is the shared, curated memory of what your data and operations _mean_. It remembers those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
 - **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows; a human approves that, outside the agent's loop.
 - **It's cheap.** No AI runs in Setoku itself; the thinking happens in the AI you already pay for. A whole deployment is one small VPS.
 
-One brain, two kinds of question: *"what was revenue last quarter?"* and *"what's been erroring since the deploy?"* The business metric and the operational truth, both answered the same read-only way.
+One brain, two kinds of question: _"what was revenue last quarter?"_ and _"what's been erroring since the deploy?"_ The business metric and the operational truth, both answered the same read-only way.
 
 Today the brain mostly holds **data and operations** (what your tables, metrics, and logs mean). The same idea could hold more (personal context, house design conventions); see [docs/memory.md](./docs/memory.md).
 
-_Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI.
+\_Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI.
 
 ---
 
@@ -24,11 +28,11 @@ There's a public demo wired to a synthetic dataset for a fictional pro baseball 
    https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9
    ```
 2. Ask in plain language. Setoku feeds your AI the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names. Try:
-   - *"How many unique fans do we have?"* The CRM has duplicates and test records; Setoku dedupes by normalized email instead of a naive `COUNT(*)`.
-   - *"What was our ticket revenue this season, and which games sold best?"* It handles cents vs dollars and excludes refunds, exchanges, and comps.
-   - *"What's our season-ticket renewal rate?"* It spans three seasons of ticketing history.
-   - *"What's our total annual revenue, and how much of it is media rights?"* It combines five systems with reconciled units (~$180–200M; media rights is the biggest line, ~$90M).
-   - *"What's our total merchandise revenue?"* Setoku flags that the data is online only (most merch is via Fanatics, not here) instead of returning a wrong total.
+   - _"How many unique fans do we have?"_ The CRM has duplicates and test records; Setoku dedupes by normalized email instead of a naive `COUNT(*)`.
+   - _"What was our ticket revenue this season, and which games sold best?"_ It handles cents vs dollars and excludes refunds, exchanges, and comps.
+   - _"What's our season-ticket renewal rate?"_ It spans three seasons of ticketing history.
+   - _"What's our total annual revenue, and how much of it is media rights?"_ It combines five systems with reconciled units (~$180–200M; media rights is the biggest line, ~$90M).
+   - _"What's our total merchandise revenue?"_ Setoku flags that the data is online only (most merch is via Fanatics, not here) instead of returning a wrong total.
 
 Full walkthrough, the `/admin` approval surface, and the data model: [`demo/README.md`](./demo/README.md).
 
@@ -47,10 +51,10 @@ It ships **tools, not models**. No AI runs on the server; the reasoning happens 
 
 ## Apps: build on the data, share a link
 
-Once your AI can read and *understand* the data, the natural next step is building little things on top of it. Ask your agent for a chart, a poll, a triage list — it writes a self-contained **app** (`publish_app`) and hands you a URL. Nothing to deploy, no frontend to maintain; a non-technical teammate just describes what they want and edits it the same way ("make the bars green, add last quarter").
+Once your AI can read and _understand_ the data, the natural next step is building little things on top of it. Ask your agent for a chart, a poll, a triage list — it writes a self-contained **app** (`publish_app`) and hands you a URL. Nothing to deploy, no frontend to maintain; a non-technical teammate just describes what they want and edits it the same way ("make the bars green, add last quarter").
 
 - **Backed by live data, read-only.** Apps query through the exact same governed path as everything else — row caps, audit, a SELECT-only database role. An app never gets write access to your sources.
-- **Their own private state.** Each app keeps its own state — todos, poll tallies, notes, annotations — in a sandbox that belongs to the *app*, not your database. So an app can be genuinely interactive (and a prompt-injected one still can't touch your data; worst case it messes up its own notes). The useful trick: tag a business row by its id to mark it "reviewed" or attach a note, an overlay on top of read-only data without ever writing the source.
+- **Their own private state.** Each app keeps its own state — todos, poll tallies, notes, annotations — in a sandbox that belongs to the _app_, not your database. So an app can be genuinely interactive (and a prompt-injected one still can't touch your data; worst case it messes up its own notes). The useful trick: tag a business row by its id to mark it "reviewed" or attach a note, an overlay on top of read-only data without ever writing the source.
 - **Shareable by link.** A team link is login-gated; an admin can flip one public for a credential-free URL. The page runs in a locked-down, no-network sandbox, so a published app can't phone home.
 
 ## Why we built it
@@ -93,11 +97,11 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh
 
 It installs Docker, generates secrets, gets a real HTTPS certificate (uses `<your-ip>.sslip.io` if you don't have a domain yet), and brings the whole stack up. It prints the command to connect your AI and the token for log drains. (`SETOKU_ADMIN_USER` is the `/admin` login it creates; set it so the script runs unattended, or omit it and it asks once, interactively.)
 
-Then add the plugin and run `/setoku:onboard` from your project; it detects the box you just made, wires up your database (the credential stays in your env; only the env-var *name* goes in config), and generates the first knowledge from your code.
+Then add the plugin and run `/setoku:onboard` from your project; it detects the box you just made, wires up your database (the credential stays in your env; only the env-var _name_ goes in config), and generates the first knowledge from your code.
 
 </details>
 
-The point isn't that an agent can query your Postgres; if you're an engineer, it already can. The point is that the *meaning* gets captured once and **shared with the whole team**: `add-teammate` mints a connector for anyone, so a non-technical teammate can query and visualize their own data in plain language ("show me signups by week") and get the *right* number, because your annotations ride along.
+The point isn't that an agent can query your Postgres; if you're an engineer, it already can. The point is that the _meaning_ gets captured once and **shared with the whole team**: `add-teammate` mints a connector for anyone, so a non-technical teammate can query and visualize their own data in plain language ("show me signups by week") and get the _right_ number, because your annotations ride along.
 
 ## High level architecture
 
@@ -127,18 +131,18 @@ flowchart LR
 **Two pieces:**
 
 1. **A provisioner** that hooks each data source up on demand: query a Postgres live (read-only), ingest logs and events, pull an API on a schedule, archive Slack. You maintain a handful of proven patterns, not one connector per vendor.
-2. **A gateway** that gives agents two kinds of tools over MCP: *context* tools (look up what the data means) and *data* tools (`get_schema`, `run_query`; read-only, audited, routed to whichever store the data lives in).
+2. **A gateway** that gives agents two kinds of tools over MCP: _context_ tools (look up what the data means) and _data_ tools (`get_schema`, `run_query`; read-only, audited, routed to whichever store the data lives in).
 
-**The membrane: what makes it injection-safe.** Agents can only *propose* knowledge; a human accepts it on the approval page, outside the agent loop. The deployed gateway holds no tool that commits curated knowledge. So an agent tricked by a malicious log line can propose nonsense, but nothing takes effect without a human click.
+**The membrane: what makes it injection-safe.** Agents can only _propose_ knowledge; a human accepts it on the approval page, outside the agent loop. The deployed gateway holds no tool that commits curated knowledge. So an agent tricked by a malicious log line can propose nonsense, but nothing takes effect without a human click.
 
 **What runs in the box:**
 
-| Component | Role |
-|---|---|
-| **Caddy** | HTTPS edge, the only public-facing container |
-| **Gateway** | the MCP server (context + query tools) and the `/admin` approval surface |
-| **Postgres** | the knowledge store and admin accounts |
-| **ClickHouse + Vector** *(optional)* | a lake for logs/events/telemetry, only when there's more than Postgres should hold |
+| Component                            | Role                                                                               |
+| ------------------------------------ | ---------------------------------------------------------------------------------- |
+| **Caddy**                            | HTTPS edge, the only public-facing container                                       |
+| **Gateway**                          | the MCP server (context + query tools) and the `/admin` approval surface           |
+| **Postgres**                         | the knowledge store and admin accounts                                             |
+| **ClickHouse + Vector** _(optional)_ | a lake for logs/events/telemetry, only when there's more than Postgres should hold |
 
 Your operational data stays where it is: Setoku queries Postgres **live and read-only**; it doesn't copy your database. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
 
