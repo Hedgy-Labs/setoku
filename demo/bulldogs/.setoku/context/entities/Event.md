@@ -2,7 +2,7 @@
 name: Event
 table: ticketing.event
 summary: A home game, in the ticketing system. The shared business key (event_no) that pos, hr, and ops also reference. Spans 3 seasons. Has a start time (first_pitch) and optional promotional pricing.
-keywords: [event, game, games, schedule, opponent, attendance, gate, season, promo, start time, first pitch, day night, promotional pricing]
+keywords: [event, game, games, schedule, opponent, attendance, gate, season, promo, start time, first pitch, day night, promotional pricing, ballpark, stadium, crowd, matchday, gameday, turnstile, capacity]
 links: [Team, SeatTxn, PosTransaction, GamedayIncident]
 ---
 
