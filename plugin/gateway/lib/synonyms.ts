@@ -1,69 +1,43 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Static semantic-neighbor table for query expansion (the I8-clean stand-in for
- * embeddings).
+ * Query-expansion neighbor tables — the I8-clean stand-in for request-time
+ * inference.
  *
  * I8 forbids server-side inference, so the gateway can't embed a query at request
- * time. Instead, semantic relatedness is reduced to a STATIC neighbor table the
- * gateway only does lookups against — no model call. Today the table is a curated
- * thesaurus of general business/sports-business clusters; in production the SAME
- * table can be GENERATED OFFLINE from real embeddings (cluster terms by cosine,
- * emit neighbor lists) — the gateway code path is identical either way.
+ * time. Instead, semantic relatedness is reduced to STATIC neighbor tables the
+ * gateway only does lookups against — no model call on the request path.
  *
- * The table is built from concept CLUSTERS: every term in a cluster expands to
- * the others. Keep clusters CONCEPTUAL (a thesaurus), not mappings to specific
- * eval phrasings — improvements must generalize (measured on a held-out split).
+ * There are two tiers, both consumed through the same `(token) => string[]` seam:
+ *
+ *   1. This module — a SMALL, DOMAIN-GENERAL base that is safe for EVERY tenant:
+ *      generic money/count words plus algorithmic plural↔singular morphology.
+ *      No sports/e-commerce/vertical vocabulary lives here anymore (issue #33):
+ *      a hand-curated *global* thesaurus only helped tenants whose domain matched
+ *      it and was inert for everyone else.
+ *
+ *   2. `derived-synonyms.ts` — a PER-TENANT table generated OFFLINE by clustering
+ *      the tenant's own doc vocabulary with the local embedding model already on
+ *      the box. That is where domain-specific bridges (clinician↔physician,
+ *      SKU↔product, …) now come from — derived, not authored.
+ *
+ * `combineSynonyms` fuses the two so a caller sees one lookup. The base clusters
+ * are built from concept CLUSTERS: every term in a cluster expands to the others.
  */
 
+/** A semantic-neighbor lookup: a token → its neighbors (excluding itself). */
+export type SynonymLookup = (token: string) => string[];
+
+/**
+ * Domain-general base clusters. Deliberately tiny and vertical-agnostic — these
+ * words mean the same thing in any business (money, counting). Anything specific
+ * to a domain must come from the derived per-tenant table, not from here.
+ */
 const CLUSTERS: string[][] = [
-  ["fans", "fan", "fanbase", "supporters", "supporter", "followers", "following"],
-  [
-    "sponsorship", "sponsor", "sponsors", "sponsored", "partner", "partners",
-    "partnership", "partnerships", "brand", "brands", "advertiser", "advertisers",
-    "backer", "backers", "corporate", "commercial",
-  ],
-  [
-    "media", "broadcast", "broadcasting", "broadcaster", "tv", "television",
-    "radio", "network", "networks", "streaming", "rights",
-  ],
-  [
-    "food", "beverage", "beverages", "fnb", "concession", "concessions", "snack",
-    "snacks", "drink", "drinks", "refreshments", "catering",
-  ],
-  [
-    "labor", "labour", "staff", "staffing", "worker", "workers", "workforce",
-    "crew", "employee", "employees", "personnel", "wages", "payroll", "headcount",
-  ],
-  [
-    "renewal", "renewals", "renew", "renewed", "retention", "retain", "subscriber",
-    "subscribers", "subscription", "membership", "memberships", "resubscribe",
-  ],
-  [
-    "attendance", "attendees", "attendee", "crowd", "turnstile", "turnstiles",
-    "gate", "ballpark", "stadium", "arena", "matchday", "gameday",
-  ],
-  [
-    "merch", "merchandise", "apparel", "jersey", "jerseys", "shop", "store",
-    "gear", "clothing",
-  ],
-  ["pos", "kiosk", "stand", "stands", "instadium", "invenue"],
-  [
-    "revenue", "earnings", "income", "sales", "money", "takings", "receipts",
-    "proceeds", "turnover",
-  ],
-  [
-    "incident", "incidents", "ejection", "ejections", "injury", "injuries",
-    "medical", "security", "breach", "emergency",
-  ],
-  [
-    "identity", "dedupe", "deduplicate", "deduplication", "duplicate", "duplicates",
-    "match", "matching", "resolve", "resolution", "linkage", "link",
-  ],
-  [
-    "account", "accounts", "buyer", "buyers", "customer", "customers", "contact",
-    "contacts", "patron", "patrons",
-  ],
-  ["opponent", "opponents", "rival", "rivals", "team", "teams", "matchup", "matchups"],
+  ["revenue", "earnings", "income", "sales", "money", "turnover", "proceeds", "receipts", "takings"],
+  ["cost", "costs", "expense", "expenses", "spend", "spending", "outlay", "outlays"],
+  ["count", "number", "total", "sum", "quantity", "volume", "amount", "tally"],
+  ["average", "avg", "mean", "median", "typical"],
+  ["customer", "customers", "client", "clients", "account", "accounts", "user", "users"],
 ];
 
 /** term → its in-cluster neighbors (excluding itself), deduped. Built once. */
@@ -78,8 +52,51 @@ const TABLE: Map<string, Set<string>> = (() => {
   return m;
 })();
 
-/** Semantic neighbors of a token (empty if unknown). Pure lookup — no inference. */
+/**
+ * Domain-general plural↔singular morphology, derived algorithmically instead of
+ * being enumerated in a table. Handles the common English regulars only
+ * (`-s`, `-es`, `-ies`) — deliberately conservative: synonym expansion fires
+ * only on an exact-match MISS and is discounted, so an occasional over-eager stem
+ * is bounded-harmless, and a real domain morphology gap is caught by the derived
+ * table. Never returns the input itself.
+ */
+function morphology(token: string): string[] {
+  const out = new Set<string>();
+  if (token.length >= 4 && token.endsWith("ies")) out.add(token.slice(0, -3) + "y"); // parties → party
+  if (token.length >= 4 && token.endsWith("es")) out.add(token.slice(0, -2)); // boxes → box
+  if (token.length >= 3 && token.endsWith("s")) out.add(token.slice(0, -1)); // fans → fan
+  if (token.length >= 3 && !token.endsWith("s")) {
+    out.add(token + "s"); // fan → fans
+    if (/[^aeiou]y$/.test(token)) out.add(token.slice(0, -1) + "ies"); // party → parties
+    if (/(s|x|z|ch|sh)$/.test(token)) out.add(token + "es"); // box → boxes
+  }
+  out.delete(token);
+  return [...out];
+}
+
+/**
+ * Base (domain-general) semantic neighbors of a token: the static cluster table
+ * plus algorithmic morphology. Empty for an unknown, non-inflected token. Pure
+ * lookup — no inference (I8).
+ */
 export function synonymsOf(token: string): string[] {
+  const out = new Set<string>(morphology(token));
   const s = TABLE.get(token);
-  return s ? [...s] : [];
+  if (s) for (const n of s) out.add(n);
+  out.delete(token);
+  return [...out];
+}
+
+/**
+ * Fuse several neighbor lookups (e.g. the base table + a per-tenant derived
+ * table) into one. Neighbors are deduped and never include the input token, so
+ * the result is drop-in for the single-lookup `synonyms` seam in search.ts.
+ */
+export function combineSynonyms(...lookups: SynonymLookup[]): SynonymLookup {
+  return (token: string) => {
+    const out = new Set<string>();
+    for (const lookup of lookups) for (const n of lookup(token)) out.add(n);
+    out.delete(token);
+    return [...out];
+  };
 }

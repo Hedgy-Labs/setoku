@@ -192,26 +192,34 @@ describe("trap coverage (value eval)", () => {
 
 describe("synonym query expansion (I8-clean semantic layer)", () => {
   const docs: ScorableDoc[] = [
-    { type: "metric", name: "unique_fans", meta: { summary: "Distinct fans.", keywords: ["fans", "attendance"] }, body: "Deduped fan count." },
-    { type: "metric", name: "ticket_revenue", meta: { summary: "Seat sales.", keywords: ["tickets", "seats"] }, body: "Sum of paid seats." },
+    { type: "metric", name: "total_revenue", meta: { summary: "Recognized revenue.", keywords: ["revenue", "sales"] }, body: "Sum of paid invoices." },
+    { type: "metric", name: "active_customers", meta: { summary: "Distinct buyers.", keywords: ["customers"] }, body: "Deduped customer count." },
   ];
 
-  it("synonymsOf returns cluster neighbors, [] for unknown tokens", () => {
-    expect(synonymsOf("supporters")).toContain("fans");
-    expect(synonymsOf("zzxq")).toEqual([]);
+  it("synonymsOf returns DOMAIN-GENERAL cluster neighbors, [] for unknown tokens", () => {
+    expect(synonymsOf("earnings")).toContain("revenue"); // generic money cluster
+    expect(synonymsOf("zzxq")).not.toContain("revenue"); // no thesaurus neighbor
+    // the retired sports/e-commerce vocabulary is no longer a global synonym
+    expect(synonymsOf("supporters")).not.toContain("fans");
+    expect(synonymsOf("jersey")).not.toContain("merch");
+  });
+
+  it("synonymsOf covers plural↔singular morphology algorithmically", () => {
+    expect(synonymsOf("customers")).toContain("customer");
+    expect(synonymsOf("party")).toContain("parties");
   });
 
   it("a synonym-only query misses without expansion and hits with it", () => {
-    const off = scoreDocs(docs, "how many supporters?").map((s) => s.doc.name);
-    expect(off).not.toContain("unique_fans"); // "supporters" != "fans" lexically
-    const on = scoreDocs(docs, "how many supporters?", { synonyms: synonymsOf }).map((s) => s.doc.name);
-    expect(on).toContain("unique_fans");
+    const off = scoreDocs(docs, "how much earnings?").map((s) => s.doc.name);
+    expect(off).not.toContain("total_revenue"); // "earnings" != "revenue" lexically
+    const on = scoreDocs(docs, "how much earnings?", { synonyms: synonymsOf }).map((s) => s.doc.name);
+    expect(on).toContain("total_revenue");
   });
 
   it("does not change ranking when the query matches exactly (no regression)", () => {
-    const off = scoreDocs(docs, "fans count").map((s) => s.doc.name);
-    const on = scoreDocs(docs, "fans count", { synonyms: synonymsOf }).map((s) => s.doc.name);
-    expect(on).toEqual(off); // exact hits present → synonym fallback never fires
+    const off = scoreDocs(docs, "customers").map((s) => s.doc.name);
+    const on = scoreDocs(docs, "customers", { synonyms: synonymsOf }).map((s) => s.doc.name);
+    expect(on).toEqual(off); // exact hit present → synonym fallback never fires here
   });
 });
 
