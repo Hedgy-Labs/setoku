@@ -62,13 +62,16 @@ const TABLE: Map<string, Set<string>> = (() => {
  */
 function morphology(token: string): string[] {
   const out = new Set<string>();
-  if (token.length >= 4 && token.endsWith("ies")) out.add(token.slice(0, -3) + "y"); // parties → party
-  if (token.length >= 4 && token.endsWith("es")) out.add(token.slice(0, -2)); // boxes → box
-  if (token.length >= 3 && token.endsWith("s")) out.add(token.slice(0, -1)); // fans → fan
-  if (token.length >= 3 && !token.endsWith("s")) {
-    out.add(token + "s"); // fan → fans
+  // Singularize (skip `-ss` words like "class" and 3-letter "bus" to avoid junk).
+  if (token.length >= 4 && token.endsWith("s") && !token.endsWith("ss")) {
+    if (token.length >= 5 && token.endsWith("ies")) out.add(token.slice(0, -3) + "y"); // parties → party
+    else if (token.endsWith("es") && /(s|x|z|ch|sh)es$/.test(token)) out.add(token.slice(0, -2)); // boxes → box
+    else out.add(token.slice(0, -1)); // fans → fan
+  } else if (token.length >= 3 && !token.endsWith("s")) {
+    // Pluralize — exactly one form, chosen by the ending.
     if (/[^aeiou]y$/.test(token)) out.add(token.slice(0, -1) + "ies"); // party → parties
-    if (/(s|x|z|ch|sh)$/.test(token)) out.add(token + "es"); // box → boxes
+    else if (/(s|x|z|ch|sh)$/.test(token)) out.add(token + "es"); // box → boxes
+    else out.add(token + "s"); // fan → fans
   }
   out.delete(token);
   return [...out];
