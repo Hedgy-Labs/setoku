@@ -63,6 +63,20 @@ describe("docVocabulary", () => {
     expect(vocab.every((t) => t.length >= 4)).toBe(true);
   });
 
+  it("drops hub words that appear in too many docs (doc-frequency cap)", () => {
+    // 12 docs; "everywhere" is in all of them, "rareterm" in 2. At maxDocFrac
+    // 0.1 the cap is max(3, 1.2) = 3 docs → the hub is out, the rare term stays.
+    const corpus: ScorableDoc[] = Array.from({ length: 12 }, (_, i) => ({
+      type: "note",
+      name: `doc${i}`,
+      meta: {},
+      body: `everywhere ${i < 2 ? "rareterm rareterm" : ""}`,
+    }));
+    const vocab = docVocabulary(corpus, { minFrequency: 2, maxDocFrac: 0.1 });
+    expect(vocab).toContain("rareterm");
+    expect(vocab).not.toContain("everywhere");
+  });
+
   it("is deterministic and honors the vocab cap (frequency-ranked)", () => {
     const a = docVocabulary(docs, { minFrequency: 1, minTermLength: 3, maxVocab: 3 });
     const b = docVocabulary(docs, { minFrequency: 1, minTermLength: 3, maxVocab: 3 });

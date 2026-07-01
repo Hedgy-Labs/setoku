@@ -29,9 +29,11 @@ import { STOP, tokenize, type ScorableDoc } from "./search";
 export type EmbedFn = (terms: string[]) => Promise<number[][]>;
 
 export interface DerivedOpts {
-  /** Cosine floor for two terms to be considered neighbors (default 0.62). */
+  /** Cosine floor for two terms to be considered neighbors (default 0.68 —
+   *  keeps true cross-word bridges like sku↔product at ~0.69 while cutting the
+   *  antonym/co-occurrence band below; measured on the demo paraphrase eval). */
   minSim?: number;
-  /** Max neighbors kept per term (default 6). */
+  /** Max neighbors kept per term (default 3). */
   maxNeighbors?: number;
   /** Min length for a vocabulary term (default 4) — short tokens are noisy. */
   minTermLength?: number;
@@ -40,32 +42,47 @@ export interface DerivedOpts {
   /** Cap on vocabulary size (most frequent first) to bound embedding cost
    *  (default 500). */
   maxVocab?: number;
+  /** Max fraction of docs a term may appear in (default 0.10, with an absolute
+   *  floor of 3 docs so tiny corpora aren't over-filtered). Hub words that
+   *  appear everywhere hit exactly on their own (no bridge needed) and, as
+   *  expansion TARGETS, score in the wrong docs — the measured cause of a
+   *  held-out regression on the demo eval before this filter. */
+  maxDocFrac?: number;
 }
 
 /**
  * The salient vocabulary of a doc set: distinct content tokens that are long
- * enough, not stopwords, and occur often enough to be worth clustering — capped
- * to the most frequent `maxVocab` so the offline embed pass stays bounded on a
- * large corpus. Deterministic (frequency then alphabetical) so a rebuild over the
- * same corpus yields the same table.
+ * enough, not stopwords, occur often enough to be worth clustering, and are
+ * DISCRIMINATIVE — a doc-frequency cap drops corpus "hub" words (in the demo
+ * eval: money, total, system, …) whose derived neighbors score in the wrong docs
+ * and regress held-out recall. Capped to the most frequent `maxVocab` so the
+ * offline embed pass stays bounded on a large corpus. Deterministic (frequency
+ * then alphabetical) so a rebuild over the same corpus yields the same table.
  */
 export function docVocabulary(docs: ScorableDoc[], opts: DerivedOpts = {}): string[] {
   const minLen = opts.minTermLength ?? 4;
   const minFreq = opts.minFrequency ?? 2;
   const maxVocab = opts.maxVocab ?? 500;
+  const maxDocs = Math.max(3, (opts.maxDocFrac ?? 0.1) * docs.length);
   const freq = new Map<string, number>();
+  const docFreq = new Map<string, number>();
   for (const d of docs) {
     const kw = Array.isArray(d.meta.keywords)
       ? d.meta.keywords.join(" ")
       : String(d.meta.keywords ?? "");
     const text = `${d.name} ${d.meta.summary ?? ""} ${kw} ${d.body}`;
+    const seen = new Set<string>();
     for (const t of tokenize(text)) {
       if (t.length < minLen || STOP.has(t) || /^\d+$/.test(t)) continue;
       freq.set(t, (freq.get(t) ?? 0) + 1);
+      if (!seen.has(t)) {
+        seen.add(t);
+        docFreq.set(t, (docFreq.get(t) ?? 0) + 1);
+      }
     }
   }
   return [...freq.entries()]
-    .filter(([, n]) => n >= minFreq)
+    .filter(([t, n]) => n >= minFreq && (docFreq.get(t) ?? 0) <= maxDocs)
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
     .slice(0, maxVocab)
     .map(([t]) => t);
@@ -82,8 +99,8 @@ export async function buildNeighborTable(
   embed: EmbedFn,
   opts: DerivedOpts = {},
 ): Promise<Map<string, string[]>> {
-  const minSim = opts.minSim ?? 0.62;
-  const maxNeighbors = opts.maxNeighbors ?? 6;
+  const minSim = opts.minSim ?? 0.68;
+  const maxNeighbors = opts.maxNeighbors ?? 3;
   const table = new Map<string, string[]>();
   if (vocab.length < 2) return table;
   const vecs = await embed(vocab);
