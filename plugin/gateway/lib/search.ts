@@ -16,7 +16,9 @@ export function tokenize(text: string): string[] {
     .filter((t) => t.length > 1);
 }
 
-const STOP = new Set([
+/** Common function words dropped from queries (and from derived-synonym
+ *  vocabulary) so they never dominate scoring or clustering. */
+export const STOP = new Set([
   "the",
   "a",
   "an",
