@@ -2,7 +2,7 @@
 name: SeatTxn
 table: ticketing.seat_txn
 summary: The seat manifest + sales ledger — one row per seat per game. Status codes, price-level codes, season plans, resale flags. Money in CENTS.
-keywords: [seat, ticket, tickets, manifest, sold, scanned, refund, exchange, resale, price level, plan, season ticket, sell-through, scan time, scan in, gate time, arrival]
+keywords: [seat, ticket, tickets, manifest, sold, scanned, refund, exchange, resale, price level, plan, season ticket, sell-through, scan time, scan in, gate time, arrival, attendance, turnstile, crowd, gate]
 links: [TicketingAccount, Event, ticket_revenue, season_renewal_rate]
 ---
 

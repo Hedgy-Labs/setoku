@@ -29,6 +29,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 
 import { buildServer, type TokenRole } from "./app";
 import { EmbedIndex } from "./lib/embed-index";
+import { DerivedSynonyms } from "./lib/derived-synonyms";
 import { loadConfig, resolveProjectDir } from "./lib/config";
 import {
   KnowledgeStore,
@@ -240,6 +241,13 @@ if (store.empty) {
 // retrieval until (and unless) it's ready. Inert when SETOKU_EMBEDDINGS!=1.
 const embedIndex = EmbedIndex.create();
 embedIndex.start(() => store.listDocs(), store);
+
+// Per-tenant DERIVED synonym table (issue #33): cluster this tenant's own doc
+// vocabulary with the local model OFFLINE, so every domain gets a lexical bridge
+// over its own words without hand-editing synonyms.ts. Built in the background;
+// inert (base table only) until ready, and when embeddings are off.
+const derivedSynonyms = DerivedSynonyms.create();
+derivedSynonyms.start(() => store.listDocs());
 
 if (store.accountCount === 0) {
   console.error(
@@ -1610,6 +1618,7 @@ const httpServer = http.createServer(async (req, res) => {
       user: auth.identity,
       role: auth.role,
       embedIndex,
+      derivedSynonyms,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

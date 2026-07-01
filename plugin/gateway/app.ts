@@ -18,8 +18,9 @@ import {
 import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { buildLinkGraph, docRef, matchByTokens, retrieve, selectGotchas } from "./lib/search";
-import { synonymsOf } from "./lib/synonyms";
+import { combineSynonyms, synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
+import type { DerivedSynonyms } from "./lib/derived-synonyms";
 import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
 import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel, compilePanel, isFullDoc } from "./lib/apps";
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
@@ -83,6 +84,13 @@ export interface GatewayDeps {
    * per-request servers, like `store`.
    */
   embedIndex?: EmbedIndex | null;
+  /**
+   * The process-wide per-tenant DERIVED synonym table (issue #33). Built offline
+   * by clustering this tenant's doc vocabulary with the local model, it fuses with
+   * the domain-general base table for I8-clean query expansion. Null/inert →
+   * base table only. Shared across per-request servers, like `store`.
+   */
+  derivedSynonyms?: DerivedSynonyms | null;
 }
 
 export function buildServer({
@@ -91,9 +99,16 @@ export function buildServer({
   user,
   role,
   embedIndex = null,
+  derivedSynonyms = null,
 }: GatewayDeps): McpServer {
 const { canWrite, denyLakeRead, canDraft, canReject } = capabilitiesFor(role);
 const server = new McpServer({ name: "setoku", version: VERSION });
+
+// Query expansion seam: the domain-general base table, fused with this tenant's
+// offline-derived table when it's live (issue #33). Pure lookup either way (I8).
+const synonyms = derivedSynonyms
+  ? combineSynonyms(synonymsOf, derivedSynonyms.neighbors)
+  : synonymsOf;
 
 const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 const errorText = (s: string) => ({
@@ -173,7 +188,7 @@ server.registerTool(
       k,
       expandLinks: true,
       maxLinked: k,
-      synonyms: synonymsOf, // I8-clean semantic expansion (static table, no inference)
+      synonyms, // I8-clean semantic expansion: base + per-tenant derived (no inference)
       embedScores,
     });
     const top = retrieved.filter((r) => r.via === "direct");

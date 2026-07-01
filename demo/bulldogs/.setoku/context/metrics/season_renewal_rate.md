@@ -1,7 +1,7 @@
 ---
 name: season_renewal_rate
 summary: Season-ticket-holder renewal rate — share of one season's STH accounts that are STH again the next season. Needs the multi-season ticketing data.
-keywords: [renewal, retention, season ticket holder, sth, churn, renew, members, membership, year over year]
+keywords: [renewal, retention, season ticket holder, sth, churn, renew, members, membership, year over year, subscriber, subscribers, subscription, resubscribe, retain]
 links: [SeatTxn, TicketingAccount, Event]
 ---
 

@@ -1,7 +1,7 @@
 ---
 name: fnb_per_cap
 summary: Food & beverage per-cap — concession revenue (POS, in dollars) divided by paid/scanned attendance, per game. Completed games only.
-keywords: [per cap, per capita, concession revenue, food and beverage, fnb, f&b, pos, spend per fan, beverage]
+keywords: [per cap, per capita, concession revenue, food and beverage, fnb, f&b, pos, spend per fan, beverage, snack, snacks, drinks, refreshments, catering]
 links: [PosTransaction, Event, total_revenue]
 ---
 

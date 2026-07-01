@@ -97,18 +97,31 @@ as "unverified team knowledge").
 
 **e. Synonym expansion (I8-clean semantic layer).** A query token with **no exact
 field hit** falls back to its best-scoring **semantic neighbor**, discounted (×0.5)
-— so "supporters" reaches the `fans` doc. Neighbors come from a **static table**
-(`lib/synonyms.ts`), looked up with no model call: I8 forbids server-side
-inference, so embeddings live *offline* (compute vectors, cluster by cosine, emit
-neighbor lists) and the gateway only does table lookups. It fires **only on a
-miss** and is discounted, so exact-match ranking is unchanged (no regression). On
-the held-out paraphrase eval this lifted recall@5 **80% → 95%** (see
-[Measuring recall](#measuring-recall-the-hillclimb-test)).
+— so "clinician" reaches the `physician` doc. Neighbors come from **static
+tables**, looked up with no model call (I8 forbids request-time inference). Two
+tiers feed the one `(token) => string[]` seam (`lib/synonyms.ts`):
 
-**Remaining limits:** no IDF (common terms aren't down-weighted); the synonym
-table is a curated thesaurus, so genuinely novel wordings still miss until the
-table (or the curated `keywords`) covers them — which is the data-driven trigger
-for real offline embeddings. The eval below is how we know when that point comes.
+- a **domain-general base** — generic money/count words + algorithmic plural↔
+  singular morphology, safe for every tenant; and
+- a **per-tenant derived table** (`lib/derived-synonyms.ts`, issue #33) generated
+  **offline** at startup by clustering the tenant's OWN doc vocabulary with the
+  local embedding model already on the box (embed each salient term, keep the
+  nearest neighbors above a cosine floor). This is where domain-specific bridges
+  come from now — *derived, not authored*.
+
+It fires **only on a miss** and is discounted, so exact-match ranking is unchanged
+(no regression). On the held-out paraphrase eval synonym expansion lifted recall@5
+**80% → 95%** (see [Measuring recall](#measuring-recall-the-hillclimb-test)).
+
+Retiring the old hand-curated *global* thesaurus (which only helped tenants whose
+domain matched sports/e-commerce and was inert for everyone else) is the point of
+#33: every domain now gets the lexical bridge over its own words, with nobody
+hand-editing `synonyms.ts`.
+
+**Remaining limits:** no IDF (common terms aren't down-weighted); the derived
+table bridges only words that already appear in the tenant's corpus, so a query
+using a term found *nowhere* in the docs still misses until curated `keywords`
+cover it — hybrid embedding retrieval (below) is what catches the rest.
 
 ### 3. Structural lint — orphans, missing connections, broken links
 `facts.ts` gains two model-free detectors that fall straight out of the graph
@@ -228,12 +241,19 @@ Synonyms edge hybrid by ~5pp — but on a 20-case held-out split that's ~1 case
 | --- | --- | --- | --- |
 | 13% | **13%** | **88%** | **88%** |
 
-This is the decisive result. The hand-curated synonym table adds **zero** outside
-its domain; embeddings generalize with **no curation**. For a product serving any
-company / any data, hand-synonyms are a per-customer maintenance tax that only ever
-helps the one domain someone tuned — a non-starter. **Recommendation: hybrid
-(keyword ⊕ local embeddings) is the product retrieval path; demote the synonym
-table to an optional zero-dependency cold-start boost, not the mechanism.**
+This is the decisive result. The hand-curated *global* synonym table adds **zero**
+outside its domain; embeddings generalize with **no curation**. For a product
+serving any company / any data, hand-synonyms are a per-customer maintenance tax
+that only ever helps the one domain someone tuned — a non-starter. **Recommendation:
+hybrid (keyword ⊕ local embeddings) is the product retrieval path; the synonym
+table is a complementary lexical bridge, not the mechanism.**
+
+**Resolution (#33):** the synonym *mechanism* stayed (it's complementary to
+embeddings — a lexical bridge on a keyword miss), but its *source* changed. The
+global thesaurus is retired down to a domain-general base; the domain-specific
+neighbors are now **derived per-tenant offline** by clustering each tenant's own
+doc vocabulary with the same local model (`lib/derived-synonyms.ts`). Same seam,
+no hand-editing, and it generalizes across domains instead of only the tuned one.
 
 Model choice (VPS-realistic, CPU, no GPU): **bge-small** (~130MB, ~120 ms/query,
 ~100 ms load) ties bge-base for hybrid and beats e5-large (which was both worse
