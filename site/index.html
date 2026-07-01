@@ -7,7 +7,7 @@
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
     <meta
       name="description"
-      content="Setoku is an open-source MCP server that gives your AI a read-only view of your company's data, plus the context to use it correctly."
+      content="Setoku is an open-source MCP server that gives your AI a read-only view of your company’s data, plus the context to use it correctly."
     />
     <link rel="preconnect" href="https://use.typekit.net" crossorigin />
     <!-- Display/body sans via Adobe Fonts (kit zcb5teq) -->
@@ -704,7 +704,7 @@
     <main id="top">
       <div class="intro wrap">
         <span class="eyebrow">Open source · MCP server · Apache-2.0</span>
-        <h1>Make any AI fluent in your company's data.</h1>
+        <h1>Make any AI fluent in your company’s data.</h1>
         <p class="lede">
           Setoku is a small self-hosted MCP knowledge server + Claude Code
           skills for hooking up your data. It does two things: it gives your AI
@@ -730,9 +730,9 @@
         <div class="wrap">
           <h2>Quickstart</h2>
           <p>
-            Setoku installs as a Claude Code plugin, so setup happens right
-            inside Claude. Add the plugin, then run onboarding from your main
-            project directory, the codebase you want Setoku to learn from:
+            Setoku installs as a Claude Code plugin. Add the plugin, then run
+            onboarding from your main project directory, the codebase you want
+            Setoku to learn from:
           </p>
           <pre><code><span class="c"># 1 · add the plugin (skills only)</span>
 /plugin marketplace add Hedgy-Labs/setoku
@@ -741,21 +741,20 @@
 <span class="c"># 2 · from your project directory</span>
 /setoku:onboard</code></pre>
           <p>
-            Onboarding stands up the server, connects this Claude to it, wires
-            your database read-only, and generates the first knowledge from your
-            code. You stay in the loop for anything that touches your data. Or
-            just tell Claude "set up setoku."
+            Onboarding stands up the server, auths your Claude, wires your
+            database read-only, and generates the first knowledge from your
+            code. You stay in the loop for anything that touches your data. To
+            start onboarding, run <code>/setoku:onboard</code>.
           </p>
           <p>
-            You'll need somewhere to host it (something like OVH's
+            You’ll need somewhere to host it. Something like OVH’s
             <a
               href="https://us.ovhcloud.com/vps/"
               target="_blank"
               rel="noopener"
               >VPS-2</a
             >
-            is plenty) and an admin connection URL for the database you want it
-            to learn about.
+            is plenty.
           </p>
           <details class="manual">
             <summary>Or stand up the server by hand</summary>
@@ -766,7 +765,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             <p style="margin-top: 12px">
               Installs Docker, generates secrets, gets an HTTPS certificate, and
               prints the connect command. Then add the plugin and run
-              /setoku:onboard from your project; it'll detect the box you just
+              /setoku:onboard from your project; it’ll detect the box you just
               made.
             </p>
           </details>
@@ -809,7 +808,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
               <div class="v">
                 The AI can only propose changes to what Setoku knows. A person
                 accepts them on the admin page, outside the agent loop, so an
-                injected session can't rewrite the brain.
+                injected session can’t rewrite the brain.
               </div>
             </div>
           </div>
@@ -835,7 +834,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             </li>
           </ul>
           <p class="note">
-            Once it's set up, <b>any MCP client</b> can use it: Claude, Codex,
+            Once it’s set up, <b>any MCP client</b> can use it: Claude, Codex,
             or whatever you run. Just ask in plain language, and the tools do
             the rest.
           </p>
@@ -889,7 +888,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
               <div class="v">
                 A team link is login-gated; an admin can flip one public for a
                 credential-free URL. The page runs in a locked-down sandbox with
-                no network, so a published app can't phone home.
+                no network, so a published app can’t phone home.
               </div>
             </div>
           </div>
@@ -904,7 +903,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             You can host this on whatever infra you like. We put it all on one
             small box (a ~$12/mo VPS). The <code>/setoku:connect</code> skill
             helps you add custom integrations. Only the proxy is public, so your
-            databases aren't exposed. Queries are read-only, and knowledge
+            databases aren’t exposed. Queries are read-only, and knowledge
             changes pass through a person.
           </p>
           <div class="diagram">
@@ -1126,7 +1125,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         <div class="wrap">
           <h2>Try it on real-ish data</h2>
           <p class="lead">
-            There's a live demo wired to a fictional pro sports club, the Bonita
+            There’s a live demo wired to a fictional pro sports club, the Bonita
             Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast
             rights).
           </p>
@@ -1138,7 +1137,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             <p class="note" style="margin-top: 0">
               In Claude (or any MCP client) open Settings → Connectors → Add
               custom connector, and paste this URL. The token rides in the URL,
-              so there's no separate key to enter.
+              so there’s no separate key to enter.
             </p>
             <pre><code>https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</code></pre>
           </div>
@@ -1158,7 +1157,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
               </div>
               <div class="ex">
                 <div class="q">
-                  "What's our total annual revenue, and how much is media
+                  "What’s our total annual revenue, and how much is media
                   rights?"
                 </div>
                 <div class="a">
@@ -1180,7 +1179,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
                 </div>
               </div>
               <div class="ex">
-                <div class="q">"What's our total merchandise revenue?"</div>
+                <div class="q">"What’s our total merchandise revenue?"</div>
                 <div class="a">
                   <b>It flags it</b>
                   <span
@@ -1244,13 +1243,13 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
       <section id="why" class="why">
         <div class="wrap">
           <h2>Why we built it</h2>
-          <h3>We're curious.</h3>
+          <h3>We’re curious.</h3>
           <p>
             There are plenty of AI memory stores, and plenty of data gateways.
             Stapling the two together, and nudging the agent to gather knowledge
             about the data as it goes, seemed useful and fun to tinker with.
           </p>
-          <h3>We're cheap.</h3>
+          <h3>We’re cheap.</h3>
           <p>
             We wanted something that runs on one small box, works on a Pro/Max
             subscription or a cheap model with no added inference cost, mostly
@@ -1273,7 +1272,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
               from.
             </li>
             <li>
-              <b>Sports analysts</b>: query across data that doesn't usually sit
+              <b>Sports analysts</b>: query across data that doesn’t usually sit
               together.
             </li>
             <li>
@@ -1289,8 +1288,8 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         <div class="wrap">
           <h2>Setup help</h2>
           <p>
-            It's open source, so you can self-host it today. If you'd rather
-            not, we're happy to help set it up: we wire it to your data, capture
+            It’s open source, so you can self-host it today. If you’d rather
+            not, we’re happy to help set it up: we wire it to your data, capture
             the first knowledge with you, and hand it over. Email
             <a href="mailto:hello@setoku.com">hello@setoku.com</a>.
           </p>
