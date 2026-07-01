@@ -168,8 +168,10 @@ export interface LinkGraph {
   out: Map<string, Set<string>>;
   /** DocRef → DocRefs that link TO it (inbound / backlinks). */
   back: Map<string, Set<string>>;
-  /** Declared refs that resolved to no doc OR were ambiguous — broken links. */
-  unresolved: { from: string; ref: string }[];
+  /** Declared refs that resolved to no doc OR were ambiguous — broken links.
+   *  `from` is the declaring doc's name (display); `fromRef` its DocRef, so
+   *  same-named docs across types don't blur together. */
+  unresolved: { from: string; fromRef: string; ref: string }[];
   /** DocRef → original-case doc name, for display. */
   nameOf: Map<string, string>;
 }
@@ -217,7 +219,7 @@ export function buildLinkGraph(docs: ScorableDoc[]): LinkGraph {
 
   const out = new Map<string, Set<string>>();
   const back = new Map<string, Set<string>>();
-  const unresolved: { from: string; ref: string }[] = [];
+  const unresolved: { from: string; fromRef: string; ref: string }[] = [];
   for (const d of docs) {
     out.set(docRef(d), new Set());
     back.set(docRef(d), new Set());
@@ -227,7 +229,7 @@ export function buildLinkGraph(docs: ScorableDoc[]): LinkGraph {
     for (const ref of rawLinks(d)) {
       const target = resolveLinkRef(ref, byName, byTable, refs);
       if (!target || target === from) {
-        if (!target) unresolved.push({ from: d.name, ref });
+        if (!target) unresolved.push({ from: d.name, fromRef: from, ref });
         continue;
       }
       out.get(from)!.add(target);

@@ -46,7 +46,7 @@ describe("buildLinkGraph (keyed by DocRef)", () => {
 
   it("records a declared link that resolves to no doc as broken", () => {
     const g = buildLinkGraph(DOCS);
-    expect(g.unresolved).toContainEqual({ from: "Order", ref: "Coupon" });
+    expect(g.unresolved).toContainEqual({ from: "Order", fromRef: "entity:order", ref: "Coupon" });
   });
 
   it("neighbors() is the undirected 1-hop set", () => {
@@ -76,7 +76,7 @@ describe("DocRef identity — same name across types can't merge", () => {
       ...collide,
       { type: "query", name: "q", meta: { links: ["revenue"] }, body: "" },
     ];
-    expect(buildLinkGraph(ambiguous).unresolved).toContainEqual({ from: "q", ref: "revenue" });
+    expect(buildLinkGraph(ambiguous).unresolved).toContainEqual({ from: "q", fromRef: "query:q", ref: "revenue" });
     const explicit: ScorableDoc[] = [
       ...collide,
       { type: "query", name: "q", meta: { links: ["metric:revenue"] }, body: "" },

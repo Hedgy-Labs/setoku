@@ -27,7 +27,7 @@ Save each via `upsert_context` (curator) **or** `report_correction` (analyst —
 supporting detail, and `relates_to` to the entity/metric name).
 The structure below is the *content* to produce either way.
 
-**entity** — one per business-relevant table (skip pure join/system tables). `meta`: `table` (qualified, e.g. `public.orders`), `summary` (one line), `keywords` (synonyms users say). Body sections:
+**entity** — one per business-relevant table (skip pure join/system tables). `meta`: `table` (qualified, e.g. `public.orders`), `summary` (one line), `keywords` (synonyms users say), `links` (see **Interlinking** below). Body sections:
 
 ```markdown
 ## Semantics
@@ -47,13 +47,17 @@ customer_id → public.customers.id (the buyer). One order : many order_items.
 - prisma/schema.prisma:120 (model definition)
 ```
 
-**metric** — canonical business numbers. `meta`: `summary`, `keywords`. Body: `## Definition` (prose), `## Canonical SQL` (fenced sql block — the exact production logic), `## Caveats`, `## Sources` (file:line).
+**metric** — canonical business numbers. `meta`: `summary`, `keywords`, `links` (the entities its SQL reads). Body: `## Definition` (prose), `## Canonical SQL` (fenced sql block — the exact production logic), `## Caveats`, `## Sources` (file:line).
 
-**query** — known-good SQL for a recurring question. `meta`: `question`, `keywords`. Body: fenced sql.
+**query** — known-good SQL for a recurring question. `meta`: `question`, `keywords`, `links` (the entities/metrics it touches). Body: fenced sql.
 
 **gotcha** — one-liner traps, each self-contained with its source. `name` = short slug, `body` = the line, e.g. `Customers with deleted_at set are soft-deleted — exclude from all counts (src/models/customer.ts:12)`.
 
-**overview** — 10–20 lines: what the business does, core objects, money flow.
+**overview** — 10–20 lines: what the business does, core objects, money flow. `meta.links`: the core entities and headline metrics — the overview is the hub of the wiki.
+
+## Interlinking (`meta.links`)
+
+The store is a wiki: `meta.links` is an array of **exact doc names** this doc references, and it's what makes docs retrievable by association (`/admin/knowledge` graphs it; entity/metric/query docs with no links in or out are flagged as orphans — overviews and gotchas are exempt). Link an entity to its join targets and the metrics computed from it; link a metric to the entities its SQL reads; link the overview to the core entities/metrics. Every entity/metric/query doc should have at least one link. On a curator connector, links are validated at save time — a ref that resolves to no doc (or is ambiguous) rejects the save, so save link *targets* before the docs that point at them (overview last). Use `type:name` when a name is shared across types. On the analyst connector, `report_correction` has no links field — `relates_to` is its one link mechanism (a gotcha's `relates_to` counts as a link automatically); full `meta.links` get added when a curator pass shapes the accepted proposals into docs.
 
 ## Process
 

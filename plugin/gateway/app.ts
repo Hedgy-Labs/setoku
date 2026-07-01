@@ -17,7 +17,7 @@ import {
 } from "./lib/config";
 import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
-import { buildLinkGraph, matchByTokens, retrieve, selectGotchas } from "./lib/search";
+import { buildLinkGraph, docRef, matchByTokens, retrieve, selectGotchas } from "./lib/search";
 import { synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
 import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
@@ -503,7 +503,9 @@ server.registerTool(
       "Used by the /setoku:generate and /setoku:curate workflows — do NOT use it mid-analysis to record " +
       "unreviewed beliefs (use report_correction for that). Attribution and a revision history are kept automatically. " +
       "For entities pass meta.table (e.g. public.orders), meta.summary, meta.keywords. For metrics include the " +
-      "canonical SQL in the body. For gotchas put the one-liner in body (name can be a short slug).",
+      "canonical SQL in the body. For gotchas put the one-liner in body (name can be a short slug). " +
+      "Set meta.links (array of exact doc names) to interlink related docs — join targets, the metrics an " +
+      "entity feeds, the entities a metric reads. Links must resolve to existing docs or the save is rejected.",
     inputSchema: {
       type: z.enum(["entity", "metric", "query", "overview", "gotcha"]),
       name: z
@@ -514,7 +516,7 @@ server.registerTool(
         .record(z.union([z.string(), z.array(z.string())]))
         .optional()
         .describe(
-          "Frontmatter-style fields: table, summary, keywords, question, sources",
+          "Frontmatter-style fields: table, summary, keywords, question, sources, links (array of doc names this doc references)",
         ),
     },
   },
@@ -537,7 +539,9 @@ server.registerTool(
       ...store.listDocs().filter((d) => !(d.type === type && d.name === name)),
       incoming,
     ];
-    const bad = buildLinkGraph(prospective).unresolved.filter((u) => u.from === name);
+    const bad = buildLinkGraph(prospective).unresolved.filter(
+      (u) => u.fromRef === docRef(incoming),
+    );
     if (bad.length)
       return errorText(
         `Won't save: ${bad.length} link(s) don't resolve to a doc — ${bad.map((b) => `"${b.ref}"`).join(", ")}. ` +
@@ -580,7 +584,9 @@ server.registerTool(
       meta: z
         .record(z.union([z.string(), z.array(z.string())]))
         .optional()
-        .describe("Frontmatter fields: table, summary, keywords, relates_to, expect, unit"),
+        .describe(
+          "Frontmatter fields: table, summary, keywords, relates_to, expect, unit, links (array of existing doc names the drafted doc references)",
+        ),
       flags: z
         .array(z.string())
         .optional()
