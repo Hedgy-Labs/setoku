@@ -51,10 +51,10 @@ export function Apps() {
     <>
       <div className="flex items-start justify-between gap-4">
         <Heading title="Apps">
-          Little apps your agent built on your data — backed by <b className="text-stone-800">live data</b>, with their own{" "}
-          <b className="text-stone-800">private state</b> (and no writes to your sources).{" "}
-          <b className="text-stone-800">Team</b> links are session-gated; the author or an admin can make one{" "}
-          <b className="text-stone-800">public</b> for a credential-free link.
+          Dashboards, trackers, and internal tools your agent builds on your data. They run on{" "}
+          <b className="text-stone-800">live data</b> and never write to your sources.{" "}
+          <b className="text-stone-800">Team</b> links work for anyone signed in here; the author or an
+          admin can make one <b className="text-stone-800">public</b> for a link that needs no login.
         </Heading>
         <Button className="mt-1 shrink-0" onClick={() => setNewOpen(true)}>
           New app
@@ -125,8 +125,7 @@ export function Apps() {
               })
             ) : (
               <div className="card p-8 text-center text-stone-500">
-                Nothing published yet. An agent publishes with the{" "}
-                <code className="kbd">publish_app</code> tool.
+                Nothing published yet. Ask your agent to build a business metrics dashboard.
               </div>
             )}
           </div>

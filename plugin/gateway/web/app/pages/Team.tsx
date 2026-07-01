@@ -49,10 +49,11 @@ export function Team() {
   return (
     <>
       <Heading title="Team">
-        Everyone gets an account with a read-only, propose-only agent connector. Members can use the
-        agent and view; admins also approve knowledge. The curated context the team builds is shared
-        across everyone. (Curator <i>write</i> connectors are a separate, deliberate step —{" "}
-        <code className="kbd">admin-cli</code> on the box — never a default.)
+        Who can sign in here and what their agent may do. Everyone gets an account with a read-only,
+        propose-only agent connector; members use the agent and view, admins also approve knowledge.
+        The curated context the team builds is shared across everyone. (Curator <i>write</i> connectors
+        are a separate, deliberate step — <code className="kbd">admin-cli</code> on the box — never a
+        default.)
       </Heading>
       {noAgent > 0 && mayManage ? (
         <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-700">
