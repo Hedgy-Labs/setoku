@@ -23,6 +23,7 @@ You are helping a **curator** — typically a business user, not a developer —
    - `entity` → update the relevant entity doc (fetch current body with `describe_entity`, edit, re-save)
    - `query` → new query doc
    - Preserve attribution in the body when it matters ("per ops team, 2026-06").
+   - Keep the wiki connected: when saving, set/extend `meta.links` (array of exact doc names — join targets, the entities a metric reads). Links must resolve to existing docs or the save is rejected. Fetching-then-resaving a doc? Carry its existing meta (including links) forward — `upsert_context` replaces meta wholesale.
 4. **Resolve each candidate:** `resolve_correction` with accepted or rejected. (Accept without the matching `upsert_context` loses the knowledge — always do both.)
 5. **Summarize:** accepted / edited / rejected, and what got better.
 

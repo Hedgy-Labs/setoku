@@ -58,7 +58,10 @@ Link generously; the graph is what makes retrieval and navigation work:
 - **entity → entities it joins to** (`Order` → `Customer`) and its gotchas.
 - **overview → the top entities and metrics** (it's the hub).
 - A new doc should link to its obvious neighbors *as it's written* — that's the
-  "ingest reconciles neighbors" discipline.
+  "ingest reconciles neighbors" discipline. Note the curated-write path
+  (`upsert_context`) rejects a save whose links don't resolve to an existing
+  doc, so save link *targets* before the docs that point at them (overview
+  last), or add the link when the target lands.
 
 Lint will flag the failures of this convention:
 - **orphan** — a canonical doc with no link in or out (connect it to the graph).
