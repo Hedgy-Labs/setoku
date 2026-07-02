@@ -429,13 +429,13 @@ export function AppView() {
       ) : (
         // iframe fills the remaining height; the calc drawer toggles in as a footer
         // below it (and the iframe shrinks to make room), out for full height.
-        <main className="flex min-h-0 flex-1 flex-col p-3">
+        <main className="flex min-h-0 flex-1 flex-col">
           {/* The metadata fetch failed on a reload, or the frame itself failed to
               load (session drop / archived) — surface it WITHOUT blanking the
               still-shown view. Gated on !loading so a prior app's lingering error
               doesn't flash on navigation. */}
           {!loading && (error || frameErr) ? (
-            <div className="mb-2 flex-none rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
+            <div className="flex-none border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
               Couldn't load the latest data — showing the last view. Try refreshing.
             </div>
           ) : null}
@@ -451,7 +451,7 @@ export function AppView() {
             // sandbox directive (the effective sandbox is the intersection).
             sandbox="allow-scripts allow-forms"
             referrerPolicy="no-referrer"
-            className="min-h-0 w-full flex-1 rounded-lg border border-stone-200 bg-white"
+            className="min-h-0 w-full flex-1 border-0 bg-white"
           />
           {isApp && showCalc ? (
             // SQL/description are param-independent (from data); the per-variant row
@@ -639,7 +639,7 @@ function Provenance({
   onClose: () => void;
 }) {
   return (
-    <div className="card mt-2 flex max-h-[42vh] shrink-0 flex-col overflow-hidden p-0">
+    <div className="card m-2 flex max-h-[42vh] shrink-0 flex-col overflow-hidden p-0">
       <div className="flex items-center justify-between border-b border-stone-100 px-4 py-2">
         <span className="text-sm font-medium text-stone-800">How this is calculated</span>
         <button className="text-xs text-stone-500 hover:text-stone-800" onClick={onClose}>

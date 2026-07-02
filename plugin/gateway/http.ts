@@ -832,8 +832,8 @@ function publicAppShell(opts: {
   .muted{color:#78716c;font-size:.8rem}
   .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
   .adminbtn:hover{background:#f5f5f4}
-  main{flex:1;min-height:0;display:flex;padding:.9rem 1.1rem}
-  iframe{flex:1;width:100%;border:1px solid #e7e5e4;border-radius:.5rem;background:#fff}
+  main{flex:1;min-height:0;display:flex}
+  iframe{flex:1;width:100%;border:0;background:#fff}
   #controls{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .9rem;width:100%;margin-top:.1rem}
   .pc{display:inline-flex;align-items:center;gap:.4rem;font-size:.8rem;color:#57534e}
   .pc select,.pc input{font:inherit;font-size:.8rem;color:#1c1917;background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.18rem .45rem}
