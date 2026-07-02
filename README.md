@@ -4,10 +4,12 @@
 
 # Setoku
 
-**A tool for your AI to do two things: reach your data, and understand it better over time.**
+**Make any AI fluent in your company's data.**
+
+Setoku is a small self-hosted MCP server that does two things: it gives your AI a read-only way to query your data, and it remembers what that data _means_ (the metric definitions, the gotchas), getting better the more you use it. No model runs on the server, so it works with whatever AI you already pay for.
 
 - **The problem.** What your company knows about itself lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
-- **What it does.** Setoku is the shared, curated memory of what your data and operations _mean_. It remembers those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
+- **What it does.** Setoku is the shared, curated memory of what your data and operations mean. It holds those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
 - **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows; a human approves that, outside the agent's loop.
 - **It's cheap.** No AI runs in Setoku itself; the thinking happens in the AI you already pay for. A whole deployment is one small VPS.
 
@@ -23,16 +25,16 @@ Today the brain mostly holds **data and operations** (what your tables, metrics,
 
 There's a public demo wired to a synthetic dataset for a fictional pro baseball club, the **Bonita Bulldogs**, covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, marketing, gameday incidents, and broadcast media rights.
 
-1. In **Claude.ai** (or any MCP client), open **Settings → Connectors → Add custom connector** and paste this as the server URL (there's no header field; the token rides in the URL):
+1. In **Claude.ai** (or any MCP client), open **Settings → Connectors → Add custom connector** and paste this as the server URL. The token rides in the URL, so there's no separate key to enter.
    ```
    https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9
    ```
 2. Ask in plain language. Setoku feeds your AI the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names. Try:
-   - _"How many unique fans do we have?"_ The CRM has duplicates and test records; Setoku dedupes by normalized email instead of a naive `COUNT(*)`.
-   - _"What was our ticket revenue this season, and which games sold best?"_ It handles cents vs dollars and excludes refunds, exchanges, and comps.
-   - _"What's our season-ticket renewal rate?"_ It spans three seasons of ticketing history.
-   - _"What's our total annual revenue, and how much of it is media rights?"_ It combines five systems with reconciled units (~$180–200M; media rights is the biggest line, ~$90M).
-   - _"What's our total merchandise revenue?"_ Setoku flags that the data is online only (most merch is via Fanatics, not here) instead of returning a wrong total.
+   - _"How many unique fans do we have?"_ → **71,204**, deduped by normalized email with internal/test accounts excluded, not the raw 92,118 a naive `COUNT(*)` returns.
+   - _"What was our ticket revenue this season?"_ → **$46.8M**, cents reconciled to dollars, refunds/exchanges/comps excluded.
+   - _"What's our season-ticket renewal rate?"_ → spans three seasons of ticketing history.
+   - _"What's our total annual revenue, and how much is media rights?"_ → **~$192M** across five systems reconciled to the same units; media rights is the biggest line, ~$90M.
+   - _"What's our total merchandise revenue?"_ → it **flags** that most merch is sold via Fanatics, not in this data, instead of returning a wrong total.
 
 Full walkthrough, the `/admin` approval surface, and the data model: [`demo/README.md`](./demo/README.md).
 
@@ -40,14 +42,14 @@ Full walkthrough, the `/admin` approval surface, and the data model: [`demo/READ
 
 ## How it works
 
-Setoku is a small self-hosted MCP server that sits between your AI and your data. It works with any MCP client (Claude today). It does two things:
+Setoku gives the AI two kinds of MCP tools, and one rule: look up what the data means before you touch it. It works with any MCP client (Claude today).
 
-1. **Holds curated knowledge about your data**: what your tables and metrics actually mean, the canonical SQL for each metric, and the gotchas that make naive queries wrong (e.g. "active user" excludes internal test accounts; refunds must be subtracted from revenue; a status column is current-state only, so you count events from the log table instead).
-2. **Gives the agent a read-only way to query**: with a row cap, a statement timeout, a table allow-list, and an append-only audit log of who ran what.
+1. **Context tools** (`find_context`, `get_metric`) read what your data means first: canonical metric definitions, entity docs, and the gotchas that make a naive query wrong (e.g. "active user" excludes internal test accounts; refunds must be subtracted from revenue; a status column is current-state only, so you count events from the log table instead).
+2. **Read-only query** (`get_schema`, `run_query`) runs with a row cap, a statement timeout, a table allow-list, and an append-only audit log. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
 
 The agent looks up the context first, then runs the query, so it answers the way your business actually computes things instead of guessing from column names.
 
-It ships **tools, not models**. No AI runs on the server; the reasoning happens in the AI you already use. That means no AI API keys and no per-query AI cost: a whole deployment is one small VPS plus the AI seats your team already has.
+It ships **tools, not models**. No AI runs on the server; the reasoning happens in the AI you already use. That means no AI API keys and no per-query AI cost: a whole deployment is one small VPS plus the AI seats your team already have.
 
 ## Apps: build on the data, share a link
 
@@ -103,6 +105,15 @@ Then add the plugin and run `/setoku:onboard` from your project; it detects the 
 
 The point isn't that an agent can query your Postgres; if you're an engineer, it already can. The point is that the _meaning_ gets captured once and **shared with the whole team**: `add-teammate` mints a connector for anyone, so a non-technical teammate can query and visualize their own data in plain language ("show me signups by week") and get the _right_ number, because your annotations ride along.
 
+## Connectors
+
+Point Setoku at the data you already have. It queries some sources live and read-only, and ingests others into a local lake.
+
+- **Queried live (read-only):** PostgreSQL, your app database.
+- **Ingested into the lake (ClickHouse):** Vercel and Render (deploys & logs), Slack (messages), Mercury (banking & finance).
+
+No connector for your source yet? The included setup skills give your coding agent the patterns to wire one up itself. You maintain a handful of proven patterns, not one connector per vendor. See [CONTRIBUTING.md](./CONTRIBUTING.md), or open an issue.
+
 ## High level architecture
 
 Everything is one `docker compose` on one VPS. Only the web proxy faces the internet; the databases are never exposed.
@@ -145,6 +156,10 @@ flowchart LR
 | **ClickHouse + Vector** _(optional)_ | a lake for logs/events/telemetry, only when there's more than Postgres should hold |
 
 Your operational data stays where it is: Setoku queries Postgres **live and read-only**; it doesn't copy your database. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
+
+## Setup help
+
+It's open source, so you can self-host it today. If you'd rather not, we're happy to help set it up: we wire it to your data, capture the first knowledge with you, and hand it over. Email [hello@setoku.com](mailto:hello@setoku.com).
 
 ---
 
