@@ -112,7 +112,7 @@ services:
       retries: 5
 
   clickhouse:
-    profiles: [lake, ingest, slack, render, mercury]
+    profiles: [lake, ingest, slack, render, mercury, github]
     image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
     restart: unless-stopped
     environment:
@@ -139,7 +139,7 @@ services:
       start_period: 30s
 
   vector:
-    profiles: [ingest, render, mercury]
+    profiles: [ingest, render, mercury, github]
     image: timberio/vector:0.49.0-alpine@sha256:2a31648e67280953aaf6b219c1b04729ac5ed12820ec2bfb698630b2d989d135
     restart: unless-stopped
     environment:
@@ -240,6 +240,30 @@ services:
       vector:
         condition: service_healthy
 
+  # GitHub → ingest bridge (profile: github). Pull-based like Mercury: webhooks
+  # exist but a poller gets full-history backfill and needs no public endpoint.
+  # Polls issues/PRs/commits/comments for the GITHUB_REPOS list and POSTs to
+  # Vector's /ingest/github/* on the internal network. Mutable objects land in
+  # ReplacingMergeTree tables. State on a volume so restarts don't re-backfill.
+  github-poller:
+    profiles: [github]
+    build:
+      context: .
+      dockerfile: ingest/github-poller/Dockerfile
+    restart: unless-stopped
+    environment:
+      # poll.ts validates these at runtime; :- defaults keep `docker compose
+      # config` valid for non-github deploys (matches render/mercury pollers).
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_REPOS: ${GITHUB_REPOS:-}
+      GITHUB_POLL_INTERVAL_MS: ${GITHUB_POLL_INTERVAL_MS:-300000}
+      GITHUB_BACKFILL_DAYS: ${GITHUB_BACKFILL_DAYS:-730}
+    volumes:
+      - github_state:/state
+    depends_on:
+      vector:
+        condition: service_healthy
+
   # ---- backup one-shots (profile: backup) — driven by deploy/backup/*.sh ----
 
   clickhouse-backup:
@@ -282,3 +306,4 @@ volumes:
   slack_spool:
   render_state:
   mercury_state:
+  github_state:

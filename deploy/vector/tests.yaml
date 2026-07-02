@@ -305,3 +305,160 @@ tests:
               assert!(.status == "sent", "status from nested .transaction.status")
               assert!(starts_with!(.event_ts, "2026-06-12 18:05:00"), "event_ts: " + string!(.event_ts))
               assert!(contains!(.raw, "txn_sent"), "raw preserved")
+
+  - name: github route splits issues / pulls / commits / comments by path
+    inputs:
+      - insert_at: router
+        type: log
+        log_fields:
+          _path: /ingest/github/issues
+          repo: acme/widgets
+          number: 12
+      - insert_at: router
+        type: log
+        log_fields:
+          _path: /ingest/github/pulls
+          repo: acme/widgets
+          number: 34
+      - insert_at: router
+        type: log
+        log_fields:
+          _path: /ingest/github/commits
+          repo: acme/widgets
+          sha: abc123
+      - insert_at: router
+        type: log
+        log_fields:
+          _path: /ingest/github/comments
+          repo: acme/widgets
+          id: 987
+    outputs:
+      - extract_from: github_issues_parse
+        conditions:
+          - type: vrl
+            source: assert!(.number == 12, "issues route")
+      - extract_from: github_pulls_parse
+        conditions:
+          - type: vrl
+            source: assert!(.number == 34, "pulls route")
+      - extract_from: github_commits_parse
+        conditions:
+          - type: vrl
+            source: assert!(.sha == "abc123", "commits route")
+      - extract_from: github_comments_parse
+        conditions:
+          - type: vrl
+            source: assert!(.id == 987, "comments route")
+
+  - name: github open issue keeps null closed_at, normalizes timestamps
+    inputs:
+      - insert_at: github_issues_parse
+        type: log
+        log_fields:
+          _path: /ingest/github/issues
+          repo: acme/widgets
+          id: 111
+          number: 12
+          is_pr: 0
+          title: Widget crashes on load
+          state: open
+          author: octocat
+          labels: '["bug"]'
+          created_at: "2026-06-10T08:00:00Z"
+          updated_at: "2026-06-12T09:30:00Z"
+          closed_at: ""
+          raw: '{"id":111,"title":"Widget crashes on load"}'
+          ingested_at: "2026-07-01T00:00:00Z"
+    outputs:
+      - extract_from: github_issues_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.state == "open", "state")
+              assert!(.closed_at == null, "closed_at stays null while open")
+              assert!(contains!(.raw, "Widget crashes"), "raw passes through untouched")
+              assert!(starts_with!(.created_at, "2026-06-10 08:00:00"), "created_at: " + string!(.created_at))
+              assert!(starts_with!(.updated_at, "2026-06-12 09:30:00"), "updated_at")
+              assert!(starts_with!(.ingested_at, "2026-07-01 00:00:00"), "ingested_at")
+
+  - name: github merged PR fills merged_at; closed-unmerged stays null
+    inputs:
+      - insert_at: github_pulls_parse
+        type: log
+        log_fields:
+          _path: /ingest/github/pulls
+          repo: acme/widgets
+          number: 34
+          state: closed
+          author: octocat
+          base_ref: main
+          head_ref: fix/crash
+          created_at: "2026-06-10T08:00:00Z"
+          updated_at: "2026-06-11T10:00:00Z"
+          closed_at: "2026-06-11T10:00:00Z"
+          merged_at: "2026-06-11T10:00:00Z"
+          ingested_at: "2026-07-01T00:00:00Z"
+      - insert_at: github_pulls_parse
+        type: log
+        log_fields:
+          _path: /ingest/github/pulls
+          repo: acme/widgets
+          number: 35
+          state: closed
+          closed_at: "2026-06-11T11:00:00Z"
+          merged_at: ""
+          created_at: "2026-06-10T08:00:00Z"
+          updated_at: "2026-06-11T11:00:00Z"
+          ingested_at: "2026-07-01T00:00:00Z"
+    outputs:
+      - extract_from: github_pulls_parse
+        conditions:
+          - type: vrl
+            source: |
+              if .number == 34 {
+                assert!(starts_with!(.merged_at, "2026-06-11 10:00:00"), "merged_at set on merged PR")
+              } else {
+                assert!(.merged_at == null, "closed-unmerged PR keeps null merged_at")
+                assert!(starts_with!(.closed_at, "2026-06-11 11:00:00"), "closed_at")
+              }
+
+  - name: github commit and comment normalize timestamps
+    inputs:
+      - insert_at: github_commits_parse
+        type: log
+        log_fields:
+          _path: /ingest/github/commits
+          repo: acme/widgets
+          sha: abc123
+          author_login: octocat
+          message: "fix: widget crash"
+          committed_at: "2026-06-10T08:00:00Z"
+          ingested_at: "2026-07-01T00:00:00Z"
+      - insert_at: github_comments_parse
+        type: log
+        log_fields:
+          _path: /ingest/github/comments
+          repo: acme/widgets
+          comment_type: review
+          id: 987
+          number: 34
+          author: octocat
+          body: nit — rename this
+          path: src/widget.ts
+          created_at: "2026-06-10T09:00:00Z"
+          updated_at: "2026-06-10T09:05:00Z"
+          ingested_at: "2026-07-01T00:00:00Z"
+    outputs:
+      - extract_from: github_commits_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(starts_with!(.committed_at, "2026-06-10 08:00:00"), "committed_at")
+              assert!(.author_login == "octocat", "author_login")
+      - extract_from: github_comments_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.comment_type == "review", "comment_type")
+              assert!(.path == "src/widget.ts", "path")
+              assert!(starts_with!(.updated_at, "2026-06-10 09:05:00"), "updated_at")
