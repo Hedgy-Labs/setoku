@@ -6,7 +6,7 @@
 
 **Make any AI fluent in your company's data.**
 
-Setoku is a small self-hosted MCP server that does two things: it gives your AI a read-only way to query your data, and it remembers what that data _means_ (the metric definitions, the gotchas), getting better the more you use it. No model runs on the server, so it works with whatever AI you already pay for.
+Setoku is a small self-hosted MCP server that does two things: it gives your AI a read-only way to query your data, and it remembers what that data _means_ (the metric definitions, the gotchas), getting better the more you use it. The MCP works with whatever AI you already pay for, and no model runs on the server, so no added inference cost.
 
 - **The problem.** What your company knows about itself lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
 - **What it does.** Setoku is the shared, curated memory of what your data and operations mean. It holds those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
@@ -65,6 +65,8 @@ Once your AI can read and _understand_ the data, the natural next step is buildi
 
 **We're cheap.** We wanted something that runs on one small box, works on a Pro/Max subscription or a cheap model with no added inference cost, mostly sets itself up (no field engineer to pay for), stays portable between providers, and is open source.
 
+**We're wary.** HR platforms, CRMs, and clouds are all announcing "context layers." They'd like the meaning of your business to accumulate on their servers, where it can never leave. Context is deeper lock-in than data, and a hosted context layer has no export button. Setoku exists so that understanding accumulates on a box you own instead. If we disappear tomorrow, your context doesn't.
+
 **We and some friends wanted the same thing.**
 
 - **[Hedgy](https://www.hedgy.works)**: keep scaling without hiring. Debug from live logs and data, find growth levers, and match candidates and companies better with more data.
@@ -110,7 +112,7 @@ The point isn't that an agent can query your Postgres; if you're an engineer, it
 Point Setoku at the data you already have. It queries some sources live and read-only, and ingests others into a local lake.
 
 - **Queried live (read-only):** PostgreSQL, your app database.
-- **Ingested into the lake (ClickHouse):** Vercel and Render (deploys & logs), Slack (messages), Mercury (banking & finance).
+- **Ingested into the lake (ClickHouse):** GitHub (issues, PRs & commits), Vercel and Render (deploys & logs), Slack (messages), Mercury (banking & finance).
 
 No connector for your source yet? The included setup skills give your coding agent the patterns to wire one up itself. You maintain a handful of proven patterns, not one connector per vendor. See [CONTRIBUTING.md](./CONTRIBUTING.md), or open an issue.
 

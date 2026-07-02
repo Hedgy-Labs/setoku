@@ -710,8 +710,8 @@
           skills for hooking up your data. It does two things: it gives your AI
           a read-only way to query your data, and it remembers what that data
           means (the metric definitions, the gotchas), getting better the more
-          you use it. No model runs on the server, so it works with whatever AI
-          you already have.
+          you use it. The MCP works with whatever AI you already have, and no
+          model runs on the server, so no added inference cost.
         </p>
         <div class="actions">
           <a
@@ -910,7 +910,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             <svg
               viewBox="0 0 680 520"
               role="img"
-              aria-label="Setoku architecture and data flow: you and your AI connect over MCP to the gateway on your box, which holds a ClickHouse lake, a knowledge store, and a person who approves. Below the box, your Postgres database is queried read-only and your sources (Vercel, Render, Slack, Mercury) are ingested into the lake."
+              aria-label="Setoku architecture and data flow: you and your AI connect over MCP to the gateway on your box, which holds a ClickHouse lake, a knowledge store, and a person who approves. Below the box, your Postgres database is queried read-only and your sources (GitHub, Vercel, Render, Slack, Mercury) are ingested into the lake."
             >
               <defs>
                 <marker
@@ -955,7 +955,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
                 rx="14"
               />
               <text class="e" x="76" y="130" fill="#8E968C">
-                your box · only the proxy is public
+                your box
               </text>
               <rect
                 class="node"
@@ -1021,7 +1021,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
                 Your sources
               </text>
               <text class="s" x="182" y="486" text-anchor="middle">
-                Vercel · Render · Slack…
+                GitHub · Vercel · Slack…
               </text>
               <rect
                 class="node"
@@ -1088,6 +1088,10 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
                   <span class="dot"></span>ClickHouse · the lake
                 </div>
                 <div class="chips">
+                  <div class="chip">
+                    <span class="dot"></span><b>GitHub</b
+                    ><span>issues, PRs &amp; commits</span>
+                  </div>
                   <div class="chip">
                     <span class="dot"></span><b>Vercel</b
                     ><span>deploys &amp; logs</span>
@@ -1255,6 +1259,16 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             subscription or a cheap model with no added inference cost, mostly
             sets itself up (no field engineer to pay for), stays portable
             between providers, and is open source.
+          </p>
+          <h3>We’re wary.</h3>
+          <p>
+            HR platforms, CRMs, and clouds are all announcing “context layers.”
+            They’d like the meaning of your business to accumulate on their
+            servers, where it can never leave. Context is deeper
+            lock-in than data, and a hosted context layer has no export button.
+            Setoku exists so that understanding accumulates on a box you own
+            instead. If we disappear tomorrow, your context
+            doesn’t.
           </p>
           <h3>We and some friends wanted the same thing.</h3>
           <ul class="uses">
