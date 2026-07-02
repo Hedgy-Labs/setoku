@@ -130,10 +130,16 @@ function requireDb(config: SetokuConfig): string {
   return res.url;
 }
 
-/** Every ```sql fence in the curated store — what "already covered" means for
- *  the success-path capture nudges (lib/nudge). Cheap at curated-store scale. */
+/** The ```sql fences of METRIC/QUERY docs — what "already covered" means for
+ *  the success-path capture nudges (lib/nudge). Scoped to the doc types that
+ *  define numbers: an illustrative fence in an entity/gotcha doc is context,
+ *  not a metric, and must not suppress the capture hint. Passed as a thunk so
+ *  the nudge helpers only scan the store once their cheap gates pass. */
 function curatedSqls(): string[] {
-  return store.listDocs().flatMap((d) => extractSql(d.body));
+  return store
+    .listDocs()
+    .filter((d) => d.type === "metric" || d.type === "query")
+    .flatMap((d) => extractSql(d.body));
 }
 
 const NO_KNOWLEDGE_HINT =
@@ -946,7 +952,7 @@ server.registerTool(
       // validated. (The empty-store warning below owns docCount === 0; nudging
       // on failed or zero-row queries would just coach retries.)
       if (store.docCount > 0 && result.rowCount > 0) {
-        const nudge = queryCaptureNudge(sql, curatedSqls());
+        const nudge = queryCaptureNudge(sql, curatedSqls);
         if (nudge) lines.push("", nudge);
       }
       // No curated context yet → the agent is querying from raw schema, which is
@@ -1108,7 +1114,7 @@ function publishNotes(html: string, panels: AppPanel[]): string {
   const noDesc = panels.filter((p) => !p.description?.trim()).map((p) => p.key);
   if (noDesc.length)
     notes.push(`panel(s) ${noDesc.map((k) => `"${k}"`).join(", ")} have no \`description\` — the drawer can't explain what they compute. Add a one-line description.`);
-  const capture = panelCaptureNote(panels, curatedSqls());
+  const capture = panelCaptureNote(panels, curatedSqls);
   if (capture) notes.push(capture);
   notes.push(...lintAppTemplate(html, panels.map((p) => p.key)));
   return notes.length ? `\n\n⚠ Heads up (publishes anyway):\n- ${notes.join("\n- ")}` : "";

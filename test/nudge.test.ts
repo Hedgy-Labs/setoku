@@ -21,6 +21,18 @@ describe("normalizeSql", () => {
       "select count(*) from t",
     );
   });
+  it("comment markers inside string literals survive (literal-aware lexing)", () => {
+    expect(normalizeSql("SELECT id FROM t WHERE slug = 'my--post'")).toBe(
+      "select id from t where slug = 'my--post'",
+    );
+    expect(normalizeSql("SELECT id FROM t WHERE note LIKE '%/*%'")).toBe(
+      "select id from t where note like '%/*%'",
+    );
+    // distinct literals must stay distinct after normalization
+    expect(normalizeSql("SELECT 1 FROM t WHERE s='a--x'")).not.toBe(
+      normalizeSql("SELECT 1 FROM t WHERE s='a--y'"),
+    );
+  });
 });
 
 describe("isExploratorySql", () => {
@@ -46,6 +58,24 @@ describe("isAggregateShaped", () => {
     expect(isAggregateShaped('SELECT * FROM "Vendor" LIMIT 10')).toBe(false);
     expect(isAggregateShaped("SELECT id, name FROM users WHERE id = 3")).toBe(false);
   });
+  it("aggregate-looking text inside a string literal is not an aggregate", () => {
+    expect(
+      isAggregateShaped("SELECT id, note FROM t WHERE label = 'sum(total)'"),
+    ).toBe(false);
+  });
+  it("window functions are per-row fetches, not metrics", () => {
+    expect(
+      isAggregateShaped(
+        "SELECT id, amount, sum(amount) OVER (PARTITION BY user_id) FROM ledger",
+      ),
+    ).toBe(false);
+    // a real aggregate alongside a window call still counts
+    expect(
+      isAggregateShaped(
+        "SELECT plan, count(*), sum(amt) OVER (PARTITION BY plan) FROM x GROUP BY plan",
+      ),
+    ).toBe(true);
+  });
 });
 
 describe("coveredByCurated", () => {
@@ -68,6 +98,16 @@ describe("coveredByCurated", () => {
       coveredByCurated('SELECT count(*) FROM "Listing" WHERE active', curated),
     ).toBe(false);
   });
+  it("token boundaries: a curated prefix must not claim a different table", () => {
+    const c = ["SELECT count(*) FROM orders"];
+    expect(coveredByCurated("SELECT count(*) FROM orders_archive", c)).toBe(false);
+    expect(coveredByCurated("SELECT count(*) FROM orders WHERE paid", c)).toBe(true);
+  });
+  it("a broad query inside a narrower curated metric is NOT covered", () => {
+    const narrow = ["SELECT count(*) FROM orders WHERE status = 'paid' AND total > 0"];
+    // the broad number is defined by no metric — it should still nudge
+    expect(coveredByCurated("SELECT count(*) FROM orders", narrow)).toBe(false);
+  });
   it("empty store covers nothing, blank fences cover nothing", () => {
     expect(coveredByCurated(WINS_SQL, [])).toBe(false);
     expect(coveredByCurated(WINS_SQL, ["  "])).toBe(false);
@@ -75,7 +115,7 @@ describe("coveredByCurated", () => {
 });
 
 describe("queryCaptureNudge", () => {
-  const curated = [WINS_SQL];
+  const curated = () => [WINS_SQL];
   it("fires on an uncovered business aggregate", () => {
     const nudge = queryCaptureNudge(
       'SELECT count(*) FROM "Listing" WHERE status = \'LIVE\'',
@@ -88,10 +128,22 @@ describe("queryCaptureNudge", () => {
     expect(queryCaptureNudge('SELECT * FROM "Vendor" LIMIT 5', curated)).toBeNull();
     expect(queryCaptureNudge(WINS_SQL, curated)).toBeNull();
   });
+  it("does not pay for the curated scan unless the shape gates pass", () => {
+    let scans = 0;
+    const counting = (): string[] => {
+      scans += 1;
+      return [WINS_SQL];
+    };
+    queryCaptureNudge("SELECT id, name FROM users LIMIT 20", counting);
+    queryCaptureNudge("SHOW TABLES", counting);
+    expect(scans).toBe(0);
+    queryCaptureNudge('SELECT count(*) FROM "Listing"', counting);
+    expect(scans).toBe(1);
+  });
 });
 
 describe("panelCaptureNote", () => {
-  const curated = [WINS_SQL];
+  const curated = () => [WINS_SQL];
   it("names only the uncovered, unlinked aggregate panels", () => {
     const note = panelCaptureNote(
       [
@@ -109,5 +161,15 @@ describe("panelCaptureNote", () => {
   });
   it("null when everything is covered or linked", () => {
     expect(panelCaptureNote([{ key: "won_deals", sql: WINS_SQL }], curated)).toBeNull();
+  });
+  it("never scans the store for zero-panel or non-aggregate publishes", () => {
+    let scans = 0;
+    const counting = (): string[] => {
+      scans += 1;
+      return [];
+    };
+    panelCaptureNote([], counting);
+    panelCaptureNote([{ key: "d", sql: "SELECT id FROM t LIMIT 5" }], counting);
+    expect(scans).toBe(0);
   });
 });
