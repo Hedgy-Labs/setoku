@@ -9,6 +9,10 @@
 #   /ingest/mercury/accounts     → mercury_accounts      (poller balance snapshots)
 #   /ingest/mercury/transactions → mercury_transactions  (poller, ReplacingMergeTree)
 #   /ingest/mercury              → mercury_events         (optional webhook stream)
+#   /ingest/github/issues        → github_issues   (poller; issues + PRs, ReplacingMergeTree)
+#   /ingest/github/pulls         → github_pulls    (poller; PR merge/branch detail)
+#   /ingest/github/commits       → github_commits  (poller; default-branch commits)
+#   /ingest/github/comments      → github_comments (poller; issue + review comments)
 #   anything else                → ingest_raw    (catch-all; nothing is silently dropped)
 #
 # Buffer policy (I4): app events block when the disk buffer fills (never shed
@@ -41,6 +45,10 @@ transforms:
       mercury_acct: '._path == "/ingest/mercury/accounts"'
       mercury_txn: '._path == "/ingest/mercury/transactions"'
       mercury_event: '._path == "/ingest/mercury"'
+      github_issue: '._path == "/ingest/github/issues"'
+      github_pull: '._path == "/ingest/github/pulls"'
+      github_commit: '._path == "/ingest/github/commits"'
+      github_comment: '._path == "/ingest/github/comments"'
 
   vercel_parse:
     type: remap
@@ -218,6 +226,91 @@ transforms:
         "raw": raw
       }
 
+  github_issues_parse:
+    type: remap
+    inputs: [router.github_issue]
+    source: |
+      # Poller sends pre-normalized fields (mercury pattern); normalize the
+      # timestamps to ClickHouse format, keep closed_at null while open.
+      del(.source_type)
+      del(._path)
+      ts_cr, e1 = parse_timestamp(to_string(.created_at) ?? "", "%+")
+      if e1 != null { ts_cr = now() }
+      .created_at = format_timestamp!(ts_cr, "%F %T%.3f")
+      ts_up, e2 = parse_timestamp(to_string(.updated_at) ?? "", "%+")
+      if e2 != null { ts_up = ts_cr }
+      .updated_at = format_timestamp!(ts_up, "%F %T%.3f")
+      ts_in, e3 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e3 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+      ca = .closed_at
+      if ca == null || ca == "" {
+        .closed_at = null
+      } else {
+        tc, ec = parse_timestamp(to_string(ca) ?? "", "%+")
+        if ec != null { .closed_at = null } else { .closed_at = format_timestamp!(tc, "%F %T%.3f") }
+      }
+
+  github_pulls_parse:
+    type: remap
+    inputs: [router.github_pull]
+    source: |
+      del(.source_type)
+      del(._path)
+      ts_cr, e1 = parse_timestamp(to_string(.created_at) ?? "", "%+")
+      if e1 != null { ts_cr = now() }
+      .created_at = format_timestamp!(ts_cr, "%F %T%.3f")
+      ts_up, e2 = parse_timestamp(to_string(.updated_at) ?? "", "%+")
+      if e2 != null { ts_up = ts_cr }
+      .updated_at = format_timestamp!(ts_up, "%F %T%.3f")
+      ts_in, e3 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e3 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+      # nullable lifecycle columns: null until closed / merged
+      ca = .closed_at
+      if ca == null || ca == "" {
+        .closed_at = null
+      } else {
+        tc, ec = parse_timestamp(to_string(ca) ?? "", "%+")
+        if ec != null { .closed_at = null } else { .closed_at = format_timestamp!(tc, "%F %T%.3f") }
+      }
+      ma = .merged_at
+      if ma == null || ma == "" {
+        .merged_at = null
+      } else {
+        tm, em = parse_timestamp(to_string(ma) ?? "", "%+")
+        if em != null { .merged_at = null } else { .merged_at = format_timestamp!(tm, "%F %T%.3f") }
+      }
+
+  github_commits_parse:
+    type: remap
+    inputs: [router.github_commit]
+    source: |
+      del(.source_type)
+      del(._path)
+      ts_co, e1 = parse_timestamp(to_string(.committed_at) ?? "", "%+")
+      if e1 != null { ts_co = now() }
+      .committed_at = format_timestamp!(ts_co, "%F %T%.3f")
+      ts_in, e2 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e2 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+
+  github_comments_parse:
+    type: remap
+    inputs: [router.github_comment]
+    source: |
+      del(.source_type)
+      del(._path)
+      ts_cr, e1 = parse_timestamp(to_string(.created_at) ?? "", "%+")
+      if e1 != null { ts_cr = now() }
+      .created_at = format_timestamp!(ts_cr, "%F %T%.3f")
+      ts_up, e2 = parse_timestamp(to_string(.updated_at) ?? "", "%+")
+      if e2 != null { ts_up = ts_cr }
+      .updated_at = format_timestamp!(ts_up, "%F %T%.3f")
+      ts_in, e3 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e3 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+
   to_raw:
     type: remap
     inputs: [router._unmatched]
@@ -295,7 +388,55 @@ sinks:
     auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
     compression: gzip
     batch: { timeout_secs: 10, max_events: 10000 }
-    buffer: { type: disk, max_size: 536870912, when_full: block }
+    buffer: { type: disk, max_size: 536870912, when_full: drop_newest } # re-pollable — see lake_github_issues
+
+  lake_github_issues:
+    type: clickhouse
+    inputs: [github_issues_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: github_issues
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    # drop_newest, not block: github data is re-pollable (the poller re-emits
+    # from its cursor), and a blocked sink here would backpressure the shared
+    # ingest_http source — stalling first-party app_events to protect data we
+    # can simply re-fetch. Same reasoning as the platform-log sinks (see header).
+    buffer: { type: disk, max_size: 536870912, when_full: drop_newest }
+
+  lake_github_pulls:
+    type: clickhouse
+    inputs: [github_pulls_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: github_pulls
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: drop_newest } # re-pollable — see lake_github_issues
+
+  lake_github_commits:
+    type: clickhouse
+    inputs: [github_commits_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: github_commits
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: drop_newest } # re-pollable — see lake_github_issues
+
+  lake_github_comments:
+    type: clickhouse
+    inputs: [github_comments_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: github_comments
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: drop_newest } # re-pollable — see lake_github_issues
 
   lake_raw:
     type: clickhouse
