@@ -640,7 +640,7 @@ server.registerTool(
       "on /admin), and audited — so over-aggressive rejection is visible. Always pass a concrete `reason`.",
     inputSchema: {
       id: z.number().int(),
-      reason: z.string().describe("Why it failed an objective check (recorded + shown in the cockpit)"),
+      reason: z.string().describe("Why it failed an objective check (recorded + shown in the /admin review queue)"),
     },
   },
   async ({ id, reason }) => {

@@ -1,22 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { api } from "./api";
+import { useApi } from "./hooks";
 import { useAuth } from "./auth";
 import { Brand } from "./components/Brand";
 import { cn } from "./cn";
+import type { Correction } from "./types";
 
+// Ordered by how often a human actually visits. Knowledge (the agent-facing
+// store + its review queue) sits after Apps and carries a pending-count badge
+// so curators still get pulled in without the tab needing top billing.
 const TABS: { to: string; label: string }[] = [
-  { to: "/", label: "Cockpit" },
+  { to: "/", label: "Apps" },
   { to: "/knowledge", label: "Knowledge" },
   { to: "/sources", label: "Sources" },
   { to: "/team", label: "Team" },
-  { to: "/apps", label: "Apps" },
   { to: "/audit", label: "Audit" },
 ];
+
+/** Count chip on the Knowledge tab: proposals waiting for review. */
+function PendingBadge({ n }: { n: number }) {
+  if (!n) return null;
+  return (
+    <span className="ml-1.5 rounded-full bg-stone-300 px-1.5 py-px text-[10px] font-semibold tabular-nums text-stone-700">
+      {n}
+    </span>
+  );
+}
 
 /** Signed-in chrome: sticky top bar (brand, nav, identity, sign-out) + content. */
 export function Layout() {
   const { me, logout } = useAuth();
+  const { pathname } = useLocation();
+  // refreshed on every navigation, so approving/rejecting updates the badge
+  const { data: queue } = useApi<Correction[]>(() => api.pending(), [pathname]);
+  const pending = queue?.length ?? 0;
   return (
     <>
       <header className="sticky top-0 z-10 border-b border-stone-200 bg-stone-50/80 backdrop-blur">
@@ -35,6 +54,7 @@ export function Layout() {
                 className={({ isActive }) => cn("tab", isActive && "tab-active")}
               >
                 {t.label}
+                {t.to === "/knowledge" ? <PendingBadge n={pending} /> : null}
               </NavLink>
             ))}
           </nav>
@@ -44,7 +64,7 @@ export function Layout() {
 
           {/* small screens: everything collapses into a hamburger */}
           <div className="ml-auto md:hidden">
-            <MobileNav identity={me?.identity ?? ""} role={me?.role ?? ""} onSignOut={() => void logout()} />
+            <MobileNav identity={me?.identity ?? ""} role={me?.role ?? ""} pending={pending} onSignOut={() => void logout()} />
           </div>
         </div>
       </header>
@@ -97,7 +117,17 @@ function AccountMenu({ identity, role, onSignOut }: { identity: string; role: st
 }
 
 /** The small-width nav: a hamburger opening the tabs + identity + sign-out. */
-function MobileNav({ identity, role, onSignOut }: { identity: string; role: string; onSignOut: () => void }) {
+function MobileNav({
+  identity,
+  role,
+  pending,
+  onSignOut,
+}: {
+  identity: string;
+  role: string;
+  pending: number;
+  onSignOut: () => void;
+}) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const isActive = (to: string): boolean => (to === "/" ? pathname === "/" : pathname.startsWith(to));
@@ -121,6 +151,7 @@ function MobileNav({ identity, role, onSignOut }: { identity: string; role: stri
               onSelect={() => navigate(t.to)}
             >
               {t.label}
+              {t.to === "/knowledge" ? <PendingBadge n={pending} /> : null}
             </DropdownMenu.Item>
           ))}
           <DropdownMenu.Separator className="my-1 h-px bg-stone-200" />

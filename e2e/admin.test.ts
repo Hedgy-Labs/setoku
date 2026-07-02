@@ -117,7 +117,11 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
 
   it("an admin signs in and approves a pending gotcha (the membrane)", async () => {
     const { page, errors } = await open({ user: "boss", pass: "s3cret-pass" });
-    await page.waitForSelector("text=Curation cockpit");
+    // landing is Apps; the review queue lives under the Knowledge tab
+    await page.waitForSelector('h1:has-text("Apps")');
+    await page.click('nav a:has-text("Knowledge")');
+    await page.click('a:has-text("Review")');
+    await page.waitForSelector("text=Pending (");
     expect(await page.locator('button:has-text("Approve")').first().isVisible()).toBe(true);
     await page.locator('button:has-text("Approve")').first().click();
     await page.waitForSelector("text=approved"); // flash from the resolve response
@@ -127,7 +131,9 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
 
   it("a member is view-only — cannot approve, no invite form", async () => {
     const { page, errors } = await open({ user: "viewer", pass: "viewer-pass" });
-    await page.waitForSelector("text=Curation cockpit");
+    await page.click('nav a:has-text("Knowledge")');
+    await page.click('a:has-text("Review")');
+    await page.waitForSelector("text=Pending (");
     expect(await page.locator("text=viewing only").first().isVisible()).toBe(true);
     expect(await page.locator('button:has-text("Approve")').count()).toBe(0);
     await page.click('a:has-text("Team")');

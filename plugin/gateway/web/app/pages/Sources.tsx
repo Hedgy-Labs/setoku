@@ -12,7 +12,8 @@ export function Sources() {
   return (
     <>
       <Heading title="Sources">
-        What's connected and whether data is flowing — click a source to expand. Read-only, refreshed
+        The databases and feeds your agents can query — what's connected and whether data is actually
+        flowing (a live heartbeat, not just recent rows). Click a source to expand. Read-only, refreshed
         live on each load.
       </Heading>
       {loading ? <Loading /> : error ? <ErrorMsg>{error}</ErrorMsg> : data ? <SourceList data={data} /> : null}

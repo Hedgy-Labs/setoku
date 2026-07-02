@@ -4,10 +4,11 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
+import { KnowledgeTabs } from "../components/KnowledgeTabs";
 import { Badge } from "../components/Badge";
 import { Markdown } from "../components/Markdown";
 import { KnowledgeGraph } from "../components/KnowledgeGraph";
-import type { KnowledgeMember, KnowledgeView, SubjectGroup } from "../types";
+import type { Correction, KnowledgeMember, KnowledgeView, SubjectGroup } from "../types";
 
 /* The active worklist/filter. Search (`q`) layers on top of any of these.
  *  - flag: subjects with a member carrying that per-doc flag
@@ -712,6 +713,7 @@ function SubjectPage({
 
 export function Knowledge() {
   const { data, loading, error } = useApi<KnowledgeView>(() => api.knowledgeView(), []);
+  const { data: queue } = useApi<Correction[]>(() => api.pending(), []);
   const [q, setQ] = useState("");
   const [view, setView] = useState<View>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -768,17 +770,19 @@ export function Knowledge() {
   return (
     <>
       <Heading title="Knowledge">
-        Curated business context the analyst reads as ground truth — {data?.docs ?? 0} doc(s) across{" "}
-        {data?.subjects.length ?? 0} subject(s). Read-only here: curated edits come from a curator
-        session, and corrections land in{" "}
+        The curated context your agents read as ground truth — {data?.docs ?? 0} doc(s) across{" "}
+        {data?.subjects.length ?? 0} subject(s). This is reference material for agents, not for you:
+        browse it to check what they believe and spot problems. Read-only here — curated edits come
+        from a curator session, and agent proposals wait in{" "}
         <Link
           className="font-medium text-stone-900 underline decoration-stone-400 underline-offset-2 hover:decoration-stone-600"
-          to="/"
+          to="/knowledge/review"
         >
-          Pending
+          Review
         </Link>{" "}
-        for review.
+        for a human to approve.
       </Heading>
+      <KnowledgeTabs pending={queue?.length} />
 
       {loading ? (
         <Loading />
@@ -799,37 +803,42 @@ export function Knowledge() {
         <>
           <HealthBar h={data.health} view={view} toggle={toggle} />
 
-          {/* catalog / graph — two views of the same curated knowledge */}
-          <div className="mb-4 inline-flex gap-1 rounded-lg bg-stone-100 p-1">
-            <button
-              type="button"
-              onClick={() => setMode("catalog")}
-              aria-pressed={mode === "catalog"}
-              className={`tab ${mode === "catalog" ? "tab-active" : ""}`}
-            >
-              Catalog
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode("graph")}
-              aria-pressed={mode === "graph"}
-              className={`tab ${mode === "graph" ? "tab-active" : ""}`}
-            >
-              Graph
-            </button>
+          {/* search + the catalog/graph view-mode toggle, on one row */}
+          <div className="mb-4 flex items-center gap-3">
+            {mode === "catalog" ? (
+              <input
+                className="input flex-1"
+                placeholder="Search subjects, facts…"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+              />
+            ) : (
+              <div className="flex-1" />
+            )}
+            <div className="inline-flex shrink-0 gap-1 rounded-lg bg-stone-100 p-1">
+              <button
+                type="button"
+                onClick={() => setMode("catalog")}
+                aria-pressed={mode === "catalog"}
+                className={`tab ${mode === "catalog" ? "tab-active" : ""}`}
+              >
+                Catalog
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("graph")}
+                aria-pressed={mode === "graph"}
+                className={`tab ${mode === "graph" ? "tab-active" : ""}`}
+              >
+                Graph
+              </button>
+            </div>
           </div>
 
           {mode === "graph" ? (
             <KnowledgeGraph subjects={data.subjects} onOpen={openSubject} />
           ) : (
             <>
-              <input
-                className="input mb-4 w-full"
-                placeholder="Search subjects, facts…"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
-
               {isPanel && view.panel === "connections" ? (
                 <ConnectionsPanel rows={data.connections} onNav={onNav} />
               ) : isPanel && view.panel === "brokenLinks" ? (

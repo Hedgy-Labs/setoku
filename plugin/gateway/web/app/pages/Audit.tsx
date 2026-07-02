@@ -9,7 +9,10 @@ export function Audit() {
   const { data, loading, error } = useApi<AuditRow[]>(() => api.audit(), []);
   return (
     <>
-      <Heading title="Audit log">Append-only; newest first.</Heading>
+      <Heading title="Audit log">
+        Who did what on this box — sign-ins, agent tool calls, approvals, team and app changes.
+        Append-only; newest first.
+      </Heading>
       {loading ? (
         <Loading />
       ) : error ? (
