@@ -40,6 +40,11 @@ Naming: `public.orders` → `biz.orders`; other schemas prefix,
 - Timestamps/dates leave pg as **text** (offset included) and are parsed by
   ClickHouse with `best_effort`, so the mirror never depends on a driver's
   timezone interpretation. `infinity` timestamps are unsupported (fail loudly).
+- Floats stream as pg **text** too (shortest-exact, round-trips precisely), so
+  `NaN`/`±Infinity` survive into real ClickHouse Float specials instead of
+  collapsing in the driver; a `null` reaching a NOT NULL column fails the
+  reload loudly (`input_format_null_as_default=0`) instead of silently
+  becoming 0.
 - pg enums → `LowCardinality(String)`; arrays → `Array(T)` (a NULL array lands
   as `[]` — ClickHouse arrays can't be Nullable); `json`/`jsonb` → `String`.
 
@@ -59,7 +64,13 @@ docker compose up -d --build pg-mirror
 
 Env: `SETOKU_DATABASE_URL` (required, the read-only role),
 `SETOKU_MIRROR_INTERVAL_MS` (default 900000 = 15 min), `CLICKHOUSE_*` (like
-every connector), `SETOKU_MIRROR_DB` (default `biz`).
+every connector).
+
+The allow/deny list comes from the baked `.setoku/config.json` (same
+`deploy/project-template` bake as the gateway image) and **fails closed**: a
+missing or corrupt config skips the run rather than mirroring with defaults.
+After editing `allowTables`/`denyTables`, rebuild **both** images so the lists
+can't drift: `docker compose up -d --build server pg-mirror`.
 
 Tests: `bun test ingest/pg-mirror/` (real local Postgres + a fake ClickHouse;
 set `SETOKU_E2E_CH_URL` to also run the real-engine e2e, same gate as

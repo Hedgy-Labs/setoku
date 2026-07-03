@@ -32,13 +32,15 @@ const lakeTsToIso = (s: string): string => {
 };
 
 const TTL_MS = 60_000;
+/** How long a COLD-cache caller waits for the first lake read before giving up
+ *  with "no mirror". Everything downstream is advisory chrome/nudges, so a
+ *  degraded lake must never stall run_query/healthz/the public data poll —
+ *  those paths were lake-free before the mirror existed. */
+const COLD_WAIT_MS = 1_000;
 let cache: { at: number; url: string; tables: MirroredTable[] } | null = null;
+let inflight: Promise<MirroredTable[]> | null = null;
 
-/** Currently-mirrored tables with per-table freshness. Cached ~60 s so the
- *  render/query hot paths never add more than a rare, small lake read; [] when
- *  the mirror (or the lake) isn't there. */
-export async function mirroredTables(lakeUrl: string): Promise<MirroredTable[]> {
-  if (cache && cache.url === lakeUrl && Date.now() - cache.at < TTL_MS) return cache.tables;
+async function refresh(lakeUrl: string): Promise<MirroredTable[]> {
   let tables: MirroredTable[] = [];
   try {
     // Only tables that still exist in biz count — pg_mirror_runs keeps history
@@ -57,15 +59,37 @@ export async function mirroredTables(lakeUrl: string): Promise<MirroredTable[]> 
       asOf: lakeTsToIso(String(r.as_of)),
     }));
   } catch {
-    /* no mirror on this box / lake unreachable — degrade to "no mirror" */
+    /* no mirror on this box / lake unreachable — degrade to "no mirror"
+       (negative-cached for a TTL so a down lake isn't re-probed per call) */
   }
   cache = { at: Date.now(), url: lakeUrl, tables };
   return tables;
 }
 
+/** Currently-mirrored tables with per-table freshness; [] when the mirror (or
+ *  the lake) isn't there. Stale-while-revalidate: an expired cache answers
+ *  immediately while one shared refresh updates it in the background, and a
+ *  cold cache waits at most COLD_WAIT_MS — so callers never inherit the lake's
+ *  latency. */
+export async function mirroredTables(lakeUrl: string): Promise<MirroredTable[]> {
+  if (cache && cache.url !== lakeUrl) cache = null;
+  if (cache && Date.now() - cache.at < TTL_MS) return cache.tables;
+  if (!inflight) {
+    inflight = refresh(lakeUrl).finally(() => {
+      inflight = null;
+    });
+  }
+  if (cache) return cache.tables; // stale — serve it, the refresh lands for the next caller
+  return Promise.race([
+    inflight,
+    new Promise<MirroredTable[]>((resolve) => setTimeout(() => resolve([]), COLD_WAIT_MS)),
+  ]);
+}
+
 /** Test hook. */
 export function clearMirrorCache(): void {
   cache = null;
+  inflight = null;
 }
 
 /** The honest "data as of" for a set of biz tables: the OLDEST fresh copy among
@@ -80,15 +104,13 @@ export function mirrorAsOf(tables: MirroredTable[], referencedTargets?: string[]
 }
 
 /** biz.<target> references in a panel's clickhouse SQL (case-insensitive,
- *  backtick-tolerant). Purely for the freshness stamp — never access control. */
+ *  backtick-tolerant, boundary-checked so biz.orders never claims
+ *  biz.orders_archive). Purely for the freshness stamp — never access control. */
 export function referencedBizTables(sql: string, tables: MirroredTable[]): string[] {
-  const lower = sql.toLowerCase();
-  return tables.filter((t) => {
-    const name = t.target.toLowerCase();
-    return (
-      lower.includes(`biz.${name}`) ||
-      lower.includes(`biz.\`${name}\``) ||
-      lower.includes(`\`biz\`.\`${name}\``)
-    );
-  }).map((t) => t.target);
+  return tables
+    .filter((t) => {
+      const n = t.target.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`(?:\\bbiz|\`biz\`)\\.(?:\`${n}\`|${n}(?![\\w$]))`, "i").test(sql);
+    })
+    .map((t) => t.target);
 }

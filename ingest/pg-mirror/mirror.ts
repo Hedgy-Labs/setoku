@@ -32,7 +32,6 @@
  *   CLICKHOUSE_USER            default setoku   (full-privilege ingest user — needs CREATE/INSERT/EXCHANGE)
  *   CLICKHOUSE_PASSWORD        default ""
  *   CLICKHOUSE_DB              metadata db (heartbeats, runs), default setoku
- *   SETOKU_MIRROR_DB           mirror target db, default biz
  *   SETOKU_MIRROR_INTERVAL_MS  default 900000 (15 min between full reloads)
  *   SETOKU_PROJECT_DIR         default /project — reads .setoku/config.json for allow/denyTables
  *   SETOKU_PG_SSL_STRICT       "1" = verify TLS certs (default: encrypt, don't verify — matches gateway lib/db.ts)
@@ -49,18 +48,24 @@ export interface MirrorConfig {
 }
 
 /** Same allow/deny source of truth as the gateway: .setoku/config.json in the
- *  baked project dir (deploy/project-template, or the operator's own bake). */
+ *  baked project dir (deploy/project-template, or the operator's own bake).
+ *  FAILS CLOSED: a missing or corrupt config throws (the loop skips the run and
+ *  keeps the previous mirror) — silently falling back to defaults could mirror
+ *  a deny-listed table into the analyst-readable lake (I2). NB the config is
+ *  baked at image build: after editing allow/denyTables, rebuild BOTH images
+ *  (`docker compose up -d --build server pg-mirror`) or the lists drift. */
 export function loadMirrorConfig(projectDir: string): MirrorConfig {
   const file = path.join(projectDir, ".setoku", "config.json");
+  let raw: { allowTables?: string[]; denyTables?: string[] };
   try {
-    const raw = JSON.parse(fs.readFileSync(file, "utf8"));
-    return {
-      allowTables: raw.allowTables ?? ["public.*"],
-      denyTables: raw.denyTables ?? [],
-    };
-  } catch {
-    return { allowTables: ["public.*"], denyTables: [] };
+    raw = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (e) {
+    throw new Error(`cannot read ${file} (${(e as Error).message}) — refusing to mirror with an unknown allow/deny list`);
   }
+  return {
+    allowTables: raw.allowTables ?? ["public.*"],
+    denyTables: raw.denyTables ?? [],
+  };
 }
 
 /** Glob match for "schema.table" patterns where * matches within a segment —
@@ -109,8 +114,7 @@ interface PgColumnRow {
   elem_udt: string | null;
   elem_typtype: string | null;
   not_null: boolean;
-  num_precision: number | null;
-  num_scale: number | null;
+  atttypmod: number | null; // raw typmod (numeric precision/scale packing)
 }
 
 /** The explicit pg → ClickHouse scalar map. Small on purpose: an unmapped type
@@ -139,14 +143,31 @@ const PG_TO_CH: Record<string, { ch: string; kind: ColKind }> = {
   bytea: { ch: "String", kind: "bytea" },
 };
 
-function scalarType(udt: string, typtype: string, p: number | null, s: number | null): { ch: string; kind: ColKind } {
+/** Decode a pg numeric atttypmod → declared precision/scale. The scale lives in
+ *  the low 11 bits as a SIGNED value (pg ≥ 15 allows negative scale), so it
+ *  must be sign-extended — a plain mask reads numeric(5,-2) as scale 2046. */
+export function numericTypmod(atttypmod: number | null): { precision: number | null; scale: number } {
+  if (atttypmod == null || atttypmod < 4) return { precision: null, scale: 0 }; // bare numeric
+  const packed = atttypmod - 4;
+  return { precision: (packed >> 16) & 0xffff, scale: ((packed & 0x7ff) ^ 0x400) - 0x400 };
+}
+
+function scalarType(udt: string, typtype: string, atttypmod: number | null): { ch: string; kind: ColKind } {
   if (udt === "numeric") {
     // Declared precision carries over; bare `numeric` (arbitrary precision) gets
     // Decimal(38,9) — exact for money-scale values, and an out-of-range value
     // fails the reload loudly rather than silently rounding through Float64.
-    const prec = p && p > 0 && p <= 76 ? p : 38;
-    const scale = p && p > 0 && s != null ? s : 9;
-    return { ch: `Decimal(${prec}, ${scale})`, kind: "plain" };
+    const { precision, scale } = numericTypmod(atttypmod);
+    if (precision == null) return { ch: "Decimal(38, 9)", kind: "plain" };
+    let p = precision;
+    let s = scale;
+    if (s < 0) {
+      p -= s; // numeric(5,-2) holds up to 7 integer digits
+      s = 0;
+    }
+    if (s > p) p = s; // pg ≥ 15 allows scale > precision; ClickHouse doesn't
+    if (p > 76) throw new Error(`numeric(${precision},${scale}) exceeds ClickHouse Decimal precision (76) — deny the table or narrow the column`);
+    return { ch: `Decimal(${p}, ${s})`, kind: "plain" };
   }
   if (typtype === "e") return { ch: "LowCardinality(String)", kind: "plain" }; // pg enum
   const hit = PG_TO_CH[udt];
@@ -159,7 +180,7 @@ export function mapColumn(c: PgColumnRow): MirrorColumn {
   const isArray = c.udt_name.startsWith("_");
   const udt = isArray ? (c.elem_udt ?? c.udt_name.slice(1)) : c.udt_name;
   const typtype = isArray ? (c.elem_typtype ?? "b") : c.typtype;
-  const base = scalarType(udt, typtype, c.num_precision, c.num_scale);
+  const base = scalarType(udt, typtype, c.atttypmod);
   const nullable = !c.not_null;
   if (isArray) {
     // ClickHouse arrays can't be Nullable — a NULL pg array lands as [] (the
@@ -214,12 +235,18 @@ export function stagingDDL(db: string, staging: string, t: MirrorTable): string 
 
 /** The SELECT list streamed out of pg. Timestamps/dates go out as pg TEXT (so
  *  the mirror never depends on the driver's timezone interpretation — ClickHouse
- *  parses them with best_effort); enum arrays cast to text[]. */
+ *  parses them with best_effort). Floats go out as TEXT too: pg's shortest-exact
+ *  form round-trips precisely and keeps NaN/±Infinity intact (Bun's driver
+ *  collapses all three specials to NaN), and ClickHouse parses "Infinity" /
+ *  "-Infinity" / "NaN" strings into real Float specials. Enum arrays cast to
+ *  text[]. */
 export function buildSelect(t: MirrorTable): string {
+  const asText = (c: MirrorColumn): boolean =>
+    c.kind === "datetime" || c.kind === "date" || c.udt === "float4" || c.udt === "float8";
   const cols = t.columns.map((c) => {
     const q = pgIdent(c.name);
-    if (!c.isArray && (c.kind === "datetime" || c.kind === "date")) return `${q}::text AS ${q}`;
-    if (c.isArray && (c.isEnum || c.elemKind === "datetime" || c.elemKind === "date")) return `${q}::text[] AS ${q}`;
+    if (!c.isArray && asText(c)) return `${q}::text AS ${q}`;
+    if (c.isArray && (c.isEnum || asText({ ...c, kind: c.elemKind ?? "plain" }))) return `${q}::text[] AS ${q}`;
     return q;
   });
   return `SELECT ${cols.join(", ")} FROM ${pgIdent(t.schema)}.${pgIdent(t.name)}`;
@@ -235,6 +262,10 @@ const hex = (b: Uint8Array): string => {
 
 function serializeScalar(v: unknown, kind: ColKind): unknown {
   if (v === null || v === undefined) return null;
+  // JSON has no NaN/Infinity (JSON.stringify would emit null → silent 0/NULL in
+  // ClickHouse); the engine parses these quoted forms back into real Float
+  // NaN/Inf, so pg float specials survive the trip instead of corrupting.
+  if (typeof v === "number" && !Number.isFinite(v)) return Number.isNaN(v) ? "nan" : v > 0 ? "inf" : "-inf";
   if (v instanceof Date) return v.toISOString();
   if (typeof v === "bigint") return String(v);
   if (v instanceof Uint8Array) return kind === "bytea" ? hex(v) : String(v);
@@ -304,6 +335,9 @@ export async function chInsert(ch: ChOptions, db: string, table: string, ndjson:
   const params = new URLSearchParams({
     query: `INSERT INTO ${chIdent(db)}.${chIdent(table)} FORMAT JSONEachRow`,
     date_time_input_format: "best_effort",
+    // a null reaching a NOT NULL column is a serialization bug — fail the
+    // reload loudly instead of ClickHouse silently substituting 0/''
+    input_format_null_as_default: "0",
   });
   await chFetch(ch, params, ndjson, 300_000);
 }
@@ -365,8 +399,7 @@ export async function discoverTables(
            t.typname AS udt_name, t.typtype AS typtype,
            et.typname AS elem_udt, et.typtype AS elem_typtype,
            a.attnotnull AS not_null,
-           CASE WHEN a.atttypmod > 4 THEN ((a.atttypmod - 4) >> 16) & 65535 END AS num_precision,
-           CASE WHEN a.atttypmod > 4 THEN (a.atttypmod - 4) & 65535 END AS num_scale
+           a.atttypmod AS atttypmod
     FROM pg_attribute a
     JOIN pg_class c ON c.oid = a.attrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -407,6 +440,12 @@ export async function discoverTables(
     const raw = colsByTable.get(key(t.schema, t.name)) ?? [];
     if (!raw.length) {
       failed.push({ schema: t.schema, name: t.name, error: "no columns visible in pg_attribute" });
+      continue;
+    }
+    // "__staging" is the swap workspace — a source table mapping onto it would
+    // have its LIVE mirror clobbered by another table's reload mid-run.
+    if (bizTableName(t.schema, t.name).endsWith("__staging")) {
+      failed.push({ schema: t.schema, name: t.name, error: 'mirror name ends in the reserved "__staging" suffix — rename or deny the table' });
       continue;
     }
     try {
@@ -500,7 +539,12 @@ export async function mirrorTable(
 
   if (existing.has(target)) {
     await chCommand(ch, `EXCHANGE TABLES ${chIdent(db)}.${chIdent(target)} AND ${chIdent(db)}.${chIdent(staging)}`);
-    await chCommand(ch, `DROP TABLE IF EXISTS ${chIdent(db)}.${chIdent(staging)} SYNC`); // now holds the previous copy
+    // staging now holds the previous copy — the swap already succeeded, so a
+    // failed cleanup must not record this reload as an error (next run's
+    // DROP IF EXISTS retries it).
+    await chCommand(ch, `DROP TABLE IF EXISTS ${chIdent(db)}.${chIdent(staging)} SYNC`).catch((e) =>
+      console.error(`pg-mirror: post-swap cleanup of ${staging} failed: ${e}`),
+    );
   } else {
     await chCommand(ch, `RENAME TABLE ${chIdent(db)}.${chIdent(staging)} TO ${chIdent(db)}.${chIdent(target)}`);
     existing.add(target);
@@ -536,6 +580,18 @@ export async function runOnce(
   const existing = new Set<string>(
     (await chSelect(ch, `SELECT name FROM system.tables WHERE database = ${sqlString(ch.mirrorDb)}`)).map((r) => String(r.name)),
   );
+
+  // Zero-discovery guard: an empty result usually means a transient grant loss
+  // or a misrouted connection, not "mirror nothing" — pruning here would drop
+  // the ENTIRE mirror and break every biz.* panel until grants recover AND a
+  // full reload completes. Keep the last good copy and say so.
+  if (!tables.length && !discoveryFailed.length) {
+    if (existing.size)
+      console.error(
+        `pg-mirror: discovery returned no allowlisted tables — refusing to prune ${existing.size} existing mirror table(s) (revoked grants or misconfig? fix the source, the next pass reconciles)`,
+      );
+    return { ok: 0, failed: 0, rows: 0 };
+  }
 
   const results: TableResult[] = [];
   for (const f of discoveryFailed) {
@@ -634,9 +690,11 @@ async function main(): Promise<void> {
     user: process.env.CLICKHOUSE_USER ?? "setoku",
     password: process.env.CLICKHOUSE_PASSWORD ?? "",
     db: process.env.CLICKHOUSE_DB ?? "setoku",
-    mirrorDb: process.env.SETOKU_MIRROR_DB ?? "biz",
+    // "biz" is a contract, not a knob: the gateway's steering/freshness surfaces
+    // and the setoku_ro grant all name it (deploy/clickhouse/lake-users.xml).
+    mirrorDb: "biz",
   };
-  const cfg = loadMirrorConfig(PROJECT_DIR);
+  const cfg = loadMirrorConfig(PROJECT_DIR); // fail-fast at startup (fails closed)
   console.error(
     `pg-mirror: full reload every ${INTERVAL}ms → ${ch.url} db ${ch.mirrorDb} ` +
       `(allow ${JSON.stringify(cfg.allowTables)}, deny ${JSON.stringify(cfg.denyTables)})`,
@@ -658,7 +716,10 @@ async function main(): Promise<void> {
     try {
       const pg = new SQL(pgOptions(DB_URL)) as unknown as Pg;
       try {
-        const r = await runOnce(pg, ch, cfg, (s) => {
+        // Re-read per tick (fails closed — a broken config skips the run and
+        // keeps the previous mirror) so a bind-mounted /project picks up
+        // allow/deny edits without a restart.
+        const r = await runOnce(pg, ch, loadMirrorConfig(PROJECT_DIR), (s) => {
           state = s;
         });
         state = r.failed

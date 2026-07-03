@@ -205,6 +205,19 @@ describe("mirrorSteerNote (issue #47)", () => {
   it("no false match on longer names sharing a suffix", () => {
     expect(mirrorSteerNote("SELECT count(*) FROM orders_archive", MIRRORED)).toBeNull();
   });
+  it("a bare name never steers cross-schema (unqualified resolves to public)", () => {
+    // ticketing.seat_txn is mirrored, but bare `seat_txn` means public.seat_txn —
+    // steering there would present a different table's numbers as the answer.
+    expect(mirrorSteerNote("SELECT count(*) FROM seat_txn", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote('SELECT count(*) FROM ticketing.seat_txn', MIRRORED)).toContain("biz.ticketing_seat_txn");
+  });
+  it("quoted (camelCase) identifiers still steer", () => {
+    const camel = [{ target: "DealPipeline", source: "public.DealPipeline" }];
+    expect(mirrorSteerNote('SELECT count(*) FROM "DealPipeline" GROUP BY status', camel)).toContain("biz.DealPipeline");
+    expect(mirrorSteerNote('SELECT count(*) FROM "public"."DealPipeline"', camel)).toContain("biz.DealPipeline");
+    // …but a single-quoted LITERAL naming the table still doesn't
+    expect(mirrorSteerNote("SELECT count(*) FROM audit WHERE t = 'DealPipeline'", camel)).toBeNull();
+  });
 });
 
 describe("panelMirrorNote (issue #47)", () => {

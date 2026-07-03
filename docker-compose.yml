@@ -291,6 +291,8 @@ services:
   # gateway queries with — the allow/deny list is inherited, a denied table
   # never leaves prod. Heavy app panels read the mirror by default; see
   # ingest/pg-mirror/README.md. Stateless: every run is a full reload.
+  # NB the allow/deny config is baked at build like the server image — after
+  # editing .setoku/config.json rebuild BOTH: up -d --build server pg-mirror.
   pg-mirror:
     logging: *default-logging
     profiles: [mirror]

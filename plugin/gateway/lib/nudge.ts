@@ -20,13 +20,17 @@
  */
 
 /** One pass over `sql`: drop comments (literal-aware), collapse whitespace,
- *  lowercase, strip trailing semicolons. Returns two views of the same scan:
+ *  lowercase, strip trailing semicolons. Returns three views of the same scan:
  *  `normalized` keeps string-literal contents (for containment comparison);
  *  `skeleton` blanks them to `'?'` so shape predicates never match text the
- *  query merely filters on (`label = 'sum(total)'`). */
-function lex(sql: string): { normalized: string; skeleton: string } {
+ *  query merely filters on (`label = 'sum(total)'`); `identSkeleton` blanks
+ *  only '…' string literals and UNWRAPS "…" quoted identifiers (pg quoting for
+ *  camelCase names), so table-reference predicates can see `FROM "DealPipeline"`
+ *  as `from dealpipeline` without matching literal text. */
+function lex(sql: string): { normalized: string; skeleton: string; identSkeleton: string } {
   let norm = "";
   let skel = "";
+  let ident = "";
   const n = sql.length;
   let i = 0;
   while (i < n) {
@@ -37,6 +41,7 @@ function lex(sql: string): { normalized: string; skeleton: string } {
       i = nl === -1 ? n : nl;
       norm += " ";
       skel += " ";
+      ident += " ";
       continue;
     }
     // block comment: /* … */ (non-nesting — fine for a heuristic on both dialects)
@@ -45,6 +50,7 @@ function lex(sql: string): { normalized: string; skeleton: string } {
       i = close === -1 ? n : close + 2;
       norm += " ";
       skel += " ";
+      ident += " ";
       continue;
     }
     // string literal / quoted identifier: '…' or "…" (a doubled quote escapes)
@@ -61,18 +67,21 @@ function lex(sql: string): { normalized: string; skeleton: string } {
         }
         j += 1;
       }
-      norm += sql.slice(i, j).toLowerCase();
+      const chunk = sql.slice(i, j).toLowerCase();
+      norm += chunk;
       skel += `${c}?${c}`;
+      ident += c === '"' ? chunk.replace(/"/g, "") : "'?'";
       i = j;
       continue;
     }
     norm += c.toLowerCase();
     skel += c.toLowerCase();
+    ident += c.toLowerCase();
     i += 1;
   }
   const squash = (s: string): string =>
     s.replace(/\s+/g, " ").trim().replace(/[\s;]+$/, "").trim();
-  return { normalized: squash(norm), skeleton: squash(skel) };
+  return { normalized: squash(norm), skeleton: squash(skel), identSkeleton: squash(ident) };
 }
 
 /** Comment-stripped, whitespace/case-collapsed SQL for comparison. Literal
@@ -160,13 +169,17 @@ export interface MirrorRef {
   source: string;
 }
 
-/** Whether postgres SQL references a mirrored source table — qualified or bare,
- *  at token boundaries, judged on the literal-blanked skeleton (a query merely
- *  FILTERING on the string 'ticketing.seat_txn' doesn't count). */
+/** Whether postgres SQL references a mirrored source table, judged on the
+ *  identifier-preserving skeleton (a query merely FILTERING on the string
+ *  'ticketing.seat_txn' doesn't count, but `FROM "DealPipeline"` does). A BARE
+ *  name only matches for public-schema sources — an unqualified name resolves
+ *  to the search_path (public), so `FROM seat_txn` must never steer to a
+ *  mirrored ticketing.seat_txn (a different table, a confidently wrong number). */
 function referencesSource(sql: string, source: string): boolean {
-  const s = lex(sql).skeleton;
-  const bare = source.split(".").pop()!;
-  return containsAtBoundary(s, source.toLowerCase()) || containsAtBoundary(s, bare.toLowerCase());
+  const s = lex(sql).identSkeleton;
+  const [schema] = source.split(".");
+  if (containsAtBoundary(s, source.toLowerCase())) return true;
+  return schema === "public" && containsAtBoundary(s, source.split(".").pop()!.toLowerCase());
 }
 
 /**

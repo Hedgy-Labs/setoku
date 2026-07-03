@@ -33,4 +33,9 @@ describe("referencedBizTables", () => {
     expect(referencedBizTables("SELECT * FROM setoku.slack_messages", TABLES)).toEqual([]);
     expect(referencedBizTables("SELECT * FROM biz.unknown_table", TABLES)).toEqual([]);
   });
+  it("boundary-checked: biz.orders never claims biz.orders_archive", () => {
+    const both: MirroredTable[] = [...TABLES, { target: "orders_archive", source: "public.orders_archive", asOf: "2026-07-01T00:00:00.000Z" }];
+    expect(referencedBizTables("SELECT count() FROM biz.orders_archive", both)).toEqual(["orders_archive"]);
+    expect(referencedBizTables("SELECT count() FROM biz.orders_archive", TABLES)).toEqual([]);
+  });
 });

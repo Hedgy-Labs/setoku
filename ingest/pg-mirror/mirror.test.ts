@@ -13,10 +13,15 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import { SQL } from "bun";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   tableMatches,
   isTableAllowed,
+  loadMirrorConfig,
   mapColumn,
+  numericTypmod,
   bizTableName,
   chIdent,
   stagingDDL,
@@ -29,6 +34,9 @@ import {
   type ChOptions,
   type MirrorColumn,
 } from "./mirror";
+
+/** Pack a pg numeric typmod the way the catalog stores it. */
+const tm = (p: number, s: number): number => ((p << 16) | (s & 0x7ff)) + 4;
 
 /* ------------------------------ units ------------------------------- */
 
@@ -54,9 +62,20 @@ const col = (over: Partial<Parameters<typeof mapColumn>[0]>): Parameters<typeof 
   elem_udt: null,
   elem_typtype: null,
   not_null: false,
-  num_precision: null,
-  num_scale: null,
+  atttypmod: null,
   ...over,
+});
+
+describe("loadMirrorConfig fails closed (I2 — never mirror with an unknown list)", () => {
+  it("throws on missing and on corrupt config.json", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "setoku-mirror-cfg-"));
+    expect(() => loadMirrorConfig(dir)).toThrow(/refusing to mirror/);
+    fs.mkdirSync(path.join(dir, ".setoku"));
+    fs.writeFileSync(path.join(dir, ".setoku", "config.json"), "{not json");
+    expect(() => loadMirrorConfig(dir)).toThrow(/refusing to mirror/);
+    fs.writeFileSync(path.join(dir, ".setoku", "config.json"), JSON.stringify({ denyTables: ["public.x"] }));
+    expect(loadMirrorConfig(dir)).toEqual({ allowTables: ["public.*"], denyTables: ["public.x"] });
+  });
 });
 
 describe("type mapping", () => {
@@ -68,8 +87,19 @@ describe("type mapping", () => {
     expect(mapColumn(col({ udt_name: "uuid", not_null: true })).chType).toBe("UUID");
   });
   it("numeric: declared precision carries; bare numeric gets Decimal(38,9)", () => {
-    expect(mapColumn(col({ udt_name: "numeric", num_precision: 10, num_scale: 2, not_null: true })).chType).toBe("Decimal(10, 2)");
+    expect(mapColumn(col({ udt_name: "numeric", atttypmod: tm(10, 2), not_null: true })).chType).toBe("Decimal(10, 2)");
     expect(mapColumn(col({ udt_name: "numeric", not_null: true })).chType).toBe("Decimal(38, 9)");
+  });
+  it("numeric typmod decodes signed scale and clamps to valid ClickHouse Decimals", () => {
+    expect(numericTypmod(tm(10, 2))).toEqual({ precision: 10, scale: 2 });
+    expect(numericTypmod(tm(5, -2))).toEqual({ precision: 5, scale: -2 }); // pg ≥ 15 negative scale
+    expect(numericTypmod(null)).toEqual({ precision: null, scale: 0 });
+    // negative scale → integer-digit capacity, scale 0
+    expect(mapColumn(col({ udt_name: "numeric", atttypmod: tm(5, -2), not_null: true })).chType).toBe("Decimal(7, 0)");
+    // pg ≥ 15 scale > precision → widen precision to the scale
+    expect(mapColumn(col({ udt_name: "numeric", atttypmod: tm(3, 5), not_null: true })).chType).toBe("Decimal(5, 5)");
+    // beyond ClickHouse's Decimal range → loud failure, not invalid DDL
+    expect(() => mapColumn(col({ udt_name: "numeric", atttypmod: tm(100, 50) }))).toThrow(/exceeds ClickHouse Decimal precision/);
   });
   it("pg enums become LowCardinality(String)", () => {
     expect(mapColumn(col({ udt_name: "order_status", typtype: "e", not_null: true })).chType).toBe("LowCardinality(String)");
@@ -128,7 +158,8 @@ describe("row serialization", () => {
     mapColumn(col({ column_name: "meta", udt_name: "jsonb" })),
     mapColumn(col({ column_name: "tags", udt_name: "_text", elem_udt: "text", elem_typtype: "b" })),
     mapColumn(col({ column_name: "blob", udt_name: "bytea" })),
-    mapColumn(col({ column_name: "amount", udt_name: "numeric", num_precision: 10, num_scale: 2 })),
+    mapColumn(col({ column_name: "amount", udt_name: "numeric", atttypmod: tm(10, 2) })),
+    mapColumn(col({ column_name: "ratio", udt_name: "float8" })),
   ];
   it("serializes bigint→string, jsonb→string, null array→[], bytea→pg hex", () => {
     const line = serializeRow(
@@ -144,9 +175,17 @@ describe("row serialization", () => {
     expect(line.endsWith("\n")).toBe(true);
   });
   it("passes nulls through for nullable scalars", () => {
-    const parsed = JSON.parse(serializeRow({ id: 1, meta: null, tags: [], blob: null, amount: null }, columns));
+    const parsed = JSON.parse(serializeRow({ id: 1, meta: null, tags: [], blob: null, amount: null, ratio: null }, columns));
     expect(parsed.meta).toBeNull();
     expect(parsed.amount).toBeNull();
+  });
+  it("float NaN/±Infinity become ClickHouse-parseable strings, never JSON null", () => {
+    const p1 = JSON.parse(serializeRow({ id: 1, ratio: NaN }, columns));
+    const p2 = JSON.parse(serializeRow({ id: 1, ratio: Infinity }, columns));
+    const p3 = JSON.parse(serializeRow({ id: 1, ratio: -Infinity }, columns));
+    expect(p1.ratio).toBe("nan");
+    expect(p2.ratio).toBe("inf");
+    expect(p3.ratio).toBe("-inf");
   });
 });
 
@@ -283,7 +322,8 @@ const SCHEMA_STATEMENTS = [
      active boolean NOT NULL DEFAULT true,
      uid uuid,
      note text,
-     blob bytea
+     blob bytea,
+     ratio float8
    )`,
   `CREATE TABLE ticketing.seat_txn (
      acct_id int NOT NULL,
@@ -295,9 +335,10 @@ const SCHEMA_STATEMENTS = [
   `CREATE TABLE public.no_pk (v text)`,
   `CREATE TABLE public.internal_notes (id int PRIMARY KEY, secret text)`,
   `CREATE TABLE public.has_interval (id int PRIMARY KEY, span interval)`,
-  `INSERT INTO public.orders (id, amount, loose, placed_at, day, naive, meta, tags, nums, status, active, uid, note, blob) VALUES
-     (1, 12.34, 0.000000001, '2026-05-01T10:00:00Z', '2026-05-01', '2026-05-01 10:00:00', '{"a":1}', ARRAY['x','y''z'], ARRAY[1,2], 'paid', true, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'héllo — ''quoted''', '\\xdead'),
-     (2, 0.05, NULL, '2026-05-02T00:00:00Z', NULL, NULL, NULL, NULL, NULL, 'pending', false, NULL, NULL, NULL)`,
+  `CREATE TABLE public.evil__staging (id int PRIMARY KEY)`, // reserved-suffix guard
+  `INSERT INTO public.orders (id, amount, loose, placed_at, day, naive, meta, tags, nums, status, active, uid, note, blob, ratio) VALUES
+     (1, 12.34, 0.000000001, '2026-05-01T10:00:00Z', '2026-05-01', '2026-05-01 10:00:00', '{"a":1}', ARRAY['x','y''z'], ARRAY[1,2], 'paid', true, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'héllo — ''quoted''', '\\xdead', 'NaN'),
+     (2, 0.05, NULL, '2026-05-02T00:00:00Z', NULL, NULL, NULL, NULL, NULL, 'pending', false, NULL, NULL, NULL, '-Infinity')`,
   `INSERT INTO ticketing.seat_txn SELECT g, 1, g * 100, 'fan' || g || '@example.com' FROM generate_series(1, 25000) g`,
   `INSERT INTO public.no_pk VALUES ('a'), ('b')`,
   `INSERT INTO public.internal_notes VALUES (1, 'do not mirror')`,
@@ -341,7 +382,8 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     expect(orders.pk).toEqual(["id"]);
     const seat = tables.find((t) => t.name === "seat_txn")!;
     expect(seat.pk).toEqual(["acct_id", "seq"]);
-    expect(failed).toEqual([
+    expect(failed.sort((a, b) => a.name.localeCompare(b.name))).toEqual([
+      { schema: "public", name: "evil__staging", error: expect.stringContaining('reserved "__staging" suffix') },
       { schema: "public", name: "has_interval", error: expect.stringContaining('unmapped Postgres type "interval"') },
     ]);
   });
@@ -350,7 +392,7 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     await ensureMirrorObjects(ch);
     const r = await runOnce(pg as never, ch, CFG);
     expect(r.ok).toBe(3);
-    expect(r.failed).toBe(1); // has_interval
+    expect(r.failed).toBe(2); // has_interval (unmapped) + evil__staging (reserved suffix)
     expect(r.rows).toBe(2 + 25000 + 2);
 
     // rows landed under the biz names, staging cleaned up
@@ -366,14 +408,15 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     expect(o1.status).toBe("paid");
     expect(o1.active).toBe(true);
     expect(o1.blob).toBe("\\xdead");
+    expect(o1.ratio).toBe("NaN"); // floats stream as pg text — specials survive the driver
+    expect(o2.ratio).toBe("-Infinity");
     expect(o2.meta).toBeNull();
     expect(o2.tags).toEqual([]);
 
-    // run records: one per attempted table, error row for the unmapped one
-    expect(fake.runs.length).toBe(4);
-    const err = fake.runs.find((r2) => r2.status === "error")!;
-    expect(err.target_table).toBe("has_interval");
-    expect(String(err.error)).toContain("unmapped");
+    // run records: one per attempted table, error rows for the unmirrorable ones
+    expect(fake.runs.length).toBe(5);
+    const errs = fake.runs.filter((r2) => r2.status === "error").map((r2) => r2.target_table).sort();
+    expect(errs).toEqual(["evil__staging", "has_interval"]);
     const okRun = fake.runs.find((r2) => r2.target_table === "ticketing_seat_txn")!;
     expect(okRun.rows).toBe(25000);
     expect(okRun.source_table).toBe("ticketing.seat_txn");
@@ -396,6 +439,13 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     expect(fake.tables.has("biz.stale_thing")).toBe(false);
     expect(fake.tables.has("biz.no_pk")).toBe(false); // newly denied → pruned
     expect(fake.tables.has("biz.orders")).toBe(true);
+  });
+
+  it("zero-discovery guard: an empty discovery never prunes the mirror", async () => {
+    const before = [...fake.tables.keys()].sort();
+    const r = await runOnce(pg as never, ch, { allowTables: ["nosuch.*"], denyTables: [] });
+    expect(r).toEqual({ ok: 0, failed: 0, rows: 0 });
+    expect([...fake.tables.keys()].sort()).toEqual(before); // nothing dropped
   });
 
   it("a failed load keeps the previous good mirror and records the error", async () => {
@@ -479,6 +529,13 @@ describe.skipIf(!CH_URL)("mirror e2e (real ClickHouse)", () => {
     expect(row[0].note).toBe("héllo — 'quoted'");
     expect(String(row[0].day)).toBe("2026-05-01");
     expect(row[0].meta).toBe('{"a":1}');
+
+    // float specials round-trip as real NaN/-Inf, not 0/NULL
+    const specials = await adminRows(
+      `SELECT isNaN(ratio) AS n FROM ${rch.mirrorDb}.orders WHERE id = 1
+       UNION ALL SELECT isInfinite(ratio) FROM ${rch.mirrorDb}.orders WHERE id = 2`,
+    );
+    expect(specials.map((s) => Number(s.n))).toEqual([1, 1]);
     const nulls = await adminRows(`SELECT meta, uid, tags FROM ${rch.mirrorDb}.orders WHERE id = 2`);
     expect(nulls[0].meta).toBeNull();
     expect(nulls[0].uid).toBeNull();

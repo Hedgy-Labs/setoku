@@ -272,7 +272,9 @@ so enabling a source means adding its profile — see the cheat-sheet below.
   one table with a count in both dialects (`SELECT count(*) FROM <t>` on
   postgres vs `SELECT count() FROM biz.<t>` on clickhouse — equal, modulo one
   reload interval of drift). Poolers are fine here (plain SELECTs, no
-  replication prereqs). Works through the same pooler-vs-direct URL either way.
+  replication prereqs). ⚠ The allow/deny list is **baked into both images** —
+  after editing `.setoku/config.json`, rebuild both so the lists can't drift:
+  `docker compose up -d --build server pg-mirror`.
 - **Vercel logs.** Create a log drain to `https://<domain>/ingest/vercel` with
   the ingest token; set `SETOKU_VERCEL_VERIFY` to the value Vercel requires;
   enable the `ingest` profile; restart.
