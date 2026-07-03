@@ -370,6 +370,7 @@ export function AppView() {
           <span className="hidden text-xs text-stone-500 sm:inline">
             published by {data.createdBy}
             {isApp && stampAt ? ` · data updated ${relTime(stampAt)}` : ""}
+            {isApp && data.mirrorAsOf ? ` · source data as of ${relTime(data.mirrorAsOf)}` : ""}
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
           </span>
         ) : null}

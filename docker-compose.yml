@@ -125,7 +125,7 @@ services:
 
   clickhouse:
     logging: *default-logging
-    profiles: [lake, ingest, slack, render, mercury, github]
+    profiles: [lake, ingest, slack, render, mercury, github, mirror]
     image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
     restart: unless-stopped
     environment:
@@ -285,6 +285,32 @@ services:
       vector:
         condition: service_healthy
 
+  # Business-DB → lake mirror (profile: mirror, issue #47). Full-reloads every
+  # allowlisted Postgres table into ClickHouse `biz.*` on a poller-style loop
+  # (staging table + atomic EXCHANGE swap), using the SAME read-only role the
+  # gateway queries with — the allow/deny list is inherited, a denied table
+  # never leaves prod. Heavy app panels read the mirror by default; see
+  # ingest/pg-mirror/README.md. Stateless: every run is a full reload.
+  pg-mirror:
+    logging: *default-logging
+    profiles: [mirror]
+    build:
+      context: .
+      dockerfile: ingest/pg-mirror/Dockerfile
+    restart: unless-stopped
+    environment:
+      # mirror.ts validates this at runtime; :- default keeps `docker compose
+      # config` valid for non-mirror deploys (matches the other connectors).
+      SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
+      SETOKU_MIRROR_INTERVAL_MS: ${SETOKU_MIRROR_INTERVAL_MS:-900000}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+      CLICKHOUSE_DB: setoku
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
   # ---- backup one-shots (profile: backup) — driven by deploy/backup/*.sh ----
 
   clickhouse-backup:
@@ -303,6 +329,10 @@ services:
       S3_PATH: clickhouse
       S3_FORCE_PATH_STYLE: "true"
       BACKUPS_TO_KEEP_REMOTE: "14"
+      # biz.* is the pg-mirror of the business DB — re-derivable from prod, so
+      # it stays OUT of the backup (I4); system/information_schema are the
+      # tool's defaults, restated because setting the var replaces them.
+      CLICKHOUSE_SKIP_TABLES: "system.*,INFORMATION_SCHEMA.*,information_schema.*,_temporary_and_external_tables.*,biz.*"
     volumes:
       - ch_data:/var/lib/clickhouse
 

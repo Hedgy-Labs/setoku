@@ -28,6 +28,10 @@
             <networks><ip>::/0</ip></networks>
             <grants>
                 <query>GRANT SELECT ON setoku.*</query>
+                <!-- the pg-mirror of the business DB (issue #47) — analysts can
+                     already read these tables via prod pg, so this grants no
+                     new data, just the fast engine for it -->
+                <query>GRANT SELECT ON biz.*</query>
             </grants>
         </setoku_ro>
     </users>

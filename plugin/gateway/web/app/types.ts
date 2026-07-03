@@ -202,6 +202,8 @@ export interface AppData {
   createdAt: string;
   archivedAt: string | null;
   updatedAt: string | null;
+  /** Business-DB mirror freshness ("data as of") when clickhouse panels read biz.* tables. */
+  mirrorAsOf?: string | null;
   panels: PanelProvenance[];
 }
 

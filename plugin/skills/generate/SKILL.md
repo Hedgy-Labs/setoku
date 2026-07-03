@@ -47,7 +47,7 @@ customer_id → public.customers.id (the buyer). One order : many order_items.
 - prisma/schema.prisma:120 (model definition)
 ```
 
-**metric** — canonical business numbers. `meta`: `summary`, `keywords`, `links` (the entities its SQL reads). Body: `## Definition` (prose), `## Canonical SQL` (fenced sql block — the exact production logic), `## Caveats`, `## Sources` (file:line).
+**metric** — canonical business numbers. `meta`: `summary`, `keywords`, `links` (the entities its SQL reads). Body: `## Definition` (prose), `## Canonical SQL` (fenced sql block — the exact production logic), `## Caveats`, `## Sources` (file:line). A metric is canonical in exactly **one** dialect (I5) — state it next to the SQL. When the box mirrors the business DB (`list_sources` shows a BUSINESS-DB MIRROR section), define **scan-shaped metrics (GROUP BY / large-table aggregations) in `clickhouse` dialect against `biz.<table>`** from day one — the mirror is the default read path for heavy queries; keep `postgres` canonical only for point-lookup-shaped metrics.
 
 **query** — known-good SQL for a recurring question. `meta`: `question`, `keywords`, `links` (the entities/metrics it touches). Body: fenced sql.
 

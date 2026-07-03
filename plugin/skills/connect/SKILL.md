@@ -258,6 +258,21 @@ so enabling a source means adding its profile — see the cheat-sheet below.
   (`/opt/setoku/.env`) and out of git. `allowTables: ["public.*"]` is a good default
   — it also scopes away Supabase system schemas (`auth`, `storage`, …); keep
   `_prisma_migrations` in `denyTables`. Verify with `get_schema`.
+
+  **Finally, enable the mirror (recommended whenever the lake profile is on).**
+  The `pg-mirror` container full-reloads every allowlisted table into ClickHouse
+  `biz.*` on a loop, so heavy app panels and scan-shaped metrics run on the lake
+  instead of seq-scanning the business DB (issue #47). It reuses
+  `SETOKU_DATABASE_URL` (the read-only role — the allow-list is inherited, a
+  denied table never leaves the DB) and needs no extra secrets: add `mirror` to
+  `COMPOSE_PROFILES`, then `docker compose --profile mirror up -d --build
+  pg-mirror`. **Do this during onboarding** so no box has a pre-mirror era:
+  watch the first reload land (`list_sources` grows a BUSINESS-DB MIRROR section
+  with per-table "data as of"; `/healthz` gains a `mirror` field), then verify
+  one table with a count in both dialects (`SELECT count(*) FROM <t>` on
+  postgres vs `SELECT count() FROM biz.<t>` on clickhouse — equal, modulo one
+  reload interval of drift). Poolers are fine here (plain SELECTs, no
+  replication prereqs). Works through the same pooler-vs-direct URL either way.
 - **Vercel logs.** Create a log drain to `https://<domain>/ingest/vercel` with
   the ingest token; set `SETOKU_VERCEL_VERIFY` to the value Vercel requires;
   enable the `ingest` profile; restart.
@@ -284,6 +299,9 @@ docker compose --profile <name> up -d <service>   # e.g. --profile mercury up -d
 
 # connect a Postgres business DB in one shot (role + read-only URL + verify)
 ADMIN_URL='postgresql://owner:…@host:5432/db' deploy/connect-postgres.sh --env-file /opt/setoku/.env
+
+# mirror the business DB into the lake (biz.* — the fast path for heavy panels)
+docker compose --profile mirror up -d --build pg-mirror   # + add `mirror` to COMPOSE_PROFILES
 
 # apply config / restart the gateway (picks up .env + profile changes)
 docker compose up -d server

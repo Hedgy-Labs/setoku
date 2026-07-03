@@ -40,6 +40,7 @@ import {
   type PublishedReport,
 } from "./lib/store";
 import { newestComputedAt, renderApp, isFullDoc, type RenderedPanel } from "./lib/apps";
+import { mirroredTables, mirrorAsOf, referencedBizTables } from "./lib/mirror";
 import { APP_RUNTIME } from "./lib/app-runtime";
 import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
 import { resolveParams, type AppParam } from "./lib/params";
@@ -415,12 +416,20 @@ async function healthz(): Promise<{
   } catch {
     /* statfs unavailable on this platform — omit disk */
   }
+  // Business-DB mirror freshness (issue #47) — informational, never flips `ok`
+  // (a stale mirror degrades app panels, it doesn't down the box). Derived from
+  // SETOKU_LAKE_URL like the lake ping; omitted when there is no mirror.
+  let mirror: { asOf: string | null; tables: number } | undefined;
+  if (process.env.SETOKU_LAKE_URL) {
+    const tables = await mirroredTables(process.env.SETOKU_LAKE_URL);
+    if (tables.length) mirror = { asOf: mirrorAsOf(tables), tables: tables.length };
+  }
   const ok =
     Object.values(deps).every((d) => d.ok) &&
     (disk ? disk.used_pct < 90 : true);
   const value = {
     status: ok ? 200 : 503,
-    body: { ok, version: VERSION, docs: store.docCount, disk, deps },
+    body: { ok, version: VERSION, docs: store.docCount, disk, deps, ...(mirror ? { mirror } : {}) },
   };
   healthzCache = { at: Date.now(), value };
   return value;
@@ -763,6 +772,26 @@ function appProvenance(
   };
 }
 
+/** Mirror "data as of" for an app (issue #47): the oldest fresh copy among the
+ *  biz.* tables its clickhouse panels read — an app is only as current as its
+ *  stalest input. Null when the app doesn't touch the mirror. Best-effort and
+ *  cached (lib/mirror), so the freshness polls stay cheap. */
+async function appMirrorAsOf(meta: PublishedMeta): Promise<string | null> {
+  const chPanels = (meta.panels ?? []).filter((p) => p.dialect === "clickhouse");
+  if (!chPanels.length) return null;
+  try {
+    const cfg = loadConfig(projectDir);
+    if (!cfg.ok) return null;
+    const lake = resolveLakeUrl(projectDir, cfg.config);
+    if (!lake.ok) return null;
+    const tables = await mirroredTables(lake.url);
+    const refs = [...new Set(chPanels.flatMap((p) => referencedBizTables(p.sql, tables)))];
+    return refs.length ? mirrorAsOf(tables, refs) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Escape text for safe interpolation into HTML. */
 function escapeHtml(s: string): string {
   return String(s)
@@ -935,7 +964,7 @@ function publicAppShell(opts: {
     var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
     // Omit the "data updated …" clause when there's no successful data yet (null
     // stamp — e.g. every panel currently errored) rather than render a blank time.
-    stamp.textContent=(d.updatedAt?'data updated '+rel(d.updatedAt)+' · ':'')+'auto-refreshes every '+iv;
+    stamp.textContent=(d.updatedAt?'data updated '+rel(d.updatedAt)+' · ':'')+(d.mirrorAsOf?'source data as of '+rel(d.mirrorAsOf)+' · ':'')+'auto-refreshes every '+iv;
   }).catch(function(){}); }
   // Reveal the Admin link only if this viewer has a box session (the cookie is
   // Path=/admin, so it rides along to /admin/api/session but not to /p/*).
@@ -1030,6 +1059,8 @@ const httpServer = http.createServer(async (req, res) => {
             title: meta.title,
             refreshSeconds: meta.refreshSeconds,
             updatedAt: store.newestPanelComputedAt(id),
+            // mirror freshness is methodology-safe (a timestamp, no schema/SQL)
+            mirrorAsOf: await appMirrorAsOf(meta),
           }),
         );
         return;
@@ -1326,6 +1357,7 @@ const httpServer = http.createServer(async (req, res) => {
           // from the cache (no query). Keeps the metadata fetch off the DB entirely.
           const prov = appProvenance(store, meta, []);
           prov.updatedAt = store.newestPanelComputedAt(id);
+          prov.mirrorAsOf = await appMirrorAsOf(meta);
           store.audit(session.identity, "app_viewed", { id });
           return json(200, prov);
         }

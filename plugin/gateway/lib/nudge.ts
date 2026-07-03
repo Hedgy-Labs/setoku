@@ -152,6 +152,69 @@ export function queryCaptureNudge(sql: string, curatedSqls: () => string[]): str
   );
 }
 
+/** A mirrored table as the steering helpers need it (lib/mirror.ts fetches). */
+export interface MirrorRef {
+  /** ClickHouse-side name — query as biz.<target>. */
+  target: string;
+  /** Source pg table, schema-qualified (e.g. "ticketing.seat_txn"). */
+  source: string;
+}
+
+/** Whether postgres SQL references a mirrored source table — qualified or bare,
+ *  at token boundaries, judged on the literal-blanked skeleton (a query merely
+ *  FILTERING on the string 'ticketing.seat_txn' doesn't count). */
+function referencesSource(sql: string, source: string): boolean {
+  const s = lex(sql).skeleton;
+  const bare = source.split(".").pop()!;
+  return containsAtBoundary(s, source.toLowerCase()) || containsAtBoundary(s, bare.toLowerCase());
+}
+
+/**
+ * The mirror-steering hint (issue #47): a postgres-dialect scan/aggregation
+ * just ran against a table that has a ClickHouse mirror — the exact workload
+ * the mirror exists for. Null for point-lookup-shaped or exploratory SQL
+ * (those legitimately stay on prod), or when nothing referenced is mirrored.
+ */
+export function mirrorSteerNote(sql: string, mirrored: MirrorRef[]): string | null {
+  if (!mirrored.length) return null;
+  if (isExploratorySql(sql) || !isAggregateShaped(sql)) return null;
+  const hits = mirrored.filter((m) => referencesSource(sql, m.source));
+  if (!hits.length) return null;
+  const targets = hits.map((m) => `biz.${m.target}`).join(", ");
+  return (
+    `⚡ ${hits.map((m) => m.source).join(", ")} ${hits.length > 1 ? "are" : "is"} mirrored into the lake — ` +
+    `heavy scans/aggregations like this run much faster there. Re-run with dialect:"clickhouse" against ` +
+    `${targets} (same rows, full-reloaded on a cron; list_sources shows the mirror's "data as of").`
+  );
+}
+
+/**
+ * publish/update_app note flagging postgres-dialect panels whose aggregate SQL
+ * scans a mirrored table — those panels should be authored in clickhouse
+ * dialect against biz.* (every param toggle is a cold run against prod
+ * otherwise). Null when nothing qualifies.
+ */
+export function panelMirrorNote(
+  panels: { key: string; sql: string; dialect?: string }[],
+  mirrored: MirrorRef[],
+): string | null {
+  if (!mirrored.length) return null;
+  const flagged = panels
+    .filter((p) => (p.dialect ?? "postgres") === "postgres")
+    .filter((p) => !isExploratorySql(p.sql) && isAggregateShaped(p.sql))
+    .map((p) => ({ key: p.key, hits: mirrored.filter((m) => referencesSource(p.sql, m.source)) }))
+    .filter((p) => p.hits.length);
+  if (!flagged.length) return null;
+  const detail = flagged
+    .map((p) => `"${p.key}" (${p.hits.map((m) => `${m.source} → biz.${m.target}`).join(", ")})`)
+    .join(", ");
+  return (
+    `panel(s) ${detail} aggregate over postgres tables that are MIRRORED into the lake — author heavy ` +
+    'panels in dialect:"clickhouse" against the biz.* mirror instead (same data, no prod scans, param ' +
+    "toggles run live). Prod postgres is for point lookups."
+  );
+}
+
 /**
  * publish/update_app note listing panels whose aggregate SQL no curated metric
  * covers (and that declare no metricId provenance). Null when every panel is

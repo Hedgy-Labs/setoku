@@ -83,6 +83,12 @@ interface AppPanel {
 }
 ```
 
+`dialect` picks the engine: `postgres` (the business DB) or `clickhouse` (the
+lake **and the `biz.*` business-DB mirror** — see ingest/pg-mirror). When the box
+runs the mirror, heavy scan/aggregation panels belong in `clickhouse` against
+`biz.<table>`; publish-time notes flag postgres aggregates over mirrored tables,
+and the app chrome shows the mirror's "data as of" beside the cache stamp.
+
 `sql` is always the executable binding. `metricId` is **provenance only** — it
 links a panel to a curated metric so the "how is this calculated" drawer can show
 the team's *verified* definition and gotchas. We do not re-parse SQL out of a

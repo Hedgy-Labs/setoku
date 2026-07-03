@@ -26,7 +26,8 @@ import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_S
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
-import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
+import { queryCaptureNudge, panelCaptureNote, mirrorSteerNote, panelMirrorNote, type MirrorRef } from "./lib/nudge";
+import { mirroredTables } from "./lib/mirror";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
@@ -140,6 +141,23 @@ function curatedSqls(): string[] {
     .listDocs()
     .filter((d) => d.type === "metric" || d.type === "query")
     .flatMap((d) => extractSql(d.body));
+}
+
+/** Tables currently mirrored into biz.* (issue #47) — feeds the run_query /
+ *  publish-time steering hints and the list_sources mirror section. Best-effort
+ *  and cached in lib/mirror; [] on a curator session (it can't run clickhouse,
+ *  so steering it there is noise — and the membrane keeps lake reads off the
+ *  write-capable session, metadata included). */
+async function mirrorRefs(): Promise<MirrorRef[]> {
+  if (denyLakeRead) return [];
+  try {
+    const config = requireConfig();
+    const lake = resolveLakeUrl(projectDir, config);
+    if (!lake.ok) return [];
+    return await mirroredTables(lake.url);
+  } catch {
+    return [];
+  }
 }
 
 const NO_KNOWLEDGE_HINT =
@@ -748,6 +766,18 @@ server.registerTool(
           } else {
             lines.push("", "DATA LAKE: configured but empty.");
           }
+          // Business-DB mirror (issue #47) — the DEFAULT read path for heavy
+          // scans/aggregations over business tables.
+          const mirror = await mirroredTables(lake.url);
+          if (mirror.length) {
+            lines.push(
+              "",
+              'BUSINESS-DB MIRROR (ClickHouse, biz.*) — run_query with dialect:"clickhouse". Full copies of',
+              "allowlisted business tables, reloaded on a cron — PREFER these over postgres for scans, GROUP BY,",
+              "and app panels; keep postgres for point lookups. Each shows its \"data as of\":",
+              ...mirror.map((m) => `  - biz.${m.target} ← ${m.source} (as of ${m.asOf})`),
+            );
+          }
         } else {
           lines.push("", "DATA LAKE: not configured (no logs/events/finance lake on this box).");
         }
@@ -879,7 +909,9 @@ server.registerTool(
     description:
       "Executes ONE read-only SQL statement (statement timeout + row cap; audited with your identity). " +
       "Routes by dialect (metric docs declare theirs): `postgres` (default) = the business DB in a READ ONLY " +
-      "transaction; `clickhouse` = the bundled lake (logs/events/Slack archive), engine-enforced readonly. " +
+      "transaction; `clickhouse` = the bundled lake (logs/events/Slack archive) plus the biz.* business-DB " +
+      "mirror when enabled — prefer the mirror for heavy scans/aggregations of mirrored tables (list_sources " +
+      "shows them), engine-enforced readonly. " +
       "Workflow: find_context first, prefer canonical metric SQL via get_metric, always include an explicit " +
       "LIMIT, never SELECT * on wide tables. Writes/DDL are rejected. Discover lake tables with " +
       "SHOW TABLES / DESCRIBE <table> on the clickhouse dialect.",
@@ -954,6 +986,14 @@ server.registerTool(
       if (store.docCount > 0 && result.rowCount > 0) {
         const nudge = queryCaptureNudge(sql, curatedSqls);
         if (nudge) lines.push("", nudge);
+      }
+      // Mirror steering (issue #47): a postgres scan/aggregation just ran over
+      // a table that has a ClickHouse mirror — nudge toward the fast path
+      // (advisory, never a deny: prod stays right for point lookups and for
+      // verifying the mirror against source).
+      if ((dialect ?? "postgres") === "postgres") {
+        const steer = mirrorSteerNote(sql, await mirrorRefs());
+        if (steer) lines.push("", steer);
       }
       // No curated context yet → the agent is querying from raw schema, which is
       // exactly when it confidently returns a wrong number (test accounts not
@@ -1100,8 +1140,9 @@ const clampRefresh = (refreshSeconds: number | undefined, hasPanels: boolean): n
     : null;
 
 // Non-blocking warnings the agent can't see for itself (it publishes blind):
-// missing curated metric links + static render-lint of the template.
-function publishNotes(html: string, panels: AppPanel[]): string {
+// missing curated metric links + mirror steering + static render-lint of the
+// template. Async only for the (cached, best-effort) mirror lookup.
+async function publishNotes(html: string, panels: AppPanel[]): Promise<string> {
   const notes: string[] = [];
   const missing = panels.filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId))).map((p) => p.metricId);
   if (missing.length)
@@ -1116,6 +1157,10 @@ function publishNotes(html: string, panels: AppPanel[]): string {
     notes.push(`panel(s) ${noDesc.map((k) => `"${k}"`).join(", ")} have no \`description\` — the drawer can't explain what they compute. Add a one-line description.`);
   const capture = panelCaptureNote(panels, curatedSqls);
   if (capture) notes.push(capture);
+  // Heavy postgres panels over mirrored tables belong on the biz.* mirror
+  // (issue #47) — flag them so the agent re-authors before the app calcifies.
+  const mirror = panelMirrorNote(panels, await mirrorRefs());
+  if (mirror) notes.push(mirror);
   notes.push(...lintAppTemplate(html, panels.map((p) => p.key)));
   return notes.length ? `\n\n⚠ Heads up (publishes anyway):\n- ${notes.join("\n- ")}` : "";
 }
@@ -1125,7 +1170,7 @@ const PANEL_SCHEMA = z.object({
   title: z.string().optional().describe("Recommended — label shown in the calc drawer (see app_guide)"),
   description: z.string().optional().describe("Recommended — one-line calc explanation; the only one public viewers get"),
   sql: z.string().describe("A single read-only SELECT/WITH (validate with run_query first)"),
-  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = lake"),
+  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = lake + biz.* mirror — prefer for scans/aggregations (see app_guide)"),
   metricId: z.string().optional().describe("Curated metric name this panel computes — links provenance"),
 });
 
@@ -1174,11 +1219,20 @@ const APP_GUIDE = [
   "Each panel: `{ key, sql, dialect?, title?, description?, metricId? }`.",
   "- `key` — stable slug the template reads (window.__SETOKU__.panels[key]).",
   "- `sql` — ONE read-only SELECT/WITH; validate with run_query first.",
-  "- `dialect` — `postgres` (default, business DB) or `clickhouse` (the lake).",
+  "- `dialect` — `postgres` (default, business DB) or `clickhouse` (the lake + the biz.* business-DB mirror).",
   "- `title` / `description` — STRONGLY RECOMMENDED: shown in the 'how is this calculated' drawer; the",
   "  description is the ONLY calc explanation public viewers get. Without them viewers see the raw slug.",
   "- `metricId` — name of a curated metric this panel computes; links provenance to the verified def.",
   "Omit `panels` entirely for a static report.",
+  "",
+  "## Choosing a dialect — heavy panels go to the mirror",
+  "When the box mirrors the business DB (list_sources shows a BUSINESS-DB MIRROR section), author",
+  "scan/aggregation panels in `clickhouse` dialect against `biz.<table>` — full copies of the allowlisted",
+  "business tables, reloaded on a cron, and far faster than prod Postgres for GROUP BY over big tables.",
+  "Param-driven panels especially: every input combo is a cold run, and cold runs are where prod scans",
+  "hurt. Keep `postgres` for point lookups and small reads. Metric SQL is canonical in exactly ONE",
+  "dialect (I5) — define scan-shaped metrics in clickhouse from day one. The app chrome shows the",
+  'mirror\'s "data as of" beside the cache stamp, so freshness stays legible to viewers.',
   "",
   "## Interactive inputs (the `params` arg)",
   "Declared inputs the viewer can change. A panel's SQL references one as `:name` (e.g.",
@@ -1287,7 +1341,7 @@ server.registerTool(
         (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
         `\n\nEdit it with update_app("${id}", …) — same link. Manage: get_app / unpublish_app("${id}"). ` +
         `(An admin can make this ${noun} public from /admin.)` +
-        publishNotes(html, normalized),
+        (await publishNotes(html, normalized)),
     );
   },
 );
@@ -1410,7 +1464,7 @@ server.registerTool(
     return text(
       `Updated "${meta.title}" → ${publishUrl(tid, reverted ? "team" : meta.visibility)} (same link).` +
         (reverted ? "\n\n⚠ Panels or params changed on a PUBLIC app — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
-        publishNotes(finalHtml, finalPanels),
+        (await publishNotes(finalHtml, finalPanels)),
     );
   },
 );
