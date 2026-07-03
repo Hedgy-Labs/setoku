@@ -16,7 +16,12 @@ import type { AppData, AppParam, PanelProvenance } from "../types";
 /** The per-panel numbers the frame echoes up for the variant it rendered — the
  *  param-DEPENDENT half of provenance (the SQL/description come from metadata).
  *  A subset of PanelProvenance so the two can't drift on these fields. */
-type LivePanel = Pick<PanelProvenance, "rowCount" | "computedAt" | "error" | "refreshError">;
+type LivePanel = Pick<PanelProvenance, "rowCount" | "computedAt" | "error" | "refreshError" | "refreshing" | "durationMs">;
+
+/** A run duration as a compact label: 320ms · 7.4s. */
+function fmtDuration(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
 
 /** A refresh interval as a compact label: 30s · 5m · 1h (rolls up the units). */
 function fmtInterval(s: number): string {
@@ -670,6 +675,8 @@ function Provenance({
                     <>
                       {p.dialect} · {lp.rowCount} row(s)
                       {lp.computedAt ? ` · ${relTime(lp.computedAt)}` : ""}
+                      {lp.durationMs != null ? ` · ran in ${fmtDuration(lp.durationMs)}` : ""}
+                      {lp.refreshing ? <span className="italic"> · refreshing…</span> : null}
                       {lp.refreshError ? <span className="text-amber-700"> · refresh failed</span> : null}
                     </>
                   ) : (

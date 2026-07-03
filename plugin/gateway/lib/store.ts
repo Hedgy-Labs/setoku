@@ -174,6 +174,9 @@ export interface PanelCacheRow {
   rowCount: number;
   computedAt: string;
   error: string | null;
+  /** Wall-clock ms of the query execution that produced this row (null on
+   *  legacy rows written before durations were recorded). */
+  durationMs: number | null;
 }
 
 /** Parse the stored panels JSON; tolerates null/garbage (legacy rows). */
@@ -400,8 +403,10 @@ export class KnowledgeStore {
       row_count INTEGER NOT NULL DEFAULT 0,
       computed_at TEXT NOT NULL,
       error TEXT,
+      duration_ms INTEGER,
       PRIMARY KEY (app_id, panel_key)
     )`);
+    this.ensureColumn("app_cache", "duration_ms", "INTEGER");
     // Carry the pre-rename cache forward (dashboard_cache → app_cache, same shape
     // but for the renamed key column). Without this an upgraded box cold-starts
     // every app's cache — the first view of each re-runs all its panels against
@@ -1052,10 +1057,10 @@ export class KnowledgeStore {
   getPanelCache(appId: string, panelKey: string): PanelCacheRow | null {
     const row = this.db
       .query(
-        "SELECT columns, rows, row_count AS rowCount, computed_at AS computedAt, error FROM app_cache WHERE app_id = ? AND panel_key = ?",
+        "SELECT columns, rows, row_count AS rowCount, computed_at AS computedAt, error, duration_ms AS durationMs FROM app_cache WHERE app_id = ? AND panel_key = ?",
       )
       .get(appId, panelKey) as
-      | { columns: string; rows: string; rowCount: number; computedAt: string; error: string | null }
+      | { columns: string; rows: string; rowCount: number; computedAt: string; error: string | null; durationMs: number | null }
       | null;
     if (!row) return null;
     return {
@@ -1064,6 +1069,7 @@ export class KnowledgeStore {
       rowCount: row.rowCount,
       computedAt: row.computedAt,
       error: row.error,
+      durationMs: row.durationMs,
     };
   }
 
@@ -1071,15 +1077,15 @@ export class KnowledgeStore {
   putPanelCache(
     appId: string,
     panelKey: string,
-    data: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string | null },
+    data: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string | null; durationMs?: number | null },
   ): string {
     const computedAt = new Date().toISOString();
     this.db.run(
-      `INSERT INTO app_cache (app_id, panel_key, columns, rows, row_count, computed_at, error)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO app_cache (app_id, panel_key, columns, rows, row_count, computed_at, error, duration_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(app_id, panel_key) DO UPDATE SET
          columns = excluded.columns, rows = excluded.rows, row_count = excluded.row_count,
-         computed_at = excluded.computed_at, error = excluded.error`,
+         computed_at = excluded.computed_at, error = excluded.error, duration_ms = excluded.duration_ms`,
       [
         appId,
         panelKey,
@@ -1088,6 +1094,7 @@ export class KnowledgeStore {
         data.rowCount ?? 0,
         computedAt,
         data.error ?? null,
+        data.durationMs ?? null,
       ],
     );
     // Bound the cache per app: each panel/param VARIANT is a distinct panel_key,

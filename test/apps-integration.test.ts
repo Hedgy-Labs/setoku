@@ -14,6 +14,7 @@ import path from "node:path";
 import pgPkg from "pg";
 import { Database } from "bun:sqlite";
 import { KnowledgeStore } from "../plugin/gateway/lib/store";
+import { renderApp, flushBackgroundPanelRefreshes } from "../plugin/gateway/lib/apps";
 import { hashPassword } from "../plugin/gateway/lib/accounts";
 import { spawnGateway, waitHealthy, connect as gwConnect, call, ROOT } from "./lib/gateway";
 
@@ -313,5 +314,105 @@ describe("cache migration — pre-rename dashboard_cache carries forward", () =>
     expect(store.db.query("SELECT 1 FROM sqlite_master WHERE name='dashboard_cache'").get()).toBeNull();
     store.db.close();
     fs.rmSync(path.dirname(f), { recursive: true, force: true });
+  });
+});
+
+describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", () => {
+  // renderApp resolves the business DB in-process (same config path the gateway
+  // uses) — point it at this suite's throwaway Postgres.
+  process.env.SETOKU_DATABASE_URL = DB_URL;
+
+  /** A minimal published app for direct renderApp calls (no HTTP round-trip). */
+  const mkDash = (id: string, sql: string) => ({
+    id,
+    title: "t",
+    format: "app" as const,
+    body: "<div id=kpi></div>",
+    refreshSeconds: 30,
+    visibility: "team" as const,
+    createdBy: "test",
+    createdAt: new Date().toISOString(),
+    archivedAt: null,
+    panels: [{ key: "kpi", title: "n", sql, dialect: "postgres" as const }],
+    params: [],
+  });
+
+  it("records durationMs on a fresh run and serves it from cache", async () => {
+    const store = new KnowledgeStore(":memory:");
+    const dash = mkDash("swr-dur", "select count(*) n from metrics");
+    const cold = await renderApp(store, tmp, dash);
+    expect(cold[0].error).toBeNull();
+    expect(typeof cold[0].durationMs).toBe("number");
+    expect(store.getPanelCache("swr-dur", "kpi")?.durationMs).toBe(cold[0].durationMs!);
+    // A within-TTL cache hit carries the duration of the run that produced it.
+    const warm = await renderApp(store, tmp, dash);
+    expect(warm[0].durationMs).toBe(cold[0].durationMs!);
+    store.db.close();
+  });
+
+  it("serves stale rows immediately past the TTL and refreshes in the background", async () => {
+    const store = new KnowledgeStore(":memory:");
+    const dash = mkDash("swr-basic", "select count(*) n from metrics");
+    const cold = await renderApp(store, tmp, dash);
+    expect(cold[0].error).toBeNull();
+    const staleAt = cold[0].computedAt;
+    await Bun.sleep(5); // ensure the refresh stamp lands in a later millisecond
+    // 60s later: past the 30s TTL, well inside the stale ceiling.
+    const stale = await renderApp(store, tmp, dash, { now: Date.now() + 60_000 });
+    expect(stale[0].refreshing).toBe(true);
+    expect(stale[0].computedAt).toBe(staleAt); // honest "updated N ago" — the OLD stamp
+    expect(stale[0].rows).toEqual(cold[0].rows);
+    await flushBackgroundPanelRefreshes();
+    const refreshed = store.getPanelCache("swr-basic", "kpi")!;
+    expect(refreshed.error).toBeNull();
+    expect(Date.parse(refreshed.computedAt)).toBeGreaterThan(Date.parse(staleAt));
+    // The next view is a plain fresh cache hit — no SWR flag.
+    const next = await renderApp(store, tmp, dash);
+    expect(next[0].refreshing).toBeFalsy();
+    expect(next[0].computedAt).toBe(refreshed.computedAt);
+    store.db.close();
+  });
+
+  it("budget-denied SWR says rate-limited (not refreshing) and runs nothing", async () => {
+    const store = new KnowledgeStore(":memory:");
+    const dash = mkDash("swr-budget", "select count(*) n from metrics");
+    await renderApp(store, tmp, dash, { tryFreshRun: () => true });
+    const before = store.getPanelCache("swr-budget", "kpi")!;
+    const stale = await renderApp(store, tmp, dash, { now: Date.now() + 60_000, tryFreshRun: () => false });
+    expect(stale[0].refreshing).toBeFalsy();
+    expect(stale[0].refreshError).toContain("rate-limited");
+    expect(stale[0].rows).toEqual([{ n: "6" }]); // last-good rows still served
+    await flushBackgroundPanelRefreshes();
+    expect(store.getPanelCache("swr-budget", "kpi")!.computedAt).toBe(before.computedAt); // nothing ran
+    store.db.close();
+  });
+
+  it("a failing background refresh keeps the last-good rows (stale ceiling still governs)", async () => {
+    const store = new KnowledgeStore(":memory:");
+    await renderApp(store, tmp, mkDash("swr-fail", "select count(*) n from metrics"));
+    const before = store.getPanelCache("swr-fail", "kpi")!;
+    // The app's query breaks (e.g. a dropped column) — SWR still serves last-good…
+    const broken = mkDash("swr-fail", "select nope from missing_table");
+    const stale = await renderApp(store, tmp, broken, { now: Date.now() + 60_000 });
+    expect(stale[0].refreshing).toBe(true);
+    expect(stale[0].rows).toEqual(before.rows);
+    await flushBackgroundPanelRefreshes();
+    // …and the failed refresh did NOT clobber the good cache row.
+    const after = store.getPanelCache("swr-fail", "kpi")!;
+    expect(after.error).toBeNull();
+    expect(after.computedAt).toBe(before.computedAt);
+    store.db.close();
+  });
+
+  it("force bypasses SWR and blocks for fresh rows", async () => {
+    const store = new KnowledgeStore(":memory:");
+    const dash = mkDash("swr-force", "select count(*) n from metrics");
+    const cold = await renderApp(store, tmp, dash);
+    await Bun.sleep(5); // ensure the forced run's stamp lands in a later millisecond
+    const forced = await renderApp(store, tmp, dash, { force: true, now: Date.now() + 60_000 });
+    expect(forced[0].refreshing).toBeFalsy();
+    expect(Date.parse(forced[0].computedAt)).toBeGreaterThanOrEqual(Date.parse(cold[0].computedAt));
+    expect(forced[0].computedAt).not.toBe(cold[0].computedAt);
+    store.db.close();
   });
 });

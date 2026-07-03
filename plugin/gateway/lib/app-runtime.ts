@@ -165,7 +165,7 @@ export const APP_RUNTIME = `(function () {
       var prov = {};
       for (var pk in sp) if (Object.prototype.hasOwnProperty.call(sp, pk)) {
         var pv = sp[pk];
-        prov[pk] = { rowCount: pv.rowCount, computedAt: pv.computedAt, error: pv.error, refreshError: pv.refreshError };
+        prov[pk] = { rowCount: pv.rowCount, computedAt: pv.computedAt, error: pv.error, refreshError: pv.refreshError, refreshing: pv.refreshing || false, durationMs: pv.durationMs == null ? null : pv.durationMs };
       }
       var t = null;
       try { t = new URLSearchParams(location.search).get("t"); } catch (e2) { /* no location */ }

@@ -702,6 +702,9 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
           computedAt: p.computedAt,
           error: scrub(p.error),
           refreshError: scrub(p.refreshError),
+          refreshing: p.refreshing ?? false,
+          // Run duration is team-only telemetry — don't leak perf shape publicly.
+          durationMs: opts.team ? (p.durationMs ?? null) : null,
         },
       ]),
     ),
@@ -758,6 +761,8 @@ function appProvenance(
         computedAt: r?.computedAt ?? null,
         error: r?.error ?? null,
         refreshError: r?.refreshError ?? null,
+        refreshing: r?.refreshing ?? false,
+        durationMs: r?.durationMs ?? null,
       };
     }),
   };
