@@ -31,3 +31,27 @@ export const LAKE_SOURCES: LakeSource[] = [
   { table: "github_comments", source: "GitHub · comments", ts: "ingested_at", blurb: "Issue/PR discussion + code-review comments (query with FINAL)" },
   { table: "ingest_raw", source: "Unrouted (raw)", ts: "ingested_at", blurb: "Raw ingest that didn't match a known schema (rarely queried directly)" },
 ];
+
+/** Business-DB mirror tables (the pg-mirror connector, issue #47) can't be a
+ *  static list — one `biz_*` table appears per mirrored Postgres table, per
+ *  tenant. Callers discover them (SHOW TABLES LIKE 'biz\_%'), drop the
+ *  `__staging` work tables, and synthesize a LakeSource per table here so the
+ *  Sources page / list_sources treat mirrors like any other connector. */
+export const MIRROR_TABLE_PREFIX = "biz_";
+export const MIRROR_STAGING_SUFFIX = "__staging";
+export const MIRROR_CONNECTOR = "pg-mirror";
+
+export function isMirrorTable(name: string): boolean {
+  return name.startsWith(MIRROR_TABLE_PREFIX) && !name.endsWith(MIRROR_STAGING_SUFFIX);
+}
+
+export function mirrorLakeSource(table: string): LakeSource {
+  const pgName = table.slice(MIRROR_TABLE_PREFIX.length);
+  return {
+    table,
+    source: `Business DB · ${pgName}`,
+    ts: "_mirrored_at",
+    blurb: `Scheduled full-reload mirror of the business-Postgres table "${pgName}" — the fast venue for big aggregations; freshness in _mirrored_at`,
+    connector: MIRROR_CONNECTOR,
+  };
+}

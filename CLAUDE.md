@@ -51,7 +51,7 @@ A token maps to either an **analyst** (`canWrite:false`, may read the lake) or a
 
 **`provisioner/`** — patterns for wiring sources on demand (`sources/{vercel,render,slack}.ts`, schema inference). A handful of proven patterns, not one connector per vendor (see CONTRIBUTING — new connectors are a maintenance tax).
 
-**`ingest/`** — containers that fill the lake: `slack-listener`, `mercury-poller`, `render-poller`, plus the lake's SQL schemas in `ingest/schemas/`. Liveness is tracked via `ingest_heartbeats` (a "flowing" source reads from a real beat, not data recency).
+**`ingest/`** — containers that fill the lake: `slack-listener`, `mercury-poller`, `render-poller`, `github-poller`, and `pg-mirror` (scheduled full-reload mirror of allowlisted business-Postgres tables into `biz_*` — the fast venue for app panels, issue #47), plus the lake's SQL schemas in `ingest/schemas/`. Liveness is tracked via `ingest_heartbeats` (a "flowing" source reads from a real beat, not data recency).
 
 **`plugin/skills/`** — the user-facing workflows (`SKILL.md` each): `onboard`, `connect`, `generate` (read the business code → propose/commit context), `curate` (review pending), `eval` (golden-question scorecard).
 

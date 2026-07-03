@@ -27,7 +27,7 @@ import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
-import { LAKE_SOURCES } from "./lib/sources";
+import { LAKE_SOURCES, MIRROR_TABLE_PREFIX, isMirrorTable, mirrorLakeSource } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
 /**
@@ -740,11 +740,22 @@ server.registerTool(
           });
           const present = new Set(res.rows.map((r) => String(Object.values(r)[0] ?? "")));
           const known = LAKE_SOURCES.filter((s) => present.has(s.table));
-          const extra = [...present].filter((t) => !LAKE_SOURCES.some((s) => s.table === t));
-          if (known.length || extra.length) {
+          // Business-DB mirrors (pg-mirror, #47) are per-tenant, so they're
+          // recognized by prefix, not the static list — and their in-flight
+          // `__staging` work tables are noise, never a query target.
+          const mirrors = [...present].filter(isMirrorTable).sort().map(mirrorLakeSource);
+          const extra = [...present].filter(
+            (t) => !LAKE_SOURCES.some((s) => s.table === t) && !t.startsWith(MIRROR_TABLE_PREFIX),
+          );
+          if (known.length || mirrors.length || extra.length) {
             lines.push("", 'DATA LAKE (ClickHouse) — run_query with dialect:"clickhouse" — tables:');
             for (const s of known) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
+            for (const s of mirrors) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
             for (const t of extra) lines.push(`  - setoku.${t}`);
+            if (mirrors.length)
+              lines.push(
+                "  (biz_* mirrors reload on a schedule — prefer them over Postgres for big scans/aggregations; use Postgres for point lookups and to-the-second freshness.)",
+              );
           } else {
             lines.push("", "DATA LAKE: configured but empty.");
           }

@@ -478,7 +478,7 @@ echo "    how many companies are paying us right now?"
 
 // Lake source tables we know how to surface (shared with the list_sources MCP
 // tool) — query only the ones that actually exist; see gatherSources().
-import { LAKE_SOURCES } from "./lib/sources";
+import { LAKE_SOURCES, isMirrorTable, mirrorLakeSource, type LakeSource } from "./lib/sources";
 
 /**
  * Gather the /admin Sources view live: is Postgres configured + reachable (+
@@ -486,6 +486,26 @@ import { LAKE_SOURCES } from "./lib/sources";
  * All read-only; every probe is independently try/caught so one failure
  * degrades to "—" rather than blanking the page.
  */
+/** The known lake sources plus any dynamically-discovered business-DB mirror
+ *  tables (pg-mirror, issue #47) — mirrors are per-tenant so they can't live in
+ *  the static LAKE_SOURCES list. Failure to list (lake down, SHOW not granted)
+ *  just yields the static set. */
+async function discoverLakeSources(lakeUrl: string): Promise<LakeSource[]> {
+  try {
+    const res = await runLakeQuery(lakeUrl, "SHOW TABLES FROM setoku LIKE 'biz\\\\_%'", {
+      rowCap: 500,
+      statementTimeoutMs: 8_000,
+    });
+    const mirrors = res.rows
+      .map((r) => String(Object.values(r)[0] ?? ""))
+      .filter(isMirrorTable)
+      .map(mirrorLakeSource);
+    return [...LAKE_SOURCES, ...mirrors];
+  } catch {
+    return LAKE_SOURCES;
+  }
+}
+
 async function gatherSources(): Promise<SourcesData> {
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
@@ -540,7 +560,7 @@ async function gatherSources(): Promise<SourcesData> {
           /* ingest_heartbeats absent — sources fall back to data-recency freshness */
         }
         const probes = await Promise.all(
-          LAKE_SOURCES.map(async (s): Promise<SourceTable | null> => {
+          (await discoverLakeSources(lakeUrl.url)).map(async (s): Promise<SourceTable | null> => {
             try {
               const res = await runLakeQuery(
                 lakeUrl.url,
@@ -587,7 +607,7 @@ async function gatherSourceSeries(): Promise<SourceSeriesData> {
     if (lakeUrl.ok) {
       const qopts = { rowCap: 100, statementTimeoutMs: 8_000 };
       const results = await Promise.all(
-        LAKE_SOURCES.map(async (s): Promise<SourceSeries | null> => {
+        (await discoverLakeSources(lakeUrl.url)).map(async (s): Promise<SourceSeries | null> => {
           try {
             const res = await runLakeQuery(
               lakeUrl.url,

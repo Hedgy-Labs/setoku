@@ -125,7 +125,7 @@ services:
 
   clickhouse:
     logging: *default-logging
-    profiles: [lake, ingest, slack, render, mercury, github]
+    profiles: [lake, ingest, slack, render, mercury, github, pg-mirror]
     image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
     restart: unless-stopped
     environment:
@@ -283,6 +283,34 @@ services:
       - github_state:/state
     depends_on:
       vector:
+        condition: service_healthy
+
+  # Business-DB → lake mirror (profile: pg-mirror, issue #47). Scheduled FULL
+  # reloads of allowlisted Postgres tables into `biz_*` MergeTree tables via a
+  # staging table + atomic EXCHANGE — app panels aggregate the mirror
+  # (clickhouse dialect) instead of seq-scanning prod. Reads with the SAME
+  # read-only role the gateway uses; writes ClickHouse directly (no Vector —
+  # it needs DDL for the swap). Stateless: no volume, every run is a reload.
+  pg-mirror:
+    logging: *default-logging
+    profiles: [pg-mirror]
+    build:
+      context: .
+      dockerfile: ingest/pg-mirror/Dockerfile
+    restart: unless-stopped
+    environment:
+      SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
+      # Keep in sync with .setoku/config.json allowTables — the mirror must
+      # never widen what the gateway's postgres path allows.
+      PG_MIRROR_TABLES: ${PG_MIRROR_TABLES:-public.*}
+      PG_MIRROR_DENY_TABLES: ${PG_MIRROR_DENY_TABLES:-}
+      PG_MIRROR_INTERVAL_MS: ${PG_MIRROR_INTERVAL_MS:-3600000}
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+      CLICKHOUSE_DB: setoku
+    depends_on:
+      clickhouse:
         condition: service_healthy
 
   # ---- backup one-shots (profile: backup) — driven by deploy/backup/*.sh ----
