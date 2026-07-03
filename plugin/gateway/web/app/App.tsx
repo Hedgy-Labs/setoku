@@ -7,6 +7,7 @@ import { Login } from "./pages/Login";
 import { Review } from "./pages/Review";
 import { Knowledge } from "./pages/Knowledge";
 import { Sources } from "./pages/Sources";
+import { Trends } from "./pages/Trends";
 import { Team } from "./pages/Team";
 import { Audit } from "./pages/Audit";
 import { Apps } from "./pages/Apps";
@@ -31,6 +32,7 @@ export function App() {
         <Route path="knowledge" element={<Knowledge />} />
         <Route path="knowledge/review" element={<Review />} />
         <Route path="sources" element={<Sources />} />
+        <Route path="sources/trends" element={<Trends />} />
         <Route path="team" element={<Team />} />
         <Route path="audit" element={<Audit />} />
         <Route path="p/:id" element={<AppView />} />

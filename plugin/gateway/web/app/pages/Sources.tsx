@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 import type { ReactNode } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { Status } from "../components/Status";
+import { Sparkline } from "../components/Sparkline";
 import { relTime, freshness, type StatusColor } from "../format";
-import type { SourcesData } from "../types";
+import type { SourcesData, SourceSeriesData } from "../types";
 
 export function Sources() {
   const { data, loading, error } = useApi<SourcesData>(() => api.sources(), []);
+  // Sparkline data is a second, non-blocking fetch — the page renders with
+  // scalar totals immediately and the 30-day trends fill in when they land.
+  const { data: seriesData } = useApi<SourceSeriesData>(() => api.sourceSeries(), []);
+  const series = new Map((seriesData?.series ?? []).map((s) => [s.source, s.points]));
   return (
     <>
       <Heading title="Sources">
@@ -16,7 +22,13 @@ export function Sources() {
         flowing (a live heartbeat, not just recent rows). Click a source to expand. Read-only, refreshed
         live on each load.
       </Heading>
-      {loading ? <Loading /> : error ? <ErrorMsg>{error}</ErrorMsg> : data ? <SourceList data={data} /> : null}
+      {loading ? (
+        <Loading />
+      ) : error ? (
+        <ErrorMsg>{error}</ErrorMsg>
+      ) : data ? (
+        <SourceList data={data} series={series} />
+      ) : null}
     </>
   );
 }
@@ -55,7 +67,13 @@ function Row({
   );
 }
 
-function SourceList({ data }: { data: SourcesData }) {
+function SourceList({
+  data,
+  series,
+}: {
+  data: SourcesData;
+  series: Map<string, SourceSeriesData["series"][number]["points"]>;
+}) {
   const rows: ReactNode[] = [];
 
   const pg = data.postgres;
@@ -97,11 +115,13 @@ function SourceList({ data }: { data: SourcesData }) {
     );
   } else if (lake.configured) {
     for (const t of lake.tables) {
+      const points = series.get(t.source);
       rows.push(
         <Row key={t.source} name={t.source} status={freshness(t.rows, t.last, t.beat)} last={t.last}>
           {kv("rows", t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US"))}
           {kv("last ingest", t.last ? `${String(t.last).slice(0, 19)} UTC` : "—")}
           {t.beat ? kv("connector", `live · last beat ${relTime(t.beat)}`) : null}
+          {points && points.length ? kv("last 30 days", <Sparkline points={points} />) : null}
         </Row>,
       );
     }
@@ -126,6 +146,14 @@ function SourceList({ data }: { data: SourcesData }) {
         <Status color="green">flowing</Status>
         <Status color="yellow">stale / empty</Status>
         <Status color="red">down</Status>
+        {series.size ? (
+          <Link
+            to="/sources/trends"
+            className="ml-auto text-stone-600 underline underline-offset-2 hover:text-stone-900"
+          >
+            ingestion trends →
+          </Link>
+        ) : null}
       </div>
     </>
   );

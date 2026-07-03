@@ -53,6 +53,8 @@ import {
   sessionClearCookie,
   type SourcesData,
   type SourceTable,
+  type SourceSeries,
+  type SourceSeriesData,
 } from "./lib/approval";
 import { authenticate, canApprove, hashPassword, isRole } from "./lib/accounts";
 import { buildKnowledgeView } from "./lib/facts";
@@ -567,6 +569,48 @@ async function gatherSources(): Promise<SourcesData> {
   for (const d of store.listDocs()) byType[d.type] = (byType[d.type] ?? 0) + 1;
 
   return { postgres, lake, knowledge: { docs: store.docCount, byType } };
+}
+
+/**
+ * Per-source daily ingestion for the last 30 days — one lake query per known
+ * source, each independently try/caught (a missing/ungranted table is simply
+ * omitted). Powers the Sources sparklines and the /sources/trends chart. Table
+ * and column come from the trusted LAKE_SOURCES constant (never user input), so
+ * the interpolation is safe — same pattern as gatherSources().
+ */
+async function gatherSourceSeries(): Promise<SourceSeriesData> {
+  const cfg = loadConfig(projectDir);
+  const config = cfg.ok ? cfg.config : null;
+  const series: SourceSeries[] = [];
+  if (config) {
+    const lakeUrl = resolveLakeUrl(projectDir, config);
+    if (lakeUrl.ok) {
+      const qopts = { rowCap: 100, statementTimeoutMs: 8_000 };
+      const results = await Promise.all(
+        LAKE_SOURCES.map(async (s): Promise<SourceSeries | null> => {
+          try {
+            const res = await runLakeQuery(
+              lakeUrl.url,
+              `SELECT toString(toDate(${s.ts})) AS day, count() AS rows
+               FROM setoku.${s.table}
+               WHERE ${s.ts} >= now() - INTERVAL 30 DAY
+               GROUP BY day ORDER BY day`,
+              qopts,
+            );
+            const points = (res.rows as Array<Record<string, unknown>>).map((r) => ({
+              day: String(r.day),
+              rows: Number(r.rows ?? 0),
+            }));
+            return points.length ? { source: s.source, points } : null;
+          } catch {
+            return null; // table absent or not granted — omit this source
+          }
+        }),
+      );
+      for (const r of results) if (r) series.push(r);
+    }
+  }
+  return { series };
 }
 
 // ---- live-app rendering helpers ----
@@ -1251,6 +1295,7 @@ const httpServer = http.createServer(async (req, res) => {
           );
         if (api === "audit" && req.method === "GET") return json(200, store.listAudit(200));
         if (api === "sources" && req.method === "GET") return json(200, await gatherSources());
+        if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries());
         if (api === "team" && req.method === "GET")
           return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
 
