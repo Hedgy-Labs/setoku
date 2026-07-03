@@ -224,3 +224,18 @@ export interface SourcesData {
   lake: { configured: boolean; ok: boolean; error?: string; tables: SourceTable[] };
   knowledge: { docs: number; byType: Record<string, number> };
 }
+
+// Per-source daily ingestion, last ~30 days — powers the Sources sparklines and
+// the /sources/trends chart. Days with zero rows are omitted (sparse); the client
+// fills the gaps across each series' own [min, max] day range.
+export interface SourceSeriesPoint {
+  day: string; // YYYY-MM-DD (UTC)
+  rows: number;
+}
+export interface SourceSeries {
+  source: string; // matches SourceTable.source
+  points: SourceSeriesPoint[];
+}
+export interface SourceSeriesData {
+  series: SourceSeries[];
+}

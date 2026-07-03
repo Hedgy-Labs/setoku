@@ -11,6 +11,7 @@ import type {
   KnowledgeView,
   AuditRow,
   SourcesData,
+  SourceSeriesData,
   TeamData,
   Role,
   PublishedMeta,
@@ -96,6 +97,7 @@ export const api = {
   knowledge: () => req<KnowledgeDoc[]>("knowledge"),
   knowledgeView: () => req<KnowledgeView>("knowledge_view"),
   sources: () => req<SourcesData>("sources"),
+  sourceSeries: () => req<SourceSeriesData>("source_series"),
   audit: () => req<AuditRow[]>("audit"),
   team: () => req<TeamData>("team"),
   invite: (identity: string, rotate = false) =>

@@ -180,6 +180,21 @@ export interface SourcesData {
   knowledge: { docs: number; byType: Record<string, number> };
 }
 
+// Per-source daily ingestion, last ~30 days (Sources sparklines + trends chart).
+// Days with zero rows are omitted; the client fills gaps across each series'
+// own [min, max] range. Mirrors the client copy in web/app/types.ts.
+export interface SourceSeriesPoint {
+  day: string; // YYYY-MM-DD (UTC)
+  rows: number;
+}
+export interface SourceSeries {
+  source: string; // matches SourceTable.source
+  points: SourceSeriesPoint[];
+}
+export interface SourceSeriesData {
+  series: SourceSeries[];
+}
+
 /** A freshly-minted invite, returned once so the admin can hand it to the teammate. */
 export interface Invite {
   identity: string;

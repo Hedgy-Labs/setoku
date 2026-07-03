@@ -20,10 +20,20 @@
 # keeps the production stack named "setoku".
 name: ${SETOKU_STACK:-setoku}
 
+# Bound every container's log so a chatty service can't quietly fill the disk —
+# Docker's json-file driver is UNLIMITED by default. 20 MB × 3 files per
+# container. Wired into each service below via `logging: *default-logging`.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "3"
+
 services:
   caddy:
     image: caddy:2-alpine@sha256:77c07d5ebfa5be9fd6c820d2094ae662c9e7eeb9bf98346b7f639900263ee2a2
     restart: unless-stopped
+    logging: *default-logging
     ports:
       - "${SETOKU_EDGE_HTTP_PORT:-80}:80"
       - "${SETOKU_EDGE_HTTPS_PORT:-443}:443"
@@ -58,6 +68,7 @@ services:
       context: .
       dockerfile: deploy/Dockerfile
     restart: unless-stopped
+    logging: *default-logging
     environment:
       SETOKU_TOKENS: "${SETOKU_TOKENS:?per-user MCP tokens, e.g. tok1=alice@co.com}"
       # Hot-pluggable analyst tokens on the data volume: `admin-cli add-teammate`
@@ -100,6 +111,7 @@ services:
   postgres:
     image: pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set in .env}
       POSTGRES_DB: setoku
@@ -112,6 +124,7 @@ services:
       retries: 5
 
   clickhouse:
+    logging: *default-logging
     profiles: [lake, ingest, slack, render, mercury, github]
     image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
     restart: unless-stopped
@@ -124,6 +137,9 @@ services:
       - ch_data:/var/lib/clickhouse
       # memory/concurrency preset: small (4–8 GB boxes) | roomy (24 GB prototype)
       - ./deploy/clickhouse/${SETOKU_CH_PRESET:-small}.xml:/etc/clickhouse-server/config.d/zz-setoku-preset.xml:ro
+      # rolling TTL on ClickHouse's own telemetry tables (system.*_log) so they
+      # can't outgrow the lake — see deploy/clickhouse/system-logs.xml
+      - ./deploy/clickhouse/system-logs.xml:/etc/clickhouse-server/config.d/zz-setoku-system-logs.xml:ro
       # the gateway's read-only lake user (grants + settings constraints)
       - ./deploy/clickhouse/lake-users.xml:/etc/clickhouse-server/users.d/zz-setoku-lake.xml:ro
       - ./ingest/schemas:/docker-entrypoint-initdb.d:ro
@@ -139,6 +155,7 @@ services:
       start_period: 30s
 
   vector:
+    logging: *default-logging
     profiles: [ingest, render, mercury, github]
     image: timberio/vector:0.49.0-alpine@sha256:2a31648e67280953aaf6b219c1b04729ac5ed12820ec2bfb698630b2d989d135
     restart: unless-stopped
@@ -161,6 +178,7 @@ services:
   # durability. One-shot backfill: docker compose run --rm slack-listener bun backfill.ts
   # Start it as soon as the app exists: the free-plan ~90-day window is burning.
   slack-listener:
+    logging: *default-logging
     profiles: [slack]
     build:
       context: .
@@ -198,6 +216,7 @@ services:
   # configured services and POSTs to Vector's /ingest/render on the internal
   # network. State on a volume so restarts don't re-ingest.
   render-poller:
+    logging: *default-logging
     profiles: [render]
     build:
       context: .
@@ -222,6 +241,7 @@ services:
   # transactions (ReplacingMergeTree handles pending→posted updates). State on a
   # volume so restarts don't re-backfill. See ingest/mercury-poller/README.md.
   mercury-poller:
+    logging: *default-logging
     profiles: [mercury]
     build:
       context: .
@@ -246,6 +266,7 @@ services:
   # Vector's /ingest/github/* on the internal network. Mutable objects land in
   # ReplacingMergeTree tables. State on a volume so restarts don't re-backfill.
   github-poller:
+    logging: *default-logging
     profiles: [github]
     build:
       context: .
@@ -267,6 +288,7 @@ services:
   # ---- backup one-shots (profile: backup) — driven by deploy/backup/*.sh ----
 
   clickhouse-backup:
+    logging: *default-logging
     profiles: [backup]
     image: altinity/clickhouse-backup:2.6.5@sha256:d970be663360e8c4cfa1bb4cac21898e434c7bec3e196599d2b39ff55a20f841
     environment:
@@ -285,6 +307,7 @@ services:
       - ch_data:/var/lib/clickhouse
 
   rclone:
+    logging: *default-logging
     profiles: [backup]
     image: rclone/rclone:1.69@sha256:1f497a86a6466395e62a5886613a14b7b18809543566ef9fa35fa1371a7ecc0f
     environment:
