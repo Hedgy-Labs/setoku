@@ -20,8 +20,9 @@
  * fix → a human approves. deploy.sh runs it WITHOUT --gate (warn, never block).
  */
 import path from "node:path";
-import { loadConfig, resolveDatabaseUrl, resolveProjectDir } from "./lib/config";
+import { loadConfig, resolveDatabaseUrl, resolveLakeUrl, resolveProjectDir } from "./lib/config";
 import { runReadOnlyQuery, closePools } from "./lib/db";
+import { runLakeQuery } from "./lib/lake";
 import { KnowledgeStore, defaultDbPath } from "./lib/store";
 import { extractSql, lintDocResults, parseResultTable, type LintResult } from "./lib/lint";
 
@@ -50,6 +51,8 @@ async function main() {
     console.error(`knowledge-lint: no business DB — ${db.error}`);
     process.exit(2);
   }
+  // clickhouse-dialect docs (biz.* mirror / lake metrics) lint against the lake
+  const lake = resolveLakeUrl(projectDir, cfg.config);
   const store = new KnowledgeStore(storePath(projectDir));
   const docs = store.listDocs().filter((d) => d.type === "metric" || d.type === "query");
 
@@ -64,10 +67,20 @@ async function main() {
   for (const doc of docs) {
     const sqls = extractSql(doc.body);
     const results: LintResult[] = [];
+    // A doc is canonical in exactly ONE dialect (I5), declared in frontmatter:
+    // `dialect: clickhouse` routes its SQL to the lake (the biz.* mirror);
+    // default stays postgres. run_query routes the same way.
+    const dialect = String((doc.meta as Record<string, unknown>).dialect ?? "postgres");
     for (const sql of sqls) {
       try {
-        const out = await runReadOnlyQuery(db.url, sql, cfg.config);
-        results.push(parseResultTable(out.columns, out.rows));
+        if (dialect === "clickhouse") {
+          if (!lake.ok) throw new Error(`doc declares dialect clickhouse but no lake is configured — ${lake.error}`);
+          const out = await runLakeQuery(lake.url, sql, cfg.config);
+          results.push(parseResultTable(out.columns, out.rows));
+        } else {
+          const out = await runReadOnlyQuery(db.url, sql, cfg.config);
+          results.push(parseResultTable(out.columns, out.rows));
+        }
       } catch (e) {
         results.push({ cols: [], rows: [], error: String((e as Error).message).split("\n")[0].slice(0, 160) });
       }

@@ -182,6 +182,14 @@ function referencesSource(sql: string, source: string): boolean {
   return schema === "public" && containsAtBoundary(s, source.split(".").pop()!.toLowerCase());
 }
 
+/** The mirrored tables a postgres statement references — regardless of query
+ *  shape (the mirror-required gate covers point lookups too; only schema
+ *  exploration is exempt). Empty when nothing mirrored is touched. */
+export function mirrorHits(sql: string, mirrored: MirrorRef[]): MirrorRef[] {
+  if (!mirrored.length || isExploratorySql(sql)) return [];
+  return mirrored.filter((m) => referencesSource(sql, m.source));
+}
+
 /**
  * The mirror-steering hint (issue #47): a postgres-dialect scan/aggregation
  * just ran against a table that has a ClickHouse mirror — the exact workload
@@ -189,9 +197,8 @@ function referencesSource(sql: string, source: string): boolean {
  * (those legitimately stay on prod), or when nothing referenced is mirrored.
  */
 export function mirrorSteerNote(sql: string, mirrored: MirrorRef[]): string | null {
-  if (!mirrored.length) return null;
-  if (isExploratorySql(sql) || !isAggregateShaped(sql)) return null;
-  const hits = mirrored.filter((m) => referencesSource(sql, m.source));
+  if (!isAggregateShaped(sql)) return null;
+  const hits = mirrorHits(sql, mirrored);
   if (!hits.length) return null;
   const targets = hits.map((m) => `biz.${m.target}`).join(", ");
   return (

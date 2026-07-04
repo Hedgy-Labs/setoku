@@ -75,3 +75,11 @@ can't drift: `docker compose up -d --build server pg-mirror`.
 Tests: `bun test ingest/pg-mirror/` (real local Postgres + a fake ClickHouse;
 set `SETOKU_E2E_CH_URL` to also run the real-engine e2e, same gate as
 `test/lake.test.ts`).
+
+## The mirror is the read path
+
+With the mirror up, the gateway **requires** it: postgres-dialect `run_query`
+and app panels that touch mirrored tables are rejected with the `biz.*`
+rewrite. `run_query force_postgres: true` reads the live source (verifying the
+mirror, row-level freshness); `.setoku/config.json` `"mirrorPolicy": "prefer"`
+softens the whole policy to an advisory nudge.

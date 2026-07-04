@@ -910,7 +910,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             <svg
               viewBox="0 0 680 520"
               role="img"
-              aria-label="Setoku architecture and data flow: you and your AI connect over MCP to the gateway on your box, which holds a ClickHouse lake, a knowledge store, and a person who approves. Below the box, your Postgres database is queried read-only and your sources (GitHub, Vercel, Render, Slack, Mercury) are ingested into the lake."
+              aria-label="Setoku architecture and data flow: you and your AI connect over MCP to the gateway on your box, which holds a ClickHouse lake, a knowledge store, and a person who approves. Below the box, your Postgres database is queried read-only and mirrored into the lake for analytics, and your sources (GitHub, Vercel, Render, Slack, Mercury) are ingested into the lake."
             >
               <defs>
                 <marker
@@ -994,7 +994,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
                 Lake (ClickHouse)
               </text>
               <text class="s" x="182" y="368" text-anchor="middle">
-                ingested logs · events
+                logs · events · DB mirror
               </text>
               <rect
                 class="node"
@@ -1069,7 +1069,9 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
           <h2>Connectors</h2>
           <p class="lead">
             Point Setoku at the data you already have. It queries some sources
-            live and ingests others into a local lake.
+            live, ingests others into a local lake, and mirrors your database
+            into that lake so dashboards and heavy questions run fast without
+            leaning on prod.
           </p>
           <div class="integ">
             <div class="igroup">
@@ -1077,7 +1079,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
               <div class="chips">
                 <div class="chip">
                   <span class="dot"></span><b>PostgreSQL</b
-                  ><span>your app database</span>
+                  ><span>your app database, mirrored for analytics</span>
                 </div>
               </div>
             </div>

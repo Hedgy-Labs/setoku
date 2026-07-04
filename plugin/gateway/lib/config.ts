@@ -24,6 +24,15 @@ export interface SetokuConfig {
   denyTables: string[];
   rowCap: number;
   statementTimeoutMs: number;
+  /**
+   * How hard the box steers queries onto the biz.* business-DB mirror
+   * (issue #47) when one exists. "require" (the default): postgres-dialect
+   * queries/panels that touch a mirrored table are REJECTED with the biz.*
+   * rewrite — the mirror is the read path; prod postgres stays for
+   * verification (run_query force_postgres) and unmirrored tables.
+   * "prefer": advisory nudge only.
+   */
+  mirrorPolicy?: "require" | "prefer";
   /** Optional override for the knowledge-store SQLite path (absolute, or relative to the project dir). */
   knowledgeDb?: string;
 }

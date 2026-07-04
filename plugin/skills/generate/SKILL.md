@@ -47,7 +47,7 @@ customer_id → public.customers.id (the buyer). One order : many order_items.
 - prisma/schema.prisma:120 (model definition)
 ```
 
-**metric** — canonical business numbers. `meta`: `summary`, `keywords`, `links` (the entities its SQL reads). Body: `## Definition` (prose), `## Canonical SQL` (fenced sql block — the exact production logic), `## Caveats`, `## Sources` (file:line). A metric is canonical in exactly **one** dialect (I5) — state it next to the SQL. When the box mirrors the business DB (`list_sources` shows a BUSINESS-DB MIRROR section), define **scan-shaped metrics (GROUP BY / large-table aggregations) in `clickhouse` dialect against `biz.<table>`** from day one — the mirror is the default read path for heavy queries; keep `postgres` canonical only for point-lookup-shaped metrics.
+**metric** — canonical business numbers. `meta`: `summary`, `keywords`, `links` (the entities its SQL reads), `dialect` (`postgres` | `clickhouse` — machine-read by run_query routing and knowledge-lint; omit = postgres). Body: `## Definition` (prose), `## Canonical SQL` (fenced sql block — the exact production logic), `## Caveats`, `## Sources` (file:line). A metric is canonical in exactly **one** dialect (I5). When the box mirrors the business DB (`list_sources` shows a BUSINESS-DB MIRROR section), the mirror is THE read path: define metrics over mirrored tables in **`clickhouse` dialect against `biz.<table>`** (`meta.dialect: clickhouse`) — the gateway rejects postgres queries against mirrored tables, so a postgres-dialect metric doc there is a metric agents cannot run.
 
 **query** — known-good SQL for a recurring question. `meta`: `question`, `keywords`, `links` (the entities/metrics it touches). Body: fenced sql.
 
@@ -70,5 +70,16 @@ The store is a wiki: `meta.links` is an array of **exact doc names** this doc re
 7. **Review with the user** — summarize what you saved/proposed (`list_entities`, `list_corrections`) and where you were least confident. On analyst, point them to `/admin` to approve the pending proposals.
 
 ## Refresh mode (knowledge already exists)
+
+## Migrating knowledge to the mirror
+
+When a box gains the business-DB mirror (or `run_query` starts rejecting a metric's postgres SQL with the biz.* rewrite), existing metric/query docs need re-dialecting once:
+
+1. List metric/query docs and pull each one's canonical SQL (`get_metric` / `find_context`). The ones to migrate reference mirrored tables (compare against the BUSINESS-DB MIRROR section of `list_sources`) and declare no `dialect: clickhouse`.
+2. Translate the SQL to ClickHouse against the `biz.*` names. The usual delta is small: `x FILTER (WHERE c)` → `xIf(..., c)`, drop `::casts`, `CURRENT_DATE` → `today()` (`dateDiff('day', d, today())` for day math), and qualified-name joins may need explicit `AS` aliases when both sides share a column name.
+3. VALIDATE on the analyst connector: run the translated SQL with `run_query` dialect `clickhouse` and compare against the old number (`force_postgres: true` runs the postgres original for the comparison — that's what it's for).
+4. Re-save with the translated SQL and `meta.dialect: clickhouse` (curator `upsert_context`, or `report_correction` on analyst). Never silently rewrite a curator-shaped doc — say what changed; revisions are recorded.
+
+knowledge-lint routes each doc's SQL by `meta.dialect`, so migrated docs keep linting against the engine they actually run on.
 
 Diff-driven: identify which entities/metrics are affected by recent code changes (`git diff`, migrations since last refresh) and re-save only those docs (`upsert_context` on curator, or `report_correction` on analyst). Never silently rewrite verified content a curator shaped — call out anything you changed (revisions are recorded automatically).
