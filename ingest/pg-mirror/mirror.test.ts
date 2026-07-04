@@ -104,6 +104,10 @@ describe("type mapping", () => {
   it("pg enums become LowCardinality(String)", () => {
     expect(mapColumn(col({ udt_name: "order_status", typtype: "e", not_null: true })).chType).toBe("LowCardinality(String)");
   });
+  it("NULLABLE enums nest Nullable inside LowCardinality (ClickHouse rejects the inverse)", () => {
+    // hit on the hedgy pilot: Prisma optional enums → Nullable(LowCardinality(…)) is ILLEGAL_TYPE_OF_ARGUMENT
+    expect(mapColumn(col({ udt_name: "order_status", typtype: "e" })).chType).toBe("LowCardinality(Nullable(String))");
+  });
   it("arrays wrap the element and are never Nullable", () => {
     const a = mapColumn(col({ udt_name: "_int4", elem_udt: "int4", elem_typtype: "b" }));
     expect(a.chType).toBe("Array(Int32)");
@@ -323,6 +327,7 @@ const SCHEMA_STATEMENTS = [
      tags text[],
      nums int4[],
      status order_status NOT NULL DEFAULT 'pending',
+     status_note order_status,
      active boolean NOT NULL DEFAULT true,
      uid uuid,
      note text,
@@ -340,9 +345,9 @@ const SCHEMA_STATEMENTS = [
   `CREATE TABLE public.internal_notes (id int PRIMARY KEY, secret text)`,
   `CREATE TABLE public.has_interval (id int PRIMARY KEY, span interval)`,
   `CREATE TABLE public.evil__staging (id int PRIMARY KEY)`, // reserved-suffix guard
-  `INSERT INTO public.orders (id, amount, loose, placed_at, day, naive, meta, tags, nums, status, active, uid, note, blob, ratio) VALUES
-     (1, 12.34, 0.000000001, '2026-05-01T10:00:00Z', '2026-05-01', '2026-05-01 10:00:00', '{"a":1}', ARRAY['x','y''z'], ARRAY[1,2], 'paid', true, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'héllo — ''quoted''', '\\xdead', 'NaN'),
-     (2, 0.05, NULL, '2026-05-02T00:00:00Z', NULL, NULL, NULL, NULL, NULL, 'pending', false, NULL, NULL, NULL, '-Infinity')`,
+  `INSERT INTO public.orders (id, amount, loose, placed_at, day, naive, meta, tags, nums, status, status_note, active, uid, note, blob, ratio) VALUES
+     (1, 12.34, 0.000000001, '2026-05-01T10:00:00Z', '2026-05-01', '2026-05-01 10:00:00', '{"a":1}', ARRAY['x','y''z'], ARRAY[1,2], 'paid', 'refunded', true, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', 'héllo — ''quoted''', '\\xdead', 'NaN'),
+     (2, 0.05, NULL, '2026-05-02T00:00:00Z', NULL, NULL, NULL, NULL, NULL, 'pending', NULL, false, NULL, NULL, NULL, '-Infinity')`,
   `INSERT INTO ticketing.seat_txn SELECT g, 1, g * 100, 'fan' || g || '@example.com' FROM generate_series(1, 25000) g`,
   `INSERT INTO public.no_pk VALUES ('a'), ('b')`,
   `INSERT INTO public.internal_notes VALUES (1, 'do not mirror')`,
@@ -523,11 +528,12 @@ describe.skipIf(!CH_URL)("mirror e2e (real ClickHouse)", () => {
 
     // arrays, enums, uuid, bool, nullables
     const row = await adminRows(
-      `SELECT tags, nums, status, active, toString(uid) AS uid, note, day, meta FROM ${rch.mirrorDb}.orders WHERE id = 1`,
+      `SELECT tags, nums, status, status_note, active, toString(uid) AS uid, note, day, meta FROM ${rch.mirrorDb}.orders WHERE id = 1`,
     );
     expect(row[0].tags).toEqual(["x", "y'z"]);
     expect(row[0].nums).toEqual([1, 2]);
     expect(row[0].status).toBe("paid");
+    expect(row[0].status_note).toBe("refunded"); // nullable enum → LowCardinality(Nullable(String))
     expect(row[0].active).toBe(true);
     expect(row[0].uid).toBe("a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11");
     expect(row[0].note).toBe("héllo — 'quoted'");

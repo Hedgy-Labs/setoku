@@ -188,9 +188,14 @@ export function mapColumn(c: PgColumnRow): MirrorColumn {
     const elem = base.ch === "Bool" ? "UInt8" : base.ch; // Array(Bool) quirks avoided
     return { name: c.column_name, chType: `Array(${elem})`, kind: "plain", elemKind: base.kind, nullable, udt, isArray, isEnum: typtype === "e" };
   }
+  // Nullable nests INSIDE LowCardinality — ClickHouse rejects
+  // Nullable(LowCardinality(String)) but accepts LowCardinality(Nullable(String)).
+  // Hit in the wild by nullable pg enum columns (Prisma optional enums).
+  const nullify = (t: string): string =>
+    t.startsWith("LowCardinality(") ? `LowCardinality(Nullable(${t.slice("LowCardinality(".length, -1)}))` : `Nullable(${t})`;
   return {
     name: c.column_name,
-    chType: nullable ? `Nullable(${base.ch})` : base.ch,
+    chType: nullable ? nullify(base.ch) : base.ch,
     kind: base.kind,
     nullable,
     udt,
