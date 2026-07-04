@@ -73,6 +73,11 @@ export function AppView() {
   // without waiting for a render.
   const [frame, setFrame] = useState<{ n: number; force: boolean }>({ n: 0, force: false });
   const nonceRef = useRef(0);
+  // The iframe REMOUNTS on every reload (key={frame.n}), so a param change shows
+  // a blank frame until the new render lands — this drives the overlay loader.
+  // Cleared by the iframe's load event; the overlay's CSS delay keeps a fast
+  // cached load from flashing it.
+  const [frameLoading, setFrameLoading] = useState(false);
   // Per-panel provenance ECHOED UP by the frame for the variant it actually rendered.
   const [framePanels, setFramePanels] = useState<{ t: string; panels: Record<string, LivePanel> } | null>(null);
   const framePanelsRef = useRef(framePanels);
@@ -97,6 +102,7 @@ export function AppView() {
   const reloadFrame = useCallback((opts: { force?: boolean; clearLive?: boolean } = {}) => {
     if (opts.clearLive) setFramePanels(null);
     setFrameErr(false);
+    setFrameLoading(true);
     clearEchoTimer();
     nonceRef.current += 1;
     setFrame({ n: nonceRef.current, force: !!opts.force });
@@ -256,6 +262,7 @@ export function AppView() {
   // app's metadata has resolved, so a legacy "html" report (which never echoes) and
   // a not-yet-known format don't trip a false error.
   const onFrameLoad = useCallback(() => {
+    setFrameLoading(false);
     clearEchoTimer();
     const loadedN = nonceRef.current;
     echoTimer.current = setTimeout(() => {
@@ -268,6 +275,15 @@ export function AppView() {
   }, []);
   // Drop a pending echo-watchdog on unmount so it can't fire after the view is gone.
   useEffect(() => () => clearEchoTimer(), []);
+
+  // Loader watchdog: a frame navigation that never fires `load` (box restart,
+  // dropped network — the echo watchdog only arms INSIDE onFrameLoad) must not
+  // leave the view dimmed behind a permanent spinner. Re-arms per load nonce.
+  useEffect(() => {
+    if (!frameLoading) return;
+    const t = setTimeout(() => setFrameLoading(false), 25_000);
+    return () => clearTimeout(t);
+  }, [frame.n, frameLoading]);
 
   const copy = async () => {
     try {
@@ -370,6 +386,7 @@ export function AppView() {
           <span className="hidden text-xs text-stone-500 sm:inline">
             published by {data.createdBy}
             {isApp && stampAt ? ` · data updated ${relTime(stampAt)}` : ""}
+            {isApp && data.mirrorAsOf ? ` · source data as of ${relTime(data.mirrorAsOf)}` : ""}
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
           </span>
         ) : null}
@@ -439,20 +456,34 @@ export function AppView() {
               Couldn't load the latest data — showing the last view. Try refreshing.
             </div>
           ) : null}
-          <iframe
-            key={frame.n}
-            ref={frameRef}
-            title={data.title}
-            onLoad={onFrameLoad}
-            src={`/admin/frame/${encodeURIComponent(id)}?${paramQuery ? paramQuery + "&" : ""}${frame.force ? "force=1&" : ""}t=${frame.n}`}
-            // allow-forms so an app's <form> submit handler fires (the natural
-            // app pattern); the frame CSP pins form-action 'none', so no actual
-            // submission can leave the sandbox. Must match the response CSP's
-            // sandbox directive (the effective sandbox is the intersection).
-            sandbox="allow-scripts allow-forms"
-            referrerPolicy="no-referrer"
-            className="min-h-0 w-full flex-1 border-0 bg-white"
-          />
+          <div className="relative min-h-0 w-full flex-1">
+            <iframe
+              key={frame.n}
+              ref={frameRef}
+              title={data.title}
+              onLoad={onFrameLoad}
+              src={`/admin/frame/${encodeURIComponent(id)}?${paramQuery ? paramQuery + "&" : ""}${frame.force ? "force=1&" : ""}t=${frame.n}`}
+              // allow-forms so an app's <form> submit handler fires (the natural
+              // app pattern); the frame CSP pins form-action 'none', so no actual
+              // submission can leave the sandbox. Must match the response CSP's
+              // sandbox directive (the effective sandbox is the intersection).
+              sandbox="allow-scripts allow-forms"
+              referrerPolicy="no-referrer"
+              className="h-full w-full border-0 bg-white"
+            />
+            {/* Loader over the (blank, remounting) frame while the new variant
+                renders — param changes and refreshes get visible feedback. The
+                opacity delay keeps a fast cached load from flashing it. */}
+            <div
+              aria-hidden={!frameLoading}
+              className={`pointer-events-none absolute inset-0 flex items-center justify-center bg-white/60 transition-opacity duration-150 ${frameLoading ? "opacity-100 delay-150" : "opacity-0"}`}
+            >
+              <div className="flex items-center gap-2 rounded-md border border-stone-200 bg-white px-3 py-1.5 text-xs text-stone-500 shadow-sm">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-stone-300 border-t-stone-600" />
+                updating…
+              </div>
+            </div>
+          </div>
           {isApp && showCalc ? (
             // SQL/description are param-independent (from data); the per-variant row
             // counts/freshness come from the frame's own echo (live) — "updating…"

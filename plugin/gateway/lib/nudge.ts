@@ -20,13 +20,17 @@
  */
 
 /** One pass over `sql`: drop comments (literal-aware), collapse whitespace,
- *  lowercase, strip trailing semicolons. Returns two views of the same scan:
+ *  lowercase, strip trailing semicolons. Returns three views of the same scan:
  *  `normalized` keeps string-literal contents (for containment comparison);
  *  `skeleton` blanks them to `'?'` so shape predicates never match text the
- *  query merely filters on (`label = 'sum(total)'`). */
-function lex(sql: string): { normalized: string; skeleton: string } {
+ *  query merely filters on (`label = 'sum(total)'`); `identSkeleton` blanks
+ *  only '…' string literals and UNWRAPS "…" quoted identifiers (pg quoting for
+ *  camelCase names), so table-reference predicates can see `FROM "DealPipeline"`
+ *  as `from dealpipeline` without matching literal text. */
+function lex(sql: string): { normalized: string; skeleton: string; identSkeleton: string } {
   let norm = "";
   let skel = "";
+  let ident = "";
   const n = sql.length;
   let i = 0;
   while (i < n) {
@@ -37,6 +41,7 @@ function lex(sql: string): { normalized: string; skeleton: string } {
       i = nl === -1 ? n : nl;
       norm += " ";
       skel += " ";
+      ident += " ";
       continue;
     }
     // block comment: /* … */ (non-nesting — fine for a heuristic on both dialects)
@@ -45,6 +50,7 @@ function lex(sql: string): { normalized: string; skeleton: string } {
       i = close === -1 ? n : close + 2;
       norm += " ";
       skel += " ";
+      ident += " ";
       continue;
     }
     // string literal / quoted identifier: '…' or "…" (a doubled quote escapes)
@@ -61,18 +67,21 @@ function lex(sql: string): { normalized: string; skeleton: string } {
         }
         j += 1;
       }
-      norm += sql.slice(i, j).toLowerCase();
+      const chunk = sql.slice(i, j).toLowerCase();
+      norm += chunk;
       skel += `${c}?${c}`;
+      ident += c === '"' ? chunk.replace(/"/g, "") : "'?'";
       i = j;
       continue;
     }
     norm += c.toLowerCase();
     skel += c.toLowerCase();
+    ident += c.toLowerCase();
     i += 1;
   }
   const squash = (s: string): string =>
     s.replace(/\s+/g, " ").trim().replace(/[\s;]+$/, "").trim();
-  return { normalized: squash(norm), skeleton: squash(skel) };
+  return { normalized: squash(norm), skeleton: squash(skel), identSkeleton: squash(ident) };
 }
 
 /** Comment-stripped, whitespace/case-collapsed SQL for comparison. Literal
@@ -149,6 +158,93 @@ export function queryCaptureNudge(sql: string, curatedSqls: () => string[]): str
     "(not one-off exploration), capture the definition now with report_correction " +
     '(kind:"metric" — include this SQL and what it means in business terms). It lands as ' +
     "pending for a human to approve, and the whole team gets it next time."
+  );
+}
+
+/** A mirrored table as the steering helpers need it (lib/mirror.ts fetches). */
+export interface MirrorRef {
+  /** ClickHouse-side name — query as biz.<target>. */
+  target: string;
+  /** Source pg table, schema-qualified (e.g. "ticketing.seat_txn"). */
+  source: string;
+}
+
+const reEscape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** Whether postgres SQL references a mirrored source table, judged on the
+ *  identifier-preserving skeleton (a query merely FILTERING on the string
+ *  'ticketing.seat_txn' doesn't count, but `FROM "DealPipeline"` does).
+ *
+ *  This predicate backs a hard DENY (the mirror-required gate), so it must not
+ *  fire on a mere identifier collision: a BARE name matches only in TABLE
+ *  position (after FROM/JOIN or a FROM-list comma) — never a column, alias, or
+ *  SELECT-list name — only for public-schema sources (an unqualified name
+ *  resolves to the search_path), and not when the query declares a CTE of the
+ *  same name (the CTE shadows the table). Qualified `schema.table` matches at
+ *  token boundaries anywhere (also covering `schema.table.column` refs). */
+function referencesSource(sql: string, source: string): boolean {
+  const s = lex(sql).identSkeleton;
+  if (containsAtBoundary(s, source.toLowerCase())) return true;
+  const [schema, ...rest] = source.split(".");
+  if (schema !== "public") return false;
+  const bare = reEscape(rest.join(".").toLowerCase());
+  if (new RegExp(`\\b${bare}\\s+as\\s*\\(`).test(s)) return false; // CTE shadows it
+  // FROM/JOIN position only. A comma-list item (`FROM a, orders`) is missed on
+  // purpose: a miss fails SOFT (the query runs on postgres, pre-mirror
+  // behavior) while a looser pattern risks denying legitimate SQL.
+  return new RegExp(`\\b(?:from|join)\\s+(?:public\\s*\\.\\s*)?${bare}(?![\\w$.])`).test(s);
+}
+
+/** The mirrored tables a postgres statement references — regardless of query
+ *  shape (the mirror-required gate covers point lookups too; only schema
+ *  exploration is exempt). Empty when nothing mirrored is touched. */
+export function mirrorHits(sql: string, mirrored: MirrorRef[]): MirrorRef[] {
+  if (!mirrored.length || isExploratorySql(sql)) return [];
+  return mirrored.filter((m) => referencesSource(sql, m.source));
+}
+
+/**
+ * The mirror-steering hint (issue #47): a postgres-dialect scan/aggregation
+ * just ran against a table that has a ClickHouse mirror — the exact workload
+ * the mirror exists for. Null for point-lookup-shaped or exploratory SQL
+ * (those legitimately stay on prod), or when nothing referenced is mirrored.
+ */
+export function mirrorSteerNote(sql: string, mirrored: MirrorRef[]): string | null {
+  if (!isAggregateShaped(sql)) return null;
+  const hits = mirrorHits(sql, mirrored);
+  if (!hits.length) return null;
+  const targets = hits.map((m) => `biz.${m.target}`).join(", ");
+  return (
+    `⚡ ${hits.map((m) => m.source).join(", ")} ${hits.length > 1 ? "are" : "is"} mirrored into the lake — ` +
+    `heavy scans/aggregations like this run much faster there. Re-run with dialect:"clickhouse" against ` +
+    `${targets} (same rows, full-reloaded on a cron; list_sources shows the mirror's "data as of").`
+  );
+}
+
+/**
+ * publish/update_app note flagging postgres-dialect panels whose aggregate SQL
+ * scans a mirrored table — those panels should be authored in clickhouse
+ * dialect against biz.* (every param toggle is a cold run against prod
+ * otherwise). Null when nothing qualifies.
+ */
+export function panelMirrorNote(
+  panels: { key: string; sql: string; dialect?: string }[],
+  mirrored: MirrorRef[],
+): string | null {
+  if (!mirrored.length) return null;
+  const flagged = panels
+    .filter((p) => (p.dialect ?? "postgres") === "postgres")
+    .filter((p) => !isExploratorySql(p.sql) && isAggregateShaped(p.sql))
+    .map((p) => ({ key: p.key, hits: mirrored.filter((m) => referencesSource(p.sql, m.source)) }))
+    .filter((p) => p.hits.length);
+  if (!flagged.length) return null;
+  const detail = flagged
+    .map((p) => `"${p.key}" (${p.hits.map((m) => `${m.source} → biz.${m.target}`).join(", ")})`)
+    .join(", ");
+  return (
+    `panel(s) ${detail} aggregate over postgres tables that are MIRRORED into the lake — author heavy ` +
+    'panels in dialect:"clickhouse" against the biz.* mirror instead (same data, no prod scans, param ' +
+    "toggles run live). Prod postgres is for point lookups."
   );
 }
 

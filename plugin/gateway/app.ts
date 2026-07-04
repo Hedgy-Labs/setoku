@@ -26,7 +26,8 @@ import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_S
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
-import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
+import { queryCaptureNudge, panelCaptureNote, mirrorSteerNote, panelMirrorNote, mirrorHits, type MirrorRef } from "./lib/nudge";
+import { mirroredTables, type MirroredTable } from "./lib/mirror";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
@@ -140,6 +141,50 @@ function curatedSqls(): string[] {
     .listDocs()
     .filter((d) => d.type === "metric" || d.type === "query")
     .flatMap((d) => extractSql(d.body));
+}
+
+/** Tables currently mirrored into biz.* (issue #47) — feeds the run_query
+ *  steering/gate and the list_sources mirror section. Cached in lib/mirror.
+ *
+ *  `forGate` matters on CURATOR sessions: steering surfaces return [] there
+ *  (the membrane keeps lake reads off write-capable sessions, and a curator
+ *  can't run clickhouse anyway, so a nudge is noise) — but the publish GATE
+ *  must see the mirror regardless of role, or curators become the one session
+ *  type that can plant durable postgres panels over mirrored tables. The gate
+ *  read is a server-side metadata fetch (pg-catalog identifiers the curator
+ *  can already see via get_schema), not lake content reaching the session.
+ *  `forGate` also awaits a real refresh instead of trusting a cold/negative
+ *  cache — a lake blip must not silently disable a durable-artifact gate. */
+async function mirrorRefs(opts: { forGate?: boolean } = {}): Promise<MirroredTable[]> {
+  if (denyLakeRead && !opts.forGate) return [];
+  try {
+    const config = requireConfig();
+    const lake = resolveLakeUrl(projectDir, config);
+    if (!lake.ok) return [];
+    return await mirroredTables(lake.url, { fresh: opts.forGate });
+  } catch {
+    return [];
+  }
+}
+
+/** The mirror-required rejection (issue #47, hardened): with a mirror present,
+ *  the mirror IS the read path for mirrored tables — postgres against them is
+ *  refused with the rewrite, not nudged. Returns null when allowed. NB the
+ *  gate can't see mirror metadata on a curator session (the membrane keeps all
+ *  lake reads off write-capable sessions), but a curator can't run clickhouse
+ *  panels either — analysts are who author and query. */
+function mirrorRequiredError(hits: MirrorRef[], what: "query" | "panel"): string | null {
+  if (!hits.length) return null;
+  const map = hits.map((m) => `${m.source} → biz.${m.target}`).join(", ");
+  return (
+    `This box mirrors the business DB — mirrored tables are read via ClickHouse, not prod postgres ` +
+    `(${map}). Re-write the ${what} with dialect:"clickhouse" against the biz.* names (same rows, ` +
+    `reloaded on a cron; list_sources shows each table's "data as of").` +
+    (what === "query"
+      ? ` If you specifically need the LIVE source rows — verifying the mirror against prod, or a ` +
+        `row that changed in the last few minutes — re-run with force_postgres:true (audited).`
+      : "")
+  );
 }
 
 const NO_KNOWLEDGE_HINT =
@@ -694,6 +739,9 @@ server.registerTool(
     }
 
     // business database (Postgres)
+    // With a mirror present, postgres is just the mirror's SOURCE — the section
+    // must not present it as the query path (those queries get rejected).
+    const mirrored = await mirrorRefs();
     try {
       const db = config ? resolveDatabaseUrl(projectDir, config) : { ok: false as const, error: "" };
       if (config && db.ok) {
@@ -706,6 +754,19 @@ server.registerTool(
             denied
               ? `BUSINESS DATABASE (Postgres): configured but the read-only role can see no tables — ${denied}`
               : "BUSINESS DATABASE (Postgres): configured, but no tables match the allow-list (or the database is empty).",
+          );
+        } else if (mirrored.length) {
+          const require = (config?.mirrorPolicy ?? "require") === "require";
+          lines.push(
+            "",
+            `BUSINESS DATABASE (Postgres) — the mirror's source, ${names.length} tables. Query these via the`,
+            require
+              ? "BUSINESS-DB MIRROR below (clickhouse dialect); direct postgres queries on mirrored tables are"
+              : "BUSINESS-DB MIRROR below (clickhouse dialect) — strongly preferred for scans/aggregations;",
+            require
+              ? "rejected (run_query force_postgres:true only to verify the mirror or read the last few minutes):"
+              : "postgres still runs them (this box sets mirrorPolicy \"prefer\"):",
+            "  " + names.slice(0, 40).join(", ") + (names.length > 40 ? ", …" : "") + "  (get_schema for columns)",
           );
         } else {
           lines.push(
@@ -748,6 +809,23 @@ server.registerTool(
           } else {
             lines.push("", "DATA LAKE: configured but empty.");
           }
+          // Business-DB mirror (issue #47) — the DEFAULT read path for heavy
+          // scans/aggregations over business tables.
+          const mirror = mirrored;
+          if (mirror.length) {
+            const require = (config?.mirrorPolicy ?? "require") === "require";
+            lines.push(
+              "",
+              'BUSINESS-DB MIRROR (ClickHouse, biz.*) — run_query with dialect:"clickhouse". Full copies of',
+              require
+                ? "allowlisted business tables, reloaded on a cron. These are THE read path: postgres queries"
+                : "allowlisted business tables, reloaded on a cron — PREFER these over postgres for scans, GROUP BY,",
+              require
+                ? 'against mirrored tables are rejected (force_postgres:true for source verification only). Each shows its "data as of":'
+                : "and app panels; keep postgres for point lookups. Each shows its \"data as of\":",
+              ...mirror.map((m) => `  - biz.${m.target} ← ${m.source} (as of ${m.asOf})`),
+            );
+          }
         } else {
           lines.push("", "DATA LAKE: not configured (no logs/events/finance lake on this box).");
         }
@@ -760,7 +838,7 @@ server.registerTool(
       "",
       `KNOWLEDGE STORE: ${store.docCount} curated docs — call find_context to retrieve what your data MEANS (definitions, gotchas, canonical SQL).`,
       "",
-      'Reminder: logs, errors, product events, finance, and chat are in the LAKE — query them with dialect:"clickhouse", not Postgres.',
+      'Reminder: logs, errors, product events, finance, chat — and mirrored business tables (biz.*) — all live in the LAKE. Query with dialect:"clickhouse"; Postgres is for tables the mirror doesn\'t carry.',
     );
     store.audit(user, "list_sources", {});
     return text(lines.join("\n"));
@@ -774,6 +852,8 @@ server.registerTool(
     title: "Live database schema (permission-scoped)",
     description:
       "Introspects the live Postgres schema, filtered to the tables this project's Setoku config allows. " +
+      "The structure applies to the biz.* mirror too (query <schema>.<table> as biz.<schema>_<table>, " +
+      "public.<table> as biz.<table>, clickhouse dialect). " +
       "With no arguments: compact list of all tables + column names. With `tables`: full detail " +
       "(types, primary keys, foreign keys) for those tables. Tables not listed here are off-limits — do not query them.",
     inputSchema: {
@@ -879,7 +959,10 @@ server.registerTool(
     description:
       "Executes ONE read-only SQL statement (statement timeout + row cap; audited with your identity). " +
       "Routes by dialect (metric docs declare theirs): `postgres` (default) = the business DB in a READ ONLY " +
-      "transaction; `clickhouse` = the bundled lake (logs/events/Slack archive), engine-enforced readonly. " +
+      "transaction; `clickhouse` = the bundled lake (logs/events/Slack archive) plus the biz.* business-DB " +
+      "mirror when enabled. Mirrored tables are read through the MIRROR — postgres queries against them are " +
+      "rejected (force_postgres:true reads the live source, for verification/freshness only). list_sources " +
+      "shows what's mirrored. Engine-enforced readonly either way. " +
       "Workflow: find_context first, prefer canonical metric SQL via get_metric, always include an explicit " +
       "LIMIT, never SELECT * on wide tables. Writes/DDL are rejected. Discover lake tables with " +
       "SHOW TABLES / DESCRIBE <table> on the clickhouse dialect.",
@@ -889,7 +972,9 @@ server.registerTool(
         .enum(["postgres", "clickhouse"])
         .optional()
         .describe(
-          "Where to run it (default postgres = the business DB; clickhouse = the lake). Use the dialect the metric doc declares.",
+          "Where to run it. clickhouse = the lake + the biz.* business-DB mirror (the read path for mirrored " +
+            "tables); postgres (default) = the live business DB, rejected for mirrored tables. Use the dialect " +
+            "the metric doc declares (meta.dialect).",
         ),
       purpose: z
         .string()
@@ -897,14 +982,39 @@ server.registerTool(
         .describe(
           "One line on what business question this answers (goes in the audit log)",
         ),
+      force_postgres: z
+        .boolean()
+        .optional()
+        .describe(
+          "Boxes with a business-DB mirror refuse postgres queries on mirrored tables (run them on " +
+            'clickhouse against biz.* instead). Pass true ONLY to read the live source — verifying the ' +
+            "mirror, or row-level freshness the reload interval can't give. Audited.",
+        ),
     },
   },
-  async ({ sql, dialect, purpose }) => {
+  async ({ sql, dialect, purpose, force_postgres }) => {
     const started = Date.now();
     const sqlForAudit =
       sql && sql.length > 2000 ? sql.slice(0, 2000) + "…" : sql;
     try {
       const config = requireConfig();
+      // Mirror-required gate (issue #47): mirrored tables read via the mirror,
+      // full stop — unless the caller explicitly asked for the live source.
+      if ((dialect ?? "postgres") === "postgres" && (config.mirrorPolicy ?? "require") === "require" && !force_postgres) {
+        const blocked = mirrorRequiredError(mirrorHits(sql, await mirrorRefs()), "query");
+        if (blocked) {
+          store.audit(user, "run_query", {
+            purpose: purpose ?? null,
+            dialect: "postgres",
+            sql: sqlForAudit,
+            ok: false,
+            error: "mirror-required",
+            ms: Date.now() - started,
+            totalMs: Date.now() - started,
+          });
+          return errorText(blocked);
+        }
+      }
       // Route + enforce the lake membrane (I2/I9) through the SAME helper the
       // app panels use, so there is one gate, not two divergent copies.
       const result = await runPanel(
@@ -917,6 +1027,7 @@ server.registerTool(
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
         dialect: dialect ?? "postgres",
+        ...(force_postgres ? { force_postgres: true } : {}),
         sql: sqlForAudit,
         ok: true,
         rows: result.rowCount,
@@ -955,6 +1066,13 @@ server.registerTool(
         const nudge = queryCaptureNudge(sql, curatedSqls);
         if (nudge) lines.push("", nudge);
       }
+      // Mirror steering nudge — reaches this point only under mirrorPolicy
+      // "prefer" (the default "require" already rejected above) or when the
+      // caller forced the live source (no nudge then; they chose deliberately).
+      if ((dialect ?? "postgres") === "postgres" && !force_postgres) {
+        const steer = mirrorSteerNote(sql, await mirrorRefs());
+        if (steer) lines.push("", steer);
+      }
       // No curated context yet → the agent is querying from raw schema, which is
       // exactly when it confidently returns a wrong number (test accounts not
       // excluded, refunds not netted, status-vs-event-log confusion). Make that
@@ -977,6 +1095,7 @@ server.registerTool(
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
         dialect: dialect ?? "postgres",
+        ...(force_postgres ? { force_postgres: true } : {}),
         sql: sqlForAudit,
         ok: false,
         error: msg,
@@ -1065,6 +1184,20 @@ async function prepPanels(
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
+  // Mirror-required gate (issue #47): a postgres panel over a mirrored table is
+  // a repeating prod scan — with a mirror present it must be authored in
+  // clickhouse against biz.* (no force escape here; panels are durable). Only
+  // when the SQL itself is changing (seed): a params-only edit re-validates
+  // EXISTING panels, and blocking it would freeze every pre-mirror app's
+  // metadata until its whole panel set is re-authored.
+  if (seed && (config.mirrorPolicy ?? "require") === "require") {
+    const mirrored = await mirrorRefs({ forGate: true });
+    for (const p of normalized) {
+      if (p.dialect !== "postgres") continue;
+      const blocked = mirrorRequiredError(mirrorHits(p.sql, mirrored), "panel");
+      if (blocked) return { ok: false, error: `Panel "${p.key}": ${blocked}` };
+    }
+  }
   // Resolve the declared inputs to their DEFAULTS to dry-run the panels (no viewer
   // yet) — this also validates every :token is declared and every default coerces.
   let resolved;
@@ -1100,8 +1233,9 @@ const clampRefresh = (refreshSeconds: number | undefined, hasPanels: boolean): n
     : null;
 
 // Non-blocking warnings the agent can't see for itself (it publishes blind):
-// missing curated metric links + static render-lint of the template.
-function publishNotes(html: string, panels: AppPanel[]): string {
+// missing curated metric links + mirror steering + static render-lint of the
+// template. Async only for the (cached, best-effort) mirror lookup.
+async function publishNotes(html: string, panels: AppPanel[]): Promise<string> {
   const notes: string[] = [];
   const missing = panels.filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId))).map((p) => p.metricId);
   if (missing.length)
@@ -1116,6 +1250,10 @@ function publishNotes(html: string, panels: AppPanel[]): string {
     notes.push(`panel(s) ${noDesc.map((k) => `"${k}"`).join(", ")} have no \`description\` — the drawer can't explain what they compute. Add a one-line description.`);
   const capture = panelCaptureNote(panels, curatedSqls);
   if (capture) notes.push(capture);
+  // Heavy postgres panels over mirrored tables belong on the biz.* mirror
+  // (issue #47) — flag them so the agent re-authors before the app calcifies.
+  const mirror = panelMirrorNote(panels, await mirrorRefs());
+  if (mirror) notes.push(mirror);
   notes.push(...lintAppTemplate(html, panels.map((p) => p.key)));
   return notes.length ? `\n\n⚠ Heads up (publishes anyway):\n- ${notes.join("\n- ")}` : "";
 }
@@ -1125,7 +1263,7 @@ const PANEL_SCHEMA = z.object({
   title: z.string().optional().describe("Recommended — label shown in the calc drawer (see app_guide)"),
   description: z.string().optional().describe("Recommended — one-line calc explanation; the only one public viewers get"),
   sql: z.string().describe("A single read-only SELECT/WITH (validate with run_query first)"),
-  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = lake"),
+  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = lake + biz.* mirror. Mirrored tables REQUIRE clickhouse (see app_guide)"),
   metricId: z.string().optional().describe("Curated metric name this panel computes — links provenance"),
 });
 
@@ -1174,11 +1312,20 @@ const APP_GUIDE = [
   "Each panel: `{ key, sql, dialect?, title?, description?, metricId? }`.",
   "- `key` — stable slug the template reads (window.__SETOKU__.panels[key]).",
   "- `sql` — ONE read-only SELECT/WITH; validate with run_query first.",
-  "- `dialect` — `postgres` (default, business DB) or `clickhouse` (the lake).",
+  "- `dialect` — `postgres` (default, business DB) or `clickhouse` (the lake + the biz.* business-DB mirror).",
   "- `title` / `description` — STRONGLY RECOMMENDED: shown in the 'how is this calculated' drawer; the",
   "  description is the ONLY calc explanation public viewers get. Without them viewers see the raw slug.",
   "- `metricId` — name of a curated metric this panel computes; links provenance to the verified def.",
   "Omit `panels` entirely for a static report.",
+  "",
+  "## Choosing a dialect — mirrored tables are clickhouse-ONLY",
+  "When the box mirrors the business DB (list_sources shows a BUSINESS-DB MIRROR section), panels that",
+  "touch a mirrored table MUST use `clickhouse` dialect against `biz.<table>` — publish/update REJECT",
+  "postgres panels over mirrored tables (the mirror is the read path; full copies, reloaded on a cron).",
+  "Param-driven panels especially benefit: every input combo is a cold run, and the mirror makes cold",
+  "runs interactive. `postgres` remains only for tables the mirror doesn't carry. Metric SQL is",
+  "canonical in exactly ONE dialect (I5) — define metrics over mirrored tables in clickhouse. The app",
+  'chrome shows the mirror\'s "data as of" beside the cache stamp, so freshness stays legible to viewers.',
   "",
   "## Interactive inputs (the `params` arg)",
   "Declared inputs the viewer can change. A panel's SQL references one as `:name` (e.g.",
@@ -1287,7 +1434,7 @@ server.registerTool(
         (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
         `\n\nEdit it with update_app("${id}", …) — same link. Manage: get_app / unpublish_app("${id}"). ` +
         `(An admin can make this ${noun} public from /admin.)` +
-        publishNotes(html, normalized),
+        (await publishNotes(html, normalized)),
     );
   },
 );
@@ -1410,7 +1557,7 @@ server.registerTool(
     return text(
       `Updated "${meta.title}" → ${publishUrl(tid, reverted ? "team" : meta.visibility)} (same link).` +
         (reverted ? "\n\n⚠ Panels or params changed on a PUBLIC app — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
-        publishNotes(finalHtml, finalPanels),
+        (await publishNotes(finalHtml, finalPanels)),
     );
   },
 );

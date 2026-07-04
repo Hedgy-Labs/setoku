@@ -10,6 +10,8 @@ import {
   coveredByCurated,
   queryCaptureNudge,
   panelCaptureNote,
+  mirrorSteerNote,
+  panelMirrorNote,
 } from "../plugin/gateway/lib/nudge";
 
 const WINS_SQL = `SELECT COUNT(*) AS won_deals\nFROM "DealPipeline"\nWHERE status = 'WON';`;
@@ -171,5 +173,79 @@ describe("panelCaptureNote", () => {
     panelCaptureNote([], counting);
     panelCaptureNote([{ key: "d", sql: "SELECT id FROM t LIMIT 5" }], counting);
     expect(scans).toBe(0);
+  });
+});
+
+describe("mirrorSteerNote (issue #47)", () => {
+  const MIRRORED = [
+    { target: "ticketing_seat_txn", source: "ticketing.seat_txn" },
+    { target: "orders", source: "public.orders" },
+  ];
+  it("steers a postgres aggregate over a mirrored table to biz.*", () => {
+    const note = mirrorSteerNote(
+      "SELECT acct_id, sum(price_cents) FROM ticketing.seat_txn GROUP BY acct_id",
+      MIRRORED,
+    );
+    expect(note).toContain("ticketing.seat_txn");
+    expect(note).toContain("biz.ticketing_seat_txn");
+    expect(note).toContain('dialect:"clickhouse"');
+  });
+  it("matches bare (unqualified) table references too", () => {
+    expect(mirrorSteerNote("SELECT count(*) FROM orders", MIRRORED)).toContain("biz.orders");
+  });
+  it("silent on point lookups, exploration, and unmirrored tables", () => {
+    expect(mirrorSteerNote("SELECT * FROM ticketing.seat_txn WHERE id = 5 LIMIT 1", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("SELECT count(*) FROM information_schema.tables", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("SELECT count(*) FROM invoices", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("SELECT count(*) FROM orders", [])).toBeNull();
+  });
+  it("a literal mentioning the table is not a reference", () => {
+    expect(mirrorSteerNote("SELECT count(*) FROM audit WHERE detail = 'ticketing.seat_txn'", MIRRORED)).toBeNull();
+  });
+  it("no false match on longer names sharing a suffix", () => {
+    expect(mirrorSteerNote("SELECT count(*) FROM orders_archive", MIRRORED)).toBeNull();
+  });
+  it("bare names only match in TABLE position — never columns, aliases, or CTEs", () => {
+    // the matcher backs a hard deny: an identifier collision must not reject SQL
+    expect(mirrorSteerNote("SELECT day, orders, revenue FROM reporting.daily_rollup GROUP BY day", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("SELECT count(*) AS orders FROM leads", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("WITH orders AS (SELECT id FROM leads) SELECT count(*) FROM orders", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("SELECT count(*) FROM public.orders", MIRRORED)).toContain("biz.orders");
+    expect(mirrorSteerNote("SELECT count(*) FROM x JOIN orders o ON o.id = x.id", MIRRORED)).toContain("biz.orders");
+  });
+  it("a bare name never steers cross-schema (unqualified resolves to public)", () => {
+    // ticketing.seat_txn is mirrored, but bare `seat_txn` means public.seat_txn —
+    // steering there would present a different table's numbers as the answer.
+    expect(mirrorSteerNote("SELECT count(*) FROM seat_txn", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote('SELECT count(*) FROM ticketing.seat_txn', MIRRORED)).toContain("biz.ticketing_seat_txn");
+  });
+  it("quoted (camelCase) identifiers still steer", () => {
+    const camel = [{ target: "DealPipeline", source: "public.DealPipeline" }];
+    expect(mirrorSteerNote('SELECT count(*) FROM "DealPipeline" GROUP BY status', camel)).toContain("biz.DealPipeline");
+    expect(mirrorSteerNote('SELECT count(*) FROM "public"."DealPipeline"', camel)).toContain("biz.DealPipeline");
+    // …but a single-quoted LITERAL naming the table still doesn't
+    expect(mirrorSteerNote("SELECT count(*) FROM audit WHERE t = 'DealPipeline'", camel)).toBeNull();
+  });
+});
+
+describe("panelMirrorNote (issue #47)", () => {
+  const MIRRORED = [{ target: "orders", source: "public.orders" }];
+  it("flags postgres aggregate panels over mirrored tables, names the target", () => {
+    const note = panelMirrorNote(
+      [
+        { key: "rev", sql: "SELECT sum(total) FROM orders" },
+        { key: "one", sql: "SELECT * FROM orders WHERE id = :id LIMIT 1" },
+        { key: "fast", sql: "SELECT count() FROM biz.orders", dialect: "clickhouse" },
+      ],
+      MIRRORED,
+    );
+    expect(note).toContain('"rev"');
+    expect(note).toContain("public.orders → biz.orders");
+    expect(note).not.toContain('"one"');
+    expect(note).not.toContain('"fast"');
+  });
+  it("null when no postgres panel scans a mirrored table (or no mirror)", () => {
+    expect(panelMirrorNote([{ key: "a", sql: "SELECT sum(x) FROM invoices" }], MIRRORED)).toBeNull();
+    expect(panelMirrorNote([{ key: "a", sql: "SELECT sum(x) FROM orders" }], [])).toBeNull();
   });
 });

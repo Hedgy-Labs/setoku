@@ -29,7 +29,11 @@ existing subject or a section in an existing doc.
   `TicketingAccount`), matching the code's model name where one exists. Set
   `meta.table` to the real table so retrieval and joins resolve.
 - **metric** — `snake_case` noun phrase a person would say (`active_customers`,
-  `net_revenue`, `season_renewal_rate`).
+  `net_revenue`, `season_renewal_rate`). A metric is canonical in exactly one
+  dialect (I5): set `meta.dialect` (`postgres` default | `clickhouse`) so
+  `run_query` routing and knowledge-lint execute the SQL against the engine it
+  was written for. On boxes with the biz.* business-DB mirror, metrics over
+  mirrored tables are `clickhouse`.
 - **gotcha** — a short kebab slug naming the rule (`refunds-excluded`,
   `money-is-cents`, `soft-delete`), not a sentence.
 - Names are the retrieval key and the link target — keep them stable. Renaming a

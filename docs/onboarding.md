@@ -73,6 +73,10 @@ one.
   - *Postgres/MySQL* — create a read-only role (`deploy/readonly-role.sql`), put
     the connection string in the box's `SETOKU_DATABASE_URL`, set the table
     allow-list, restart. The credential lives on the box, never in the repo.
+    Then enable the **mirror** (profile `mirror`): pg-mirror full-reloads the
+    allowlisted tables into ClickHouse `biz.*` on a cron, and the mirror is the
+    read path — postgres queries on mirrored tables are rejected with the
+    rewrite. Do it during onboarding so no box has a pre-mirror era.
   - *Vercel / Render / Slack / Mercury* — the existing drain / pull-bridge
     patterns (`ingest/*-poller`): create the provider token, set its env on the
     box, enable the compose profile, restart.

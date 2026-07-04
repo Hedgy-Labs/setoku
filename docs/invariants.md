@@ -23,10 +23,16 @@ README) so the references resolve without bloating the front page.
   fed via the `SETOKU_DENYLIST` secret).
 - **I4 — Lake data is durable user data.** Setoku may hold the *only* copy of a
   user's logs. Backups to off-provider object storage are part of setup; Vector
-  buffers to disk so a ClickHouse restart drops nothing.
+  buffers to disk so a ClickHouse restart drops nothing. The business-DB mirror
+  (`biz.*`, ingest/pg-mirror) is the deliberate exception: re-derivable from prod
+  on the next reload, so it lives in its own database and stays OUT of the backup
+  and Parquet-export story.
 - **I5 — Dialect-routed, engine-portable knowledge.** Metric SQL declares its
   dialect (`postgres` | `clickhouse` | future `bigquery`/`snowflake`); `run_query`
-  routes accordingly. The context layer is storage-agnostic.
+  routes accordingly. The context layer is storage-agnostic. A metric is canonical
+  in exactly **one** dialect — with the business-DB mirror (issue #47), scan-shaped
+  metrics are canonical in `clickhouse` against `biz.*` from day one, so a
+  two-dialect drift problem never exists.
 - **I6 — Single-tenant by architecture.** One deploy = one org. No tenancy layer —
   isolation as a feature.
 - **I7 — Verify vendor facts at build time.** Slack rate limits, Vercel/Render plan

@@ -29,5 +29,6 @@ export const LAKE_SOURCES: LakeSource[] = [
   { table: "github_pulls", source: "GitHub · pull requests", ts: "ingested_at", blurb: "Pull request detail — merge state, branches, draft (merged = merged_at IS NOT NULL; FINAL)" },
   { table: "github_commits", source: "GitHub · commits", ts: "ingested_at", blurb: "Default-branch commits — authors, messages, timing (query with FINAL)" },
   { table: "github_comments", source: "GitHub · comments", ts: "ingested_at", blurb: "Issue/PR discussion + code-review comments (query with FINAL)" },
+  { table: "pg_mirror_runs", source: "Business-DB mirror", ts: "finished_at", blurb: "Reload history of the biz.* business-DB mirror — the mirrored tables themselves live in the biz database (query biz.<table>, clickhouse dialect)", connector: "pg-mirror" },
   { table: "ingest_raw", source: "Unrouted (raw)", ts: "ingested_at", blurb: "Raw ingest that didn't match a known schema (rarely queried directly)" },
 ];
