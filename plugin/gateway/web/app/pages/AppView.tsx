@@ -276,6 +276,15 @@ export function AppView() {
   // Drop a pending echo-watchdog on unmount so it can't fire after the view is gone.
   useEffect(() => () => clearEchoTimer(), []);
 
+  // Loader watchdog: a frame navigation that never fires `load` (box restart,
+  // dropped network — the echo watchdog only arms INSIDE onFrameLoad) must not
+  // leave the view dimmed behind a permanent spinner. Re-arms per load nonce.
+  useEffect(() => {
+    if (!frameLoading) return;
+    const t = setTimeout(() => setFrameLoading(false), 25_000);
+    return () => clearTimeout(t);
+  }, [frame.n, frameLoading]);
+
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(link);

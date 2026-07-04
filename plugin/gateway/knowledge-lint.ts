@@ -25,6 +25,8 @@ import { runReadOnlyQuery, closePools } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { KnowledgeStore, defaultDbPath } from "./lib/store";
 import { extractSql, lintDocResults, parseResultTable, type LintResult } from "./lib/lint";
+import { mirroredTables } from "./lib/mirror";
+import { mirrorHits } from "./lib/nudge";
 
 const FILE = process.argv.includes("--file");
 const GATE = process.argv.includes("--gate");
@@ -53,6 +55,11 @@ async function main() {
   }
   // clickhouse-dialect docs (biz.* mirror / lake metrics) lint against the lake
   const lake = resolveLakeUrl(projectDir, cfg.config);
+  // Postgres-dialect docs over MIRRORED tables are exactly what agents can no
+  // longer run (the mirror-required gate rejects that SQL) — the lint runs
+  // server-side and would happily certify them, so flag them for migration.
+  const mirrorRequire = (cfg.config.mirrorPolicy ?? "require") === "require";
+  const mirrored = lake.ok ? await mirroredTables(lake.url, { fresh: true }) : [];
   const store = new KnowledgeStore(storePath(projectDir));
   const docs = store.listDocs().filter((d) => d.type === "metric" || d.type === "query");
 
@@ -86,6 +93,20 @@ async function main() {
       }
     }
     const report = lintDocResults({ name: doc.name, meta: doc.meta, body: doc.body }, results);
+    if (dialect !== "clickhouse" && mirrored.length) {
+      const hits = [...new Set(sqls.flatMap((q) => mirrorHits(q, mirrored).map((h) => `${h.source} → biz.${h.target}`)))];
+      if (hits.length) {
+        report.problems.push(
+          `canonical postgres SQL targets mirrored table(s) (${hits.join(", ")}) — ` +
+            (mirrorRequire
+              ? "run_query rejects it (mirrorPolicy require); agents cannot execute this doc as written. "
+              : "agents are steered off it. ") +
+            "Migrate the SQL to clickhouse + meta.dialect (see /setoku:generate, 'Migrating knowledge to the mirror').",
+        );
+        if (report.status === "no-sql" || report.status === "pass") report.status = mirrorRequire ? "fail" : "warn";
+        else if (mirrorRequire) report.status = "fail";
+      }
+    }
     if (report.status === "no-sql") { noSql++; console.log(`  –  ${doc.name} (no SQL)`); continue; }
     if (report.status === "pass") { pass++; console.log(`  ✓  ${doc.name} (${report.ranOk} query(s) ran, values sane)`); continue; }
     if (report.status === "warn") warn++; else fail++;

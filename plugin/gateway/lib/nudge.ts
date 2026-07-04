@@ -169,17 +169,30 @@ export interface MirrorRef {
   source: string;
 }
 
+const reEscape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** Whether postgres SQL references a mirrored source table, judged on the
  *  identifier-preserving skeleton (a query merely FILTERING on the string
- *  'ticketing.seat_txn' doesn't count, but `FROM "DealPipeline"` does). A BARE
- *  name only matches for public-schema sources — an unqualified name resolves
- *  to the search_path (public), so `FROM seat_txn` must never steer to a
- *  mirrored ticketing.seat_txn (a different table, a confidently wrong number). */
+ *  'ticketing.seat_txn' doesn't count, but `FROM "DealPipeline"` does).
+ *
+ *  This predicate backs a hard DENY (the mirror-required gate), so it must not
+ *  fire on a mere identifier collision: a BARE name matches only in TABLE
+ *  position (after FROM/JOIN or a FROM-list comma) — never a column, alias, or
+ *  SELECT-list name — only for public-schema sources (an unqualified name
+ *  resolves to the search_path), and not when the query declares a CTE of the
+ *  same name (the CTE shadows the table). Qualified `schema.table` matches at
+ *  token boundaries anywhere (also covering `schema.table.column` refs). */
 function referencesSource(sql: string, source: string): boolean {
   const s = lex(sql).identSkeleton;
-  const [schema] = source.split(".");
   if (containsAtBoundary(s, source.toLowerCase())) return true;
-  return schema === "public" && containsAtBoundary(s, source.split(".").pop()!.toLowerCase());
+  const [schema, ...rest] = source.split(".");
+  if (schema !== "public") return false;
+  const bare = reEscape(rest.join(".").toLowerCase());
+  if (new RegExp(`\\b${bare}\\s+as\\s*\\(`).test(s)) return false; // CTE shadows it
+  // FROM/JOIN position only. A comma-list item (`FROM a, orders`) is missed on
+  // purpose: a miss fails SOFT (the query runs on postgres, pre-mirror
+  // behavior) while a looser pattern risks denying legitimate SQL.
+  return new RegExp(`\\b(?:from|join)\\s+(?:public\\s*\\.\\s*)?${bare}(?![\\w$.])`).test(s);
 }
 
 /** The mirrored tables a postgres statement references — regardless of query

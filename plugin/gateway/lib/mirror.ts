@@ -8,9 +8,15 @@
  *     mirror"),
  *   - the mirror "as of" stamp on /healthz and the app frame chrome.
  *
- * Everything here is best-effort advisory metadata: one cached lake query, and
- * a box without the mirror (or with the lake down) degrades to "no mirror" —
- * never an error on the caller's path.
+ * Two consumers with different stakes share this cache:
+ *   - HOT paths (run_query steering/gate, healthz, the app-chrome stamp) use
+ *     the stale-while-revalidate read — bounded latency, degrades to "no
+ *     mirror" on a lake blip (a missed gate on an ad-hoc query is transient).
+ *   - The PUBLISH gate (prepPanels) passes {fresh:true}: a panel is a durable,
+ *     repeating query, so it's worth an actual lake round-trip to know the
+ *     real mirror set rather than trusting a cold or negative cache.
+ * A lake that is genuinely down still degrades to "no mirror" — publishing
+ * postgres panels is then the only thing that can work at all.
  */
 import { runLakeQuery } from "./lake";
 
@@ -40,8 +46,11 @@ const COLD_WAIT_MS = 1_000;
 let cache: { at: number; url: string; tables: MirroredTable[] } | null = null;
 let inflight: Promise<MirroredTable[]> | null = null;
 
+let lastRefreshErred = false;
+
 async function refresh(lakeUrl: string): Promise<MirroredTable[]> {
   let tables: MirroredTable[] = [];
+  lastRefreshErred = false;
   try {
     // Only tables that still exist in biz count — pg_mirror_runs keeps history
     // for pruned tables, which must not resurrect steering hints.
@@ -61,24 +70,33 @@ async function refresh(lakeUrl: string): Promise<MirroredTable[]> {
   } catch {
     /* no mirror on this box / lake unreachable — degrade to "no mirror"
        (negative-cached for a TTL so a down lake isn't re-probed per call) */
+    lastRefreshErred = true;
   }
   cache = { at: Date.now(), url: lakeUrl, tables };
   return tables;
 }
 
 /** Currently-mirrored tables with per-table freshness; [] when the mirror (or
- *  the lake) isn't there. Stale-while-revalidate: an expired cache answers
+ *  the lake) isn't there.
+ *
+ *  Default (hot paths): stale-while-revalidate — an expired cache answers
  *  immediately while one shared refresh updates it in the background, and a
- *  cold cache waits at most COLD_WAIT_MS — so callers never inherit the lake's
- *  latency. */
-export async function mirroredTables(lakeUrl: string): Promise<MirroredTable[]> {
+ *  cold cache waits at most COLD_WAIT_MS, so callers never inherit the lake's
+ *  latency.
+ *
+ *  {fresh:true} (the publish gate): a fresh or known-good cached answer, or a
+ *  full awaited refresh — a cold cache, an expired cache, or a negative cache
+ *  from an earlier error never silently disables a durable-artifact gate. */
+export async function mirroredTables(lakeUrl: string, opts: { fresh?: boolean } = {}): Promise<MirroredTable[]> {
   if (cache && cache.url !== lakeUrl) cache = null;
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.tables;
+  const cacheFresh = cache != null && Date.now() - cache.at < TTL_MS;
+  if (cacheFresh && (!opts.fresh || cache!.tables.length > 0 || !lastRefreshErred)) return cache!.tables;
   if (!inflight) {
     inflight = refresh(lakeUrl).finally(() => {
       inflight = null;
     });
   }
+  if (opts.fresh) return inflight; // publish is rare and not latency-critical — wait for truth
   if (cache) return cache.tables; // stale — serve it, the refresh lands for the next caller
   return Promise.race([
     inflight,

@@ -71,6 +71,8 @@ The store is a wiki: `meta.links` is an array of **exact doc names** this doc re
 
 ## Refresh mode (knowledge already exists)
 
+Diff-driven: identify which entities/metrics are affected by recent code changes (`git diff`, migrations since last refresh) and re-save only those docs (`upsert_context` on curator, or `report_correction` on analyst). Never silently rewrite verified content a curator shaped — call out anything you changed (revisions are recorded automatically).
+
 ## Migrating knowledge to the mirror
 
 When a box gains the business-DB mirror (or `run_query` starts rejecting a metric's postgres SQL with the biz.* rewrite), existing metric/query docs need re-dialecting once:
@@ -82,4 +84,3 @@ When a box gains the business-DB mirror (or `run_query` starts rejecting a metri
 
 knowledge-lint routes each doc's SQL by `meta.dialect`, so migrated docs keep linting against the engine they actually run on.
 
-Diff-driven: identify which entities/metrics are affected by recent code changes (`git diff`, migrations since last refresh) and re-save only those docs (`upsert_context` on curator, or `report_correction` on analyst). Never silently rewrite verified content a curator shaped — call out anything you changed (revisions are recorded automatically).

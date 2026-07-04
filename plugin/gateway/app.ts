@@ -143,18 +143,25 @@ function curatedSqls(): string[] {
     .flatMap((d) => extractSql(d.body));
 }
 
-/** Tables currently mirrored into biz.* (issue #47) — feeds the run_query /
- *  publish-time steering hints and the list_sources mirror section. Best-effort
- *  and cached in lib/mirror; [] on a curator session (it can't run clickhouse,
- *  so steering it there is noise — and the membrane keeps lake reads off the
- *  write-capable session, metadata included). */
-async function mirrorRefs(): Promise<MirroredTable[]> {
-  if (denyLakeRead) return [];
+/** Tables currently mirrored into biz.* (issue #47) — feeds the run_query
+ *  steering/gate and the list_sources mirror section. Cached in lib/mirror.
+ *
+ *  `forGate` matters on CURATOR sessions: steering surfaces return [] there
+ *  (the membrane keeps lake reads off write-capable sessions, and a curator
+ *  can't run clickhouse anyway, so a nudge is noise) — but the publish GATE
+ *  must see the mirror regardless of role, or curators become the one session
+ *  type that can plant durable postgres panels over mirrored tables. The gate
+ *  read is a server-side metadata fetch (pg-catalog identifiers the curator
+ *  can already see via get_schema), not lake content reaching the session.
+ *  `forGate` also awaits a real refresh instead of trusting a cold/negative
+ *  cache — a lake blip must not silently disable a durable-artifact gate. */
+async function mirrorRefs(opts: { forGate?: boolean } = {}): Promise<MirroredTable[]> {
+  if (denyLakeRead && !opts.forGate) return [];
   try {
     const config = requireConfig();
     const lake = resolveLakeUrl(projectDir, config);
     if (!lake.ok) return [];
-    return await mirroredTables(lake.url);
+    return await mirroredTables(lake.url, { fresh: opts.forGate });
   } catch {
     return [];
   }
@@ -749,11 +756,16 @@ server.registerTool(
               : "BUSINESS DATABASE (Postgres): configured, but no tables match the allow-list (or the database is empty).",
           );
         } else if (mirrored.length) {
+          const require = (config?.mirrorPolicy ?? "require") === "require";
           lines.push(
             "",
             `BUSINESS DATABASE (Postgres) — the mirror's source, ${names.length} tables. Query these via the`,
-            "BUSINESS-DB MIRROR below (clickhouse dialect); direct postgres queries on mirrored tables are",
-            "rejected (run_query force_postgres:true only to verify the mirror or read the last few minutes):",
+            require
+              ? "BUSINESS-DB MIRROR below (clickhouse dialect); direct postgres queries on mirrored tables are"
+              : "BUSINESS-DB MIRROR below (clickhouse dialect) — strongly preferred for scans/aggregations;",
+            require
+              ? "rejected (run_query force_postgres:true only to verify the mirror or read the last few minutes):"
+              : "postgres still runs them (this box sets mirrorPolicy \"prefer\"):",
             "  " + names.slice(0, 40).join(", ") + (names.length > 40 ? ", …" : "") + "  (get_schema for columns)",
           );
         } else {
@@ -1083,6 +1095,7 @@ server.registerTool(
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
         dialect: dialect ?? "postgres",
+        ...(force_postgres ? { force_postgres: true } : {}),
         sql: sqlForAudit,
         ok: false,
         error: msg,
@@ -1173,9 +1186,12 @@ async function prepPanels(
   }
   // Mirror-required gate (issue #47): a postgres panel over a mirrored table is
   // a repeating prod scan — with a mirror present it must be authored in
-  // clickhouse against biz.* (no force escape here; panels are durable).
-  if ((config.mirrorPolicy ?? "require") === "require") {
-    const mirrored = await mirrorRefs();
+  // clickhouse against biz.* (no force escape here; panels are durable). Only
+  // when the SQL itself is changing (seed): a params-only edit re-validates
+  // EXISTING panels, and blocking it would freeze every pre-mirror app's
+  // metadata until its whole panel set is re-authored.
+  if (seed && (config.mirrorPolicy ?? "require") === "require") {
+    const mirrored = await mirrorRefs({ forGate: true });
     for (const p of normalized) {
       if (p.dialect !== "postgres") continue;
       const blocked = mirrorRequiredError(mirrorHits(p.sql, mirrored), "panel");

@@ -964,9 +964,13 @@ function publicAppShell(opts: {
   // panels bound to the viewer's current selection.
   function paramQuery(){ var parts=[]; document.querySelectorAll('[data-pname]').forEach(function(el){
     parts.push('p.'+encodeURIComponent(el.getAttribute('data-pname'))+'='+encodeURIComponent(el.value)); }); return parts.join('&'); }
-  var ldr=document.getElementById('ldr');
-  frame.addEventListener('load', function(){ ldr.classList.remove('on'); });
-  function reload(){ ldr.classList.add('on'); var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
+  var ldr=document.getElementById('ldr'), ldrT=null;
+  function ldrOff(){ ldr.classList.remove('on'); if(ldrT){ clearTimeout(ldrT); ldrT=null; } }
+  frame.addEventListener('load', ldrOff);
+  // watchdog: a navigation that never completes (box restart, dropped network)
+  // must not leave the page dimmed behind a permanent spinner
+  function reload(){ ldr.classList.add('on'); if(ldrT) clearTimeout(ldrT); ldrT=setTimeout(ldrOff, 25000);
+    var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
   document.querySelectorAll('[data-pname]').forEach(function(el){ el.addEventListener('change', function(){ reload(); }); });
   function refresh(){ fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
     var secs=d.refreshSeconds||CFG.refresh;

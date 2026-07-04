@@ -60,6 +60,7 @@ const spawnOn = (port: number, repo: string): Subprocess =>
     SETOKU_E2E_DB_URL: DB_URL,
     SETOKU_HTTP_PORT: String(port),
     SETOKU_TOKENS: "tok-analyst=mirror-gate@test",
+    SETOKU_CURATOR_TOKENS: "tok-curator=mirror-gate@test",
     SETOKU_LAKE_URL: CH_URL!,
   });
 
@@ -128,6 +129,23 @@ describe.skipIf(!CH_URL)("mirror-required policy", () => {
   it("unmirrored tables still run on postgres untouched", async () => {
     const r = await call("run_query", { sql: "SELECT count(*) AS n FROM side_notes" });
     expect(r.isError).toBe(false);
+  });
+
+  it("an identifier collision is not a reference — column/alias named like a mirrored table passes", async () => {
+    const r = await call("run_query", { sql: "SELECT count(*) AS deals FROM side_notes" });
+    expect(r.isError).toBe(false);
+  });
+
+  it("curator sessions cannot slip postgres panels past the gate (no membrane bypass)", async () => {
+    const curator = await connect(`http://127.0.0.1:${PORT}`, "tok-curator");
+    const r = await gwCall(curator, "publish_app", {
+      title: "curator-gate",
+      html: "<div id='a'></div>",
+      panels: [{ key: "a", sql: "SELECT sum(amount) AS total FROM deals" }],
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain("biz.deals");
+    await curator.close();
   });
 
   it("the mirror itself answers on clickhouse", async () => {

@@ -205,6 +205,14 @@ describe("mirrorSteerNote (issue #47)", () => {
   it("no false match on longer names sharing a suffix", () => {
     expect(mirrorSteerNote("SELECT count(*) FROM orders_archive", MIRRORED)).toBeNull();
   });
+  it("bare names only match in TABLE position — never columns, aliases, or CTEs", () => {
+    // the matcher backs a hard deny: an identifier collision must not reject SQL
+    expect(mirrorSteerNote("SELECT day, orders, revenue FROM reporting.daily_rollup GROUP BY day", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("SELECT count(*) AS orders FROM leads", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("WITH orders AS (SELECT id FROM leads) SELECT count(*) FROM orders", MIRRORED)).toBeNull();
+    expect(mirrorSteerNote("SELECT count(*) FROM public.orders", MIRRORED)).toContain("biz.orders");
+    expect(mirrorSteerNote("SELECT count(*) FROM x JOIN orders o ON o.id = x.id", MIRRORED)).toContain("biz.orders");
+  });
   it("a bare name never steers cross-schema (unqualified resolves to public)", () => {
     // ticketing.seat_txn is mirrored, but bare `seat_txn` means public.seat_txn —
     // steering there would present a different table's numbers as the answer.

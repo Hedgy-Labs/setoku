@@ -85,6 +85,11 @@ fi
 
 echo "→ starting lake + business-DB mirror …"
 "${COMPOSE[@]}" up -d --build demo-clickhouse demo-pg-mirror
+# a reseed replaced the source data — bounce the mirror so it reloads NOW
+# instead of serving the previous dataset for up to a full cron interval
+if [ "${DEMO_RESEED:-1}" = "1" ]; then
+  "${COMPOSE[@]}" restart demo-pg-mirror
+fi
 
 echo "→ starting gateway …"
 "${COMPOSE[@]}" up -d demo-server
