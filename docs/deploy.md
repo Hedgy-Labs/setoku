@@ -73,6 +73,12 @@ ssh BOX 'cd DIR && docker compose --profile NAME up -d SERVICE'   # e.g. --profi
 # 3) restart the gateway so it picks up new env / config
 ssh BOX 'cd DIR && docker compose up -d server'
 ```
+
+**The business-DB mirror** (`pg-mirror`, profile `mirror`) follows the same
+pattern with one extra rule: the table allow/deny list is **baked into both**
+the server and pg-mirror images from `.setoku/config.json`, so after editing it
+rebuild both — `docker compose up -d --build server pg-mirror` — or the lists
+drift (the gateway would hide a table the mirror keeps copying).
 Verify: `list_sources` (the new source should appear), then query it.
 
 ## 4. Rollback

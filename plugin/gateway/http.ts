@@ -40,6 +40,7 @@ import {
   type PublishedReport,
 } from "./lib/store";
 import { newestComputedAt, renderApp, isFullDoc, type RenderedPanel } from "./lib/apps";
+import { mirroredTables, mirrorAsOf, referencedBizTables } from "./lib/mirror";
 import { APP_RUNTIME } from "./lib/app-runtime";
 import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
 import { resolveParams, type AppParam } from "./lib/params";
@@ -415,12 +416,20 @@ async function healthz(): Promise<{
   } catch {
     /* statfs unavailable on this platform — omit disk */
   }
+  // Business-DB mirror freshness (issue #47) — informational, never flips `ok`
+  // (a stale mirror degrades app panels, it doesn't down the box). Derived from
+  // SETOKU_LAKE_URL like the lake ping; omitted when there is no mirror.
+  let mirror: { asOf: string | null; tables: number } | undefined;
+  if (process.env.SETOKU_LAKE_URL) {
+    const tables = await mirroredTables(process.env.SETOKU_LAKE_URL);
+    if (tables.length) mirror = { asOf: mirrorAsOf(tables), tables: tables.length };
+  }
   const ok =
     Object.values(deps).every((d) => d.ok) &&
     (disk ? disk.used_pct < 90 : true);
   const value = {
     status: ok ? 200 : 503,
-    body: { ok, version: VERSION, docs: store.docCount, disk, deps },
+    body: { ok, version: VERSION, docs: store.docCount, disk, deps, ...(mirror ? { mirror } : {}) },
   };
   healthzCache = { at: Date.now(), value };
   return value;
@@ -768,6 +777,26 @@ function appProvenance(
   };
 }
 
+/** Mirror "data as of" for an app (issue #47): the oldest fresh copy among the
+ *  biz.* tables its clickhouse panels read — an app is only as current as its
+ *  stalest input. Null when the app doesn't touch the mirror. Best-effort and
+ *  cached (lib/mirror), so the freshness polls stay cheap. */
+async function appMirrorAsOf(meta: PublishedMeta): Promise<string | null> {
+  const chPanels = (meta.panels ?? []).filter((p) => p.dialect === "clickhouse");
+  if (!chPanels.length) return null;
+  try {
+    const cfg = loadConfig(projectDir);
+    if (!cfg.ok) return null;
+    const lake = resolveLakeUrl(projectDir, cfg.config);
+    if (!lake.ok) return null;
+    const tables = await mirroredTables(lake.url);
+    const refs = [...new Set(chPanels.flatMap((p) => referencedBizTables(p.sql, tables)))];
+    return refs.length ? mirrorAsOf(tables, refs) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Escape text for safe interpolation into HTML. */
 function escapeHtml(s: string): string {
   return String(s)
@@ -881,15 +910,22 @@ function publicAppShell(opts: {
   .muted{color:#78716c;font-size:.8rem}
   .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
   .adminbtn:hover{background:#f5f5f4}
-  main{flex:1;min-height:0;display:flex}
+  main{flex:1;min-height:0;display:flex;position:relative}
   iframe{flex:1;width:100%;border:0;background:#fff}
+  /* loader over the reloading frame (param change / refresh) — the transition
+     delay keeps a fast cached load from flashing it */
+  #ldr{pointer-events:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.55);opacity:0;transition:opacity .15s .15s}
+  #ldr.on{opacity:1}
+  #ldr .card{display:flex;align-items:center;gap:.5rem;border:1px solid #e7e5e4;background:#fff;border-radius:.5rem;padding:.35rem .7rem;font-size:.8rem;color:#78716c;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  #ldr .sp{width:12px;height:12px;border:2px solid #d6d3d1;border-top-color:#57534e;border-radius:50%;animation:ldrspin .8s linear infinite}
+  @keyframes ldrspin{to{transform:rotate(360deg)}}
   #controls{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .9rem;width:100%;margin-top:.1rem}
   .pc{display:inline-flex;align-items:center;gap:.4rem;font-size:.8rem;color:#57534e}
   .pc select,.pc input{font:inherit;font-size:.8rem;color:#1c1917;background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.18rem .45rem}
   .pc select:focus,.pc input:focus{outline:none;border-color:#a8a29e;box-shadow:0 0 0 2px #e7e5e4}
 </style></head><body>
 <header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
-<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe></main>
+<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><div id="ldr"><div class="card"><span class="sp"></span>updating…</div></div></main>
 <script>
 (function(){
   var CFG=${cfg};
@@ -933,14 +969,20 @@ function publicAppShell(opts: {
   // panels bound to the viewer's current selection.
   function paramQuery(){ var parts=[]; document.querySelectorAll('[data-pname]').forEach(function(el){
     parts.push('p.'+encodeURIComponent(el.getAttribute('data-pname'))+'='+encodeURIComponent(el.value)); }); return parts.join('&'); }
-  function reload(){ var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
+  var ldr=document.getElementById('ldr'), ldrT=null;
+  function ldrOff(){ ldr.classList.remove('on'); if(ldrT){ clearTimeout(ldrT); ldrT=null; } }
+  frame.addEventListener('load', ldrOff);
+  // watchdog: a navigation that never completes (box restart, dropped network)
+  // must not leave the page dimmed behind a permanent spinner
+  function reload(){ ldr.classList.add('on'); if(ldrT) clearTimeout(ldrT); ldrT=setTimeout(ldrOff, 25000);
+    var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
   document.querySelectorAll('[data-pname]').forEach(function(el){ el.addEventListener('change', function(){ reload(); }); });
   function refresh(){ fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
     var secs=d.refreshSeconds||CFG.refresh;
     var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
     // Omit the "data updated …" clause when there's no successful data yet (null
     // stamp — e.g. every panel currently errored) rather than render a blank time.
-    stamp.textContent=(d.updatedAt?'data updated '+rel(d.updatedAt)+' · ':'')+'auto-refreshes every '+iv;
+    stamp.textContent=(d.updatedAt?'data updated '+rel(d.updatedAt)+' · ':'')+(d.mirrorAsOf?'source data as of '+rel(d.mirrorAsOf)+' · ':'')+'auto-refreshes every '+iv;
   }).catch(function(){}); }
   // Reveal the Admin link only if this viewer has a box session (the cookie is
   // Path=/admin, so it rides along to /admin/api/session but not to /p/*).
@@ -1035,6 +1077,8 @@ const httpServer = http.createServer(async (req, res) => {
             title: meta.title,
             refreshSeconds: meta.refreshSeconds,
             updatedAt: store.newestPanelComputedAt(id),
+            // mirror freshness is methodology-safe (a timestamp, no schema/SQL)
+            mirrorAsOf: await appMirrorAsOf(meta),
           }),
         );
         return;
@@ -1331,6 +1375,7 @@ const httpServer = http.createServer(async (req, res) => {
           // from the cache (no query). Keeps the metadata fetch off the DB entirely.
           const prov = appProvenance(store, meta, []);
           prov.updatedAt = store.newestPanelComputedAt(id);
+          prov.mirrorAsOf = await appMirrorAsOf(meta);
           store.audit(session.identity, "app_viewed", { id });
           return json(200, prov);
         }

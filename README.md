@@ -109,9 +109,9 @@ The point isn't that an agent can query your Postgres; if you're an engineer, it
 
 ## Connectors
 
-Point Setoku at the data you already have. It queries some sources live and read-only, and ingests others into a local lake.
+Point Setoku at the data you already have. Every source lands in a local [ClickHouse](https://clickhouse.com/) data lake, on purpose: agents write arbitrary queries (scans, GROUP BYs, whole-table aggregations), and a columnar engine answers those in about a second, so the apps and dashboards they build stay quick.
 
-- **Queried live (read-only):** PostgreSQL, your app database.
+- **Your app database (PostgreSQL):** connected read-only, then mirrored into the box's analytics engine on a cron. Dashboards and heavy questions run against the mirror (fast, no load on prod); the live connection stays for verification and anything the mirror doesn't carry.
 - **Ingested into the lake (ClickHouse):** GitHub (issues, PRs & commits), Vercel and Render (deploys & logs), Slack (messages), Mercury (banking & finance).
 
 No connector for your source yet? The included setup skills give your coding agent the patterns to wire one up itself. You maintain a handful of proven patterns, not one connector per vendor. See [CONTRIBUTING.md](./CONTRIBUTING.md), or open an issue.
@@ -127,7 +127,7 @@ flowchart LR
     subgraph box["Your VPS · docker compose (only the proxy is public)"]
         GW["Gateway (MCP)<br/>context + read-only query tools"]
         K[("Knowledge store<br/>what your data means")]
-        LAKE[("Lake (optional)<br/>logs · events · SaaS/bank data")]
+        LAKE[("Lake (optional)<br/>logs · events · a mirror of your DB")]
         ADMIN["Approval page<br/>human accepts knowledge changes"]
     end
 
@@ -155,9 +155,9 @@ flowchart LR
 | **Caddy**                            | HTTPS edge, the only public-facing container                                       |
 | **Gateway**                          | the MCP server (context + query tools) and the `/admin` approval surface           |
 | **Postgres**                         | the knowledge store and admin accounts                                             |
-| **ClickHouse + Vector** _(optional)_ | a lake for logs/events/telemetry, only when there's more than Postgres should hold |
+| **ClickHouse + Vector** _(optional)_ | a lake for logs/events/telemetry, plus the analytics mirror of your app DB (the read path for dashboards) |
 
-Your operational data stays where it is: Setoku queries Postgres **live and read-only**; it doesn't copy your database. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
+Setoku reads your database with a SELECT-only role; read-only is enforced by the database engine, not by parsing SQL in our code. With the lake enabled it also keeps an analytics copy of the allowlisted tables on your box, refreshed on a cron. That mirror is what makes dashboards fast (columnar scans instead of hammering prod), and it is deliberately disposable: rebuilt from source every pass, excluded from backups, dropped the moment a table leaves the allowlist. It never leaves the box.
 
 ## Setup help
 
