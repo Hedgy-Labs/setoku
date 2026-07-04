@@ -42,6 +42,62 @@ services:
       timeout: 5s
       retries: 5
 
+  # The demo's own lake (ClickHouse) — target of the biz.* business-DB mirror
+  # and run_query's clickhouse dialect. Internal network only (I1); reuses the
+  # production ClickHouse configs (small preset, setoku_ro lake user, schemas).
+  # Default passwords are fine here: synthetic data, never exposed.
+  demo-clickhouse:
+    image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_USER: setoku
+      CLICKHOUSE_PASSWORD: ${DEMO_CH_PASSWORD:-demo}
+      CLICKHOUSE_RO_PASSWORD: ${DEMO_CH_RO_PASSWORD:-demo}
+      CLICKHOUSE_DB: setoku
+    volumes:
+      - demo_ch:/var/lib/clickhouse
+      - ../deploy/clickhouse/small.xml:/etc/clickhouse-server/config.d/zz-setoku-preset.xml:ro
+      - ../deploy/clickhouse/system-logs.xml:/etc/clickhouse-server/config.d/zz-setoku-system-logs.xml:ro
+      - ../deploy/clickhouse/lake-users.xml:/etc/clickhouse-server/users.d/zz-setoku-lake.xml:ro
+      - ../ingest/schemas:/docker-entrypoint-initdb.d:ro
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    networks: [demo_internal]
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - clickhouse-client --user setoku --password "$${CLICKHOUSE_PASSWORD}" --query "SELECT 1"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # Business-DB → lake mirror (issue #47): full-reloads the allowlisted bulldogs
+  # tables into demo-clickhouse `biz.*` so heavy app panels run on the mirror
+  # instead of seq-scanning demo-postgres. The dataset's .setoku (allow/deny
+  # list) is bind-mounted over the baked config, so it always matches what the
+  # demo gateway enforces.
+  demo-pg-mirror:
+    build:
+      context: ..
+      dockerfile: ingest/pg-mirror/Dockerfile
+    restart: unless-stopped
+    environment:
+      SETOKU_DATABASE_URL: postgres://postgres:${DEMO_PG_PASSWORD:-demo}@demo-postgres.local:5432/${DEMO_DB:-bulldogs}
+      SETOKU_MIRROR_INTERVAL_MS: ${DEMO_MIRROR_INTERVAL_MS:-900000}
+      CLICKHOUSE_URL: http://demo-clickhouse:8123
+      CLICKHOUSE_USER: setoku
+      CLICKHOUSE_PASSWORD: ${DEMO_CH_PASSWORD:-demo}
+      CLICKHOUSE_DB: setoku
+    volumes:
+      - ${DEMO_DATASET_DIR:-./bulldogs}/.setoku:/project/.setoku:ro
+    networks: [demo_internal]
+    depends_on:
+      demo-postgres:
+        condition: service_healthy
+      demo-clickhouse:
+        condition: service_healthy
+
   # The Setoku gateway (same image as production), pointed at the demo Postgres
   # and the sports knowledge seed. A separate /data volume keeps its knowledge
   # store isolated from production.
@@ -54,9 +110,12 @@ services:
       SETOKU_DATABASE_URL: postgres://postgres:${DEMO_PG_PASSWORD:-demo}@demo-postgres.local:5432/${DEMO_DB:-bulldogs}
       # Per-user MCP tokens — "token=identity,token2=identity2" (analyst: read + propose)
       SETOKU_TOKENS: ${DEMO_TOKENS:?set DEMO_TOKENS (e.g. <hex>=demo@bulldogs) — see boot.sh}
-      # Optional curator token (commit curated knowledge; cannot read a lake — there is none here)
+      # Optional curator token (commit curated knowledge; cannot read the lake — I2)
       SETOKU_CURATOR_TOKENS: ${DEMO_CURATOR_TOKENS:-}
       SETOKU_PUBLIC_URL: ${DEMO_PUBLIC_URL:-http://localhost:8788}
+      # The demo lake — run_query dialect "clickhouse" + the biz.* mirror.
+      # Connects as the engine-constrained read-only user (I9), like prod.
+      SETOKU_LAKE_URL: http://setoku_ro:${DEMO_CH_RO_PASSWORD:-demo}@demo-clickhouse:8123/setoku
     ports:
       - "127.0.0.1:${DEMO_PORT:-8788}:8787"
     volumes:
@@ -73,3 +132,4 @@ networks:
 volumes:
   demo_pg:
   demo_data:
+  demo_ch:

@@ -83,6 +83,9 @@ if [ "${DEMO_RESEED:-1}" = "1" ]; then
     demo-server bun /app/seed/generate.ts
 fi
 
+echo "→ starting lake + business-DB mirror …"
+"${COMPOSE[@]}" up -d --build demo-clickhouse demo-pg-mirror
+
 echo "→ starting gateway …"
 "${COMPOSE[@]}" up -d demo-server
 sleep 3

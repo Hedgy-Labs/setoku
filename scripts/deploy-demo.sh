@@ -41,7 +41,7 @@ done
 echo "→ rsync code to ${SSH}:${DIR}  (dirs WITHOUT trailing slashes)"
 rsync -az \
   --exclude='.env' --exclude='.git' --exclude='node_modules' --exclude='seed-mercury-knowledge.ts' \
-  plugin deploy demo docker-compose.yml \
+  plugin deploy demo ingest docker-compose.yml \
   "${SSH}:${DIR}/"
 
 echo "→ rebuild the setoku-server image (does NOT restart production)"
