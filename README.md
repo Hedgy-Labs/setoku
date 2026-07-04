@@ -109,7 +109,7 @@ The point isn't that an agent can query your Postgres; if you're an engineer, it
 
 ## Connectors
 
-Point Setoku at the data you already have. It queries some sources live and read-only, and ingests others into a local lake.
+Point Setoku at the data you already have. Every source lands in a local [ClickHouse](https://clickhouse.com/) data lake, on purpose: agents write arbitrary queries (scans, GROUP BYs, whole-table aggregations), and a columnar engine answers those in about a second, so the apps and dashboards they build stay quick.
 
 - **Your app database (PostgreSQL):** connected read-only, then mirrored into the box's analytics engine on a cron. Dashboards and heavy questions run against the mirror (fast, no load on prod); the live connection stays for verification and anything the mirror doesn't carry.
 - **Ingested into the lake (ClickHouse):** GitHub (issues, PRs & commits), Vercel and Render (deploys & logs), Slack (messages), Mercury (banking & finance).
