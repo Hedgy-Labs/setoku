@@ -27,7 +27,7 @@ import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote, mirrorSteerNote, panelMirrorNote, mirrorHits, type MirrorRef } from "./lib/nudge";
-import { mirroredTables } from "./lib/mirror";
+import { mirroredTables, type MirroredTable } from "./lib/mirror";
 import { LAKE_SOURCES } from "./lib/sources";
 import { VERSION } from "./lib/version";
 
@@ -148,7 +148,7 @@ function curatedSqls(): string[] {
  *  and cached in lib/mirror; [] on a curator session (it can't run clickhouse,
  *  so steering it there is noise — and the membrane keeps lake reads off the
  *  write-capable session, metadata included). */
-async function mirrorRefs(): Promise<MirrorRef[]> {
+async function mirrorRefs(): Promise<MirroredTable[]> {
   if (denyLakeRead) return [];
   try {
     const config = requireConfig();
@@ -732,6 +732,9 @@ server.registerTool(
     }
 
     // business database (Postgres)
+    // With a mirror present, postgres is just the mirror's SOURCE — the section
+    // must not present it as the query path (those queries get rejected).
+    const mirrored = await mirrorRefs();
     try {
       const db = config ? resolveDatabaseUrl(projectDir, config) : { ok: false as const, error: "" };
       if (config && db.ok) {
@@ -744,6 +747,14 @@ server.registerTool(
             denied
               ? `BUSINESS DATABASE (Postgres): configured but the read-only role can see no tables — ${denied}`
               : "BUSINESS DATABASE (Postgres): configured, but no tables match the allow-list (or the database is empty).",
+          );
+        } else if (mirrored.length) {
+          lines.push(
+            "",
+            `BUSINESS DATABASE (Postgres) — the mirror's source, ${names.length} tables. Query these via the`,
+            "BUSINESS-DB MIRROR below (clickhouse dialect); direct postgres queries on mirrored tables are",
+            "rejected (run_query force_postgres:true only to verify the mirror or read the last few minutes):",
+            "  " + names.slice(0, 40).join(", ") + (names.length > 40 ? ", …" : "") + "  (get_schema for columns)",
           );
         } else {
           lines.push(
@@ -788,7 +799,7 @@ server.registerTool(
           }
           // Business-DB mirror (issue #47) — the DEFAULT read path for heavy
           // scans/aggregations over business tables.
-          const mirror = await mirroredTables(lake.url);
+          const mirror = mirrored;
           if (mirror.length) {
             const require = (config?.mirrorPolicy ?? "require") === "require";
             lines.push(
@@ -815,7 +826,7 @@ server.registerTool(
       "",
       `KNOWLEDGE STORE: ${store.docCount} curated docs — call find_context to retrieve what your data MEANS (definitions, gotchas, canonical SQL).`,
       "",
-      'Reminder: logs, errors, product events, finance, and chat are in the LAKE — query them with dialect:"clickhouse", not Postgres.',
+      'Reminder: logs, errors, product events, finance, chat — and mirrored business tables (biz.*) — all live in the LAKE. Query with dialect:"clickhouse"; Postgres is for tables the mirror doesn\'t carry.',
     );
     store.audit(user, "list_sources", {});
     return text(lines.join("\n"));
@@ -829,6 +840,8 @@ server.registerTool(
     title: "Live database schema (permission-scoped)",
     description:
       "Introspects the live Postgres schema, filtered to the tables this project's Setoku config allows. " +
+      "The structure applies to the biz.* mirror too (query <schema>.<table> as biz.<schema>_<table>, " +
+      "public.<table> as biz.<table>, clickhouse dialect). " +
       "With no arguments: compact list of all tables + column names. With `tables`: full detail " +
       "(types, primary keys, foreign keys) for those tables. Tables not listed here are off-limits — do not query them.",
     inputSchema: {
@@ -947,7 +960,9 @@ server.registerTool(
         .enum(["postgres", "clickhouse"])
         .optional()
         .describe(
-          "Where to run it (default postgres = the business DB; clickhouse = the lake). Use the dialect the metric doc declares.",
+          "Where to run it. clickhouse = the lake + the biz.* business-DB mirror (the read path for mirrored " +
+            "tables); postgres (default) = the live business DB, rejected for mirrored tables. Use the dialect " +
+            "the metric doc declares (meta.dialect).",
         ),
       purpose: z
         .string()
