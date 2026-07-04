@@ -174,6 +174,10 @@ export interface PanelProvenance {
   computedAt: string | null;
   error: string | null;
   refreshError: string | null;
+  /** Serving stale rows while a background refresh runs (SWR). */
+  refreshing: boolean;
+  /** Wall-clock ms of the run that produced the rows (null on legacy cache). */
+  durationMs: number | null;
 }
 
 /** A declared interactive input (mirrors lib/params.ts AppParam). The viewer's

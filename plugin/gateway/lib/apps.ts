@@ -132,6 +132,12 @@ export interface RenderedPanel {
   error: string | null;
   /** A refresh failed but we're serving the last good rows (transient blip). */
   refreshError?: string | null;
+  /** Serving last-good rows past the refresh TTL while a background refresh
+   *  runs (stale-while-revalidate) — the next view gets the fresh rows. */
+  refreshing?: boolean;
+  /** Wall-clock ms of the execution that produced the served rows (null on
+   *  legacy cache rows). Telemetry for "which panel is slow". */
+  durationMs?: number | null;
 }
 
 function ttlMs(dash: { refreshSeconds: number | null }): number {
@@ -147,6 +153,59 @@ type RenderInput = PublishedReport | (Omit<PublishedReport, "body"> & { body?: s
 // every panel on a cold/expired cache. Concurrent NON-force renders of the same
 // app share one execution; force renders are never shared.
 const inFlight = new Map<string, Promise<RenderedPanel[]>>();
+
+// In-flight BACKGROUND refreshes (stale-while-revalidate), keyed per panel
+// variant so a burst of stale views triggers exactly one re-run each. Separate
+// from `inFlight`: that coalesces whole-app renders a viewer is waiting on;
+// these are fire-and-forget cache fills nobody awaits.
+const bgRefreshes = new Map<string, Promise<void>>();
+
+/** Await all currently-running background panel refreshes (test seam — lets a
+ *  test observe the cache the refresh will fill without polling). */
+export function flushBackgroundPanelRefreshes(): Promise<void> {
+  return Promise.all([...bgRefreshes.values()]).then(() => undefined);
+}
+
+/** Kick a fire-and-forget refresh of one stale panel variant. Returns whether
+ *  a refresh is actually running (started now, or already in flight) — false
+ *  means the public per-app budget denied it, and the caller should say
+ *  "rate-limited", not "refreshing". The budget is charged HERE, at actual
+ *  execution — a background run is still a real query against prod. On failure
+ *  the last-good cache row is left in place (parity with the blocking path's
+ *  keepLastGood): its stamp keeps aging, so once it crosses the stale ceiling
+ *  SWR stops applying and the blocking path surfaces the hard error instead of
+ *  masking it forever. */
+function startBackgroundRefresh(
+  store: KnowledgeStore,
+  projectDir: string,
+  config: SetokuConfig,
+  appId: string,
+  panel: AppPanel,
+  compiled: CompiledPanel,
+  cacheKey: string,
+  opts: { denyLakeRead?: boolean; tryFreshRun?: () => boolean },
+): boolean {
+  const key = `${appId}:${cacheKey}:${opts.denyLakeRead ? 1 : 0}`;
+  if (bgRefreshes.has(key)) return true;
+  if (opts.tryFreshRun && !opts.tryFreshRun()) return false;
+  const p = (async () => {
+    const t0 = performance.now();
+    try {
+      const r = await runPanel(projectDir, config, panel, compiled, { denyLakeRead: opts.denyLakeRead });
+      store.putPanelCache(appId, cacheKey, {
+        columns: r.columns,
+        rows: r.rows,
+        rowCount: r.rowCount,
+        error: null,
+        durationMs: Math.round(performance.now() - t0),
+      });
+    } catch {
+      /* keep last-good — see above */
+    }
+  })().finally(() => bgRefreshes.delete(key));
+  bgRefreshes.set(key, p);
+  return true;
+}
 
 /**
  * Render every panel of an app, serving cached rows within the refresh TTL
@@ -228,7 +287,21 @@ async function renderUncoalesced(
         const cacheLimit = cached?.error ? Math.min(ERROR_TTL_MS, limit) : limit;
         const fresh = !opts.force && cached != null && now - Date.parse(cached.computedAt) < cacheLimit;
         if (fresh && cached) {
-          return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: cached.error };
+          return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: cached.error, durationMs: cached.durationMs };
+        }
+        // Stale-while-revalidate: past the TTL but holding last-good rows within
+        // the stale ceiling, serve them IMMEDIATELY (their real computedAt keeps
+        // the "updated N ago" stamp honest) and refresh in the background — the
+        // viewer never waits out a cold query they didn't ask for. `force` skips
+        // this (a manual refresh is the one place the user asked to wait), an
+        // errored cache row has no good rows to serve, and past the ceiling we
+        // fall through to the blocking path so a permanently-broken query can't
+        // hide behind ever-older rows.
+        if (!opts.force && cached != null && !cached.error && config != null && now - Date.parse(cached.computedAt) < staleCeiling) {
+          const running = startBackgroundRefresh(store, projectDir, config, dash.id, panel, compiled, cacheKey, opts);
+          return running
+            ? { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshing: true, durationMs: cached.durationMs }
+            : { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: "refresh rate-limited — showing the last cached result", durationMs: cached.durationMs };
         }
         // About to run a fresh query — but the caller may cap fresh executions
         // (the public per-app budget). Charge ONLY here, on a real cache miss, so
@@ -249,16 +322,19 @@ async function renderUncoalesced(
             return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
           return { ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: msg };
         }
+        const t0 = performance.now();
         try {
           const r = await runPanel(projectDir, config, panel, compiled, { denyLakeRead: opts.denyLakeRead });
-          const computedAt = store.putPanelCache(dash.id, cacheKey, { columns: r.columns, rows: r.rows, rowCount: r.rowCount, error: null });
-          return { ...base, columns: r.columns, rows: r.rows, rowCount: r.rowCount, computedAt, error: null };
+          const durationMs = Math.round(performance.now() - t0);
+          const computedAt = store.putPanelCache(dash.id, cacheKey, { columns: r.columns, rows: r.rows, rowCount: r.rowCount, error: null, durationMs });
+          return { ...base, columns: r.columns, rows: r.rows, rowCount: r.rowCount, computedAt, error: null, durationMs };
         } catch (e) {
           const msg = (e as Error).message;
+          const durationMs = Math.round(performance.now() - t0);
           if (keepLastGood && cached)
-            return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg };
-          const computedAt = store.putPanelCache(dash.id, cacheKey, { columns: [], rows: [], rowCount: 0, error: msg });
-          return { ...base, columns: [], rows: [], rowCount: 0, computedAt, error: msg };
+            return { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, computedAt: cached.computedAt, error: null, refreshError: msg, durationMs: cached.durationMs };
+          const computedAt = store.putPanelCache(dash.id, cacheKey, { columns: [], rows: [], rowCount: 0, error: msg, durationMs });
+          return { ...base, columns: [], rows: [], rowCount: 0, computedAt, error: msg, durationMs };
         }
       } catch (e) {
         // Last resort (e.g. cache read/write threw) — isolate to this panel.

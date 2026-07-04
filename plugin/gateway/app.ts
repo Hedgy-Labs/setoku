@@ -1631,10 +1631,14 @@ server.registerTool(
       // Surface description so a read-before-edit (get_app → update_app)
       // round-trip can preserve it — update_app REPLACES the whole panel set.
       if (p.description) lines.push(`description: ${p.description}`);
-      if (cache)
+      if (cache) {
+        // Duration is the "which panel is slow" signal for an iterating agent —
+        // a multi-second panel is the one to rewrite (or point at the lake).
+        const took = cache.durationMs == null ? "" : ` in ${cache.durationMs >= 1000 ? `${(cache.durationMs / 1000).toFixed(1)}s` : `${cache.durationMs}ms`}`;
         lines.push(
-          `last run ${cache.computedAt.slice(0, 16)} — ${cache.error ? `ERROR: ${cache.error}` : `${cache.rowCount} row(s)`}`,
+          `last run ${cache.computedAt.slice(0, 16)}${took} — ${cache.error ? `ERROR: ${cache.error}` : `${cache.rowCount} row(s)`}`,
         );
+      }
       lines.push("```sql", p.sql.trim(), "```", "");
     }
     return text(lines.join("\n"));
