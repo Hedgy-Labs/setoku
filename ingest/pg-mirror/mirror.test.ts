@@ -129,7 +129,11 @@ describe("naming / DDL / select", () => {
     expect(ddl).toContain("CREATE TABLE `biz`.`orders__staging`");
     expect(ddl).toContain("ORDER BY (`id`)");
     expect(ddl).toContain("ENGINE = MergeTree");
+    expect(ddl).toContain("`_mirrored_at` DateTime64(3) DEFAULT now64(3)"); // per-row "data as of"
     expect(stagingDDL("biz", "x", { ...t, pk: [] })).toContain("ORDER BY tuple()");
+    // a source column named _mirrored_at wins — no duplicate column in the DDL
+    const clash = { ...t, columns: [...cols, mapColumn(col({ column_name: "_mirrored_at", udt_name: "timestamptz" }))] };
+    expect(stagingDDL("biz", "y", clash).match(/_mirrored_at/g)!.length).toBe(1);
   });
   it("buildSelect casts timestamps/dates to pg text (driver-timezone-proof)", () => {
     const t = {
@@ -540,6 +544,13 @@ describe.skipIf(!CH_URL)("mirror e2e (real ClickHouse)", () => {
     expect(nulls[0].meta).toBeNull();
     expect(nulls[0].uid).toBeNull();
     expect(nulls[0].tags).toEqual([]);
+
+    // per-row freshness stamp DEFAULT-fills at load and is sane
+    const stamp = await adminRows(
+      `SELECT countIf(_mirrored_at IS NULL) AS nulls, max(_mirrored_at) > now() - INTERVAL 10 MINUTE AS fresh FROM ${rch.mirrorDb}.orders`,
+    );
+    expect(Number(stamp[0].nulls)).toBe(0);
+    expect(Number(stamp[0].fresh)).toBe(1);
 
     // volume + ORDER BY key present
     const cnt = await adminRows(`SELECT count() AS c FROM ${rch.mirrorDb}.ticketing_seat_txn`);

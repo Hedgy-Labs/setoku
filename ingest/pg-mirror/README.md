@@ -30,7 +30,15 @@ are a later optimization for append-only tables only if size demands.
    frame) and the loop beats `ingest_heartbeats` as connector `pg-mirror`.
 
 Naming: `public.orders` → `biz.orders`; other schemas prefix,
-`ticketing.seat_txn` → `biz.ticketing_seat_txn`.
+`ticketing.seat_txn` → `biz.ticketing_seat_txn`. Every mirrored row carries
+`_mirrored_at` (stamped at load), so "data as of" is queryable inline —
+`SELECT max(_mirrored_at) FROM biz.<t>` — without reading `pg_mirror_runs`.
+
+The copy streams through one READ ONLY cursor per table (a consistent
+snapshot, and it works through transaction-pooling proxies). For very large
+tables where holding a snapshot for the copy duration is a concern,
+keyset-pagination on the PK is the known alternative (short statements, no
+pinned snapshot, fuzzy reads) — not implemented until a table needs it.
 
 ## Type notes
 

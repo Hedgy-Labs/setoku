@@ -222,12 +222,21 @@ export interface MirrorTable {
 }
 
 /** CREATE TABLE for the staging copy. ORDER BY = the pg primary key (that's the
- *  entire tuning story); PK-less tables get ORDER BY tuple(). */
+ *  entire tuning story); PK-less tables get ORDER BY tuple(). Every row also
+ *  carries `_mirrored_at` (DEFAULT-filled at load, constant per batch so it
+ *  compresses to nothing) — the "data as of" is queryable inline
+ *  (max(_mirrored_at)) without knowing about pg_mirror_runs. Skipped, loudly,
+ *  if the source already has a column of that name. */
 export function stagingDDL(db: string, staging: string, t: MirrorTable): string {
-  const cols = t.columns.map((c) => `  ${chIdent(c.name)} ${c.chType}`).join(",\n");
+  const colDefs = t.columns.map((c) => `  ${chIdent(c.name)} ${c.chType}`);
+  if (!t.columns.some((c) => c.name === "_mirrored_at")) {
+    colDefs.push("  `_mirrored_at` DateTime64(3) DEFAULT now64(3)");
+  } else {
+    console.error(`pg-mirror: ${t.schema}.${t.name} has its own _mirrored_at column — skipping the freshness stamp`);
+  }
   const orderBy = t.pk.length ? `(${t.pk.map(chIdent).join(", ")})` : "tuple()";
   return (
-    `CREATE TABLE ${chIdent(db)}.${chIdent(staging)}\n(\n${cols}\n)\n` +
+    `CREATE TABLE ${chIdent(db)}.${chIdent(staging)}\n(\n${colDefs.join(",\n")}\n)\n` +
     `ENGINE = MergeTree\nORDER BY ${orderBy}\n` +
     `COMMENT ${sqlString(`mirror of ${t.schema}.${t.name} (pg-mirror, full reload)`)}`
   );
