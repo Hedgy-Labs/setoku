@@ -155,6 +155,35 @@
         margin: 16px 0 0;
         max-width: 15em;
       }
+      .rotator {
+        position: relative;
+        display: inline-block;
+        text-align: left;
+        vertical-align: baseline;
+        color: var(--sage-d);
+        transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1);
+      }
+      .rotator-word {
+        display: inline-block;
+        white-space: nowrap;
+        will-change: transform, opacity;
+        border-bottom: 0.06em solid rgba(51, 84, 61, 0.28);
+        padding-bottom: 0.02em;
+      }
+      /* Off-screen twin used only to measure each word's width. */
+      .rotator-measure {
+        position: absolute;
+        left: 0;
+        top: 0;
+        visibility: hidden;
+        pointer-events: none;
+        white-space: nowrap;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .rotator {
+          transition: none;
+        }
+      }
       .intro p.lede {
         color: var(--ink-soft);
         font-size: 18px;
@@ -704,7 +733,13 @@
     <main id="top">
       <div class="intro wrap">
         <span class="eyebrow">Open source · MCP server · Apache-2.0</span>
-        <h1>Make any AI fluent in your company’s data.</h1>
+        <h1>Make any AI fluent in your <span
+            class="rotator"
+            data-words="company,family,personal"
+          ><span class="rotator-word">company</span><span
+              class="rotator-measure"
+              aria-hidden="true"
+            ></span></span> data.</h1>
         <p class="lede">
           Setoku is a small self-hosted MCP knowledge server + Claude Code
           skills for hooking up your data. It does two things: it gives your AI
@@ -1088,7 +1123,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
                 <div class="chips">
                   <div class="chip">
                     <span class="dot"></span><b>PostgreSQL</b
-                    ><span>your app database, mirrored read-only</span>
+                    ><span>app database, mirrored read-only</span>
                   </div>
                   <div class="chip">
                     <span class="dot"></span><b>GitHub</b
@@ -1262,7 +1297,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
             sets itself up (no field engineer to pay for), stays portable
             between providers, and is open source.
           </p>
-          <h3>We’re wary.</h3>
+          <h3>We’re paranoid.</h3>
           <p>
             HR platforms, CRMs, and clouds are all announcing “context layers.”
             They’d like the meaning of your business to accumulate on their
@@ -1304,8 +1339,8 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         <div class="wrap">
           <h2>Setup help</h2>
           <p>
-            It’s open source, so you can self-host it today. If you’d rather
-            not, we’re happy to help set it up. Email
+            It’s open source, so you can self-host it today. If you like,
+            we’re happy to help set it up. Just email
             <a href="mailto:hello@setoku.com">hello@setoku.com</a>.
           </p>
         </div>
@@ -1372,5 +1407,70 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         </text>
       </svg>
     </footer>
+    <script>
+      (function () {
+        var box = document.querySelector(".rotator");
+        if (!box) return;
+        var word = box.querySelector(".rotator-word");
+        var measure = box.querySelector(".rotator-measure");
+        var words = (box.getAttribute("data-words") || "")
+          .split(",")
+          .map(function (w) { return w.trim(); })
+          .filter(Boolean);
+        if (words.length < 2) return;
+
+        var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        var LIFT = "0.72em";
+        var HALF = 240;
+        var HOLD = 2400;
+        var i = 0;
+
+        function widthOf(w) {
+          measure.textContent = w;
+          return measure.getBoundingClientRect().width;
+        }
+
+        // Pin the starting width so the sentence never jumps on first swap.
+        box.style.width = widthOf(words[0]) + "px";
+
+        function swap() {
+          var next = words[(i + 1) % words.length];
+
+          if (reduce || !word.animate) {
+            word.textContent = next;
+            box.style.width = widthOf(next) + "px";
+            i = (i + 1) % words.length;
+            return;
+          }
+
+          word
+            .animate(
+              [
+                { transform: "translateY(0)", opacity: 1 },
+                { transform: "translateY(-" + LIFT + ")", opacity: 0 },
+              ],
+              { duration: HALF, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" }
+            )
+            .finished.then(function () {
+              word.textContent = next;
+              box.style.width = widthOf(next) + "px"; // width eases via CSS
+              word.animate(
+                [
+                  { transform: "translateY(" + LIFT + ")", opacity: 0 },
+                  { transform: "translateY(0)", opacity: 1 },
+                ],
+                { duration: HALF, easing: "cubic-bezier(0, 0, 0.2, 1)", fill: "forwards" }
+              );
+              i = (i + 1) % words.length;
+            })
+            .catch(function () {});
+        }
+
+        setInterval(swap, HOLD);
+        window.addEventListener("resize", function () {
+          box.style.width = widthOf(words[i]) + "px";
+        });
+      })();
+    </script>
   </body>
 </html>
