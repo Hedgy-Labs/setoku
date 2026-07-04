@@ -905,15 +905,22 @@ function publicAppShell(opts: {
   .muted{color:#78716c;font-size:.8rem}
   .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
   .adminbtn:hover{background:#f5f5f4}
-  main{flex:1;min-height:0;display:flex}
+  main{flex:1;min-height:0;display:flex;position:relative}
   iframe{flex:1;width:100%;border:0;background:#fff}
+  /* loader over the reloading frame (param change / refresh) — the transition
+     delay keeps a fast cached load from flashing it */
+  #ldr{pointer-events:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.55);opacity:0;transition:opacity .15s .15s}
+  #ldr.on{opacity:1}
+  #ldr .card{display:flex;align-items:center;gap:.5rem;border:1px solid #e7e5e4;background:#fff;border-radius:.5rem;padding:.35rem .7rem;font-size:.8rem;color:#78716c;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+  #ldr .sp{width:12px;height:12px;border:2px solid #d6d3d1;border-top-color:#57534e;border-radius:50%;animation:ldrspin .8s linear infinite}
+  @keyframes ldrspin{to{transform:rotate(360deg)}}
   #controls{display:flex;flex-wrap:wrap;align-items:center;gap:.3rem .9rem;width:100%;margin-top:.1rem}
   .pc{display:inline-flex;align-items:center;gap:.4rem;font-size:.8rem;color:#57534e}
   .pc select,.pc input{font:inherit;font-size:.8rem;color:#1c1917;background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.18rem .45rem}
   .pc select:focus,.pc input:focus{outline:none;border-color:#a8a29e;box-shadow:0 0 0 2px #e7e5e4}
 </style></head><body>
 <header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
-<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe></main>
+<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><div id="ldr"><div class="card"><span class="sp"></span>updating…</div></div></main>
 <script>
 (function(){
   var CFG=${cfg};
@@ -957,7 +964,9 @@ function publicAppShell(opts: {
   // panels bound to the viewer's current selection.
   function paramQuery(){ var parts=[]; document.querySelectorAll('[data-pname]').forEach(function(el){
     parts.push('p.'+encodeURIComponent(el.getAttribute('data-pname'))+'='+encodeURIComponent(el.value)); }); return parts.join('&'); }
-  function reload(){ var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
+  var ldr=document.getElementById('ldr');
+  frame.addEventListener('load', function(){ ldr.classList.remove('on'); });
+  function reload(){ ldr.classList.add('on'); var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
   document.querySelectorAll('[data-pname]').forEach(function(el){ el.addEventListener('change', function(){ reload(); }); });
   function refresh(){ fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
     var secs=d.refreshSeconds||CFG.refresh;
