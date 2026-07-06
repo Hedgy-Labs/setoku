@@ -64,6 +64,11 @@ services:
       retries: 5
 
   server:
+    # Prebuilt image published by CI (.github/workflows/publish.yml). A fresh box
+    # PULLS this instead of compiling on-VPS. `build:` stays as the fallback: plain
+    # `up` pulls the image, `up --build` (dev / scripts/deploy.sh) builds locally and
+    # tags it with the same name. Pin a release with SETOKU_GATEWAY_TAG in .env.
+    image: ghcr.io/hedgy-labs/setoku-gateway:${SETOKU_GATEWAY_TAG:-latest}
     build:
       context: .
       dockerfile: deploy/Dockerfile
