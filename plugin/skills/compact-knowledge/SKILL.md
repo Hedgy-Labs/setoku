@@ -14,9 +14,10 @@ server-side inference (I8). You are the compactor; the heuristics are just a map
 
 > **Requires the curator connector.** Compaction commits curated knowledge
 > (`upsert_context`, and `resolve_correction` for pending), so it needs a
-> **curator token** (the `setoku-curator` connector), not an everyday analyst
-> token. If those tools aren't in your toolset, you're propose-only — reconnect
-> via `setoku-curator`. The curator token is lake-blind (it can't ingest
+> **curator token** (the `<name>-setoku-curator` connector — the box's connector
+> name plus `-curator`), not an everyday analyst token. If those tools aren't in
+> your toolset, you're propose-only — reconnect via `<name>-setoku-curator`. The
+> curator token is lake-blind (it can't ingest
 > untrusted bulk text), which is what keeps the I2/I9 membrane intact. The human
 > curator stays in the loop: confirm before you commit.
 
