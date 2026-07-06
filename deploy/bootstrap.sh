@@ -75,8 +75,17 @@ fi
 set -a; source .env; set +a
 
 # 4. Bring up the stack -----------------------------------------------------
-log "building + starting the stack (first run pulls images — a few minutes)…"
-dc up -d --build --wait
+# Prefer the prebuilt gateway image (published by CI) — the box PULLS instead of
+# running bun install + baking the embed model on a small VPS. Fall back to an
+# on-box build only if the image can't be pulled (private/unpublished tag, air-gap).
+log "starting the stack (first run pulls images — a few minutes)…"
+if dc pull --quiet server 2>/dev/null; then
+  log "using prebuilt gateway image (no on-box compile)"
+  dc up -d --wait
+else
+  log "prebuilt gateway image unavailable — building on the box (slower)…"
+  dc up -d --build --wait
+fi
 log "stack healthy."
 
 # 5. Admin account for the approval surface ---------------------------------

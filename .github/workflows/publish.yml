@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build the gateway image once, in CI, and publish it to GHCR — so a fresh box
+# PULLS a ready image instead of running `bun install` + baking the 130MB embed
+# model on a 2-core VPS. This is the single biggest lever on box-setup time.
+#
+# The published package is PUBLIC (repo stays private): the box pulls anonymously,
+# no token. The image holds no secrets — code is Apache-2.0 and every credential
+# arrives from .env at runtime. First publish creates a private package; flip it to
+# public once, under Packages → setoku-gateway → Package settings → Change visibility.
+name: publish-gateway
+
+on:
+  push:
+    branches: [main]
+    # only rebuild when something in the image actually changes
+    paths:
+      - "plugin/**"
+      - "deploy/Dockerfile"
+      - ".github/workflows/publish.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: publish-gateway-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/hedgy-labs/setoku-gateway
+          # main → `latest` + `sha-<short>`; a `v1.2.3` tag → `1.2.3`, `1.2`, `latest`.
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build + push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # persist the bun-install + model-bake layers across runs
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
