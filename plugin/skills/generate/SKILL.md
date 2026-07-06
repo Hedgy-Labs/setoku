@@ -13,6 +13,8 @@ You are deriving the business's **verified context** from its codebase and savin
 >
 > **Detect the mode:** if `upsert_context` is in your tools → curator; otherwise → analyst (use `report_correction`). Don't send the human to SSH for a curator token just to generate — proposing on the analyst connector gets real context into the store today.
 
+> **One box per session.** This skill calls tools by bare name (`get_schema`, `upsert_context`, …). If more than one Setoku box is connected, the same tool name resolves ambiguously and you may write context into the wrong box. If you see a bare tool offered by multiple setoku connectors, **stop and ask the user which box** this generation is for before saving — or have them disconnect the others.
+
 ## What to read (adapt to the stack — nothing here is framework-specific)
 
 1. **Schema source:** Prisma (`*.prisma`), ActiveRecord (`db/schema.rb`), Django models, SQLAlchemy, dbt (`models/*.yml`), raw migrations — whatever defines tables. No codebase? Use `get_schema` + the platform's standard semantics (e.g. Shopify/HubSpot schemas) + an interview with the user.

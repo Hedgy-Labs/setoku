@@ -21,6 +21,8 @@ server-side inference (I8). You are the compactor; the heuristics are just a map
 > untrusted bulk text), which is what keeps the I2/I9 membrane intact. The human
 > curator stays in the loop: confirm before you commit.
 
+> **One box per session.** This skill calls tools by bare name (`upsert_context`, `list_corrections`, …). If more than one Setoku box is connected, the same tool name resolves ambiguously and you may compact the wrong box's store. If you see a bare tool offered by multiple setoku connectors, **stop and ask the user which box** before committing — or have them disconnect the others.
+
 ## What compaction does (priority order)
 
 1. **Merge duplicates** — facts that say the same thing (a metric defined twice,
