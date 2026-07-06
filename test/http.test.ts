@@ -168,6 +168,24 @@ describe("tools over HTTP", () => {
     await carol.close();
   });
 
+  it("a teammate token written to the DB authenticates immediately, no restart (add-teammate path)", async () => {
+    // Mint the way `admin-cli add-teammate` now does — a row in the RUNNING
+    // gateway's knowledge.db — and confirm it authenticates on the next request
+    // without bouncing the process.
+    const { KnowledgeStore } = await import(
+      path.join(ROOT, "plugin", "gateway", "lib", "store.ts")
+    );
+    const s = new KnowledgeStore(path.join(tmpRepo, "knowledge.db"));
+    s.addAnalystToken("tok-dave-db", "dave@co.test", "admin-cli");
+    s.db.close();
+
+    const dave = await connect("tok-dave-db");
+    const names = (await dave.listTools()).tools.map((t) => t.name);
+    expect(names).toContain("find_context"); // read + propose…
+    expect(names).not.toContain("upsert_context"); // …but analyst only (no write)
+    await dave.close();
+  });
+
   it("attributes each token's calls to its own identity in the shared audit log", async () => {
     const bob = await connect("tok-bob");
     await call(bob, "report_correction", {
@@ -580,6 +598,20 @@ describe("installer", () => {
     expect(script).toContain("alice@co.test");
     const bad = await fetch(`${BASE}/i/nope`);
     expect(bad.status).toBe(404);
+  });
+
+  it("names the connector <slug>-setoku from the box name (SETOKU_NAME wins), defaults to setoku", async () => {
+    const { connectorName, slugifyName } = await import(
+      path.join(ROOT, "plugin", "gateway", "lib", "config.ts")
+    );
+    expect(slugifyName("Camp SH!")).toBe("camp-sh");
+    const prev = process.env.SETOKU_NAME;
+    process.env.SETOKU_NAME = "campsh";
+    expect(connectorName(tmpRepo)).toBe("campsh-setoku");
+    expect(connectorName(tmpRepo, "curator")).toBe("campsh-setoku-curator");
+    delete process.env.SETOKU_NAME;
+    expect(connectorName(tmpRepo)).toBe("setoku"); // fixture config sets no name
+    if (prev !== undefined) process.env.SETOKU_NAME = prev;
   });
 
 });

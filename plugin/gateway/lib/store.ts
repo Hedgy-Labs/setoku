@@ -364,6 +364,18 @@ export class KnowledgeStore {
       csrf TEXT NOT NULL,
       expires INTEGER NOT NULL
     )`);
+    // Teammate ANALYST connectors (read-only + propose-only). Stored here — on the
+    // shared durable volume — instead of a boot-time env/file so `add-teammate`
+    // and the web "Invite" both take effect IMMEDIATELY, no restart (the running
+    // server reads this table per request; same SQLite file, same process). Only
+    // analyst tokens live here: curator/janitor authority stays env-pinned and
+    // operator-controlled (I2/I9 — the membrane never depends on a DB row).
+    this.db.run(`CREATE TABLE IF NOT EXISTS analyst_tokens (
+      token TEXT PRIMARY KEY,
+      identity TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by TEXT
+    )`);
     // Published reports (the "Reports" surface). An agent calls publish_report
     // with self-contained HTML; we store it under an opaque id. A "team" report
     // serves session-gated at /admin/p/<id>; a "public" one (an admin promotes
@@ -859,6 +871,38 @@ export class KnowledgeStore {
       .query(`SELECT DISTINCT user FROM audit WHERE tool IN (${ph})`)
       .all(...MCP_TOOLS) as { user: string }[];
     return new Set(rows.map((r) => r.user));
+  }
+
+  /* ---------------------------- analyst tokens -------------------------- */
+
+  /** Provision (or overwrite) a teammate analyst token — live on the next request. */
+  addAnalystToken(token: string, identity: string, createdBy?: string): void {
+    this.db.run(
+      "INSERT OR REPLACE INTO analyst_tokens (token, identity, created_at, created_by) VALUES (?, ?, ?, ?)",
+      [token, identity, new Date().toISOString(), createdBy ?? null],
+    );
+  }
+
+  /** Identity for a bearer token, or null if it isn't a known analyst token. */
+  analystTokenIdentity(token: string): string | null {
+    const row = this.db
+      .query("SELECT identity FROM analyst_tokens WHERE token = ?")
+      .get(token) as { identity: string } | null;
+    return row?.identity ?? null;
+  }
+
+  /** Revoke every analyst token for an identity; returns how many were removed. */
+  removeAnalystTokensFor(identity: string): number {
+    return this.db.run("DELETE FROM analyst_tokens WHERE identity = ?", [identity]).changes;
+  }
+
+  /** Distinct identities that hold a teammate analyst token (for the Team page). */
+  analystIdentities(): string[] {
+    return (
+      this.db
+        .query("SELECT DISTINCT identity FROM analyst_tokens ORDER BY identity")
+        .all() as { identity: string }[]
+    ).map((r) => r.identity);
   }
 
   /* -------------------------------- sessions ---------------------------- */

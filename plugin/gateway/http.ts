@@ -30,7 +30,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { buildServer, type TokenRole } from "./app";
 import { EmbedIndex } from "./lib/embed-index";
 import { DerivedSynonyms } from "./lib/derived-synonyms";
-import { loadConfig, resolveProjectDir } from "./lib/config";
+import { loadConfig, resolveProjectDir, connectorName } from "./lib/config";
 import {
   KnowledgeStore,
   defaultDbPath,
@@ -173,33 +173,28 @@ function mintToken(): string {
 }
 
 /**
- * Provision an analyst token at runtime (the web "Invite teammate" path): add it
- * to the in-memory set so it authenticates IMMEDIATELY (no restart), and persist
- * to SETOKU_TOKENS_FILE if configured so it survives one. Analyst only — the web
- * surface never mints curator/write capability (that stays an operator action).
+ * Provision an analyst token at runtime (the web "Invite teammate" and CLI
+ * add-teammate paths): write it to the store, which the request path reads live,
+ * so it authenticates IMMEDIATELY — no restart, no env/file surgery. Analyst
+ * only — nothing here mints curator/write capability (that stays an operator
+ * action, env-pinned, per the membrane I2/I9). `persisted` is always true now
+ * (the DB is durable); kept in the return shape for the callers' messaging.
  */
 function addAnalystToken(token: string, identity: string): { persisted: boolean } {
-  tokens.set(token, { identity, role: "analyst" });
-  const file = process.env.SETOKU_TOKENS_FILE;
-  if (!file) return { persisted: false };
-  let map: Record<string, string> = {};
-  try {
-    if (fs.existsSync(file)) map = JSON.parse(fs.readFileSync(file, "utf8"));
-  } catch {
-    /* a corrupt file shouldn't lose the new invite — start fresh */
-  }
-  map[token] = identity;
-  fs.writeFileSync(file, JSON.stringify(map, null, 2) + "\n");
+  store.addAnalystToken(token, identity, "web-invite");
   return { persisted: true };
 }
 
 /**
- * Revoke every analyst token for an identity: drop from the in-memory set
- * (effective on the NEXT request — no restart) and from SETOKU_TOKENS_FILE.
- * Returns how many were removed, and whether any lived in SETOKU_TOKENS (env),
- * which we can't rewrite — those reappear on restart, so the caller should warn.
+ * Revoke every analyst token for an identity. Removes the DB-backed teammate
+ * tokens (the normal case) AND any legacy in-memory tokens seeded from
+ * SETOKU_TOKENS / SETOKU_TOKENS_FILE at boot. Returns how many were removed, and
+ * whether any came from SETOKU_TOKENS env (which we can't rewrite — those reappear
+ * on restart, so the caller should warn).
  */
 function removeAnalystTokens(identity: string): { removed: number; envBacked: boolean } {
+  let removed = store.removeAnalystTokensFor(identity);
+  let envBacked = false;
   const file = process.env.SETOKU_TOKENS_FILE;
   let fileMap: Record<string, string> = {};
   if (file && fs.existsSync(file)) {
@@ -209,8 +204,6 @@ function removeAnalystTokens(identity: string): { removed: number; envBacked: bo
       /* ignore a corrupt file */
     }
   }
-  let removed = 0;
-  let envBacked = false;
   for (const [tok, info] of [...tokens]) {
     // only revoke analyst tokens for this identity (never curator/janitor)
     if (info.role !== "analyst" || info.identity !== identity) continue;
@@ -224,9 +217,11 @@ function removeAnalystTokens(identity: string): { removed: number; envBacked: bo
 }
 
 /** Analyst identities currently provisioned — for the Team page (curator/janitor
- *  are operator-held, not team members). */
+ *  are operator-held, not team members). Union of DB-backed teammate tokens and
+ *  any legacy env/file analyst tokens loaded at boot. */
 function analystIdentities(): string[] {
-  return [...new Set([...tokens.values()].filter((t) => t.role === "analyst").map((t) => t.identity))].sort();
+  const fromEnv = [...tokens.values()].filter((t) => t.role === "analyst").map((t) => t.identity);
+  return [...new Set([...fromEnv, ...store.analystIdentities()])].sort();
 }
 
 const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
@@ -288,13 +283,15 @@ function teamPeople(): { identity: string; hasToken: boolean; used: boolean; rol
 function identityFor(req: http.IncomingMessage): TokenInfo | null {
   const auth = req.headers.authorization ?? "";
   const m = auth.match(/^Bearer\s+(.+)$/i);
-  if (m) {
-    const t = tokens.get(m[1].trim());
-    if (t) return t;
-  }
   const pathTok = (req.url ?? "").match(/^\/mcp\/([^/?]+)/);
-  if (pathTok) return tokens.get(decodeURIComponent(pathTok[1])) ?? null;
-  return null;
+  const raw = m ? m[1].trim() : pathTok ? decodeURIComponent(pathTok[1]) : null;
+  if (!raw) return null;
+  // Env/file-seeded tokens first (analyst seed + the operator's curator/janitor);
+  // then DB-backed teammate analyst tokens, which authenticate without a restart.
+  const seeded = tokens.get(raw);
+  if (seeded) return seeded;
+  const identity = store.analystTokenIdentity(raw);
+  return identity ? { identity, role: "analyst" } : null;
 }
 
 const DOC_TYPES = ["entity", "metric", "query", "overview", "gotcha"] as const;
@@ -445,6 +442,7 @@ function installerScript(
   token: string,
   identity: string,
   baseUrl: string,
+  connector: string,
 ): string {
   return `#!/bin/sh
 # Setoku installer for ${identity} — generated by ${baseUrl}
@@ -457,9 +455,9 @@ echo "Setoku setup for ${identity}"
 DONE=""
 
 if command -v claude >/dev/null 2>&1; then
-  echo "→ Claude Code detected: adding setoku connector (user scope)…"
-  run claude mcp remove --scope user setoku >/dev/null 2>&1 || true
-  run claude mcp add --scope user --transport http setoku "$URL" --header "Authorization: Bearer $TOKEN"
+  echo "→ Claude Code detected: adding ${connector} connector (user scope)…"
+  run claude mcp remove --scope user ${connector} >/dev/null 2>&1 || true
+  run claude mcp add --scope user --transport http ${connector} "$URL" --header "Authorization: Bearer $TOKEN"
   echo "→ Installing the setoku plugin (skills)…"
   if [ -n "$SETOKU_DRY_RUN" ]; then echo "+ claude plugin marketplace add Hedgy-Labs/setoku && claude plugin install setoku@setoku"; else
     (claude plugin marketplace add Hedgy-Labs/setoku >/dev/null 2>&1 && claude plugin install setoku@setoku >/dev/null 2>&1 \\
@@ -1028,7 +1026,7 @@ const httpServer = http.createServer(async (req, res) => {
         process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
       store.audit(info.identity, "installer_served", {});
       res.writeHead(200, { "content-type": "text/x-shellscript" });
-      res.end(installerScript(token, info.identity, baseUrl));
+      res.end(installerScript(token, info.identity, baseUrl, connectorName(projectDir)));
       return;
     }
     // ---- public report surface — /p/<id>, credential-free ----

@@ -51,10 +51,12 @@ view-only account that can read the queue but not approve.)
 
 ## 4. Connect users
 
-**Claude Code:**
+**Claude Code:** (name the connector `<name>-setoku` after this box, not the bare
+`setoku` — otherwise a second box collides with an existing `setoku` connector.
+The `/i/<token>` installer does this for you.)
 
 ```bash
-claude mcp add --transport http setoku https://<your-host>/mcp \
+claude mcp add --transport http <name>-setoku https://<your-host>/mcp \
   --header "Authorization: Bearer <their-token>"
 ```
 

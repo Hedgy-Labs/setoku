@@ -7,6 +7,8 @@ description: Run the Setoku golden-question eval for this repository and report 
 
 Run the repo's golden questions end-to-end through the normal retrieve-then-query path and score the results. This is how we measure whether the context artifact actually improves answers. All inference happens right here in this session — no harness, no API keys.
 
+> **One box per session.** This skill calls tools by bare name (`find_context`, `get_metric`, `run_query`, …). If more than one Setoku box is connected, the same tool name resolves ambiguously and you'd score the wrong box's artifact. If you see a bare tool offered by multiple setoku connectors, **stop and ask the user which box** to eval before running — or have them disconnect the others.
+
 ## Golden questions file
 
 `.setoku/eval/questions.md` — one section per question:

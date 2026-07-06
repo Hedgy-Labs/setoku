@@ -41,8 +41,10 @@ export const MIN_REFRESH_SECONDS = 30;
 /** Ceiling on refresh TTL — a "live" link that never refreshes isn't live; cap
  *  it so cached data can't silently go stale for days behind a fresh-looking UI. */
 export const MAX_REFRESH_SECONDS = 86_400;
-/** Cap on panels per app — keeps one view's fan-out bounded. */
-export const MAX_PANELS = 12;
+/** Cap on panels per app — keeps one view's fan-out bounded. Loose on purpose
+ *  (seeing how rich a single app wants to get); the real backstop is
+ *  MAX_RENDER_ROW_BYTES, which bounds the payload regardless of panel count. */
+export const MAX_PANELS = 100;
 /** Ceiling on the serialized panel-rows payload handed to one render. Bounds the
  *  injected frame document + the cached/served JSON regardless of rowCap × panels. */
 export const MAX_RENDER_ROW_BYTES = 3_500_000;
