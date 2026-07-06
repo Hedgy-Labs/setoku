@@ -39,12 +39,24 @@ states, not two — figure out which:
    this Claude is connected. Continue to Phase 1.
 2. **No Setoku tools available here, but the human already has a box** (ask: "do
    you already have a Setoku box? what's its domain?"). Don't provision a new one
-   — just connect this Claude: `claude mcp add --transport http setoku https://<domain>/mcp --header "Authorization: Bearer <analyst-token>"`. The token is the analyst `SETOKU_TOKENS` value from the box's `.env` (which is
+   — just connect this Claude (see **Name the connector** below): `claude mcp add --transport http <name>-setoku https://<domain>/mcp --header "Authorization: Bearer <analyst-token>"`. The token is the analyst `SETOKU_TOKENS` value from the box's `.env` (which is
 formatted `token=identity` — use the part before the `=`). Then continue.
 3. **No box at all** → stand one up:
    - Provision a cheap Ubuntu VPS (~$12/mo). Buying it is the human's step.
    - `git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku && SETOKU_ADMIN_USER=<you> ./deploy/bootstrap.sh` — installs Docker, generates secrets, gets real HTTPS (sslip.io if no domain), brings the stack up, prints the connect command + tokens. Setting `SETOKU_ADMIN_USER` keeps it fully non-interactive (otherwise it pauses once to ask for an admin username — the `/admin` login used later to approve knowledge). Safe to run over SSH; if the human pastes SSH access, run it for them, otherwise hand them the command.
-   - Connect this Claude with the printed `claude mcp add …` (analyst connector). That's enough to start — no second connector needed yet.
+   - Connect this Claude (see **Name the connector** below). That's enough to start — no second connector needed yet.
+
+**Name the connector.** Don't use the bare name `setoku` — a person doing this a
+second time (a demo box, another deployment) already has a `setoku` connector, and
+Claude Code's `mcp add` would collide or the wrong box wins. Pick a **short box
+name** (ask the human, e.g. their company/handle — `campsh`), slugify it, and use
+`<name>-setoku` as the connector name everywhere (`campsh-setoku`). Persist the
+name so the box's own installer links match: add `"name": "<name>"` to the repo's
+`.setoku/config.json` (create/extend, never clobber). Then **verify it actually
+connected** — run `claude mcp list` (or call a context tool like `list_entities`)
+and confirm `<name>-setoku` answers before continuing; if it doesn't, fix the
+token/domain and re-add. This connector name is also the tool prefix onboarding
+allowlists (`mcp__<name>-setoku`), so keep them identical.
 
 ## 1 — Pick a source  *(analyst connector)*
 
@@ -157,7 +169,8 @@ cd /opt/setoku && docker compose exec server bun gateway/admin-cli.ts create-cur
 ```
 
 It prints the `SETOKU_CURATOR_TOKENS` line to append to `/opt/setoku/.env` and the
-`claude mcp add … setoku-curator …` command. Append, `docker compose up -d server`,
+`claude mcp add … <name>-setoku-curator …` command (the box's connector name plus
+`-curator`). Append, `docker compose up -d server`,
 add the connector, switch to it, then `upsert_context`. (For finance/lake
 knowledge you stay on analyst and `report_correction` — curator can't read the lake.)
 

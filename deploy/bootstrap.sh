@@ -114,6 +114,11 @@ fi
 
 # 6. Report -----------------------------------------------------------------
 MCP_TOKEN="$(printf '%s' "$SETOKU_TOKENS" | cut -d= -f1)"
+# Give this box a distinct connector name so a second box (a demo, another
+# deployment) doesn't collide with a bare `setoku` connector. Defaults to the
+# admin username; /onboard confirms/renames it (writes `name` to config.json).
+NAME_SLUG="$(printf '%s' "${SETOKU_NAME:-${SETOKU_ADMIN_USER:-${ADMINU:-}}}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//')"
+if [ -n "$NAME_SLUG" ]; then CONNECTOR="${NAME_SLUG}-setoku"; else CONNECTOR="setoku"; fi
 cat <<EOF
 
 ===================================================================
@@ -123,8 +128,8 @@ cat <<EOF
      $ADMIN_LOGIN_MSG
      (this is where you accept proposed knowledge — sign in once now)
 
- Connect Claude Code:
-   claude mcp add --transport http setoku https://$SETOKU_DOMAIN/mcp \\
+ Connect Claude Code (/onboard can rename this to your company — <name>-setoku):
+   claude mcp add --transport http $CONNECTOR https://$SETOKU_DOMAIN/mcp \\
      --header "Authorization: Bearer $MCP_TOKEN"
 
  Ingest token (for Vercel/Render drains + app events):

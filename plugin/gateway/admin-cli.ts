@@ -14,15 +14,27 @@
  * scripted/CI use), otherwise prompted interactively (never echoed, never
  * logged). It is argon2id-hashed before it touches the store.
  */
-import fs from "node:fs";
 import { KnowledgeStore, defaultDbPath } from "./lib/store";
 import { hashPassword, isRole, ROLES } from "./lib/accounts";
-import { resolveProjectDir, loadConfig } from "./lib/config";
+import { resolveProjectDir, loadConfig, connectorName } from "./lib/config";
 
 function randomToken(): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(24)))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
+}
+
+/**
+ * This box's public origin for the URLs we print. Prefer SETOKU_PUBLIC_URL (a
+ * full origin, and what the server itself uses), fall back to SETOKU_DOMAIN,
+ * else a visible placeholder. The server container has SETOKU_PUBLIC_URL but not
+ * always SETOKU_DOMAIN, which is why the CLI used to print "<your-domain>".
+ */
+function boxOrigin(): string {
+  const pub = process.env.SETOKU_PUBLIC_URL;
+  if (pub) return pub.replace(/\/+$/, "");
+  const dom = process.env.SETOKU_DOMAIN;
+  return dom ? `https://${dom}` : "https://<your-domain>";
 }
 
 function storePath(): string {
@@ -109,40 +121,22 @@ async function main() {
     const identity = username;
     if (!identity) usage();
     const token = randomToken();
-    const dom = process.env.SETOKU_DOMAIN ?? "<your-domain>";
-    const file = process.env.SETOKU_TOKENS_FILE;
+    const origin = boxOrigin();
 
-    // Prefer the tokens FILE (hot-pluggable, no .env surgery). Append and tell
-    // the operator to restart so the new token loads.
-    let wired = false;
-    if (file) {
-      let map: Record<string, string> = {};
-      try {
-        if (fs.existsSync(file)) map = JSON.parse(fs.readFileSync(file, "utf8"));
-      } catch {
-        console.error(`could not parse ${file} as JSON — fix it or unset SETOKU_TOKENS_FILE`);
-        process.exit(1);
-      }
-      map[token] = identity;
-      fs.writeFileSync(file, JSON.stringify(map, null, 2) + "\n");
-      wired = true;
-    }
-
+    // Write it to the store, which the running server reads per request — so the
+    // token is live IMMEDIATELY, no restart, no .env/file surgery.
+    store.addAnalystToken(token, identity, "admin-cli");
     store.audit("admin-cli", "analyst_token_created", { identity });
+
     console.log(`analyst connector for ${identity} (token shown once):\n`);
     console.log(`  ${token}=${identity}\n`);
-    if (wired) {
-      console.log(`✓ added to ${file}. Restart to load it:  docker compose up -d server\n`);
-    } else {
-      console.log("Add it to SETOKU_TOKENS in /opt/setoku/.env (comma-separated), then restart the server.");
-      console.log("(Tip: set SETOKU_TOKENS_FILE to a JSON file and this command wires teammates in for you.)\n");
-    }
+    console.log(`✓ live now — no restart needed.\n`);
     console.log("Send your teammate ONE of these:");
-    console.log(`  • Claude Code (CLI):   curl -fsSL https://${dom}/i/${token} | sh`);
+    console.log(`  • Claude Code (CLI):   curl -fsSL ${origin}/i/${token} | sh`);
     console.log(`  • Claude.ai / Desktop app (anyone, incl. non-technical) — Settings → Connectors →`);
     console.log(`    Add custom connector. The dialog has NO header field, so paste the token-in-URL as`);
     console.log(`    the "Remote MCP server URL" (leave OAuth blank):`);
-    console.log(`        https://${dom}/mcp/${token}`);
+    console.log(`        ${origin}/mcp/${token}`);
     console.log(`    (this URL carries the access token — treat it like a password). Then just ask in`);
     console.log(`    plain language ("show me signups by week").`);
     return;
@@ -156,13 +150,14 @@ async function main() {
     if (!identity) usage();
     const token = randomToken();
     store.audit("admin-cli", "curator_token_created", { identity });
-    const dom = process.env.SETOKU_DOMAIN ?? "<your-domain>";
+    const origin = boxOrigin();
+    const name = connectorName(resolveProjectDir(), "curator");
     console.log(`curator token for ${identity} (shown once):\n`);
     console.log(`  ${token}=${identity}\n`);
     console.log("1. Append it to SETOKU_CURATOR_TOKENS in /opt/setoku/.env (comma-separated), then restart the server.");
     console.log("2. On the operator's machine ONLY (never analyst machines), add the curator connector:");
     console.log(
-      `   claude mcp add --scope user --transport http setoku-curator https://${dom}/mcp --header "Authorization: Bearer ${token}"`,
+      `   claude mcp add --scope user --transport http ${name} ${origin}/mcp --header "Authorization: Bearer ${token}"`,
     );
     console.log("\nThis token can commit curated knowledge (upsert_context/resolve_correction) but cannot read the lake.");
     return;
@@ -176,13 +171,14 @@ async function main() {
     if (!identity) usage();
     const token = randomToken();
     store.audit("admin-cli", "janitor_token_created", { identity });
-    const dom = process.env.SETOKU_DOMAIN ?? "<your-domain>";
+    const origin = boxOrigin();
+    const name = connectorName(resolveProjectDir(), "janitor");
     console.log(`janitor token for ${identity} (shown once):\n`);
     console.log(`  ${token}=${identity}\n`);
     console.log("1. Append it to SETOKU_JANITOR_TOKENS in /opt/setoku/.env (comma-separated), then restart the server.");
     console.log("2. On the curation runner ONLY (where the cron / curate-cron.sh runs), use it for the janitor connector:");
     console.log(
-      `   claude mcp add --scope user --transport http setoku-janitor https://${dom}/mcp --header "Authorization: Bearer ${token}"`,
+      `   claude mcp add --scope user --transport http ${name} ${origin}/mcp --header "Authorization: Bearer ${token}"`,
     );
     console.log("\nThis token can only draft (draft_correction) and reject (reject_correction) — it can never commit or accept knowledge.");
     return;

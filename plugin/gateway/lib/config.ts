@@ -35,6 +35,40 @@ export interface SetokuConfig {
   mirrorPolicy?: "require" | "prefer";
   /** Optional override for the knowledge-store SQLite path (absolute, or relative to the project dir). */
   knowledgeDb?: string;
+  /**
+   * Short human name for THIS box (e.g. "campsh"), set during /onboard. Drives
+   * the Claude Code connector name — `<slug>-setoku` — so a person who already
+   * has a `setoku` connector (a demo box, a second deployment) doesn't collide.
+   * Unset falls back to the bare `setoku` name.
+   */
+  name?: string;
+}
+
+/**
+ * Slugify a box/business name for use in a connector name (a DNS-ish label):
+ * lowercase, alnum runs joined by single dashes, edges trimmed. Returns "" for
+ * empty/undefined so callers can fall back to a default.
+ */
+export function slugifyName(raw: string | undefined | null): string {
+  return (raw ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * The Claude Code connector name for this box: `<slug>-setoku`, from
+ * SETOKU_NAME (env) or config.name, else the bare `setoku`. `suffix` appends a
+ * role for the operator-only connectors (e.g. "curator" → `<slug>-setoku-curator`).
+ * Read live (not cached) so a name chosen during /onboard takes effect without
+ * a restart.
+ */
+export function connectorName(projectDir: string, suffix = ""): string {
+  const res = loadConfig(projectDir);
+  const raw = process.env.SETOKU_NAME ?? (res.ok ? res.config.name : undefined);
+  const slug = slugifyName(raw);
+  const base = slug ? `${slug}-setoku` : "setoku";
+  return suffix ? `${base}-${suffix}` : base;
 }
 
 export const DEFAULTS = {
