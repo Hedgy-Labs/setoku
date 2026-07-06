@@ -2,11 +2,12 @@
 #
 # Setoku — the whole system on one box (README Figure 1).
 #
-# Core services (caddy, server, postgres) have no profile: they always run.
+# Core services (caddy, server) have no profile: they always run.
 # Optional profiles:
 #   lake    → clickhouse                 (the bundled lake)
 #   ingest  → vector (+ lake implied)    (log/event receiver; slack-listener lands in Phase 3)
 #   backup  → clickhouse-backup, rclone  (one-shots driven by deploy/backup/*.sh)
+#   pgstore → postgres                   (reserved for the future SQLite→Postgres store migration; unused today, OFF by default)
 # Enable in .env:  COMPOSE_PROFILES=lake,ingest
 #
 # Images are pinned by multi-arch manifest-list digest (arm64 prototype box,
@@ -96,9 +97,6 @@ services:
       SETOKU_LAKE_URL: "http://setoku_ro:${CLICKHOUSE_RO_PASSWORD}@clickhouse:8123/setoku"
     volumes:
       - setoku_data:/data
-    depends_on:
-      postgres:
-        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -110,10 +108,15 @@ services:
       retries: 5
       start_period: 15s
 
-  # Context store + auth (target architecture). The v0.9 gateway still keeps
-  # knowledge in SQLite on the setoku_data volume; the store migrates here
-  # during the Phase 3/5 build-out. pgvector is installed but unused (I8).
+  # Context store + auth (target architecture). The gateway still keeps knowledge
+  # in SQLite on the setoku_data volume; the store migrates here during the
+  # Phase 3/5 build-out. pgvector is installed but unused today (I8), so this is
+  # OFF by default (profile: pgstore) — nothing connects to it, and a fresh box
+  # neither pulls the 600MB+ image nor waits on its healthcheck. It stays in the
+  # file as the reserved slot for that migration; enable with
+  # COMPOSE_PROFILES=...,pgstore.
   postgres:
+    profiles: [pgstore]
     image: pgvector/pgvector:pg16@sha256:00ba258a66dac104fd5171074a0084462a64a1369d8513f3d0a634e2f24d15bc
     restart: unless-stopped
     logging: *default-logging

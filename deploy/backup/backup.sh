@@ -28,8 +28,14 @@ dc exec -T server bun -e "
 docker cp "$(dc ps -q server)":/data/knowledge-snapshot.db "backups/context/knowledge-${STAMP}.db"
 dc exec -T server rm -f /data/knowledge-snapshot.db
 
-echo "[backup] pg_dump context store…"
-dc exec -T postgres pg_dump -U postgres setoku | gzip > "backups/context/pg-setoku-${STAMP}.sql.gz"
+# The Postgres context store is the reserved migration target (profile: pgstore)
+# and is unused/off by default — dump it only when it's actually running, mirroring
+# the clickhouse guard below. The irreplaceable asset is the SQLite snapshot above,
+# which is always taken.
+if dc ps --status running postgres 2>/dev/null | grep -q postgres; then
+  echo "[backup] pg_dump context store…"
+  dc exec -T postgres pg_dump -U postgres setoku | gzip > "backups/context/pg-setoku-${STAMP}.sql.gz"
+fi
 
 if [[ -n "${SETOKU_BACKUP_S3_BUCKET:-}" ]]; then
   echo "[backup] upload to bucket + prune (14 d)…"

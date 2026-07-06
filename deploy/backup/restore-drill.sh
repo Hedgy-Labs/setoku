@@ -13,20 +13,25 @@ source deploy/dc.sh
 set -a; source .env; set +a
 : "${SETOKU_BACKUP_S3_BUCKET:?restore needs the backup bucket configured}"
 
-echo "[drill] 1/5 start databases…"
-dc up -d --wait postgres clickhouse
+echo "[drill] 1/5 start the lake…"
+dc up -d --wait clickhouse
 
 echo "[drill] 2/5 fetch latest context backups…"
 dc run --rm rclone copy "remote:${SETOKU_BACKUP_S3_BUCKET}/context" /backups/context
 latest_kdb="$(ls -1 backups/context/knowledge-*.db | sort | tail -1)"
-latest_pg="$(ls -1 backups/context/pg-setoku-*.sql.gz | sort | tail -1)"
-echo "        knowledge: ${latest_kdb}   pg: ${latest_pg}"
+latest_pg="$(ls -1 backups/context/pg-setoku-*.sql.gz 2>/dev/null | sort | tail -1)"
+echo "        knowledge: ${latest_kdb}   pg: ${latest_pg:-<none — postgres store off by default>}"
 
 echo "[drill] 3/5 restore context stores…"
 # knowledge.db goes onto the data volume BEFORE the server starts
 docker run --rm -v setoku_setoku_data:/data -v "$PWD/backups/context:/restore:ro" \
   alpine sh -c "cp /restore/$(basename "$latest_kdb") /data/knowledge.db"
-gunzip -c "$latest_pg" | dc exec -T postgres psql -q -U postgres setoku
+# Restore the Postgres store only when a dump exists (profile: pgstore); bring the
+# container up on demand since it's off by default.
+if [[ -n "$latest_pg" ]]; then
+  dc up -d --wait postgres
+  gunzip -c "$latest_pg" | dc exec -T postgres psql -q -U postgres setoku
+fi
 
 echo "[drill] 4/5 restore the lake…"
 latest_ch="$(dc run --rm clickhouse-backup list remote | awk '/nightly-/{name=$1} END{print name}')"

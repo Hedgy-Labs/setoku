@@ -83,7 +83,7 @@ jobs:
           POSTGRES_PASSWORD: ci
           CLICKHOUSE_PASSWORD: ci
           CLICKHOUSE_RO_PASSWORD: ci
-          COMPOSE_PROFILES: lake,ingest,backup,slack,render,mercury
+          COMPOSE_PROFILES: lake,ingest,backup,slack,render,mercury,pgstore
         run: docker compose -f docker-compose.yml config -q
 
   dco:
