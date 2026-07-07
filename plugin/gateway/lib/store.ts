@@ -282,6 +282,11 @@ export function defaultDbPath(projectDir: string): string {
  *  × many variants stays well under this in normal use). */
 const MAX_CACHE_ROWS_PER_APP = 256;
 
+/** Cap on retained version snapshots per app (#58). Each snapshot is a full body
+ *  copy (up to ~2MB) and lands in the backed-up knowledge.db (I4), so history is
+ *  pruned to the newest N. 100 genuine edits is already a heavily-worked app. */
+const MAX_APP_REVISIONS = 100;
+
 export class KnowledgeStore {
   db: Database;
 
@@ -450,7 +455,9 @@ export class KnowledgeStore {
       note TEXT,
       ts TEXT NOT NULL
     )`);
-    this.db.run("CREATE INDEX IF NOT EXISTS app_revisions_app ON app_revisions (app_id, seq)");
+    // UNIQUE enforces the "one row per (app, seq)" invariant that "newest seq ==
+    // live state" rests on (safe: the table is new, so no pre-existing dupes).
+    this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS app_revisions_app ON app_revisions (app_id, seq)");
     // Backfill a v1 for every app published before history landed, from its
     // current row — so an existing app opens with a non-empty history (its
     // current state) instead of a blank drawer. Idempotent (NOT EXISTS), and
@@ -1115,15 +1122,40 @@ export class KnowledgeStore {
    *  is byte-identical to what a revert would restore, with no re-serialization
    *  drift. Called on create, every content edit, and revert. */
   private snapshotAppVersion(id: string, editor: string, ts: string, note?: string | null): void {
-    const row = this.db
-      .query("SELECT title, format, body, panels, params, refresh_seconds AS rs FROM published WHERE id = ?")
-      .get(id) as { title: string; format: string; body: string; panels: string | null; params: string | null; rs: number | null } | null;
+    const cols = "title, format, body, panels, params, refresh_seconds AS rs";
+    type Row = { title: string; format: string; body: string; panels: string | null; params: string | null; rs: number | null };
+    const row = this.db.query(`SELECT ${cols} FROM published WHERE id = ?`).get(id) as Row | null;
     if (!row) return;
+    // Only append when the content actually differs from the newest version.
+    // SQLite counts an UPDATE that writes identical values as a "change", so
+    // without this guard a rename-to-same-title or an idempotent update_app
+    // re-run would snapshot the whole (up-to-2MB) body again; a revert whose
+    // target already equals the live content is likewise a no-op.
+    const prev = this.db
+      .query(`SELECT ${cols} FROM app_revisions WHERE app_id = ? ORDER BY seq DESC LIMIT 1`)
+      .get(id) as Row | null;
+    if (
+      prev &&
+      prev.title === row.title &&
+      prev.format === row.format &&
+      prev.body === row.body &&
+      prev.panels === row.panels &&
+      prev.params === row.params &&
+      prev.rs === row.rs
+    )
+      return;
     const seq =
       ((this.db.query("SELECT MAX(seq) AS m FROM app_revisions WHERE app_id = ?").get(id) as { m: number | null }).m ?? 0) + 1;
     this.db.run(
       "INSERT INTO app_revisions (app_id, seq, title, format, body, panels, params, refresh_seconds, editor, note, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [id, seq, row.title, row.format, row.body, row.panels, row.params, row.rs, editor, note ?? null, ts],
+    );
+    // Bound history growth: keep the newest MAX_APP_REVISIONS, prune older seqs.
+    // Gaps at the bottom are fine — reverting to a pruned version just 404s.
+    this.db.run(
+      `DELETE FROM app_revisions WHERE app_id = ? AND seq NOT IN (
+         SELECT seq FROM app_revisions WHERE app_id = ? ORDER BY seq DESC LIMIT ?)`,
+      [id, id, MAX_APP_REVISIONS],
     );
   }
 

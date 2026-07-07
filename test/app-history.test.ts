@@ -40,12 +40,20 @@ describe("app version history", () => {
     expect(store.getPublished("app1")?.body).toBe("<div>b</div>");
   });
 
-  it("does not append a version when nothing changes", () => {
+  it("does not append a version when the content is unchanged", () => {
     const store = new KnowledgeStore(dbPath);
-    // No-op update (empty fields) must not create a phantom version.
     const before = store.listAppRevisions("app1").length;
+    // No-op update (empty fields) must not create a phantom version.
     store.updatePublished("app1", {}, { editor: "bob" });
     expect(store.listAppRevisions("app1").length).toBe(before);
+    // Re-writing IDENTICAL values still matches the row (SQLite reports a
+    // "change") but the diff-gate must suppress the duplicate full-body snapshot.
+    const live = store.getPublished("app1")!;
+    store.updatePublished("app1", { title: live.title, body: live.body }, { editor: "bob" });
+    expect(store.listAppRevisions("app1").length).toBe(before);
+    // A genuine change DOES append.
+    store.updatePublished("app1", { title: "Renamed" }, { editor: "bob" });
+    expect(store.listAppRevisions("app1").length).toBe(before + 1);
   });
 
   it("getAppRevision returns the full snapshot for restore; a restore round-trips", () => {
@@ -54,6 +62,7 @@ describe("app version history", () => {
     expect(v1?.title).toBe("First");
     expect(v1?.body).toBe("<div>a</div>");
 
+    const topBefore = store.listAppRevisions("app1")[0].seq;
     // Simulate the http revert handler: feed v1 back through updatePublished.
     store.updatePublished(
       "app1",
@@ -64,8 +73,25 @@ describe("app version history", () => {
     expect(live?.body).toBe("<div>a</div>");
     expect(live?.title).toBe("First");
     const revs = store.listAppRevisions("app1");
-    expect(revs[0].seq).toBe(3); // restore is itself a new version
+    expect(revs[0].seq).toBe(topBefore + 1); // restore is itself a new version
     expect(revs[0].note).toBe("Restored version 1");
+  });
+});
+
+describe("retention", () => {
+  it("prunes to the newest 100 versions, keeping the live one", () => {
+    const store = new KnowledgeStore(dbPath);
+    store.createPublished({ id: "capapp", title: "v", body: "b0", createdBy: "alice" });
+    for (let i = 1; i <= 120; i++) store.updatePublished("capapp", { body: `b${i}` }, { editor: "alice" });
+    const revs = store.listAppRevisions("capapp"); // newest first
+    expect(revs.length).toBe(100);
+    // The live row is the newest snapshot (seq 121: v1 + 120 edits).
+    expect(revs[0].seq).toBe(121);
+    expect(store.getAppRevision("capapp", 121)?.body).toBe("b120");
+    expect(store.getPublished("capapp")?.body).toBe("b120");
+    // The oldest surviving version is seq 22; earlier ones were pruned.
+    expect(revs[revs.length - 1].seq).toBe(22);
+    expect(store.getAppRevision("capapp", 1)).toBeNull();
   });
 });
 
