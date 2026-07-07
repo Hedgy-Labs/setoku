@@ -7,7 +7,12 @@
  * (webhooks exist but must be registered in the dashboard and only notify — see
  * README), so we poll, exactly like the Render bridge. Each tick we:
  *   1. snapshot every account's balances  → POST /ingest/mercury/accounts
+ *      (deposit accounts from /accounts AND the IO credit card from /credit —
+ *      /accounts returns checking/savings only, so the card account is discovered
+ *      separately or its per-swipe charges never get fetched)
  *   2. re-fetch a rolling window of transactions → POST /ingest/mercury/transactions
+ *      (credit-card swipes come back from the same /account/:id/transactions path
+ *      as kind="creditCardTransaction", once we know the credit account's id)
  *
  * Why re-fetch a window instead of only-new (the Render approach): a Mercury
  * transaction is MUTABLE — it moves pending → sent/posted and posted_at fills in
@@ -82,7 +87,12 @@ interface MercuryTxn {
   [k: string]: unknown;
 }
 interface State {
-  backfilledThrough?: string; // ISO date we've backfilled from; presence ⇒ steady-state
+  // Account ids that have had their one-time deep backfill. Tracked PER ACCOUNT
+  // (not a single global flag) so an account discovered later — e.g. the credit
+  // card, which /accounts never returned — still gets the full backfill instead
+  // of only the steady-state window. Absent/legacy state ⇒ everything re-backfills
+  // once (idempotent: the txn table is a ReplacingMergeTree keyed by id).
+  backfilledAccounts?: string[];
 }
 
 function loadState(): State {
@@ -97,7 +107,7 @@ function saveState(s: State): void {
   fs.writeFileSync(STATE_FILE, JSON.stringify(s));
 }
 
-async function api<T>(pathAndQuery: string): Promise<T | null> {
+async function api<T>(pathAndQuery: string, opts?: { quietStatuses?: number[] }): Promise<T | null> {
   for (let attempt = 0; attempt < 6; attempt++) {
     const r = await fetch(`${API}${pathAndQuery}`, {
       headers: { authorization: `Bearer ${TOKEN}`, accept: "application/json" },
@@ -108,7 +118,12 @@ async function api<T>(pathAndQuery: string): Promise<T | null> {
       continue;
     }
     if (!r.ok) {
-      console.error(`mercury-poller: GET ${pathAndQuery} → ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+      // Some endpoints are legitimately absent for a given account (e.g. /credit on
+      // a business with no IO card / no credit scope) — the caller marks those
+      // statuses quiet so we don't log a false-alarm error every poll interval.
+      if (!opts?.quietStatuses?.includes(r.status)) {
+        console.error(`mercury-poller: GET ${pathAndQuery} → ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+      }
       return null;
     }
     return (await r.json()) as T;
@@ -131,28 +146,77 @@ async function pushToVector(suffix: string, lines: string[]): Promise<void> {
 const last4 = (n?: string): string => (n ? n.replace(/\D/g, "").slice(-4) : "");
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
 
+// One "accounts" ingest record. Deposit and credit paths share this so the row
+// shape — and, load-bearingly, the PAN redaction — can never drift between them.
+// The raw blob is redacted HERE (accountNumber → last4) so the file's guarantee
+// ("the full PAN is never sent to the lake") holds on every account path.
+function accountLine(
+  snapshotTs: string,
+  a: MercuryAccount | MercuryCreditAccount,
+  over: { name: string; legalBusinessName: string; kind: string; type: string; routingNumber: string },
+): string {
+  const l4 = last4((a as MercuryAccount).accountNumber);
+  const redacted = { ...a, accountNumber: l4 || undefined };
+  return JSON.stringify({
+    snapshot_ts: snapshotTs,
+    id: a.id,
+    name: over.name,
+    legal_business_name: over.legalBusinessName,
+    kind: over.kind,
+    type: over.type,
+    status: a.status ?? "",
+    account_number_last4: l4,
+    routing_number: over.routingNumber,
+    available_balance: a.availableBalance ?? 0,
+    current_balance: a.currentBalance ?? 0,
+    created_at: a.createdAt ?? "",
+    raw: JSON.stringify(redacted),
+  });
+}
+
 async function snapshotAccounts(snapshotTs: string): Promise<MercuryAccount[]> {
   const d = await api<{ accounts: MercuryAccount[] }>(`/accounts`);
   const accounts = d?.accounts ?? [];
-  const lines = accounts.map((a) => {
-    // redact the PAN everywhere: typed field AND raw, before it leaves the process
-    const redacted = { ...a, accountNumber: last4(a.accountNumber) };
-    return JSON.stringify({
-      snapshot_ts: snapshotTs,
-      id: a.id,
+  const lines = accounts.map((a) =>
+    accountLine(snapshotTs, a, {
       name: a.name ?? "",
-      legal_business_name: a.legalBusinessName ?? "",
+      legalBusinessName: a.legalBusinessName ?? "",
       kind: a.kind ?? "",
       type: a.type ?? "",
-      status: a.status ?? "",
-      account_number_last4: last4(a.accountNumber),
-      routing_number: a.routingNumber ?? "",
-      available_balance: a.availableBalance ?? 0,
-      current_balance: a.currentBalance ?? 0,
-      created_at: a.createdAt ?? "",
-      raw: JSON.stringify(redacted),
-    });
-  });
+      routingNumber: a.routingNumber ?? "",
+    }),
+  );
+  await pushToVector("accounts", lines);
+  return accounts;
+}
+
+interface MercuryCreditAccount {
+  id: string;
+  name?: string;
+  status?: string;
+  availableBalance?: number;
+  currentBalance?: number;
+  createdAt?: string;
+  [k: string]: unknown;
+}
+
+// The IO credit card is NOT in /accounts (deposit accounts only). It lives under
+// /credit and its individual charges come back from the same
+// /account/:id/transactions path as kind="creditCardTransaction". Returns [] when
+// the business has no card or the token lacks scope — 403/404 there is expected,
+// not an error, so it's quiet: safe (and silent) for non-credit deploys.
+async function snapshotCreditAccounts(snapshotTs: string): Promise<MercuryCreditAccount[]> {
+  const d = await api<{ accounts: MercuryCreditAccount[] }>(`/credit`, { quietStatuses: [403, 404] });
+  const accounts = d?.accounts ?? [];
+  const lines = accounts.map((a) =>
+    accountLine(snapshotTs, a, {
+      name: a.name ?? "Mercury IO Credit Card",
+      legalBusinessName: "",
+      kind: "creditCard",
+      type: "credit",
+      routingNumber: "",
+    }),
+  );
   await pushToVector("accounts", lines);
   return accounts;
 }
@@ -172,11 +236,15 @@ async function fetchTxns(accountId: string, start: string): Promise<MercuryTxn[]
 
 async function pollTransactions(accountIds: string[], ingestedAt: string): Promise<void> {
   const st = loadState();
-  const days = st.backfilledThrough ? WINDOW_DAYS : BACKFILL_DAYS;
-  const start = isoDate(new Date(Date.now() - days * 86_400_000));
+  const done = new Set(st.backfilledAccounts ?? []);
 
   let total = 0;
+  let backfilled = false;
   for (const acct of accountIds) {
+    // A never-seen account (first run, or the newly discovered credit card) gets
+    // the deep backfill; accounts already backfilled get the rolling window.
+    const firstTime = !done.has(acct);
+    const start = isoDate(new Date(Date.now() - (firstTime ? BACKFILL_DAYS : WINDOW_DAYS) * 86_400_000));
     const txns = await fetchTxns(acct, start);
     const lines = txns.map((t) =>
       JSON.stringify({
@@ -202,19 +270,33 @@ async function pollTransactions(accountIds: string[], ingestedAt: string): Promi
     );
     await pushToVector("transactions", lines);
     total += lines.length;
+    if (firstTime) {
+      done.add(acct);
+      backfilled = true;
+    }
   }
-  if (!st.backfilledThrough) saveState({ backfilledThrough: start });
-  console.error(`mercury-poller: forwarded ${total} transaction row(s) from ${start} (${st.backfilledThrough ? "window" : "backfill"})`);
+  if (backfilled) saveState({ backfilledAccounts: [...done] });
+  console.error(`mercury-poller: forwarded ${total} transaction row(s) across ${accountIds.length} account(s)${backfilled ? " (incl. backfill)" : ""}`);
 }
 
 async function tick(): Promise<void> {
   const now = new Date().toISOString();
-  const accounts = await snapshotAccounts(now);
-  if (!accounts.length) {
-    console.error("mercury-poller: no accounts returned (token scope?)");
-    return;
-  }
-  await pollTransactions(accounts.map((a) => a.id), now);
+  // Deposit and credit discovery are independent — run them concurrently. Credit
+  // is best-effort: a /credit failure must never stall deposit ingestion, so it's
+  // isolated and degrades to [] rather than aborting the tick before pollTransactions.
+  const [deposit, credit] = await Promise.all([
+    snapshotAccounts(now),
+    snapshotCreditAccounts(now).catch((e) => {
+      console.error(`mercury-poller: credit-account discovery failed (continuing): ${e}`);
+      return [] as MercuryCreditAccount[];
+    }),
+  ]);
+  // Deposit accounts are the primary feed; an empty list is the token-scope smell
+  // the old guard caught — keep warning on it specifically, not on the merged set.
+  if (!deposit.length) console.error("mercury-poller: no deposit accounts returned (token scope?)");
+  const ids = [...deposit.map((a) => a.id), ...credit.map((a) => a.id)];
+  if (!ids.length) return;
+  await pollTransactions(ids, now);
 }
 
 async function main(): Promise<void> {
