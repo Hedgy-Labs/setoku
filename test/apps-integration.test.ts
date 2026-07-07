@@ -115,6 +115,26 @@ describe("publish_app — param validation", () => {
   });
 });
 
+describe("get_app — full round-trip (template + params + panels) (#59)", () => {
+  it("hands back the exact html template and declared params for edit-in-place", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const html = '<div id=kpi data-tab="pnl"></div><script>/*custom presentation*/renderPnl(window.__SETOKU__.panels.kpi)</script>';
+    const id = idOf((await call(c, "publish_app", { title: "Round-trip", html, panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const got = await call(c, "get_app", { id });
+    expect(got.isError).toBeFalsy();
+    // The template comes back verbatim — no rebuild-from-inference needed.
+    expect(got.text).toContain("## template");
+    expect(got.text).toContain(html);
+    // Params round-trip VERBATIM (as the exact update_app arg) — not a lossy summary.
+    expect(got.text).toContain("## params");
+    const paramsJson = got.text.split("```json")[1]?.split("```")[0] ?? "";
+    expect(JSON.parse(paramsJson)).toEqual([REGION_PARAM]);
+    // Panels still surfaced as before.
+    expect(got.text).toContain("panel kpi");
+    expect(got.text).toContain(":region");
+  });
+});
+
 describe("update_app — params are first-class (validate + I9 re-gate)", () => {
   it("rejects a params-only update whose new default doesn't coerce", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");

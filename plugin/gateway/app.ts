@@ -1293,6 +1293,13 @@ const APP_GUIDE = [
   "read-only queries the box re-runs live and injects). Validate every panel's SQL with run_query",
   "FIRST, then publish_app; edit later with update_app (same link).",
   "",
+  "## Editing an existing app — get_app FIRST, don't rebuild",
+  "To change an app you (or anyone) already published, call get_app(id): it returns the EXACT current",
+  "`html` template, its `params`, and every panel's SQL. Edit that template and pass it back to",
+  "update_app — never reconstruct the presentation layer from inference (you'd drop custom tabs, layout,",
+  "and state-keyed overrides). update_app REPLACES what you pass, so carry back the html/panels/params you",
+  "aren't intentionally changing. You never need a browser to read an app's current markup — get_app has it.",
+  "",
   "## The template (`html`)",
   "A self-contained HTML fragment: inline <style>/<script>, inline SVG. NO external/CDN assets and NO",
   "network — data is injected, not fetched (the iframe runs under a no-network CSP).",
@@ -1602,14 +1609,20 @@ server.registerTool(
   "get_app",
   {
     annotations: { readOnlyHint: true },
-    title: "Inspect an app's panels (how it's calculated)",
+    title: "Inspect an app — its full template + panels (how it's built)",
     description:
-      "Returns a published app's panel definitions — each panel's SQL, dialect, linked metric, and " +
-      "when it last ran — so you can audit or iterate how a number is computed. Read-only.",
+      "Returns everything needed to edit a published app in place: the full presentation TEMPLATE " +
+      "(the exact `html`/JS you'd pass back to update_app), its interactive `params`, and each panel's " +
+      "SQL, dialect, linked metric, and when it last ran. Read this FIRST when iterating on an app so " +
+      "you edit the existing template rather than rebuilding it from scratch (update_app REPLACES what " +
+      "you pass). Read-only.",
     inputSchema: { id: z.string().describe("The app id from publish_app / list_apps") },
   },
   async ({ id }) => {
-    const dash = store.getPublishedMeta(id.trim());
+    // Full record (incl. the up-to-2MB template body) — get_app is the low-rate
+    // read-before-edit path, so we serve the whole template, not the body-less
+    // meta the hot viewer/gating paths use.
+    const dash = store.getPublished(id.trim());
     store.audit(user, "get_app", { id, ok: !!dash });
     if (!dash || dash.archivedAt)
       return errorText(`No active app "${id}" (archived or unknown). Call list_apps.`);
@@ -1619,9 +1632,23 @@ server.registerTool(
         (dash.refreshSeconds ? ` · refresh ${dash.refreshSeconds}s` : ""),
       "",
     ];
+    // Params first — update_app REPLACES the whole param set, so a round-trip
+    // must carry them back VERBATIM. Emit them as the exact `params` arg JSON
+    // (labels, options, min/max/maxLength and all) rather than a lossy human
+    // summary — same fidelity the body/SQL get from their fenced blocks.
+    const params = dash.params ?? [];
+    if (params.length) {
+      lines.push(
+        "## params (interactive inputs, bound in panel SQL as `:name` — pass this array straight back to update_app)",
+        "```json",
+        JSON.stringify(params, null, 2),
+        "```",
+        "",
+      );
+    }
     const ps = dash.panels ?? [];
     if (!ps.length) {
-      lines.push("(no live panels — a static report.)");
+      lines.push("(no live panels — a static report.)", "");
     }
     for (const p of ps) {
       const cache = store.getPanelCache(dash.id, p.key);
@@ -1641,6 +1668,9 @@ server.registerTool(
       }
       lines.push("```sql", p.sql.trim(), "```", "");
     }
+    // The presentation template last — it's the biggest section, and the exact
+    // `html` an agent edits and passes straight back to update_app.
+    lines.push("## template (the `html` — edit this and pass it back to update_app)", "```html", dash.body, "```");
     return text(lines.join("\n"));
   },
 );
