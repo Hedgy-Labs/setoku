@@ -13,6 +13,11 @@
 #   /ingest/github/pulls         → github_pulls    (poller; PR merge/branch detail)
 #   /ingest/github/commits       → github_commits  (poller; default-branch commits)
 #   /ingest/github/comments      → github_comments (poller; issue + review comments)
+#   /ingest/monarch/accounts     → monarch_accounts     (poller balance snapshots)
+#   /ingest/monarch/networth     → monarch_net_worth    (poller; daily net worth, ReplacingMergeTree)
+#   /ingest/monarch/transactions → monarch_transactions (poller, ReplacingMergeTree)
+#   /ingest/monarch/budgets      → monarch_budgets      (poller; monthly budget vs actual)
+#   /ingest/monarch/holdings     → monarch_holdings     (poller; investment portfolio breakdown)
 #   anything else                → ingest_raw    (catch-all; nothing is silently dropped)
 #
 # Buffer policy (I4): app events block when the disk buffer fills (never shed
@@ -49,6 +54,11 @@ transforms:
       github_pull: '._path == "/ingest/github/pulls"'
       github_commit: '._path == "/ingest/github/commits"'
       github_comment: '._path == "/ingest/github/comments"'
+      monarch_acct: '._path == "/ingest/monarch/accounts"'
+      monarch_networth: '._path == "/ingest/monarch/networth"'
+      monarch_txn: '._path == "/ingest/monarch/transactions"'
+      monarch_budget: '._path == "/ingest/monarch/budgets"'
+      monarch_holding: '._path == "/ingest/monarch/holdings"'
 
   vercel_parse:
     type: remap
@@ -311,6 +321,83 @@ transforms:
       if e3 != null { ts_in = now() }
       .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
 
+  monarch_accounts_parse:
+    type: remap
+    inputs: [router.monarch_acct]
+    source: |
+      # Poller sends pre-normalized fields; normalize timestamps to the
+      # ClickHouse-friendly format (no full account number exists in the source).
+      del(.source_type)
+      del(._path)
+      ts_snap, e1 = parse_timestamp(to_string(.snapshot_ts) ?? "", "%+")
+      if e1 != null { ts_snap = now() }
+      .snapshot_ts = format_timestamp!(ts_snap, "%F %T%.3f")
+      ts_cr, e2 = parse_timestamp(to_string(.created_at) ?? "", "%+")
+      if e2 != null { ts_cr = ts_snap }
+      .created_at = format_timestamp!(ts_cr, "%F %T%.3f")
+      ts_up, e3 = parse_timestamp(to_string(.updated_at) ?? "", "%+")
+      if e3 != null { ts_up = ts_snap }
+      .updated_at = format_timestamp!(ts_up, "%F %T%.3f")
+
+  monarch_networth_parse:
+    type: remap
+    inputs: [router.monarch_networth]
+    source: |
+      del(.source_type)
+      del(._path)
+      # Monarch sometimes returns a bare YYYY-MM; pad to first-of-month for Date
+      dt = to_string(.date) ?? ""
+      if match(dt, r'^\d{4}-\d{2}$') { dt = dt + "-01" }
+      if !match(dt, r'^\d{4}-\d{2}-\d{2}') { dt = "1970-01-01" }
+      .date = slice!(dt, 0, 10)
+      ts_in, e1 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e1 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+
+  monarch_transactions_parse:
+    type: remap
+    inputs: [router.monarch_txn]
+    source: |
+      del(.source_type)
+      del(._path)
+      dt = to_string(.date) ?? ""
+      if match(dt, r'^\d{4}-\d{2}$') { dt = dt + "-01" }
+      if !match(dt, r'^\d{4}-\d{2}-\d{2}') { dt = "1970-01-01" }
+      .date = slice!(dt, 0, 10)
+      ts_cr, e1 = parse_timestamp(to_string(.created_at) ?? "", "%+")
+      if e1 != null { ts_cr = now() }
+      .created_at = format_timestamp!(ts_cr, "%F %T%.3f")
+      ts_up, e2 = parse_timestamp(to_string(.updated_at) ?? "", "%+")
+      if e2 != null { ts_up = ts_cr }
+      .updated_at = format_timestamp!(ts_up, "%F %T%.3f")
+      ts_in, e3 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e3 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+
+  monarch_budgets_parse:
+    type: remap
+    inputs: [router.monarch_budget]
+    source: |
+      del(.source_type)
+      del(._path)
+      m = to_string(.month) ?? ""
+      if match(m, r'^\d{4}-\d{2}$') { m = m + "-01" }
+      if !match(m, r'^\d{4}-\d{2}-\d{2}') { m = "1970-01-01" }
+      .month = slice!(m, 0, 10)
+      ts_in, e1 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e1 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+
+  monarch_holdings_parse:
+    type: remap
+    inputs: [router.monarch_holding]
+    source: |
+      del(.source_type)
+      del(._path)
+      ts_snap, e1 = parse_timestamp(to_string(.snapshot_ts) ?? "", "%+")
+      if e1 != null { ts_snap = now() }
+      .snapshot_ts = format_timestamp!(ts_snap, "%F %T%.3f")
+
   to_raw:
     type: remap
     inputs: [router._unmatched]
@@ -437,6 +524,61 @@ sinks:
     compression: gzip
     batch: { timeout_secs: 10, max_events: 10000 }
     buffer: { type: disk, max_size: 536870912, when_full: drop_newest } # re-pollable — see lake_github_issues
+
+  lake_monarch_accounts:
+    type: clickhouse
+    inputs: [monarch_accounts_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: monarch_accounts
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: block } # financial data: never shed
+
+  lake_monarch_net_worth:
+    type: clickhouse
+    inputs: [monarch_networth_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: monarch_net_worth
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: block }
+
+  lake_monarch_transactions:
+    type: clickhouse
+    inputs: [monarch_transactions_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: monarch_transactions
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 1073741824, when_full: block }
+
+  lake_monarch_budgets:
+    type: clickhouse
+    inputs: [monarch_budgets_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: monarch_budgets
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: block }
+
+  lake_monarch_holdings:
+    type: clickhouse
+    inputs: [monarch_holdings_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: monarch_holdings
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    buffer: { type: disk, max_size: 536870912, when_full: block }
 
   lake_raw:
     type: clickhouse

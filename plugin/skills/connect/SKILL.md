@@ -305,6 +305,16 @@ so enabling a source means adding its profile — see the cheat-sheet below.
 - **Mercury / generic SaaS API.** Read-only token → pull-bridge
   (`ingest/mercury-poller` is the template): set the token env, enable the
   source's profile, restart.
+- **Monarch Money (personal finance).** No API key, and Monarch **blocks
+  automated password logins** (CAPTCHA + an app-version gate; datacenter IPs also
+  hit a Cloudflare wall) — so don't try to log in from the box. Auth is a **browser
+  session**: have the human copy `session_id` + `csrftoken` from a logged-in Monarch
+  browser (DevTools → Network → an `api.monarch.com/graphql` request → Cookie header),
+  then run `deploy/set-monarch-cookie.sh --env-file /opt/setoku/.env`. Enable the
+  `monarch` profile (`ingest/monarch-poller`), restart. Pulls accounts, transactions,
+  net worth, budgets, and the investment portfolio; forces a daily institution
+  refresh at 1pm Pacific. The session expires in days-to-weeks — freshness signal is
+  `max(monarch_accounts.snapshot_ts)`.
 
 ## Box command cheat-sheet
 

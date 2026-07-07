@@ -133,7 +133,7 @@ services:
 
   clickhouse:
     logging: *default-logging
-    profiles: [lake, ingest, slack, render, mercury, github, mirror]
+    profiles: [lake, ingest, slack, render, mercury, github, monarch, mirror]
     image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
     restart: unless-stopped
     environment:
@@ -164,7 +164,7 @@ services:
 
   vector:
     logging: *default-logging
-    profiles: [ingest, render, mercury, github]
+    profiles: [ingest, render, mercury, github, monarch]
     image: timberio/vector:0.49.0-alpine@sha256:2a31648e67280953aaf6b219c1b04729ac5ed12820ec2bfb698630b2d989d135
     restart: unless-stopped
     environment:
@@ -264,6 +264,39 @@ services:
       MERCURY_BACKFILL_DAYS: ${MERCURY_BACKFILL_DAYS:-730}
     volumes:
       - mercury_state:/state
+    depends_on:
+      vector:
+        condition: service_healthy
+
+  # Monarch Money → ingest bridge (profile: monarch). No official API and no push
+  # stream, so we poll its private GraphQL endpoint: account balance snapshots,
+  # daily net-worth history, a rolling window of transactions, monthly budgets, and
+  # the investment portfolio breakdown. Auth is a browser session (session_id +
+  # csrftoken) — Monarch blocks automated password logins; see the README + the
+  # deploy/set-monarch-cookie.sh helper. Mutable objects land in ReplacingMergeTree
+  # tables; state on a volume so restarts don't re-backfill.
+  monarch-poller:
+    logging: *default-logging
+    profiles: [monarch]
+    build:
+      context: .
+      dockerfile: ingest/monarch-poller/Dockerfile
+    restart: unless-stopped
+    environment:
+      # Auth: cookie mode (preferred — Monarch blocks automated password logins)
+      # uses a browser session; MONARCH_TOKEN is a best-effort fallback. poll.ts
+      # requires one of the two; :- defaults keep `docker compose config` valid for
+      # non-monarch deploys (matches render/mercury/github).
+      MONARCH_SESSION_ID: ${SETOKU_MONARCH_SESSION_ID:-}
+      MONARCH_CSRFTOKEN: ${SETOKU_MONARCH_CSRFTOKEN:-}
+      MONARCH_TOKEN: ${SETOKU_MONARCH_TOKEN:-}
+      # optional host override — Monarch moved monarchmoney.com → monarch.com in
+      # 2026; set to whichever host your session was minted against.
+      MONARCH_API_BASE: ${MONARCH_API_BASE:-https://api.monarchmoney.com}
+      # daily institution force-refresh hour, Pacific (default 1pm = market close)
+      MONARCH_REFRESH_HOUR: ${MONARCH_REFRESH_HOUR:-13}
+    volumes:
+      - monarch_state:/state
     depends_on:
       vector:
         condition: service_healthy
@@ -370,3 +403,4 @@ volumes:
   render_state:
   mercury_state:
   github_state:
+  monarch_state:
