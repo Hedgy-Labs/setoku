@@ -1,0 +1,95 @@
+// SPDX-License-Identifier: Apache-2.0
+// App version history (issue #58): createPublished / updatePublished append
+// append-only content snapshots, the newest mirrors the live row, and a snapshot
+// carries who edited + when so the header drawer can list versions and revert.
+import { describe, it, expect, afterAll } from "bun:test";
+import { Database } from "bun:sqlite";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { KnowledgeStore } from "../plugin/gateway/lib/store";
+
+const dbPath = path.join(os.tmpdir(), `setoku-apphist-${process.pid}.db`);
+afterAll(() => {
+  for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) if (fs.existsSync(f)) fs.rmSync(f);
+});
+
+const PANELS = [{ key: "p1", sql: "SELECT 1", dialect: "postgres" as const }];
+
+describe("app version history", () => {
+  it("records v1 on publish and a new version per content edit", () => {
+    const store = new KnowledgeStore(dbPath);
+    store.createPublished({ id: "app1", title: "First", body: "<div>a</div>", panels: PANELS, refreshSeconds: 60, createdBy: "alice" });
+
+    let revs = store.listAppRevisions("app1");
+    expect(revs.length).toBe(1);
+    expect(revs[0].seq).toBe(1);
+    expect(revs[0].editor).toBe("alice");
+    expect(revs[0].hasPanels).toBe(true);
+
+    // A content edit by a different identity appends v2, attributed to the editor.
+    store.updatePublished("app1", { title: "Second", body: "<div>b</div>" }, { editor: "bob" });
+    revs = store.listAppRevisions("app1"); // newest first
+    expect(revs.map((r) => r.seq)).toEqual([2, 1]);
+    expect(revs[0].editor).toBe("bob");
+    expect(revs[0].title).toBe("Second");
+
+    // The newest revision mirrors the live row.
+    const snap = store.getAppRevision("app1", 2);
+    expect(snap?.body).toBe("<div>b</div>");
+    expect(store.getPublished("app1")?.body).toBe("<div>b</div>");
+  });
+
+  it("does not append a version when nothing changes", () => {
+    const store = new KnowledgeStore(dbPath);
+    // No-op update (empty fields) must not create a phantom version.
+    const before = store.listAppRevisions("app1").length;
+    store.updatePublished("app1", {}, { editor: "bob" });
+    expect(store.listAppRevisions("app1").length).toBe(before);
+  });
+
+  it("getAppRevision returns the full snapshot for restore; a restore round-trips", () => {
+    const store = new KnowledgeStore(dbPath);
+    const v1 = store.getAppRevision("app1", 1);
+    expect(v1?.title).toBe("First");
+    expect(v1?.body).toBe("<div>a</div>");
+
+    // Simulate the http revert handler: feed v1 back through updatePublished.
+    store.updatePublished(
+      "app1",
+      { title: v1!.title, body: v1!.body, panels: v1!.panels ?? [], params: v1!.params ?? [], format: v1!.format, refreshSeconds: v1!.refreshSeconds },
+      { editor: "alice", note: "Restored version 1" },
+    );
+    const live = store.getPublished("app1");
+    expect(live?.body).toBe("<div>a</div>");
+    expect(live?.title).toBe("First");
+    const revs = store.listAppRevisions("app1");
+    expect(revs[0].seq).toBe(3); // restore is itself a new version
+    expect(revs[0].note).toBe("Restored version 1");
+  });
+});
+
+describe("backfill", () => {
+  it("gives an app published before history a v1 from its current row", () => {
+    // Write a published row directly (no snapshot), then reopen the store to run
+    // the idempotent backfill — mimics an app that predates the app_revisions table.
+    const raw = new Database(dbPath);
+    raw.run(
+      "INSERT INTO published (id, title, format, body, panels, params, refresh_seconds, visibility, created_by, created_at) VALUES (?, ?, 'app', ?, NULL, NULL, NULL, 'team', ?, ?)",
+      ["legacy1", "Legacy", "<div>old</div>", "carol", "2026-01-01T00:00:00.000Z"],
+    );
+    raw.run("DELETE FROM app_revisions WHERE app_id = 'legacy1'");
+    raw.close();
+
+    const store = new KnowledgeStore(dbPath);
+    const revs = store.listAppRevisions("legacy1");
+    expect(revs.length).toBe(1);
+    expect(revs[0].seq).toBe(1);
+    expect(revs[0].editor).toBe("carol");
+    expect(revs[0].ts).toBe("2026-01-01T00:00:00.000Z");
+
+    // Idempotent — reopening does not duplicate the backfilled v1.
+    const store2 = new KnowledgeStore(dbPath);
+    expect(store2.listAppRevisions("legacy1").length).toBe(1);
+  });
+});

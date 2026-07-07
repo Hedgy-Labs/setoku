@@ -1534,7 +1534,7 @@ server.registerTool(
       params: paramsChanged ? (params as AppParam[]) : undefined,
       format,
       refreshSeconds: refresh,
-    });
+    }, { editor: user });
     if (!ok) return errorText(`Update failed — no active app "${id}".`);
     // Re-seed the cache for the re-derived panels (updatePublished cleared the old rows).
     if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });

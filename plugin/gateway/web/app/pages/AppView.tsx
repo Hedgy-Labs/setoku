@@ -11,7 +11,7 @@ import { Badge } from "../components/Badge";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
 import { appShareUrl, relTime } from "../format";
-import type { AppData, AppParam, PanelProvenance } from "../types";
+import type { AppData, AppParam, AppRevision, PanelProvenance } from "../types";
 
 /** The per-panel numbers the frame echoes up for the variant it rendered — the
  *  param-DEPENDENT half of provenance (the SQL/description come from metadata).
@@ -57,6 +57,11 @@ export function AppView() {
   const [showCalc, setShowCalc] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  // Version history drawer (#58). `historyNonce` re-fetches the list after a
+  // restore; `revertSeq` is the version awaiting the restore confirm (null = none).
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyNonce, setHistoryNonce] = useState(0);
+  const [revertSeq, setRevertSeq] = useState<number | null>(null);
   // null = not editing the title; a string = the in-progress new title.
   const [titleEdit, setTitleEdit] = useState<string | null>(null);
   const cancelRename = useRef(false);
@@ -331,6 +336,23 @@ export function AppView() {
     }
   };
 
+  // Restore an earlier version. On success: refetch metadata + the history list,
+  // and reload the frame (author/admin bypasses the cache) so the iframe shows
+  // the restored content immediately. The panel stays open so you can see the
+  // new "Current" version land.
+  const doRevert = async (seq: number) => {
+    setRevertSeq(null);
+    try {
+      const r = await api.revertApp(id, seq);
+      reload();
+      reloadFrame({ force: canForce, clearLive: true });
+      setHistoryNonce((n) => n + 1);
+      toast(r.flash ?? `Restored version ${seq}.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Restore failed.");
+    }
+  };
+
   // Archiving makes this app unfetchable, so leave the viewer rather than
   // reload into an error screen.
   const archive = async () => {
@@ -395,7 +417,23 @@ export function AppView() {
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
           </span>
         ) : null}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1">
+          {data ? (
+            <button
+              onClick={() => setShowHistory((v) => !v)}
+              aria-label="Version history"
+              aria-pressed={showHistory}
+              title="Version history"
+              className={`icon-btn ${showHistory ? "bg-stone-100 text-stone-800" : ""}`}
+            >
+              {/* History: a clock with a rewind arrow (inline SVG, no icon lib). */}
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M8 4.2v3.9l2.6 1.5" />
+                <path d="M2.6 6.6A5.6 5.6 0 1 1 2.4 9.3" />
+                <path d="M1.7 3.8v2.9h2.9" />
+              </svg>
+            </button>
+          ) : null}
           <Menu label="App actions">
             {isApp ? (
               <MenuItem onSelect={() => setShowCalc((v) => !v)}>
@@ -498,6 +536,25 @@ export function AppView() {
           ) : null}
         </main>
       )}
+      {showHistory && data ? (
+        <HistoryPanel
+          id={id}
+          canManage={mine || isAdmin}
+          nonce={historyNonce}
+          onRestore={(seq) => setRevertSeq(seq)}
+          onClose={() => setShowHistory(false)}
+        />
+      ) : null}
+      <Confirm
+        open={revertSeq !== null}
+        title={`Restore version ${revertSeq ?? ""}?`}
+        body="This app’s current content will be replaced with that version. The current state is kept in history, so you can restore it again."
+        confirmLabel="Restore"
+        onConfirm={() => {
+          if (revertSeq !== null) void doRevert(revertSeq);
+        }}
+        onClose={() => setRevertSeq(null)}
+      />
       <EditDialog
         open={editOpen}
         onClose={() => setEditOpen(false)}
@@ -519,6 +576,76 @@ export function AppView() {
         onClose={() => setArchiveOpen(false)}
       />
     </div>
+  );
+}
+
+/** The version-history drawer (#58) — a top-right panel of the app's saved
+ *  versions, newest first, each with who edited it and when. Author/admin can
+ *  restore an older one (a click on `onRestore`, confirmed by the caller). A
+ *  full-screen transparent scrim closes it on an outside click — mirrors the
+ *  Google-Docs "version history" affordance in the neutral stone chrome. */
+function HistoryPanel({
+  id,
+  canManage,
+  nonce,
+  onRestore,
+  onClose,
+}: {
+  id: string;
+  canManage: boolean;
+  nonce: number;
+  onRestore: (seq: number) => void;
+  onClose: () => void;
+}) {
+  const { data, loading, error } = useApi<AppRevision[]>(() => api.appHistory(id), [id, nonce]);
+  return (
+    <>
+      {/* Outside-click scrim (transparent — the app stays visible behind it). */}
+      <div className="fixed inset-0 z-30" onClick={onClose} aria-hidden="true" />
+      <div className="card fixed right-2 top-14 z-40 flex max-h-[70vh] w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden p-0 shadow-xl">
+        <div className="flex flex-none items-center justify-between border-b border-stone-100 px-4 py-2.5">
+          <span className="text-sm font-medium text-stone-800">Version history</span>
+          <button className="text-xs text-stone-500 hover:text-stone-800" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="min-h-0 overflow-auto">
+          {loading && !data ? (
+            <p className="px-4 py-6 text-center text-xs text-stone-400">Loading…</p>
+          ) : error ? (
+            <p className="px-4 py-6 text-center text-xs text-amber-700">Couldn’t load history.</p>
+          ) : !data || data.length === 0 ? (
+            <p className="px-4 py-6 text-center text-xs text-stone-400">No versions yet.</p>
+          ) : (
+            <ul className="divide-y divide-stone-100">
+              {data.map((r) => (
+                <li key={r.seq} className="flex items-start gap-2 px-4 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium text-stone-900">Version {r.seq}</span>
+                      {r.current ? <Badge tone="ok">Current</Badge> : null}
+                    </div>
+                    <p className="mt-0.5 truncate text-xs text-stone-500">
+                      {r.editor}
+                      {r.ts ? ` · ${relTime(r.ts)}` : ""}
+                    </p>
+                    {r.note ? <p className="mt-0.5 text-xs italic text-stone-400">{r.note}</p> : null}
+                  </div>
+                  {!r.current && canManage ? (
+                    <button
+                      className="btn btn-ghost flex-none px-2 py-1 text-xs"
+                      onClick={() => onRestore(r.seq)}
+                    >
+                      Restore
+                    </button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 

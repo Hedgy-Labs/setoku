@@ -167,6 +167,33 @@ export interface PublishedReport {
 
 export type PublishedMeta = Omit<PublishedReport, "body">;
 
+/** One saved version of an app's content (issue #58 version history). Every
+ *  create / content edit / revert appends one, so the newest revision always
+ *  mirrors the live `published` row and "history" is just this table read
+ *  newest-first. Body-less in the list view; the full snapshot (getAppRevision)
+ *  is what a revert restores. */
+export interface AppRevisionMeta {
+  /** 1-based version number within this app (v1 = the original publish). */
+  seq: number;
+  /** Identity that produced this version (author on publish/edit; whoever
+   *  clicked restore on a revert). */
+  editor: string;
+  /** Human note for non-linear versions ("Restored version 3"); null on a
+   *  normal edit. */
+  note: string | null;
+  ts: string;
+  title: string;
+  /** Whether this version carried live panels (a data app vs a static report). */
+  hasPanels: boolean;
+}
+export interface AppRevision extends AppRevisionMeta {
+  format: "html" | "app";
+  body: string;
+  panels: AppPanel[] | null;
+  params: AppParam[] | null;
+  refreshSeconds: number | null;
+}
+
 /** One panel's last-executed result, cached for the app's refresh TTL. */
 export interface PanelCacheRow {
   columns: string[];
@@ -404,6 +431,36 @@ export class KnowledgeStore {
     // code gates the runtime path on format='app', so backfill them in place (a
     // no-op on a fresh box). Legacy v0.11 frozen reports stay format='html'.
     this.db.run("UPDATE published SET format = 'app' WHERE format = 'dashboard'");
+    // Append-only version history for published apps (issue #58). One snapshot
+    // per create / content edit / revert; the newest seq mirrors the live
+    // `published` row, so the header's version drawer + revert read straight
+    // from here. Snapshots the full content (body/panels/params) so a revert is
+    // a pure restore with no re-derivation.
+    this.db.run(`CREATE TABLE IF NOT EXISTS app_revisions (
+      rev_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      app_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      format TEXT NOT NULL,
+      body TEXT NOT NULL,
+      panels TEXT,
+      params TEXT,
+      refresh_seconds INTEGER,
+      editor TEXT NOT NULL,
+      note TEXT,
+      ts TEXT NOT NULL
+    )`);
+    this.db.run("CREATE INDEX IF NOT EXISTS app_revisions_app ON app_revisions (app_id, seq)");
+    // Backfill a v1 for every app published before history landed, from its
+    // current row — so an existing app opens with a non-empty history (its
+    // current state) instead of a blank drawer. Idempotent (NOT EXISTS), and
+    // attributed to the original author at the original publish time.
+    this.db.run(
+      `INSERT INTO app_revisions (app_id, seq, title, format, body, panels, params, refresh_seconds, editor, note, ts)
+       SELECT p.id, 1, p.title, p.format, p.body, p.panels, p.params, p.refresh_seconds, p.created_by, NULL, p.created_at
+       FROM published p
+       WHERE NOT EXISTS (SELECT 1 FROM app_revisions r WHERE r.app_id = p.id)`,
+    );
     // Per-panel result cache. A app view serves cached rows within the
     // app's refresh TTL and re-runs the query when stale — bounding DB load
     // on a hammered public link and giving an honest "updated N ago" stamp.
@@ -1033,6 +1090,7 @@ export class KnowledgeStore {
   }): void {
     const panels = rec.panels && rec.panels.length ? JSON.stringify(rec.panels) : null;
     const params = rec.params && rec.params.length ? JSON.stringify(rec.params) : null;
+    const createdAt = new Date().toISOString();
     this.db.run(
       "INSERT INTO published (id, title, format, body, panels, params, refresh_seconds, visibility, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       [
@@ -1045,9 +1103,53 @@ export class KnowledgeStore {
         rec.refreshSeconds ?? null,
         rec.visibility ?? "team",
         rec.createdBy,
-        new Date().toISOString(),
+        createdAt,
       ],
     );
+    // v1 of the version history — the original publish, attributed to the author.
+    this.snapshotAppVersion(rec.id, rec.createdBy, createdAt);
+  }
+
+  /** Append the app's CURRENT `published` row as its next version. Reads the
+   *  stored row straight back (already-serialized panels/params) so a snapshot
+   *  is byte-identical to what a revert would restore, with no re-serialization
+   *  drift. Called on create, every content edit, and revert. */
+  private snapshotAppVersion(id: string, editor: string, ts: string, note?: string | null): void {
+    const row = this.db
+      .query("SELECT title, format, body, panels, params, refresh_seconds AS rs FROM published WHERE id = ?")
+      .get(id) as { title: string; format: string; body: string; panels: string | null; params: string | null; rs: number | null } | null;
+    if (!row) return;
+    const seq =
+      ((this.db.query("SELECT MAX(seq) AS m FROM app_revisions WHERE app_id = ?").get(id) as { m: number | null }).m ?? 0) + 1;
+    this.db.run(
+      "INSERT INTO app_revisions (app_id, seq, title, format, body, panels, params, refresh_seconds, editor, note, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, seq, row.title, row.format, row.body, row.panels, row.params, row.rs, editor, note ?? null, ts],
+    );
+  }
+
+  /** An app's version history, newest first, WITHOUT bodies (each can be ~2MB) —
+   *  drives the header's version drawer. */
+  listAppRevisions(id: string): AppRevisionMeta[] {
+    const rows = this.db
+      .query(
+        "SELECT seq, editor, note, ts, title, (panels IS NOT NULL) AS hasPanels FROM app_revisions WHERE app_id = ? ORDER BY seq DESC",
+      )
+      .all(id) as { seq: number; editor: string; note: string | null; ts: string; title: string; hasPanels: number }[];
+    return rows.map((r) => ({ seq: r.seq, editor: r.editor, note: r.note, ts: r.ts, title: r.title, hasPanels: !!r.hasPanels }));
+  }
+
+  /** One full version snapshot (incl. body/panels/params) — what a revert
+   *  restores. Null if the app or version is unknown. */
+  getAppRevision(id: string, seq: number): AppRevision | null {
+    const row = this.db
+      .query(
+        "SELECT seq, editor, note, ts, title, format, body, panels, params, refresh_seconds AS refreshSeconds FROM app_revisions WHERE app_id = ? AND seq = ?",
+      )
+      .get(id, seq) as
+      | (Omit<AppRevision, "panels" | "params" | "hasPanels"> & { panels: string | null; params: string | null })
+      | null;
+    if (!row) return null;
+    return { ...row, hasPanels: row.panels != null, panels: parsePanels(row.panels), params: parseParams(row.params) };
   }
 
   /** Fetch one published report/app (incl. body + panels). Returns archived
@@ -1178,6 +1280,10 @@ export class KnowledgeStore {
       format?: "html" | "app";
       refreshSeconds?: number | null;
     },
+    // Who is editing (for the version-history attribution), and an optional note
+    // for non-linear versions (a revert records "Restored version N"). A
+    // content change appends a new version snapshot.
+    by: { editor: string; note?: string | null },
   ): boolean {
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
@@ -1213,6 +1319,8 @@ export class KnowledgeStore {
       this.db.run(`UPDATE published SET ${sets.join(", ")} WHERE id = ? AND archived_at IS NULL`, vals).changes > 0;
     if (changed && fields.panels !== undefined)
       this.db.run("DELETE FROM app_cache WHERE app_id = ?", [id]);
+    // Record the resulting state as a new version (append-only history, #58).
+    if (changed) this.snapshotAppVersion(id, by.editor, new Date().toISOString(), by.note);
     return changed;
   }
 

@@ -1378,6 +1378,20 @@ const httpServer = http.createServer(async (req, res) => {
           return json(200, prov);
         }
 
+        // Version history for the header's version drawer (#58): every content
+        // edit, newest first, with who made it and when. Team-only (like the
+        // provenance drawer) — an authenticated box session; the public /p shell
+        // never sees it. Bodies are omitted (a restore fetches them server-side).
+        if (api === "app_history" && req.method === "GET") {
+          const url = new URL(req.url ?? "", "http://x");
+          const id = url.searchParams.get("id") ?? "";
+          const meta = store.getPublishedMeta(id);
+          if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found or archived" });
+          const revs = store.listAppRevisions(id);
+          const current = revs.length ? revs[0].seq : 0; // newest seq === live state
+          return json(200, revs.map((r) => ({ ...r, current: r.seq === current })));
+        }
+
         // ---- app state (per-app private datastore) ----
         // An app reads/writes its OWN state here; this never touches a business
         // data source. The app id comes from the request, but every op is scoped
@@ -1471,9 +1485,55 @@ const httpServer = http.createServer(async (req, res) => {
             if (!title) return json(400, { ok: false, error: "Title can't be empty." });
             if (title.length > 200) return json(400, { ok: false, error: "Title is too long (max 200 characters)." });
             if (!mayMutateApp(id)) return;
-            const ok = store.updatePublished(id, { title });
+            const ok = store.updatePublished(id, { title }, { editor: session.identity });
             store.audit(session.identity, "rename_app", { id, ok });
             return json(200, { ok, title, flash: "Renamed." });
+          }
+
+          // Restore an earlier version (#58) — author-or-admin, same gate as
+          // rename. Copies the chosen snapshot's content forward as a NEW version
+          // (append-only, so the restore is itself undoable) and clears the panel
+          // cache (restored panels recompute on next view). If the restored
+          // content changes what a PUBLIC app exposes, it drops to team-only — an
+          // admin must re-publish it (the human promotion gate, I9), mirroring
+          // update_app.
+          if (api === "revert") {
+            const body = (await readBody(req)) as { id?: string; seq?: number } | undefined;
+            const id = (body?.id ?? "").trim();
+            const seq = Number(body?.seq);
+            if (!Number.isInteger(seq) || seq < 1) return json(400, { ok: false, error: "Bad version." });
+            if (!mayMutateApp(id)) return;
+            const meta = store.getPublishedMeta(id); // current state (for the visibility check)
+            const snap = store.getAppRevision(id, seq);
+            if (!meta || !snap) return json(404, { ok: false, error: "No such version." });
+            const norm = (v: unknown): string => JSON.stringify(v ?? []);
+            const dataChanged = norm(snap.panels) !== norm(meta.panels) || norm(snap.params) !== norm(meta.params);
+            const ok = store.updatePublished(
+              id,
+              {
+                title: snap.title,
+                body: snap.body,
+                panels: snap.panels ?? [], // [] rewrites to no-panels + clears cache
+                params: snap.params ?? [],
+                format: snap.format,
+                refreshSeconds: snap.refreshSeconds,
+              },
+              { editor: session.identity, note: `Restored version ${seq}` },
+            );
+            let reverted = false;
+            if (ok && dataChanged && meta.visibility === "public") {
+              store.setReportVisibility(id, "team");
+              reverted = true;
+            }
+            store.audit(session.identity, "revert_app", { id, seq, reverted });
+            return json(ok ? 200 : 409, {
+              ok,
+              flash: ok
+                ? reverted
+                  ? `Restored version ${seq} — its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
+                  : `Restored version ${seq}.`
+                : "Restore failed.",
+            });
           }
 
           // Restore an archived app. Author-or-admin, but (unlike the other

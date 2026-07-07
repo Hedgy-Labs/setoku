@@ -211,6 +211,20 @@ export interface AppData {
   panels: PanelProvenance[];
 }
 
+/** One saved version of an app (issue #58), newest first. Mirrors the server's
+ *  AppRevisionMeta + a `current` flag the /app_history endpoint stamps on the
+ *  live (newest) version. Body-less — a restore fetches it server-side. */
+export interface AppRevision {
+  seq: number;
+  editor: string;
+  note: string | null;
+  ts: string;
+  title: string;
+  hasPanels: boolean;
+  /** True for the version currently live at the app's link. */
+  current: boolean;
+}
+
 export interface SourceTable {
   source: string;
   rows: number | null;
