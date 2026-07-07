@@ -406,6 +406,9 @@ describe("app surface", () => {
     expect(got.text).toContain("count(*)");
     expect(got.text).toContain("metric:revenue");
     expect(got.text).toMatch(/1 row\(s\)/); // seeded from the publish dry-run
+    // ...and hands back the full HTML/JS template for edit-in-place (#59)
+    expect(got.text).toContain("## template");
+    expect(got.text).toContain("window.__SETOKU__.panels.paid.rows[0].n");
 
     const listed = await call("list_apps");
     expect(listed.text).toContain("Paid orders");
