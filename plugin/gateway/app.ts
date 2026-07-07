@@ -1642,9 +1642,11 @@ server.registerTool(
           `- \`${pm.name}\` [${pm.type}]`,
           pm.label ? `label ${JSON.stringify(pm.label)}` : "",
           `default ${JSON.stringify(pm.default)}`,
-          pm.options?.length ? `options ${pm.options.map((o) => o.value).join("|")}` : "",
+          // Render each option as value(=label) so a round-trip preserves labels too.
+          pm.options?.length ? `options ${pm.options.map((o) => (o.label ? `${o.value}=${o.label}` : o.value)).join("|")}` : "",
           pm.min != null ? `min ${pm.min}` : "",
           pm.max != null ? `max ${pm.max}` : "",
+          pm.maxLength != null ? `maxLength ${pm.maxLength}` : "",
         ].filter(Boolean);
         lines.push(bits.join(" · "));
       }
