@@ -125,10 +125,10 @@ describe("get_app — full round-trip (template + params + panels) (#59)", () =>
     // The template comes back verbatim — no rebuild-from-inference needed.
     expect(got.text).toContain("## template");
     expect(got.text).toContain(html);
-    // Params round-trip too (update_app REPLACES the set).
+    // Params round-trip VERBATIM (as the exact update_app arg) — not a lossy summary.
     expect(got.text).toContain("## params");
-    expect(got.text).toContain("`region` [enum]");
-    expect(got.text).toContain("options NA|EMEA|APAC");
+    const paramsJson = got.text.split("```json")[1]?.split("```")[0] ?? "";
+    expect(JSON.parse(paramsJson)).toEqual([REGION_PARAM]);
     // Panels still surfaced as before.
     expect(got.text).toContain("panel kpi");
     expect(got.text).toContain(":region");

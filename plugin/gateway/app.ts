@@ -1633,24 +1633,18 @@ server.registerTool(
       "",
     ];
     // Params first — update_app REPLACES the whole param set, so a round-trip
-    // must carry them back verbatim (name/type/default drive the shell controls).
+    // must carry them back VERBATIM. Emit them as the exact `params` arg JSON
+    // (labels, options, min/max/maxLength and all) rather than a lossy human
+    // summary — same fidelity the body/SQL get from their fenced blocks.
     const params = dash.params ?? [];
     if (params.length) {
-      lines.push("## params (interactive inputs — bound in panel SQL as `:name`)");
-      for (const pm of params) {
-        const bits = [
-          `- \`${pm.name}\` [${pm.type}]`,
-          pm.label ? `label ${JSON.stringify(pm.label)}` : "",
-          `default ${JSON.stringify(pm.default)}`,
-          // Render each option as value(=label) so a round-trip preserves labels too.
-          pm.options?.length ? `options ${pm.options.map((o) => (o.label ? `${o.value}=${o.label}` : o.value)).join("|")}` : "",
-          pm.min != null ? `min ${pm.min}` : "",
-          pm.max != null ? `max ${pm.max}` : "",
-          pm.maxLength != null ? `maxLength ${pm.maxLength}` : "",
-        ].filter(Boolean);
-        lines.push(bits.join(" · "));
-      }
-      lines.push("");
+      lines.push(
+        "## params (interactive inputs, bound in panel SQL as `:name` — pass this array straight back to update_app)",
+        "```json",
+        JSON.stringify(params, null, 2),
+        "```",
+        "",
+      );
     }
     const ps = dash.panels ?? [];
     if (!ps.length) {
