@@ -1528,19 +1528,21 @@ const httpServer = http.createServer(async (req, res) => {
               },
               { editor: session.identity, note: `Restored version ${seq}` },
             );
+            // `error` (not `flash`) on failure — the SPA surfaces `error` on a
+            // non-2xx; a `flash` here would be dropped and shown as "HTTP 409".
+            if (!ok)
+              return json(409, { ok: false, error: "Couldn't restore that version — the app may have just been archived." });
             let reverted = false;
-            if (ok && dataChanged && meta.visibility === "public") {
+            if (dataChanged && meta.visibility === "public") {
               store.setReportVisibility(id, "team");
               reverted = true;
             }
             store.audit(session.identity, "revert_app", { id, seq, reverted });
-            return json(ok ? 200 : 409, {
-              ok,
-              flash: ok
-                ? reverted
-                  ? `Restored version ${seq} — its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
-                  : `Restored version ${seq}.`
-                : "Restore failed.",
+            return json(200, {
+              ok: true,
+              flash: reverted
+                ? `Restored version ${seq} — its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
+                : `Restored version ${seq}.`,
             });
           }
 

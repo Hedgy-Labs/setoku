@@ -1151,23 +1151,16 @@ export class KnowledgeStore {
       [id, seq, row.title, row.format, row.body, row.panels, row.params, row.rs, editor, note ?? null, ts],
     );
     // Bound history growth: keep the newest MAX_APP_REVISIONS, prune older seqs.
-    // Gaps at the bottom are fine — reverting to a pruned version just 404s.
-    this.db.run(
-      `DELETE FROM app_revisions WHERE app_id = ? AND seq NOT IN (
-         SELECT seq FROM app_revisions WHERE app_id = ? ORDER BY seq DESC LIMIT ?)`,
-      [id, id, MAX_APP_REVISIONS],
-    );
-  }
-
-  /** An app's version history, newest first, WITHOUT bodies (each can be ~2MB) —
-   *  drives the header's version drawer. */
-  listAppRevisions(id: string): AppRevisionMeta[] {
-    const rows = this.db
-      .query(
-        "SELECT seq, editor, note, ts, title, (panels IS NOT NULL) AS hasPanels FROM app_revisions WHERE app_id = ? ORDER BY seq DESC",
-      )
-      .all(id) as { seq: number; editor: string; note: string | null; ts: string; title: string; hasPanels: number }[];
-    return rows.map((r) => ({ seq: r.seq, editor: r.editor, note: r.note, ts: r.ts, title: r.title, hasPanels: !!r.hasPanels }));
+    // Gaps at the bottom are fine — reverting to a pruned version just 404s. Only
+    // run the DELETE once actually over the cap — the count is a cheap PK-prefix
+    // scan, so the common (well-under-cap) write skips the prune entirely.
+    const revCount = (this.db.query("SELECT COUNT(*) AS n FROM app_revisions WHERE app_id = ?").get(id) as { n: number }).n;
+    if (revCount > MAX_APP_REVISIONS)
+      this.db.run(
+        `DELETE FROM app_revisions WHERE app_id = ? AND seq NOT IN (
+           SELECT seq FROM app_revisions WHERE app_id = ? ORDER BY seq DESC LIMIT ?)`,
+        [id, id, MAX_APP_REVISIONS],
+      );
   }
 
   /** Version history for the header drawer, newest first, WITHOUT bodies — each

@@ -19,6 +19,9 @@ export function Apps() {
   const isAdmin = me?.role === "admin";
   const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.apps(), []);
   const [archiving, setArchiving] = useState<PublishedMeta | null>(null);
+  // App awaiting the make-public confirm — promoting to a credential-free link is
+  // a deliberate exposure (I9), confirmed the same way as in the app header.
+  const [makingPublic, setMakingPublic] = useState<PublishedMeta | null>(null);
   const [newOpen, setNewOpen] = useState(false);
 
   const copy = async (r: PublishedMeta) => {
@@ -90,7 +93,7 @@ export function Apps() {
                     );
                   else if (isAdmin)
                     items.push(
-                      <MenuItem key="vis" onSelect={() => void act(() => api.setVisibility(r.id, "public"))}>
+                      <MenuItem key="vis" onSelect={() => setMakingPublic(r)}>
                         Make public
                       </MenuItem>,
                     );
@@ -166,6 +169,18 @@ export function Apps() {
           if (a) void act(() => api.archive(a.id));
         }}
         onClose={() => setArchiving(null)}
+      />
+      <Confirm
+        open={!!makingPublic}
+        title="Make this app public?"
+        body="Anyone with the public link can open it without signing in to the box. You can switch it back to team-only anytime."
+        confirmLabel="Make public"
+        onConfirm={() => {
+          const p = makingPublic;
+          setMakingPublic(null);
+          if (p) void act(() => api.setVisibility(p.id, "public"));
+        }}
+        onClose={() => setMakingPublic(null)}
       />
       <NewDialog
         open={newOpen}

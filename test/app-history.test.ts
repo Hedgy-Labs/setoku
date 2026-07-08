@@ -21,7 +21,7 @@ describe("app version history", () => {
     const store = new KnowledgeStore(dbPath);
     store.createPublished({ id: "app1", title: "First", body: "<div>a</div>", panels: PANELS, refreshSeconds: 60, createdBy: "alice" });
 
-    let revs = store.listAppRevisions("app1");
+    let revs = store.listAppHistory("app1");
     expect(revs.length).toBe(1);
     expect(revs[0].seq).toBe(1);
     expect(revs[0].editor).toBe("alice");
@@ -29,7 +29,7 @@ describe("app version history", () => {
 
     // A content edit by a different identity appends v2, attributed to the editor.
     store.updatePublished("app1", { title: "Second", body: "<div>b</div>" }, { editor: "bob" });
-    revs = store.listAppRevisions("app1"); // newest first
+    revs = store.listAppHistory("app1"); // newest first
     expect(revs.map((r) => r.seq)).toEqual([2, 1]);
     expect(revs[0].editor).toBe("bob");
     expect(revs[0].title).toBe("Second");
@@ -42,18 +42,18 @@ describe("app version history", () => {
 
   it("does not append a version when the content is unchanged", () => {
     const store = new KnowledgeStore(dbPath);
-    const before = store.listAppRevisions("app1").length;
+    const before = store.listAppHistory("app1").length;
     // No-op update (empty fields) must not create a phantom version.
     store.updatePublished("app1", {}, { editor: "bob" });
-    expect(store.listAppRevisions("app1").length).toBe(before);
+    expect(store.listAppHistory("app1").length).toBe(before);
     // Re-writing IDENTICAL values still matches the row (SQLite reports a
     // "change") but the diff-gate must suppress the duplicate full-body snapshot.
     const live = store.getPublished("app1")!;
     store.updatePublished("app1", { title: live.title, body: live.body }, { editor: "bob" });
-    expect(store.listAppRevisions("app1").length).toBe(before);
+    expect(store.listAppHistory("app1").length).toBe(before);
     // A genuine change DOES append.
     store.updatePublished("app1", { title: "Renamed" }, { editor: "bob" });
-    expect(store.listAppRevisions("app1").length).toBe(before + 1);
+    expect(store.listAppHistory("app1").length).toBe(before + 1);
   });
 
   it("getAppRevision returns the full snapshot for restore; a restore round-trips", () => {
@@ -62,7 +62,7 @@ describe("app version history", () => {
     expect(v1?.title).toBe("First");
     expect(v1?.body).toBe("<div>a</div>");
 
-    const topBefore = store.listAppRevisions("app1")[0].seq;
+    const topBefore = store.listAppHistory("app1")[0].seq;
     // Simulate the http revert handler: feed v1 back through updatePublished.
     store.updatePublished(
       "app1",
@@ -72,7 +72,7 @@ describe("app version history", () => {
     const live = store.getPublished("app1");
     expect(live?.body).toBe("<div>a</div>");
     expect(live?.title).toBe("First");
-    const revs = store.listAppRevisions("app1");
+    const revs = store.listAppHistory("app1");
     expect(revs[0].seq).toBe(topBefore + 1); // restore is itself a new version
     expect(revs[0].note).toBe("Restored version 1");
   });
@@ -109,7 +109,7 @@ describe("retention", () => {
     const store = new KnowledgeStore(dbPath);
     store.createPublished({ id: "capapp", title: "v", body: "b0", createdBy: "alice" });
     for (let i = 1; i <= 120; i++) store.updatePublished("capapp", { body: `b${i}` }, { editor: "alice" });
-    const revs = store.listAppRevisions("capapp"); // newest first
+    const revs = store.listAppHistory("capapp"); // newest first
     expect(revs.length).toBe(100);
     // The live row is the newest snapshot (seq 121: v1 + 120 edits).
     expect(revs[0].seq).toBe(121);
@@ -134,7 +134,7 @@ describe("backfill", () => {
     raw.close();
 
     const store = new KnowledgeStore(dbPath);
-    const revs = store.listAppRevisions("legacy1");
+    const revs = store.listAppHistory("legacy1");
     expect(revs.length).toBe(1);
     expect(revs[0].seq).toBe(1);
     expect(revs[0].editor).toBe("carol");
@@ -142,6 +142,6 @@ describe("backfill", () => {
 
     // Idempotent — reopening does not duplicate the backfilled v1.
     const store2 = new KnowledgeStore(dbPath);
-    expect(store2.listAppRevisions("legacy1").length).toBe(1);
+    expect(store2.listAppHistory("legacy1").length).toBe(1);
   });
 });
