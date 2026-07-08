@@ -1537,12 +1537,31 @@ const httpServer = http.createServer(async (req, res) => {
               store.setReportVisibility(id, "team");
               reverted = true;
             }
-            store.audit(session.identity, "revert_app", { id, seq, reverted });
+            // Re-seed the cache from the restored version and check its panels
+            // still run — the snapshot was valid when saved, but the schema/config
+            // may have drifted since. Uses the same governed viewer render path
+            // (not the agent's prepPanels), so it's the right identity/membrane and
+            // any breakage surfaces NOW instead of on the next viewer. Best-effort.
+            let panelWarning = "";
+            const restored = store.getPublished(id);
+            if (restored && (restored.panels?.length ?? 0) > 0) {
+              try {
+                const broken = (await renderApp(store, projectDir, restored, { force: true })).filter((p) => p.error);
+                if (broken.length)
+                  panelWarning = ` Heads up: ${broken.length} panel(s) no longer run against the current data (${broken
+                    .map((p) => p.key)
+                    .join(", ")}) — this version may predate a schema change.`;
+              } catch {
+                // A re-seed failure must not fail the restore; the next view recomputes.
+              }
+            }
+            store.audit(session.identity, "revert_app", { id, seq, reverted, brokenPanels: !!panelWarning });
             return json(200, {
               ok: true,
-              flash: reverted
-                ? `Restored version ${seq} — its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
-                : `Restored version ${seq}.`,
+              flash:
+                (reverted
+                  ? `Restored version ${seq} — its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
+                  : `Restored version ${seq}.`) + panelWarning,
             });
           }
 
