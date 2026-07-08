@@ -289,8 +289,8 @@ export function AppView() {
   // (401/404/500 — no __SETOKU__): surface it instead of leaving the drawer stuck on
   // "updating…". Armed unconditionally on load (metadata may not have resolved yet
   // during navigation); the FIRE-TIME check reads formatRef — by then the current
-  // app's metadata has resolved, so a legacy "html" report (which never echoes) and
-  // a not-yet-known format don't trip a false error.
+  // app's metadata has resolved, so a not-yet-known format (still loading) doesn't
+  // trip a false error.
   const onFrameLoad = useCallback(() => {
     setFrameLoading(false);
     clearEchoTimer();

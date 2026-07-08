@@ -932,7 +932,7 @@ describe("live apps (end-to-end render path)", () => {
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200);
   }, 20_000);
 
-  it("clamps an absurd refresh, strips SQL from the list, and 404s subpaths for legacy reports", async () => {
+  it("clamps an absurd refresh, strips SQL from the list, and 404s /data for a panel-less app", async () => {
     const alice = await connect("tok-alice");
     // huge refreshSeconds must be clamped (a 'live' link that never refreshes isn't)
     const big = await call(alice, "publish_app", {
@@ -942,9 +942,9 @@ describe("live apps (end-to-end render path)", () => {
       panels: [{ key: "p", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
     });
     const bigId = (big.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
-    // a legacy zero-panel report (static)
-    const legacy = await call(alice, "publish_app", { title: "legacy", html: "<!doctype html><h1>hi</h1>" });
-    const legId = (legacy.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    // a zero-panel fragment app (state-only / presentational — no live data)
+    const stateOnly = await call(alice, "publish_app", { title: "state-only", html: "<div id=todo></div>" });
+    const soId = (stateOnly.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     await alice.close();
 
     const boss = await session("boss", "s3cret-pass");
@@ -963,15 +963,16 @@ describe("live apps (end-to-end render path)", () => {
     expect(row.panels?.length).toBe(1); // count still available for the UI
     expect(row.panels?.[0].sql).toBe(""); // but SQL stripped
 
-    // #7: legacy report is served only at /p/<id>; the app subpaths 404
+    // #7: a panel-less app renders via the runtime shell (/p + /frame both serve);
+    // only /data 404s, since the freshness poll is meaningless with no panels.
     await fetch(`${BASE}/admin/api/set_visibility`, {
       method: "POST",
       headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
-      body: JSON.stringify({ id: legId, visibility: "public" }),
+      body: JSON.stringify({ id: soId, visibility: "public" }),
     });
-    expect((await fetch(`${BASE}/p/${legId}`)).status).toBe(200);
-    expect((await fetch(`${BASE}/p/${legId}/frame`)).status).toBe(404);
-    expect((await fetch(`${BASE}/p/${legId}/data`)).status).toBe(404);
+    expect((await fetch(`${BASE}/p/${soId}`)).status).toBe(200);
+    expect((await fetch(`${BASE}/p/${soId}/frame`)).status).toBe(200);
+    expect((await fetch(`${BASE}/p/${soId}/data`)).status).toBe(404);
   }, 20_000);
 
   it("update_app is author-gated, edits in place, injects the chart runtime, and reverts public on panel change", async () => {

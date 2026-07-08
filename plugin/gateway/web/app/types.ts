@@ -146,8 +146,9 @@ export interface AppPanel {
   metricId?: string | null;
 }
 
-/** A app/report published to the box (list metadata; no body). A "app"
- *  has live `panels`; a legacy "html" report has none. Mirrors lib/store.ts. */
+/** An app published to the box (list metadata; no body). `format` is always
+ *  "app" now (the legacy raw-served "html" format is gone); a data app has live
+ *  `panels`, a static one has none. Mirrors lib/store.ts. */
 export interface PublishedMeta {
   id: string;
   title: string;

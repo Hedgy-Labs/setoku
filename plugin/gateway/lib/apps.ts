@@ -63,16 +63,19 @@ export const MAX_RENDER_ROW_BYTES = 3_500_000;
 export const RENDER_FETCH_CEILING = 25_000;
 
 /**
- * Whether a published body is a FULL HTML document (legacy "html" format, served
- * as-is) vs a fragment the app runtime wraps. A real document OPENS with the
- * doctype/`<html>` tag — possibly behind a leading banner comment or `<?xml ?>`
- * prolog. We skip that leading whitespace/comment/prolog and then require the tag
- * AT that position, so:
+ * Whether a published body is a FULL HTML document vs a fragment the app runtime
+ * wraps. Published apps are ALWAYS fragments — the runtime nests the body inside
+ * its own `<!doctype>…<body>…</body></html>` skeleton, so a whole document nested
+ * there renders wrong. publish_app / update_app use this to REJECT a full-doc body
+ * up front (the one supported model is a fragment; the legacy raw-served "html"
+ * format is gone). A real document OPENS with the doctype/`<html>` tag — possibly
+ * behind a leading banner comment or `<?xml ?>` prolog. We skip that leading
+ * whitespace/comment/prolog and then require the tag AT that position, so:
  *   - a fragment that merely CONTAINS `<html` elsewhere (a code snippet, a template
  *     string) is NOT misclassified as a document, and
  *   - a document that opens with `<!-- generated -->` or `<?xml ?>` before the
  *     doctype still IS one.
- * One definition shared by publish, update, and render so they always agree.
+ * One definition shared by publish and update so they always agree.
  */
 export function isFullDoc(body: string): boolean {
   let s = body.replace(/^\s+/, "");

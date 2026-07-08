@@ -442,18 +442,27 @@ describe("app surface", () => {
     expect(r.text.toLowerCase()).toContain("membrane");
   });
 
-  it("still publishes a static (zero-panel) report for back-compat", async () => {
+  it("publishes a zero-panel fragment app (state-only / presentational)", async () => {
     const pub = await call("publish_app", {
       title: "Q2 revenue",
-      html: "<!doctype html><h1>Q2 revenue</h1><p>$225</p>",
+      html: "<h1>Q2 revenue</h1><p>$225</p>",
     });
     expect(pub.isError).toBeFalsy();
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     expect(id).toBeTruthy();
     const listed = await call("list_apps");
     expect(listed.text).toContain("Q2 revenue");
-    expect(listed.text).toContain("static");
+    expect(listed.text).toContain("static"); // no live panels
     await call("unpublish_app", { id });
+  });
+
+  it("rejects a full HTML document — apps are fragments the runtime wraps", async () => {
+    const r = await call("publish_app", {
+      title: "full doc",
+      html: "<!doctype html><html><body><h1>hi</h1></body></html>",
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text.toLowerCase()).toContain("fragment");
   });
 
   it("rejects an oversized template", async () => {

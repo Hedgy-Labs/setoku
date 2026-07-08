@@ -16,7 +16,6 @@ import os from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "./artifact";
 import { setokuDir } from "./config";
-import { isFullDoc } from "./apps";
 import type { AppParam } from "./params";
 
 export type DocType = "entity" | "metric" | "query" | "overview" | "gotcha";
@@ -146,11 +145,12 @@ export interface AppPanel {
 export interface PublishedReport {
   id: string;
   title: string;
-  /** "html" = a frozen, self-contained report (legacy / zero-panel). "app"
-   *  = a template whose panels the box re-runs live. */
+  /** Render model. Always "app" now (a fragment the runtime wraps); the legacy
+   *  raw-served "html" format is gone. Kept as a field for existing rows and the
+   *  version-history snapshot. */
   format: "html" | "app";
   body: string;
-  /** Live data bindings; null/[] for a frozen report. */
+  /** Live data bindings; null/[] for a static (state-only or presentational) app. */
   panels: AppPanel[] | null;
   /** Declared interactive inputs (date/int/text/bool/enum) a panel's SQL binds
    *  via `:name`. null/[] for a non-interactive app. See lib/params.ts. */
@@ -428,17 +428,19 @@ export class KnowledgeStore {
       archived_at TEXT
     )`);
     // Brought the table forward in-place for boxes created before visibility /
-    // the revoked→archived rename / live apps landed (idempotent). A
-    // pre-app row stays format='html' with panels NULL and keeps rendering.
+    // the revoked→archived rename / live apps landed (idempotent).
     this.ensureColumn("published", "visibility", "TEXT NOT NULL DEFAULT 'team'");
     this.ensureColumn("published", "archived_at", "TEXT");
     this.ensureColumn("published", "panels", "TEXT");
     this.ensureColumn("published", "params", "TEXT");
     this.ensureColumn("published", "refresh_seconds", "INTEGER");
-    // Dashboards→Apps rename: the live-render format value was 'dashboard'. Boxes
-    // that published before the rename hold rows with format='dashboard'; the new
-    // code gates the runtime path on format='app', so backfill them in place (a
-    // no-op on a fresh box). Legacy v0.11 frozen reports stay format='html'.
+    // Every app now renders through the runtime shell, so the format column is
+    // effectively always 'app'. Boxes that published before the Dashboards→Apps
+    // rename hold format='dashboard'; backfill those to 'app' (a no-op on a fresh
+    // box). The legacy raw-served 'html' value is retired: no new rows mint it, and
+    // it was already absent from every live box at removal (issue #62) — so a
+    // straggler is not migrated (a full-doc body can't render inside the shell) but
+    // simply falls through the runtime path like any other app.
     this.db.run("UPDATE published SET format = 'app' WHERE format = 'dashboard'");
     // Append-only version history for published apps (issue #58). One snapshot
     // per create / content edit / revert; the newest seq mirrors the live
@@ -1092,7 +1094,6 @@ export class KnowledgeStore {
   createPublished(rec: {
     id: string;
     title: string;
-    format?: "html" | "app";
     body: string;
     panels?: AppPanel[] | null;
     params?: AppParam[] | null;
@@ -1108,10 +1109,10 @@ export class KnowledgeStore {
       [
         rec.id,
         rec.title,
-        // Match the publish_app tool's rule so a direct caller can't mislabel a
-        // fragment: panels → app; else a full <!doctype> doc is a legacy frozen
-        // "html" report, but a bare fragment (state-only app) is still an "app".
-        rec.format ?? (panels ? "app" : isFullDoc(rec.body) ? "html" : "app"),
+        // Every published app is a fragment the runtime wraps — the legacy raw-served
+        // "html" format is gone, so the stored format is always "app". The column
+        // stays for existing rows / the version-history snapshot.
+        "app",
         rec.body,
         panels,
         params,
@@ -1348,9 +1349,9 @@ export class KnowledgeStore {
 
   /** Edit a published app/report in place (same id/link) — author-gated
    *  upstream. Only provided fields change; id/createdBy/createdAt/visibility are
-   *  preserved. Passing `panels` (incl. []) rewrites the panel set + format AND
-   *  clears the panel cache (the old rows no longer apply). Returns false if the
-   *  row is unknown or archived. */
+   *  preserved. Passing `panels` (incl. []) rewrites the panel set AND clears the
+   *  panel cache (the old rows no longer apply). Returns false if the row is
+   *  unknown or archived. */
   updatePublished(
     id: string,
     fields: {
@@ -1358,9 +1359,6 @@ export class KnowledgeStore {
       body?: string;
       panels?: AppPanel[];
       params?: AppParam[];
-      /** Explicit format — the caller (which has the body) decides app vs legacy
-       *  html; falls back to panels-based derivation when omitted. */
-      format?: "html" | "app";
       refreshSeconds?: number | null;
     },
     // Who is editing (for the version-history attribution), and an optional note
@@ -1380,13 +1378,8 @@ export class KnowledgeStore {
     }
     if (fields.panels !== undefined) {
       const json = fields.panels.length ? JSON.stringify(fields.panels) : null;
-      sets.push("panels = ?", "format = ?");
-      vals.push(json, fields.format ?? (json ? "app" : "html"));
-    } else if (fields.format !== undefined) {
-      // Format can change without the panel set — e.g. a panel-less app whose body
-      // flips between a fragment ("app") and a full legacy document ("html").
-      sets.push("format = ?");
-      vals.push(fields.format);
+      sets.push("panels = ?");
+      vals.push(json);
     }
     if (fields.params !== undefined) {
       sets.push("params = ?");

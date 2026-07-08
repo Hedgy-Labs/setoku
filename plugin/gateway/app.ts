@@ -1112,7 +1112,8 @@ server.registerTool(
 // app splits presentation (a frozen, agent-authored template) from data
 // (named panels, each a saved read-only query the box RE-RUNS live through the
 // governed run_query path). The template reads results off window.__SETOKU__.
-// A zero-panel app is just a static report (back-compat).
+// A zero-panel app is a static / state-only fragment (a todo, a poll, a
+// presentational summary); it still renders through the runtime shell.
 //
 // v0 is TEAM-ONLY: the link (/admin/p/<id>) is session-gated, so only people who
 // hold a box login can view it — that's what keeps a (prompt-injectable) analyst
@@ -1308,8 +1309,10 @@ const APP_GUIDE = [
   "aren't intentionally changing. You never need a browser to read an app's current markup — get_app has it.",
   "",
   "## The template (`html`)",
-  "A self-contained HTML fragment: inline <style>/<script>, inline SVG. NO external/CDN assets and NO",
+  "A self-contained HTML FRAGMENT: inline <style>/<script>, inline SVG. NO external/CDN assets and NO",
   "network — data is injected, not fetched (the iframe runs under a no-network CSP).",
+  "Pass just the inner markup — NOT a full <!doctype>/<html>/<head>/<body> document (the runtime supplies",
+  "that skeleton and wraps your fragment; a whole document is REJECTED by publish_app / update_app).",
   "",
   "## Preloaded helpers — prefer these over hand-rolled SVG/CSS",
   "`Setoku.stat(elId, panelKey, {label, value, format})` — `value` is the COLUMN NAME to read from the",
@@ -1421,6 +1424,16 @@ server.registerTool(
         `Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap. Keep it a self-contained ` +
           "fragment; the live data arrives via panels, so don't embed bulk data in the template.",
       );
+    // Every published app is a FRAGMENT — the runtime nests the body inside its
+    // own document skeleton, so a full <!doctype>/<html> document renders wrong.
+    // Reject one up front with a clear steer (the legacy raw-served "html" format
+    // is gone; app_guide documents the fragment contract).
+    if (isFullDoc(html))
+      return errorText(
+        "Publish a fragment, not a full HTML document. The app runtime wraps your template in its own " +
+          "<!doctype>…<body> skeleton, so a whole <!doctype>/<html> document nests wrong. Drop the doctype/" +
+          "<html>/<head>/<body> wrapper and pass just the inner markup (styles in a <style> tag are fine). See app_guide.",
+      );
     const declaredParams = (params ?? []) as AppParam[];
     const prep = await prepPanels(panels ?? [], declaredParams);
     if (!prep.ok) return errorText(prep.error);
@@ -1428,11 +1441,6 @@ server.registerTool(
 
     const id = mintShareId();
     const refresh = clampRefresh(refreshSeconds, normalized.length > 0);
-    // An "app" renders via the runtime path (chart helpers + Setoku.state + the
-    // no-network app CSP). That's anything with panels OR a zero-panel FRAGMENT
-    // (e.g. a state-only app: a todo, a poll). Only a zero-panel full HTML
-    // DOCUMENT is a legacy frozen report (format "html"), served as-is.
-    const format = normalized.length > 0 || !isFullDoc(html) ? "app" : "html";
     store.createPublished({
       id,
       title: title.trim() || "Untitled app",
@@ -1440,21 +1448,19 @@ server.registerTool(
       panels: normalized,
       params: declaredParams.length ? declaredParams : null,
       refreshSeconds: refresh,
-      format,
       createdBy: user,
     });
     for (const s of seeds)
       store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, truncated: s.truncated, error: null });
     store.audit(user, "publish_app", { id, title, bytes, panels: normalized.length });
 
-    const noun = format === "app" ? "app" : "report";
     return text(
       `Published "${title}" → ${publishUrl(id)}\n\n` +
         (normalized.length ? `${normalized.length} live panel(s); the box re-runs them every ${refresh}s. ` : "") +
         "This link is TEAM-ONLY: anyone you share it with must sign in to the box to view it. " +
         (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
         `\n\nEdit it with update_app("${id}", …) — same link. Manage: get_app / unpublish_app("${id}"). ` +
-        `(An admin can make this ${noun} public from /admin.)` +
+        "(An admin can make this app public from /admin.)" +
         (await publishNotes(html, normalized)),
     );
   },
@@ -1496,6 +1502,13 @@ server.registerTool(
       const bytes = Buffer.byteLength(html, "utf8");
       if (bytes > MAX_REPORT_BYTES)
         return errorText(`Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap.`);
+      // Same one-model rule as publish_app: a published app is a FRAGMENT the
+      // runtime wraps, so a full <!doctype>/<html> document can't replace it.
+      if (isFullDoc(html))
+        return errorText(
+          "Update with a fragment, not a full HTML document. The app runtime wraps your template in its own " +
+            "<!doctype>…<body> skeleton. Drop the doctype/<html>/<head>/<body> wrapper and pass just the inner markup. See app_guide.",
+        );
     }
 
     // Panels AND params both determine what the panels compute (params bind into
@@ -1529,20 +1542,6 @@ server.registerTool(
     if (refreshSeconds !== undefined) refresh = clampRefresh(refreshSeconds, willHavePanels);
     else if (panelsChanged) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
 
-    // Recompute format when the panel SET or the BODY changes: panels → app; zero
-    // panels → "app" for a fragment (state app), "html" only for a full document.
-    // The body matters for a panel-less app (a new full <!doctype> template must
-    // flip it to the legacy "html" path); a params-only edit touches neither, so
-    // format holds.
-    let format: "html" | "app" | undefined;
-    if (panelsChanged || html !== undefined) {
-      if (willHavePanels) format = "app";
-      else {
-        const bodyToCheck = html ?? store.getPublished(tid)?.body ?? "";
-        format = isFullDoc(bodyToCheck) ? "html" : "app";
-      }
-    }
-
     const ok = store.updatePublished(tid, {
       title: newTitle,
       body: html,
@@ -1553,7 +1552,6 @@ server.registerTool(
       // and untouched variants stay warm.
       panels: panelsChanged ? normalized : undefined,
       params: paramsChanged ? (params as AppParam[]) : undefined,
-      format,
       refreshSeconds: refresh,
     }, { editor: user });
     if (!ok) return errorText(`Update failed — no active app "${id}".`);

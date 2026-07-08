@@ -66,7 +66,7 @@ describe("app version history", () => {
     // Simulate the http revert handler: feed v1 back through updatePublished.
     store.updatePublished(
       "app1",
-      { title: v1!.title, body: v1!.body, panels: v1!.panels ?? [], params: v1!.params ?? [], format: v1!.format, refreshSeconds: v1!.refreshSeconds },
+      { title: v1!.title, body: v1!.body, panels: v1!.panels ?? [], params: v1!.params ?? [], refreshSeconds: v1!.refreshSeconds },
       { editor: "alice", note: "Restored version 1" },
     );
     const live = store.getPublished("app1");
