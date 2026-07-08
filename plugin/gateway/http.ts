@@ -906,7 +906,10 @@ function publicAppShell(opts: {
   header{flex:none;display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1rem;padding:.7rem 1.1rem;border-bottom:1px solid #e7e5e4}
   h1{margin:0;font-size:1.02rem;font-weight:600}
   .muted{color:#78716c;font-size:.8rem}
-  .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
+  /* very subtle attribution — stone-family, no accent (neutral-chrome rule) */
+  .brand{margin-left:auto;font-size:.72rem;color:#a8a29e;text-decoration:none;letter-spacing:.01em;white-space:nowrap}
+  .brand:hover{color:#78716c;text-decoration:underline}
+  .adminbtn{display:none;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
   .adminbtn:hover{background:#f5f5f4}
   main{flex:1;min-height:0;display:flex;position:relative}
   iframe{flex:1;width:100%;border:0;background:#fff}
@@ -922,7 +925,7 @@ function publicAppShell(opts: {
   .pc select,.pc input{font:inherit;font-size:.8rem;color:#1c1917;background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.18rem .45rem}
   .pc select:focus,.pc input:focus{outline:none;border-color:#a8a29e;box-shadow:0 0 0 2px #e7e5e4}
 </style></head><body>
-<header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
+<header><h1>${title}</h1><span class="muted" id="stamp"></span><a class="brand" href="https://setoku.com" target="_blank" rel="noopener noreferrer">Made with Setoku</a><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
 <main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><div id="ldr"><div class="card"><span class="sp"></span>updating…</div></div></main>
 <script>
 (function(){
@@ -1374,8 +1377,30 @@ const httpServer = http.createServer(async (req, res) => {
           const prov = appProvenance(store, meta, []);
           prov.updatedAt = store.newestPanelComputedAt(id);
           prov.mirrorAsOf = await appMirrorAsOf(meta);
+          // Last-editor stamp for the header (#58) — the newest version's author +
+          // time, shown once an app has actually been edited (versions > 1).
+          const edit = store.latestAppEdit(id);
+          if (edit) {
+            prov.editedBy = edit.editor;
+            prov.editedAt = edit.ts;
+            prov.versions = edit.versions;
+          }
           store.audit(session.identity, "app_viewed", { id });
           return json(200, prov);
+        }
+
+        // Version history for the header's version drawer (#58): every content
+        // edit, newest first, with who made it and when. Team-only (like the
+        // provenance drawer) — an authenticated box session; the public /p shell
+        // never sees it. Bodies are omitted (a restore fetches them server-side).
+        if (api === "app_history" && req.method === "GET") {
+          const url = new URL(req.url ?? "", "http://x");
+          const id = url.searchParams.get("id") ?? "";
+          const meta = store.getPublishedMeta(id);
+          if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found or archived" });
+          const revs = store.listAppHistory(id);
+          const current = revs.length ? revs[0].seq : 0; // newest seq === live state
+          return json(200, revs.map((r) => ({ ...r, current: r.seq === current })));
         }
 
         // ---- app state (per-app private datastore) ----
@@ -1471,9 +1496,76 @@ const httpServer = http.createServer(async (req, res) => {
             if (!title) return json(400, { ok: false, error: "Title can't be empty." });
             if (title.length > 200) return json(400, { ok: false, error: "Title is too long (max 200 characters)." });
             if (!mayMutateApp(id)) return;
-            const ok = store.updatePublished(id, { title });
+            const ok = store.updatePublished(id, { title }, { editor: session.identity });
             store.audit(session.identity, "rename_app", { id, ok });
             return json(200, { ok, title, flash: "Renamed." });
+          }
+
+          // Restore an earlier version (#58) — author-or-admin, same gate as
+          // rename. Copies the chosen snapshot's content forward as a NEW version
+          // (append-only, so the restore is itself undoable) and clears the panel
+          // cache (restored panels recompute on next view). If the restored
+          // content changes what a PUBLIC app exposes, it drops to team-only — an
+          // admin must re-publish it (the human promotion gate, I9), mirroring
+          // update_app.
+          if (api === "revert") {
+            const body = (await readBody(req)) as { id?: string; seq?: number } | undefined;
+            const id = (body?.id ?? "").trim();
+            const seq = Number(body?.seq);
+            if (!Number.isInteger(seq) || seq < 1) return json(400, { ok: false, error: "Bad version." });
+            if (!mayMutateApp(id)) return;
+            const meta = store.getPublishedMeta(id); // current state (for the visibility check)
+            const snap = store.getAppRevision(id, seq);
+            if (!meta || !snap) return json(404, { ok: false, error: "No such version." });
+            const norm = (v: unknown): string => JSON.stringify(v ?? []);
+            const dataChanged = norm(snap.panels) !== norm(meta.panels) || norm(snap.params) !== norm(meta.params);
+            const ok = store.updatePublished(
+              id,
+              {
+                title: snap.title,
+                body: snap.body,
+                panels: snap.panels ?? [], // [] rewrites to no-panels + clears cache
+                params: snap.params ?? [],
+                format: snap.format,
+                refreshSeconds: snap.refreshSeconds,
+              },
+              { editor: session.identity, note: `Restored version ${seq}` },
+            );
+            // `error` (not `flash`) on failure — the SPA surfaces `error` on a
+            // non-2xx; a `flash` here would be dropped and shown as "HTTP 409".
+            if (!ok)
+              return json(409, { ok: false, error: "Couldn't restore that version — the app may have just been archived." });
+            let reverted = false;
+            if (dataChanged && meta.visibility === "public") {
+              store.setReportVisibility(id, "team");
+              reverted = true;
+            }
+            // Re-seed the cache from the restored version and check its panels
+            // still run — the snapshot was valid when saved, but the schema/config
+            // may have drifted since. Uses the same governed viewer render path
+            // (not the agent's prepPanels), so it's the right identity/membrane and
+            // any breakage surfaces NOW instead of on the next viewer. Best-effort.
+            let panelWarning = "";
+            const restored = store.getPublished(id);
+            if (restored && (restored.panels?.length ?? 0) > 0) {
+              try {
+                const broken = (await renderApp(store, projectDir, restored, { force: true })).filter((p) => p.error);
+                if (broken.length)
+                  panelWarning = ` Heads up: ${broken.length} panel(s) no longer run against the current data (${broken
+                    .map((p) => p.key)
+                    .join(", ")}) — this version may predate a schema change.`;
+              } catch {
+                // A re-seed failure must not fail the restore; the next view recomputes.
+              }
+            }
+            store.audit(session.identity, "revert_app", { id, seq, reverted, brokenPanels: !!panelWarning });
+            return json(200, {
+              ok: true,
+              flash:
+                (reverted
+                  ? `Restored version ${seq} — its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
+                  : `Restored version ${seq}.`) + panelWarning,
+            });
           }
 
           // Restore an archived app. Author-or-admin, but (unlike the other

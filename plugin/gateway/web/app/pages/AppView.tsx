@@ -8,10 +8,12 @@ import { useAuth } from "../auth";
 import { Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
+import { VisibilityBadge } from "../components/VisibilityBadge";
+import { VisibilityDialog } from "../components/VisibilityDialog";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
 import { appShareUrl, relTime } from "../format";
-import type { AppData, AppParam, PanelProvenance } from "../types";
+import type { AppData, AppParam, AppRevision, PanelProvenance } from "../types";
 
 /** The per-panel numbers the frame echoes up for the variant it rendered — the
  *  param-DEPENDENT half of provenance (the SQL/description come from metadata).
@@ -33,6 +35,19 @@ function fmtInterval(s: number): string {
 /** Fallback heading when a panel has no title — turn the slug into words. */
 function humanizeKey(k: string): string {
   return k.replace(/[_-]+/g, " ").trim();
+}
+
+/** A version's change tags (from the server) → a friendly, comma-joined phrase,
+ *  e.g. ["title","data"] → "title, data panels". Empty → "" (the current one). */
+const CHANGE_LABEL: Record<string, string> = {
+  title: "title",
+  content: "content",
+  data: "data panels",
+  inputs: "inputs",
+  refresh: "refresh rate",
+};
+function changeSummary(changes: string[]): string {
+  return changes.map((c) => CHANGE_LABEL[c] ?? c).join(", ");
 }
 
 /**
@@ -57,6 +72,15 @@ export function AppView() {
   const [showCalc, setShowCalc] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  // Version history drawer (#58). `historyNonce` re-fetches the list after a
+  // restore; `revertSeq` is the version awaiting the restore confirm (null = none).
+  const [showHistory, setShowHistory] = useState(false);
+  const [historyNonce, setHistoryNonce] = useState(0);
+  // The version awaiting the restore confirm (null = none). Holds the whole
+  // revision so the confirm can name what restoring it will change.
+  const [revertRev, setRevertRev] = useState<AppRevision | null>(null);
+  // Visibility picker (team/public), opened from the badge.
+  const [visOpen, setVisOpen] = useState(false);
   // null = not editing the title; a string = the in-progress new title.
   const [titleEdit, setTitleEdit] = useState<string | null>(null);
   const cancelRename = useRef(false);
@@ -138,6 +162,7 @@ export function AppView() {
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
   const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
+  const active = !!data && !data.archivedAt;
   formatRef.current = fresh?.format; // for the watchdog's fire-time decision
 
   // Live numbers for the CURRENT frame only (echo token must match the nonce).
@@ -331,6 +356,23 @@ export function AppView() {
     }
   };
 
+  // Restore an earlier version. On success: refetch metadata + the history list,
+  // and reload the frame (author/admin bypasses the cache) so the iframe shows
+  // the restored content immediately. The panel stays open so you can see the
+  // new "Current" version land.
+  const doRevert = async (seq: number) => {
+    setRevertRev(null);
+    try {
+      const r = await api.revertApp(id, seq);
+      reload();
+      reloadFrame({ force: canForce, clearLive: true });
+      setHistoryNonce((n) => n + 1);
+      toast(r.flash ?? `Restored version ${seq}.`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Restore failed.");
+    }
+  };
+
   // Archiving makes this app unfetchable, so leave the viewer rather than
   // reload into an error screen.
   const archive = async () => {
@@ -386,10 +428,36 @@ export function AppView() {
             ) : null}
           </h1>
         )}
-        {data ? <Badge tone={visibility === "public" ? "ok" : "idle"}>{visibility}</Badge> : null}
+        {data ? (
+          <VisibilityBadge
+            visibility={visibility}
+            canManage={active && (mine || isAdmin)}
+            onOpen={() => setVisOpen(true)}
+          />
+        ) : null}
         {data ? (
           <span className="hidden text-xs text-stone-500 sm:inline">
             published by {data.createdBy}
+            {/* The "edited by" stamp doubles as the discoverable entry to version
+                history (Docs-style): the thing that says it changed opens the log.
+                Underlined-dotted to afford a click without a non-stone accent. The
+                ⋮ menu carries the always-available, named path. */}
+            {data.versions && data.versions > 1 && data.editedBy && data.editedAt ? (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  onClick={() => setShowHistory((v) => !v)}
+                  aria-expanded={showHistory}
+                  title="Version history"
+                  className="underline decoration-dotted underline-offset-2 hover:text-stone-800"
+                >
+                  edited by {data.editedBy} {relTime(data.editedAt)}
+                </button>
+              </>
+            ) : (
+              ""
+            )}
             {isApp && stampAt ? ` · data updated ${relTime(stampAt)}` : ""}
             {isApp && data.mirrorAsOf ? ` · source data as of ${relTime(data.mirrorAsOf)}` : ""}
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
@@ -402,14 +470,16 @@ export function AppView() {
                 {showCalc ? "Hide calculations" : "How it's calculated"}
               </MenuItem>
             ) : null}
+            {data ? (
+              // Plain "open" (the menu closes on select and the drawer has its own
+              // Close), so no "Hide version history" toggle state is needed.
+              <MenuItem onSelect={() => setShowHistory(true)}>Version history</MenuItem>
+            ) : null}
             {isApp ? <MenuItem onSelect={() => manualRefresh()}>Refresh data</MenuItem> : null}
             {isApp ? <MenuItem onSelect={() => setEditOpen(true)}>Edit…</MenuItem> : null}
             <MenuItem onSelect={() => void copy()}>Copy link</MenuItem>
-            {data && !data.archivedAt && visibility === "public" && (isAdmin || mine) ? (
-              <MenuItem onSelect={() => void act(() => api.setVisibility(id, "team"))}>Make team-only</MenuItem>
-            ) : null}
-            {data && !data.archivedAt && visibility === "team" && isAdmin ? (
-              <MenuItem onSelect={() => void act(() => api.setVisibility(id, "public"))}>Make public</MenuItem>
+            {data && !data.archivedAt && (isAdmin || mine) ? (
+              <MenuItem onSelect={() => setVisOpen(true)}>Change visibility…</MenuItem>
             ) : null}
             {data && !data.archivedAt && (isAdmin || mine) ? (
               <MenuItem danger onSelect={() => setArchiveOpen(true)}>
@@ -498,6 +568,40 @@ export function AppView() {
           ) : null}
         </main>
       )}
+      {showHistory && data ? (
+        <HistoryPanel
+          id={id}
+          canManage={mine || isAdmin}
+          nonce={historyNonce}
+          onRestore={(rev) => setRevertRev(rev)}
+          onClose={() => setShowHistory(false)}
+        />
+      ) : null}
+      <Confirm
+        open={revertRev !== null}
+        title={`Restore version ${revertRev?.seq ?? ""}?`}
+        body={
+          revertRev && revertRev.changes.length
+            ? `The current app will be replaced with version ${revertRev.seq} — changing its ${changeSummary(revertRev.changes)}. The current version is kept in history, so you can undo this.`
+            : "The current app will be replaced with that version. The current version is kept in history, so you can undo this."
+        }
+        confirmLabel="Restore"
+        defaultAction
+        onConfirm={() => {
+          if (revertRev) void doRevert(revertRev.seq);
+        }}
+        onClose={() => setRevertRev(null)}
+      />
+      <VisibilityDialog
+        open={visOpen}
+        visibility={visibility}
+        canMakePublic={isAdmin}
+        onSubmit={(next) => {
+          setVisOpen(false);
+          void act(() => api.setVisibility(id, next));
+        }}
+        onClose={() => setVisOpen(false)}
+      />
       <EditDialog
         open={editOpen}
         onClose={() => setEditOpen(false)}
@@ -519,6 +623,97 @@ export function AppView() {
         onClose={() => setArchiveOpen(false)}
       />
     </div>
+  );
+}
+
+/** The version-history drawer (#58) — a top-right panel of the app's saved
+ *  versions, newest first, each with who edited it and when. Author/admin can
+ *  restore an older one (a click on `onRestore`, confirmed by the caller). A
+ *  full-screen transparent scrim closes it on an outside click — mirrors the
+ *  Google-Docs "version history" affordance in the neutral stone chrome. */
+function HistoryPanel({
+  id,
+  canManage,
+  nonce,
+  onRestore,
+  onClose,
+}: {
+  id: string;
+  canManage: boolean;
+  nonce: number;
+  onRestore: (rev: AppRevision) => void;
+  onClose: () => void;
+}) {
+  const { data, loading, error } = useApi<AppRevision[]>(() => api.appHistory(id), [id, nonce]);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Keyboard/focus parity with the app's Radix menus/dialogs (no popover dep):
+  // move focus into the panel on open and restore it to the trigger on close.
+  // Escape-to-close is handled on the panel itself (below) so it can't collide
+  // with a Radix confirm dialog opened on top (focus is trapped there instead).
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    return () => prev?.focus?.();
+  }, []);
+  return (
+    <>
+      {/* Outside-click scrim (transparent — the app stays visible behind it). */}
+      <div className="fixed inset-0 z-30" onClick={onClose} aria-hidden="true" />
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-label="Version history"
+        tabIndex={-1}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+        }}
+        className="card fixed right-2 top-14 z-40 flex max-h-[70vh] w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden p-0 shadow-xl focus:outline-none"
+      >
+        <div className="flex flex-none items-center justify-between border-b border-stone-100 px-4 py-2.5">
+          <span className="text-sm font-medium text-stone-800">Version history</span>
+          <button className="text-xs text-stone-500 hover:text-stone-800" onClick={onClose}>
+            Close
+          </button>
+        </div>
+        <div className="min-h-0 overflow-auto">
+          {loading && !data ? (
+            <p className="px-4 py-6 text-center text-xs text-stone-400">Loading…</p>
+          ) : error ? (
+            <p className="px-4 py-6 text-center text-xs text-amber-700">Couldn’t load history.</p>
+          ) : !data || data.length === 0 ? (
+            <p className="px-4 py-6 text-center text-xs text-stone-400">No versions yet.</p>
+          ) : (
+            <ul className="divide-y divide-stone-100">
+              {data.map((r) => (
+                <li key={r.seq} className="flex items-start gap-2 px-4 py-2.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm font-medium text-stone-900">Version {r.seq}</span>
+                      {r.current ? <Badge tone="ok">Current</Badge> : null}
+                    </div>
+                    <p className="mt-0.5 truncate text-xs text-stone-500">
+                      {r.editor}
+                      {r.ts ? ` · ${relTime(r.ts)}` : ""}
+                    </p>
+                    {r.note ? <p className="mt-0.5 text-xs italic text-stone-400">{r.note}</p> : null}
+                    {/* What restoring this version would change vs. the live app —
+                        so the restore isn't a blind pick. */}
+                    {!r.current && r.changes.length ? (
+                      <p className="mt-0.5 text-xs text-stone-400">changes: {changeSummary(r.changes)}</p>
+                    ) : null}
+                  </div>
+                  {!r.current && canManage ? (
+                    <button className="btn btn-ghost flex-none px-2 py-1 text-xs" onClick={() => onRestore(r)}>
+                      Restore
+                    </button>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </div>
+    </>
   );
 }
 

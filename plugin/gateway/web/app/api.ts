@@ -16,6 +16,7 @@ import type {
   Role,
   PublishedMeta,
   AppData,
+  AppRevision,
 } from "./types";
 
 let csrf = "";
@@ -111,6 +112,10 @@ export const api = {
   appData: (id: string) => req<AppData>(`app_data?id=${encodeURIComponent(id)}`),
   rename: (id: string, title: string) =>
     req<MutationResult & { title?: string }>("rename", { method: "POST", body: { id, title } }),
+  // Version history for the header's version drawer (#58): every edit, newest
+  // first, with editor + timestamp. `revertApp` restores one snapshot.
+  appHistory: (id: string) => req<AppRevision[]>(`app_history?id=${encodeURIComponent(id)}`),
+  revertApp: (id: string, seq: number) => req<MutationResult>("revert", { method: "POST", body: { id, seq } }),
   archive: (id: string) => req<MutationResult>("archive", { method: "POST", body: { id } }),
   unarchive: (id: string) => req<MutationResult>("unarchive", { method: "POST", body: { id } }),
   setVisibility: (id: string, visibility: "team" | "public") =>

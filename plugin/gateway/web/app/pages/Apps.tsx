@@ -8,6 +8,8 @@ import { useAuth } from "../auth";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
+import { VisibilityBadge } from "../components/VisibilityBadge";
+import { VisibilityDialog } from "../components/VisibilityDialog";
 import { Button } from "../components/Button";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
@@ -19,6 +21,8 @@ export function Apps() {
   const isAdmin = me?.role === "admin";
   const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.apps(), []);
   const [archiving, setArchiving] = useState<PublishedMeta | null>(null);
+  // App whose visibility picker is open (null = none).
+  const [visApp, setVisApp] = useState<PublishedMeta | null>(null);
   const [newOpen, setNewOpen] = useState(false);
 
   const copy = async (r: PublishedMeta) => {
@@ -81,19 +85,11 @@ export function Apps() {
                   </MenuItem>,
                 ];
                 if (canManage) {
-                  // Making PUBLIC is admin-only (I9); taking it back to team is author-or-admin.
-                  if (r.visibility === "public")
-                    items.push(
-                      <MenuItem key="vis" onSelect={() => void act(() => api.setVisibility(r.id, "team"))}>
-                        Make team-only
-                      </MenuItem>,
-                    );
-                  else if (isAdmin)
-                    items.push(
-                      <MenuItem key="vis" onSelect={() => void act(() => api.setVisibility(r.id, "public"))}>
-                        Make public
-                      </MenuItem>,
-                    );
+                  items.push(
+                    <MenuItem key="vis" onSelect={() => setVisApp(r)}>
+                      Change visibility…
+                    </MenuItem>,
+                  );
                   items.push(
                     <MenuItem key="arch" danger onSelect={() => setArchiving(r)}>
                       Archive
@@ -118,7 +114,7 @@ export function Apps() {
                     ) : (
                       <Badge tone="idle">static</Badge>
                     )}
-                    <Badge tone={r.visibility === "public" ? "ok" : "idle"}>{r.visibility}</Badge>
+                    <VisibilityBadge visibility={r.visibility} canManage={canManage} onOpen={() => setVisApp(r)} />
                     <Menu label={`Actions for ${r.title}`}>{items}</Menu>
                   </div>
                 );
@@ -166,6 +162,17 @@ export function Apps() {
           if (a) void act(() => api.archive(a.id));
         }}
         onClose={() => setArchiving(null)}
+      />
+      <VisibilityDialog
+        open={!!visApp}
+        visibility={visApp?.visibility ?? "team"}
+        canMakePublic={isAdmin}
+        onSubmit={(next) => {
+          const a = visApp;
+          setVisApp(null);
+          if (a) void act(() => api.setVisibility(a.id, next));
+        }}
+        onClose={() => setVisApp(null)}
       />
       <NewDialog
         open={newOpen}
