@@ -129,6 +129,10 @@ The net loop: canary + generate + triage turn every pending item into a linted, 
 
 `deploy.sh` also runs the lint once after each deploy as a **warn-only** step (it never blocks a ship). See [`deploy/backup/cron.example`](./backup/cron.example) for the full crontab.
 
+## 6. Activity notifications (optional)
+
+Set `SETOKU_NOTIFY_WEBHOOK` in `/opt/setoku/.env` to a Slack incoming-webhook URL and the box posts a line when an app is **published** or **updated** (with the author’s update note), and when a **new version is deployed** (fired once, on the first boot of a changed version). It uses the same `{"text": …}` shape as the alert webhook, so any Slack-compatible endpoint works. Unset means notifications are off. To read the URL from a different env var, set `notifications.slackWebhookEnv` in `.setoku/config.json`; the URL itself never lives in config (so it never reaches the model).
+
 ## Notes
 
 - **Analyst tokens are propose-only (I2/I9).** They get the read tools +

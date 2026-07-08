@@ -31,6 +31,7 @@ import { buildServer, type TokenRole } from "./app";
 import { EmbedIndex } from "./lib/embed-index";
 import { DerivedSynonyms } from "./lib/derived-synonyms";
 import { loadConfig, resolveProjectDir, connectorName } from "./lib/config";
+import { notifyActivity } from "./lib/notify";
 import {
   KnowledgeStore,
   defaultDbPath,
@@ -234,6 +235,14 @@ if (store.empty) {
   const imported = seedFromFiles(store, projectDir);
   if (imported > 0) store.audit("system", "seed_from_files", { imported });
 }
+// Detect a version change across restarts (issue #63): the gateway boots fresh
+// after `docker compose up --build`, so a startup where VERSION differs from the
+// last one we recorded is a real deploy. Record it now (so a crash-loop doesn't
+// re-announce), and remember whether to announce once we're actually listening.
+// A first-ever boot (no prior version) is onboarding, not a deploy — no notice.
+const previousVersion = store.getKv("last_deployed_version");
+const versionChanged = previousVersion !== null && previousVersion !== VERSION;
+if (previousVersion !== VERSION) store.setKv("last_deployed_version", VERSION);
 // Semantic index for hybrid retrieval (I8 opt-in local embeddings). Built in the
 // background so startup isn't blocked; find_context falls back to keyword
 // retrieval until (and unless) it's ready. Inert when SETOKU_EMBEDDINGS!=1.
@@ -1804,4 +1813,15 @@ httpServer.listen(PORT, () => {
   console.error(
     `setoku gateway (http) listening on :${PORT} — ${tokens.size} token(s), project ${projectDir}`,
   );
+  // Announce a new deployed version once the box is actually serving it (issue
+  // #63). Detached + best-effort; a no-op unless a notify webhook is configured.
+  if (versionChanged) {
+    const cfg = loadConfig(projectDir);
+    void notifyActivity(projectDir, {
+      kind: "deploy",
+      version: VERSION,
+      previous: previousVersion,
+      box: cfg.ok ? cfg.config.name ?? null : null,
+    });
+  }
 });

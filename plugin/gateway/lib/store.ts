@@ -361,6 +361,14 @@ export class KnowledgeStore {
       tool TEXT NOT NULL,
       payload TEXT
     )`);
+    // Small persistent key/value scratch for gateway-internal bookkeeping that
+    // must survive a restart but isn't knowledge — e.g. the last VERSION we sent
+    // a "deployed" notification for, so an ordinary restart doesn't re-announce
+    // (issue #63). Not for anything user-facing or secret.
+    this.db.run(`CREATE TABLE IF NOT EXISTS kv (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )`);
     // Provisioning audit trail (Phase 4, task 4.1) — append-only. Every planned,
     // applied, skipped, or failed provisioning step lands here so a `setoku init`
     // run is fully reconstructable, and so re-runs can skip already-applied steps
@@ -798,6 +806,22 @@ export class KnowledgeStore {
     );
     if (res.changes > 0) this.audit(user, "unreject_correction", { id });
     return res.changes > 0;
+  }
+
+  /* --------------------------------- kv --------------------------------- */
+
+  /** Read a gateway-internal bookkeeping value (see the `kv` table). */
+  getKv(key: string): string | null {
+    const row = this.db.query("SELECT value FROM kv WHERE key = ?").get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+
+  /** Upsert a gateway-internal bookkeeping value. */
+  setKv(key: string, value: string): void {
+    this.db.run(
+      "INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      [key, value],
+    );
   }
 
   /* -------------------------------- audit ------------------------------- */

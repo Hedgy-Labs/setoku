@@ -89,6 +89,11 @@ services:
       SETOKU_JANITOR_TOKENS: ${SETOKU_JANITOR_TOKENS:-}
       SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
       SETOKU_PUBLIC_URL: https://${SETOKU_DOMAIN:-localhost}
+      # Optional Slack incoming webhook for activity notifications (issue #63):
+      # app published/updated, and a new version deployed. Same `{text}` shape as
+      # the alert webhook. Unset → notifications are simply off. Override the env
+      # var name with .setoku/config.json notifications.slackWebhookEnv.
+      SETOKU_NOTIFY_WEBHOOK: ${SETOKU_NOTIFY_WEBHOOK:-}
       SETOKU_HEALTHZ_PING: ${SETOKU_HEALTHZ_PING:-}
       # run_query dialect "clickhouse" (I5) — connects as the read-only
       # engine-constrained user (deploy/clickhouse/lake-users.xml), NOT the
