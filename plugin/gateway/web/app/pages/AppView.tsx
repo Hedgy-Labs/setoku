@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useCallback, useEffect, useRef, useState } from "react";
-import * as AlertDialog from "@radix-ui/react-alert-dialog";
+import { AlertDialog } from "@base-ui-components/react/alert-dialog";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
@@ -646,10 +646,10 @@ function HistoryPanel({
 }) {
   const { data, loading, error } = useApi<AppRevision[]>(() => api.appHistory(id), [id, nonce]);
   const panelRef = useRef<HTMLDivElement>(null);
-  // Keyboard/focus parity with the app's Radix menus/dialogs (no popover dep):
+  // Keyboard/focus parity with the app's Base UI menus/dialogs (no popover dep):
   // move focus into the panel on open and restore it to the trigger on close.
   // Escape-to-close is handled on the panel itself (below) so it can't collide
-  // with a Radix confirm dialog opened on top (focus is trapped there instead).
+  // with a confirm dialog opened on top (focus is trapped there instead).
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null;
     panelRef.current?.focus();
@@ -820,8 +820,8 @@ function EditDialog({
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
       <AlertDialog.Portal>
-        <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
-        <AlertDialog.Content className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
+        <AlertDialog.Backdrop className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
+        <AlertDialog.Popup className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
           <AlertDialog.Title className="text-base font-semibold text-stone-900">
             {canEdit ? "Edit this app" : "Make your own copy"}
           </AlertDialog.Title>
@@ -834,8 +834,10 @@ function EditDialog({
             {prompt}
           </pre>
           <div className="mt-4 flex justify-end gap-2">
-            <AlertDialog.Cancel className="btn btn-ghost">Close</AlertDialog.Cancel>
-            <AlertDialog.Action
+            <AlertDialog.Close className="btn btn-ghost">Close</AlertDialog.Close>
+            {/* AlertDialog.Close so copying also dismisses the dialog (matches the
+                old Radix Action behavior). */}
+            <AlertDialog.Close
               className="btn btn-primary"
               onClick={() => {
                 void navigator.clipboard?.writeText(prompt).catch(() => {});
@@ -843,9 +845,9 @@ function EditDialog({
               }}
             >
               Copy prompt
-            </AlertDialog.Action>
+            </AlertDialog.Close>
           </div>
-        </AlertDialog.Content>
+        </AlertDialog.Popup>
       </AlertDialog.Portal>
     </AlertDialog.Root>
   );

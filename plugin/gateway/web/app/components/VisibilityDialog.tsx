@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import * as AlertDialog from "@radix-ui/react-alert-dialog";
+import { AlertDialog } from "@base-ui-components/react/alert-dialog";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../cn";
 
@@ -74,17 +74,14 @@ export function VisibilityDialog({
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
       <AlertDialog.Portal>
-        <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
-        <AlertDialog.Content
+        <AlertDialog.Backdrop className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
+        <AlertDialog.Popup
           className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl"
           // Focus Save on open, and let Enter submit from ANYWHERE in the dialog
           // (radio, Save, or dead space) — not just when Save has focus. Enter on
           // Cancel still cancels; preventDefault stops Enter from also re-clicking a
           // focused radio.
-          onOpenAutoFocus={(e) => {
-            e.preventDefault();
-            saveRef.current?.focus();
-          }}
+          initialFocus={saveRef}
           onKeyDown={(e) => {
             if (e.key !== "Enter") return;
             if ((e.target as HTMLElement)?.dataset?.role === "cancel") return;
@@ -104,16 +101,16 @@ export function VisibilityDialog({
             />
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <AlertDialog.Cancel data-role="cancel" className="btn btn-ghost">
+            <AlertDialog.Close data-role="cancel" className="btn btn-ghost">
               Cancel
-            </AlertDialog.Cancel>
-            {/* Plain button (not AlertDialog.Action): the parent closes via `open`
+            </AlertDialog.Close>
+            {/* Plain button (not AlertDialog.Close): the parent closes via `open`
                 after applying, so nothing changes until this is pressed. */}
             <button ref={saveRef} className="btn btn-primary" onClick={submit}>
               Save
             </button>
           </div>
-        </AlertDialog.Content>
+        </AlertDialog.Popup>
       </AlertDialog.Portal>
     </AlertDialog.Root>
   );

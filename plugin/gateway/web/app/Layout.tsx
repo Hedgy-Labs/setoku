@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { Menu as BaseMenu } from "@base-ui-components/react/menu";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api } from "./api";
 import { useApi } from "./hooks";
@@ -78,8 +78,8 @@ export function Layout() {
 /** Wide-screen account control: a quiet identity button opening a menu with role + sign-out. */
 function AccountMenu({ identity, role, onSignOut }: { identity: string; role: string; onSignOut: () => void }) {
   return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger className="group inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-stone-500 outline-none transition hover:bg-stone-100 hover:text-stone-800 data-[state=open]:bg-stone-100 data-[state=open]:text-stone-800">
+    <BaseMenu.Root>
+      <BaseMenu.Trigger className="group inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-stone-500 outline-none transition hover:bg-stone-100 hover:text-stone-800 data-[popup-open]:bg-stone-100 data-[popup-open]:text-stone-800">
         <span className="max-w-[16rem] truncate">{identity}</span>
         <svg
           width="12"
@@ -90,29 +90,27 @@ function AccountMenu({ identity, role, onSignOut }: { identity: string; role: st
           strokeWidth="1.5"
           strokeLinecap="round"
           strokeLinejoin="round"
-          className="text-stone-400 transition-transform group-data-[state=open]:rotate-180"
+          className="text-stone-400 transition-transform group-data-[popup-open]:rotate-180"
           aria-hidden="true"
         >
           <path d="M3 4.5 6 7.5 9 4.5" />
         </svg>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          align="end"
-          sideOffset={6}
-          className="z-30 min-w-[12rem] overflow-hidden rounded-lg border border-stone-200 bg-white py-1 shadow-lg"
-        >
-          <div className="px-3 py-2">
-            <div className="truncate text-sm font-medium text-stone-900">{identity}</div>
-            <div className="text-xs text-stone-500">{role}</div>
-          </div>
-          <DropdownMenu.Separator className="my-1 h-px bg-stone-200" />
-          <DropdownMenu.Item className="menu-item" onSelect={onSignOut}>
-            Sign out
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+      </BaseMenu.Trigger>
+      <BaseMenu.Portal>
+        <BaseMenu.Positioner align="end" sideOffset={6} className="z-30">
+          <BaseMenu.Popup className="min-w-[12rem] overflow-hidden rounded-lg border border-stone-200 bg-white py-1 shadow-lg">
+            <div className="px-3 py-2">
+              <div className="truncate text-sm font-medium text-stone-900">{identity}</div>
+              <div className="text-xs text-stone-500">{role}</div>
+            </div>
+            <BaseMenu.Separator className="my-1 h-px bg-stone-200" />
+            <BaseMenu.Item className="menu-item" onClick={onSignOut}>
+              Sign out
+            </BaseMenu.Item>
+          </BaseMenu.Popup>
+        </BaseMenu.Positioner>
+      </BaseMenu.Portal>
+    </BaseMenu.Root>
   );
 }
 
@@ -132,37 +130,35 @@ function MobileNav({
   const { pathname } = useLocation();
   const isActive = (to: string): boolean => (to === "/" ? pathname === "/" : pathname.startsWith(to));
   return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger className="icon-btn" aria-label="Menu">
+    <BaseMenu.Root>
+      <BaseMenu.Trigger className="icon-btn" aria-label="Menu">
         <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
           <path d="M3 5h12M3 9h12M3 13h12" />
         </svg>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content
-          align="end"
-          sideOffset={6}
-          className="z-30 min-w-[12rem] overflow-hidden rounded-lg border border-stone-200 bg-white py-1 shadow-lg"
-        >
-          {TABS.map((t) => (
-            <DropdownMenu.Item
-              key={t.to}
-              className={cn("menu-item", isActive(t.to) && "bg-stone-100 text-stone-900")}
-              onSelect={() => navigate(t.to)}
-            >
-              {t.label}
-              {t.to === "/knowledge" ? <PendingBadge n={pending} /> : null}
-            </DropdownMenu.Item>
-          ))}
-          <DropdownMenu.Separator className="my-1 h-px bg-stone-200" />
-          <div className="px-3 py-1 text-xs text-stone-500">
-            {identity} · {role}
-          </div>
-          <DropdownMenu.Item className="menu-item" onSelect={onSignOut}>
-            Sign out
-          </DropdownMenu.Item>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+      </BaseMenu.Trigger>
+      <BaseMenu.Portal>
+        <BaseMenu.Positioner align="end" sideOffset={6} className="z-30">
+          <BaseMenu.Popup className="min-w-[12rem] overflow-hidden rounded-lg border border-stone-200 bg-white py-1 shadow-lg">
+            {TABS.map((t) => (
+              <BaseMenu.Item
+                key={t.to}
+                className={cn("menu-item", isActive(t.to) && "bg-stone-100 text-stone-900")}
+                onClick={() => navigate(t.to)}
+              >
+                {t.label}
+                {t.to === "/knowledge" ? <PendingBadge n={pending} /> : null}
+              </BaseMenu.Item>
+            ))}
+            <BaseMenu.Separator className="my-1 h-px bg-stone-200" />
+            <div className="px-3 py-1 text-xs text-stone-500">
+              {identity} · {role}
+            </div>
+            <BaseMenu.Item className="menu-item" onClick={onSignOut}>
+              Sign out
+            </BaseMenu.Item>
+          </BaseMenu.Popup>
+        </BaseMenu.Positioner>
+      </BaseMenu.Portal>
+    </BaseMenu.Root>
   );
 }
