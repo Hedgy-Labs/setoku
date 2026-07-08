@@ -35,6 +35,19 @@ function humanizeKey(k: string): string {
   return k.replace(/[_-]+/g, " ").trim();
 }
 
+/** A version's change tags (from the server) → a friendly, comma-joined phrase,
+ *  e.g. ["title","data"] → "title, data panels". Empty → "" (the current one). */
+const CHANGE_LABEL: Record<string, string> = {
+  title: "title",
+  content: "content",
+  data: "data panels",
+  inputs: "inputs",
+  refresh: "refresh rate",
+};
+function changeSummary(changes: string[]): string {
+  return changes.map((c) => CHANGE_LABEL[c] ?? c).join(", ");
+}
+
 /**
  * Render one app. The agent-authored template + injected live data is
  * served by /admin/frame/<id> and shown in a sandboxed iframe — that endpoint
@@ -61,7 +74,9 @@ export function AppView() {
   // restore; `revertSeq` is the version awaiting the restore confirm (null = none).
   const [showHistory, setShowHistory] = useState(false);
   const [historyNonce, setHistoryNonce] = useState(0);
-  const [revertSeq, setRevertSeq] = useState<number | null>(null);
+  // The version awaiting the restore confirm (null = none). Holds the whole
+  // revision so the confirm can name what restoring it will change.
+  const [revertRev, setRevertRev] = useState<AppRevision | null>(null);
   // null = not editing the title; a string = the in-progress new title.
   const [titleEdit, setTitleEdit] = useState<string | null>(null);
   const cancelRename = useRef(false);
@@ -341,7 +356,7 @@ export function AppView() {
   // the restored content immediately. The panel stays open so you can see the
   // new "Current" version land.
   const doRevert = async (seq: number) => {
-    setRevertSeq(null);
+    setRevertRev(null);
     try {
       const r = await api.revertApp(id, seq);
       reload();
@@ -412,6 +427,9 @@ export function AppView() {
         {data ? (
           <span className="hidden text-xs text-stone-500 sm:inline">
             published by {data.createdBy}
+            {data.versions && data.versions > 1 && data.editedBy && data.editedAt
+              ? ` · edited by ${data.editedBy} ${relTime(data.editedAt)}`
+              : ""}
             {isApp && stampAt ? ` · data updated ${relTime(stampAt)}` : ""}
             {isApp && data.mirrorAsOf ? ` · source data as of ${relTime(data.mirrorAsOf)}` : ""}
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
@@ -541,19 +559,23 @@ export function AppView() {
           id={id}
           canManage={mine || isAdmin}
           nonce={historyNonce}
-          onRestore={(seq) => setRevertSeq(seq)}
+          onRestore={(rev) => setRevertRev(rev)}
           onClose={() => setShowHistory(false)}
         />
       ) : null}
       <Confirm
-        open={revertSeq !== null}
-        title={`Restore version ${revertSeq ?? ""}?`}
-        body="This app’s current content will be replaced with that version. The current state is kept in history, so you can restore it again."
+        open={revertRev !== null}
+        title={`Restore version ${revertRev?.seq ?? ""}?`}
+        body={
+          revertRev && revertRev.changes.length
+            ? `The current app will be replaced with version ${revertRev.seq} — changing its ${changeSummary(revertRev.changes)}. The current version is kept in history, so you can undo this.`
+            : "The current app will be replaced with that version. The current version is kept in history, so you can undo this."
+        }
         confirmLabel="Restore"
         onConfirm={() => {
-          if (revertSeq !== null) void doRevert(revertSeq);
+          if (revertRev) void doRevert(revertRev.seq);
         }}
-        onClose={() => setRevertSeq(null)}
+        onClose={() => setRevertRev(null)}
       />
       <EditDialog
         open={editOpen}
@@ -594,15 +616,34 @@ function HistoryPanel({
   id: string;
   canManage: boolean;
   nonce: number;
-  onRestore: (seq: number) => void;
+  onRestore: (rev: AppRevision) => void;
   onClose: () => void;
 }) {
   const { data, loading, error } = useApi<AppRevision[]>(() => api.appHistory(id), [id, nonce]);
+  const panelRef = useRef<HTMLDivElement>(null);
+  // Keyboard/focus parity with the app's Radix menus/dialogs (no popover dep):
+  // move focus into the panel on open and restore it to the trigger on close.
+  // Escape-to-close is handled on the panel itself (below) so it can't collide
+  // with a Radix confirm dialog opened on top (focus is trapped there instead).
+  useEffect(() => {
+    const prev = document.activeElement as HTMLElement | null;
+    panelRef.current?.focus();
+    return () => prev?.focus?.();
+  }, []);
   return (
     <>
       {/* Outside-click scrim (transparent — the app stays visible behind it). */}
       <div className="fixed inset-0 z-30" onClick={onClose} aria-hidden="true" />
-      <div className="card fixed right-2 top-14 z-40 flex max-h-[70vh] w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden p-0 shadow-xl">
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-label="Version history"
+        tabIndex={-1}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") onClose();
+        }}
+        className="card fixed right-2 top-14 z-40 flex max-h-[70vh] w-80 max-w-[calc(100vw-1rem)] flex-col overflow-hidden p-0 shadow-xl focus:outline-none"
+      >
         <div className="flex flex-none items-center justify-between border-b border-stone-100 px-4 py-2.5">
           <span className="text-sm font-medium text-stone-800">Version history</span>
           <button className="text-xs text-stone-500 hover:text-stone-800" onClick={onClose}>
@@ -630,12 +671,14 @@ function HistoryPanel({
                       {r.ts ? ` · ${relTime(r.ts)}` : ""}
                     </p>
                     {r.note ? <p className="mt-0.5 text-xs italic text-stone-400">{r.note}</p> : null}
+                    {/* What restoring this version would change vs. the live app —
+                        so the restore isn't a blind pick. */}
+                    {!r.current && r.changes.length ? (
+                      <p className="mt-0.5 text-xs text-stone-400">changes: {changeSummary(r.changes)}</p>
+                    ) : null}
                   </div>
                   {!r.current && canManage ? (
-                    <button
-                      className="btn btn-ghost flex-none px-2 py-1 text-xs"
-                      onClick={() => onRestore(r.seq)}
-                    >
+                    <button className="btn btn-ghost flex-none px-2 py-1 text-xs" onClick={() => onRestore(r)}>
                       Restore
                     </button>
                   ) : null}

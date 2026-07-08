@@ -1374,6 +1374,14 @@ const httpServer = http.createServer(async (req, res) => {
           const prov = appProvenance(store, meta, []);
           prov.updatedAt = store.newestPanelComputedAt(id);
           prov.mirrorAsOf = await appMirrorAsOf(meta);
+          // Last-editor stamp for the header (#58) — the newest version's author +
+          // time, shown once an app has actually been edited (versions > 1).
+          const edit = store.latestAppEdit(id);
+          if (edit) {
+            prov.editedBy = edit.editor;
+            prov.editedAt = edit.ts;
+            prov.versions = edit.versions;
+          }
           store.audit(session.identity, "app_viewed", { id });
           return json(200, prov);
         }
@@ -1387,7 +1395,7 @@ const httpServer = http.createServer(async (req, res) => {
           const id = url.searchParams.get("id") ?? "";
           const meta = store.getPublishedMeta(id);
           if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found or archived" });
-          const revs = store.listAppRevisions(id);
+          const revs = store.listAppHistory(id);
           const current = revs.length ? revs[0].seq : 0; // newest seq === live state
           return json(200, revs.map((r) => ({ ...r, current: r.seq === current })));
         }

@@ -78,6 +78,32 @@ describe("app version history", () => {
   });
 });
 
+describe("history diff + last-editor", () => {
+  it("tags each version with what differs from the live app; current has none", () => {
+    const store = new KnowledgeStore(dbPath);
+    store.createPublished({ id: "diffapp", title: "T1", body: "b1", refreshSeconds: 60, createdBy: "alice" });
+    store.updatePublished("diffapp", { title: "T2" }, { editor: "bob" }); // title-only
+    store.updatePublished("diffapp", { body: "b3", panels: [{ key: "p", sql: "SELECT 1", dialect: "postgres" }] }, { editor: "carol" });
+
+    const hist = store.listAppHistory("diffapp"); // newest first: seq 3,2,1
+    expect(hist.map((r) => r.seq)).toEqual([3, 2, 1]);
+    expect(hist[0].changes).toEqual([]); // current == live
+    // v2 (title "T2", body "b1", no panels) vs live (title "T2", body "b3", panels):
+    // title matches now, but content + data differ.
+    expect(hist[1].changes.sort()).toEqual(["content", "data"]);
+    // v1 (title "T1", body "b1", no panels) vs live: title + content + data differ.
+    expect(hist[2].changes.sort()).toEqual(["content", "data", "title"]);
+  });
+
+  it("latestAppEdit reports the newest editor + version count", () => {
+    const store = new KnowledgeStore(dbPath);
+    const e = store.latestAppEdit("diffapp");
+    expect(e?.editor).toBe("carol");
+    expect(e?.versions).toBe(3);
+    expect(store.latestAppEdit("nope")).toBeNull();
+  });
+});
+
 describe("retention", () => {
   it("prunes to the newest 100 versions, keeping the live one", () => {
     const store = new KnowledgeStore(dbPath);

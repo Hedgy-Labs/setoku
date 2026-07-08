@@ -208,6 +208,11 @@ export interface AppData {
   updatedAt: string | null;
   /** Business-DB mirror freshness ("data as of") when clickhouse panels read biz.* tables. */
   mirrorAsOf?: string | null;
+  /** Newest version's editor + timestamp, and total version count (#58). The
+   *  header shows "edited by X · Ns ago" once the app has been edited (versions > 1). */
+  editedBy?: string;
+  editedAt?: string;
+  versions?: number;
   panels: PanelProvenance[];
 }
 
@@ -221,6 +226,10 @@ export interface AppRevision {
   ts: string;
   title: string;
   hasPanels: boolean;
+  /** Which fields differ from the CURRENT live app ("title" | "content" | "data"
+   *  | "inputs" | "refresh") — so a restore isn't blind. Empty for the current
+   *  version. */
+  changes: string[];
   /** True for the version currently live at the app's link. */
   current: boolean;
 }

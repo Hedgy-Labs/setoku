@@ -1170,6 +1170,53 @@ export class KnowledgeStore {
     return rows.map((r) => ({ seq: r.seq, editor: r.editor, note: r.note, ts: r.ts, title: r.title, hasPanels: !!r.hasPanels }));
   }
 
+  /** Version history for the header drawer, newest first, WITHOUT bodies — each
+   *  revision tagged with which fields differ from the CURRENT live app, so a
+   *  restore isn't blind ("restoring changes: content, data"). The diff is done
+   *  in SQL against the live `published` row (`IS NOT` = null-safe), so no ~2MB
+   *  bodies are materialized. The newest revision equals the live row (diff-gate
+   *  invariant), so its `changes` is always empty. */
+  listAppHistory(id: string): (AppRevisionMeta & { changes: string[] })[] {
+    const rows = this.db
+      .query(
+        `SELECT r.seq AS seq, r.editor AS editor, r.note AS note, r.ts AS ts, r.title AS title,
+                (r.panels IS NOT NULL) AS hasPanels,
+                (r.title IS NOT p.title) AS titleChanged,
+                (r.body IS NOT p.body) AS bodyChanged,
+                (r.panels IS NOT p.panels) AS panelsChanged,
+                (r.params IS NOT p.params) AS paramsChanged,
+                (r.refresh_seconds IS NOT p.refresh_seconds) AS refreshChanged
+         FROM app_revisions r JOIN published p ON p.id = r.app_id
+         WHERE r.app_id = ? ORDER BY r.seq DESC`,
+      )
+      .all(id) as {
+      seq: number; editor: string; note: string | null; ts: string; title: string; hasPanels: number;
+      titleChanged: number; bodyChanged: number; panelsChanged: number; paramsChanged: number; refreshChanged: number;
+    }[];
+    return rows.map((r) => {
+      const changes: string[] = [];
+      if (r.titleChanged) changes.push("title");
+      if (r.bodyChanged) changes.push("content");
+      if (r.panelsChanged) changes.push("data");
+      if (r.paramsChanged) changes.push("inputs");
+      if (r.refreshChanged) changes.push("refresh");
+      return { seq: r.seq, editor: r.editor, note: r.note, ts: r.ts, title: r.title, hasPanels: !!r.hasPanels, changes };
+    });
+  }
+
+  /** The newest version's editor + timestamp and the total version count — for
+   *  the header's "edited by X · Ns ago" (shown only once an app has been edited,
+   *  i.e. versions > 1). Null for an app with no history. */
+  latestAppEdit(id: string): { editor: string; ts: string; versions: number } | null {
+    return (
+      (this.db
+        .query(
+          "SELECT editor, ts, (SELECT COUNT(*) FROM app_revisions WHERE app_id = ?) AS versions FROM app_revisions WHERE app_id = ? ORDER BY seq DESC LIMIT 1",
+        )
+        .get(id, id) as { editor: string; ts: string; versions: number } | null) ?? null
+    );
+  }
+
   /** One full version snapshot (incl. body/panels/params) — what a revert
    *  restores. Null if the app or version is unknown. */
   getAppRevision(id: string, seq: number): AppRevision | null {
