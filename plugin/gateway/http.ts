@@ -906,7 +906,10 @@ function publicAppShell(opts: {
   header{flex:none;display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1rem;padding:.7rem 1.1rem;border-bottom:1px solid #e7e5e4}
   h1{margin:0;font-size:1.02rem;font-weight:600}
   .muted{color:#78716c;font-size:.8rem}
-  .adminbtn{display:none;margin-left:auto;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
+  /* very subtle attribution — stone-family, no accent (neutral-chrome rule) */
+  .brand{margin-left:auto;font-size:.72rem;color:#a8a29e;text-decoration:none;letter-spacing:.01em;white-space:nowrap}
+  .brand:hover{color:#78716c;text-decoration:underline}
+  .adminbtn{display:none;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
   .adminbtn:hover{background:#f5f5f4}
   main{flex:1;min-height:0;display:flex;position:relative}
   iframe{flex:1;width:100%;border:0;background:#fff}
@@ -922,7 +925,7 @@ function publicAppShell(opts: {
   .pc select,.pc input{font:inherit;font-size:.8rem;color:#1c1917;background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.18rem .45rem}
   .pc select:focus,.pc input:focus{outline:none;border-color:#a8a29e;box-shadow:0 0 0 2px #e7e5e4}
 </style></head><body>
-<header><h1>${title}</h1><span class="muted" id="stamp"></span><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
+<header><h1>${title}</h1><span class="muted" id="stamp"></span><a class="brand" href="https://setoku.com" target="_blank" rel="noopener noreferrer">Made with Setoku</a><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
 <main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><div id="ldr"><div class="card"><span class="sp"></span>updating…</div></div></main>
 <script>
 (function(){

@@ -31,6 +31,7 @@ export function VisibilityDialog({
     if (open) setSel(visibility);
   }, [open, visibility]);
   const saveRef = useRef<HTMLButtonElement>(null);
+  const submit = (): void => (sel === visibility ? onClose() : onSubmit(sel));
 
   const Option = ({ value, label, desc, disabled }: { value: Vis; label: string; desc: string; disabled?: boolean }) => {
     const checked = sel === value;
@@ -76,10 +77,19 @@ export function VisibilityDialog({
         <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
         <AlertDialog.Content
           className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl"
-          // Focus Save so Enter submits (the selection is inert until then).
+          // Focus Save on open, and let Enter submit from ANYWHERE in the dialog
+          // (radio, Save, or dead space) — not just when Save has focus. Enter on
+          // Cancel still cancels; preventDefault stops Enter from also re-clicking a
+          // focused radio.
           onOpenAutoFocus={(e) => {
             e.preventDefault();
             saveRef.current?.focus();
+          }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            if ((e.target as HTMLElement)?.dataset?.role === "cancel") return;
+            e.preventDefault();
+            submit();
           }}
         >
           <AlertDialog.Title className="text-base font-semibold text-stone-900">Who can see this?</AlertDialog.Title>
@@ -94,10 +104,12 @@ export function VisibilityDialog({
             />
           </div>
           <div className="mt-4 flex justify-end gap-2">
-            <AlertDialog.Cancel className="btn btn-ghost">Cancel</AlertDialog.Cancel>
+            <AlertDialog.Cancel data-role="cancel" className="btn btn-ghost">
+              Cancel
+            </AlertDialog.Cancel>
             {/* Plain button (not AlertDialog.Action): the parent closes via `open`
                 after applying, so nothing changes until this is pressed. */}
-            <button ref={saveRef} className="btn btn-primary" onClick={() => (sel === visibility ? onClose() : onSubmit(sel))}>
+            <button ref={saveRef} className="btn btn-primary" onClick={submit}>
               Save
             </button>
           </div>
