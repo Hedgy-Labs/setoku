@@ -420,7 +420,7 @@ export class KnowledgeStore {
     this.db.run(`CREATE TABLE IF NOT EXISTS published (
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
-      format TEXT NOT NULL DEFAULT 'html',
+      format TEXT NOT NULL DEFAULT 'app',
       body TEXT NOT NULL,
       visibility TEXT NOT NULL DEFAULT 'team',
       created_by TEXT NOT NULL,
