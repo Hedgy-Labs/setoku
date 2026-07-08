@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseFrontmatter } from "./artifact";
 import { setokuDir } from "./config";
+import { isFullDoc } from "./apps";
 import type { AppParam } from "./params";
 
 export type DocType = "entity" | "metric" | "query" | "overview" | "gotcha";
@@ -1103,7 +1104,10 @@ export class KnowledgeStore {
       [
         rec.id,
         rec.title,
-        rec.format ?? (panels ? "app" : "html"),
+        // Match the publish_app tool's rule so a direct caller can't mislabel a
+        // fragment: panels → app; else a full <!doctype> doc is a legacy frozen
+        // "html" report, but a bare fragment (state-only app) is still an "app".
+        rec.format ?? (panels ? "app" : isFullDoc(rec.body) ? "html" : "app"),
         rec.body,
         panels,
         params,
