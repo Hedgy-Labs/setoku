@@ -8,6 +8,7 @@ import { useAuth } from "../auth";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
+import { VisibilityBadge } from "../components/VisibilityBadge";
 import { Button } from "../components/Button";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
@@ -121,7 +122,13 @@ export function Apps() {
                     ) : (
                       <Badge tone="idle">static</Badge>
                     )}
-                    <Badge tone={r.visibility === "public" ? "ok" : "idle"}>{r.visibility}</Badge>
+                    <VisibilityBadge
+                      visibility={r.visibility}
+                      canManage={canManage}
+                      isAdmin={isAdmin}
+                      onMakePublic={() => setMakingPublic(r)}
+                      onMakeTeam={() => void act(() => api.setVisibility(r.id, "team"))}
+                    />
                     <Menu label={`Actions for ${r.title}`}>{items}</Menu>
                   </div>
                 );
@@ -175,6 +182,7 @@ export function Apps() {
         title="Make this app public?"
         body="Anyone with the public link can open it without signing in to the box. You can switch it back to team-only anytime."
         confirmLabel="Make public"
+        defaultAction
         onConfirm={() => {
           const p = makingPublic;
           setMakingPublic(null);

@@ -8,6 +8,7 @@ import { useAuth } from "../auth";
 import { Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
+import { VisibilityBadge } from "../components/VisibilityBadge";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
 import { appShareUrl, relTime } from "../format";
@@ -161,17 +162,7 @@ export function AppView() {
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
   const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
-  // Visibility control (mirrors the server gate): only an admin may PROMOTE to
-  // public (I9); author or admin may take it back to team-only. When either
-  // applies, the badge itself becomes the toggle.
   const active = !!data && !data.archivedAt;
-  const canGoPublic = active && visibility === "team" && isAdmin;
-  const canGoTeam = active && visibility === "public" && (isAdmin || mine);
-  const canChangeVis = canGoPublic || canGoTeam;
-  const changeVisibility = () => {
-    if (visibility === "public") void act(() => api.setVisibility(id, "team"));
-    else setMakePublicOpen(true); // team→public is confirmed
-  };
   formatRef.current = fresh?.format; // for the watchdog's fire-time decision
 
   // Live numbers for the CURRENT frame only (echo token must match the nonce).
@@ -438,20 +429,15 @@ export function AppView() {
           </h1>
         )}
         {data ? (
-          canChangeVis ? (
-            // The visibility badge doubles as its own control: click to switch
-            // team ↔ public (promote is admin-only + confirmed; see changeVisibility).
-            <button
-              type="button"
-              onClick={changeVisibility}
-              title={visibility === "public" ? "Make team-only" : "Make public"}
-              className="rounded-full transition hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-stone-300"
-            >
-              <Badge tone={visibility === "public" ? "ok" : "idle"}>{visibility}</Badge>
-            </button>
-          ) : (
-            <Badge tone={visibility === "public" ? "ok" : "idle"}>{visibility}</Badge>
-          )
+          // The visibility badge doubles as its own control (promote is admin-only
+          // + confirmed via makePublicOpen; demote is immediate).
+          <VisibilityBadge
+            visibility={visibility}
+            canManage={active && (mine || isAdmin)}
+            isAdmin={active && isAdmin}
+            onMakePublic={() => setMakePublicOpen(true)}
+            onMakeTeam={() => void act(() => api.setVisibility(id, "team"))}
+          />
         ) : null}
         {data ? (
           <span className="hidden text-xs text-stone-500 sm:inline">
@@ -618,6 +604,7 @@ export function AppView() {
         title="Make this app public?"
         body="Anyone with the public link can open it without signing in to the box. You can switch it back to team-only anytime."
         confirmLabel="Make public"
+        defaultAction
         onConfirm={() => {
           setMakePublicOpen(false);
           void act(() => api.setVisibility(id, "public"));
