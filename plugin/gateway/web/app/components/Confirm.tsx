@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
-import * as AlertDialog from "@radix-ui/react-alert-dialog";
+import { AlertDialog } from "@base-ui-components/react/alert-dialog";
 import { useRef, type ReactNode } from "react";
 import { cn } from "../cn";
 
 /** A controlled confirm dialog for destructive actions (rotate / reset / remove).
- *  Escape cancels (Radix default). `defaultAction` focuses the confirm button on
+ *  Escape cancels (Base UI default). `defaultAction` focuses the confirm button on
  *  open so Enter triggers it — opt-in, and only for REVERSIBLE actions; a
- *  destructive confirm should keep the safer Cancel-focused default. */
+ *  destructive confirm should keep the safer Cancel-focused default (Base UI's
+ *  default initialFocus lands on the first tabbable element, which is Cancel). */
 export function Confirm({
   open,
   title,
@@ -35,35 +36,31 @@ export function Confirm({
       }}
     >
       <AlertDialog.Portal>
-        <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
-        <AlertDialog.Content
+        <AlertDialog.Backdrop className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
+        <AlertDialog.Popup
           className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl"
-          // Move initial focus to the confirm button so Enter activates it; Radix
-          // otherwise focuses Cancel (the safe default we keep for destructive ones).
-          onOpenAutoFocus={
-            defaultAction
-              ? (e) => {
-                  e.preventDefault();
-                  actionRef.current?.focus();
-                }
-              : undefined
-          }
+          // Move initial focus to the confirm button so Enter activates it; the
+          // default (undefined → Base UI's first tabbable) focuses Cancel, the safe
+          // default we keep for destructive ones.
+          initialFocus={defaultAction ? actionRef : undefined}
         >
           <AlertDialog.Title className="text-base font-semibold text-stone-900">{title}</AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
             {body}
           </AlertDialog.Description>
           <div className="mt-5 flex justify-end gap-2">
-            <AlertDialog.Cancel className="btn btn-ghost">Cancel</AlertDialog.Cancel>
-            <AlertDialog.Action
+            <AlertDialog.Close className="btn btn-ghost">Cancel</AlertDialog.Close>
+            {/* Plain button (not AlertDialog.Close): the parent closes via the `open`
+                prop from onConfirm, so this only needs to fire the action. */}
+            <button
               ref={actionRef}
               className={cn("btn", danger ? "bg-red-600 text-white hover:bg-red-700" : "btn-primary")}
               onClick={onConfirm}
             >
               {confirmLabel}
-            </AlertDialog.Action>
+            </button>
           </div>
-        </AlertDialog.Content>
+        </AlertDialog.Popup>
       </AlertDialog.Portal>
     </AlertDialog.Root>
   );
