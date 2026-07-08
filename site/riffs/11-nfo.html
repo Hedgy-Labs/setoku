@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SETOKU.NFO · open-source MCP server for company data</title>
+    <style>
+      :root {
+        --paper: #f4efe1;
+        --paper-2: #efe8d6;
+        --ink: #22271f;
+        --ink-soft: #454b3e;
+        --ink-faint: #6b6f5f;
+        --sage: #33543d;
+        --sage-2: #4c7a58;
+        --rule: rgba(34, 39, 31, 0.28);
+        --rule-soft: rgba(34, 39, 31, 0.14);
+        --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas,
+          "Liberation Mono", "DejaVu Sans Mono", monospace;
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html {
+        -webkit-font-smoothing: antialiased;
+        scroll-behavior: smooth;
+      }
+      body {
+        background: var(--paper);
+        background-image: radial-gradient(
+            rgba(34, 39, 31, 0.03) 1px,
+            transparent 1px
+          );
+        background-size: 3px 3px;
+        color: var(--ink);
+        font-family: var(--mono);
+        font-size: 14px;
+        line-height: 1.55;
+        padding: 0 16px 80px;
+      }
+      .sheet {
+        max-width: 82ch;
+        margin: 0 auto;
+        padding-top: 22px;
+      }
+      a {
+        color: var(--sage);
+        text-decoration: none;
+        border-bottom: 1px dotted var(--sage-2);
+      }
+      a:hover {
+        background: var(--sage);
+        color: var(--paper);
+        border-bottom-color: var(--sage);
+      }
+      b,
+      strong {
+        font-weight: 700;
+        color: var(--ink);
+      }
+      ::selection {
+        background: var(--sage);
+        color: var(--paper);
+      }
+
+      pre {
+        overflow-x: auto;
+        white-space: pre;
+        line-height: 1.2;
+        margin: 0;
+      }
+      pre.tight {
+        line-height: 1.15;
+      }
+
+      /* masthead */
+      .banner {
+        color: var(--ink);
+        font-size: clamp(8px, 2.1vw, 14px);
+        letter-spacing: 0;
+      }
+      .banner .g {
+        color: var(--sage-2);
+      }
+      .tagline {
+        margin: 6px 0 2px;
+        font-size: clamp(13px, 3vw, 20px);
+        line-height: 1.3;
+        color: var(--ink);
+        letter-spacing: -0.01em;
+      }
+      .rot {
+        display: inline-block;
+        min-width: 9ch;
+        text-align: center;
+        color: var(--sage);
+        border-bottom: 1px solid var(--sage-2);
+      }
+      .cur {
+        display: inline-block;
+        width: 0.62em;
+        height: 1.05em;
+        transform: translateY(0.18em);
+        background: var(--ink);
+        margin-left: 2px;
+        animation: blink 1.05s steps(1) infinite;
+      }
+      @keyframes blink {
+        50% {
+          opacity: 0;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .cur {
+          animation: none;
+        }
+      }
+
+      /* release info + framed callouts (drawn, so borders always align) */
+      .frame {
+        border: 1px solid var(--rule);
+        background: var(--paper-2);
+        padding: 12px 15px;
+        margin: 14px 0;
+        position: relative;
+      }
+      .frame > .tag {
+        position: absolute;
+        top: -0.72em;
+        left: 12px;
+        background: var(--paper);
+        padding: 0 7px;
+        color: var(--sage);
+        font-size: 12px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .kv {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 2px 10px;
+        font-size: 13px;
+        color: var(--ink-soft);
+      }
+      .kv .k {
+        color: var(--ink-faint);
+      }
+      .kv .k::after {
+        content: " ";
+      }
+
+      /* section rule */
+      .rule {
+        color: var(--sage);
+        margin: 34px 0 14px;
+        font-size: clamp(10px, 2.2vw, 14px);
+        overflow-x: auto;
+        white-space: pre;
+      }
+      section {
+        scroll-margin-top: 12px;
+      }
+      h2 {
+        font: inherit;
+      }
+
+      p {
+        color: var(--ink-soft);
+        max-width: 74ch;
+        margin: 10px 0;
+      }
+      p.lede {
+        color: var(--ink);
+      }
+      .muted {
+        color: var(--ink-faint);
+      }
+
+      /* generic terminal-ish list */
+      .list {
+        list-style: none;
+        margin: 10px 0;
+        max-width: 74ch;
+      }
+      .list li {
+        color: var(--ink-soft);
+        padding-left: 3.2ch;
+        position: relative;
+        margin: 4px 0;
+      }
+      .list li::before {
+        content: "*";
+        position: absolute;
+        left: 0.6ch;
+        color: var(--sage-2);
+      }
+
+      /* code blocks */
+      .code {
+        border: 1px solid var(--rule-soft);
+        border-left: 3px solid var(--sage-2);
+        background: var(--paper-2);
+        padding: 12px 14px;
+        margin: 12px 0;
+        overflow-x: auto;
+      }
+      .code pre {
+        line-height: 1.6;
+      }
+      .code .c {
+        color: var(--ink-faint);
+      }
+      code.inl {
+        color: var(--sage);
+      }
+
+      /* how-it-works / apps rows */
+      .rows {
+        margin: 14px 0;
+      }
+      .rows .r {
+        border-top: 1px dotted var(--rule-soft);
+        padding: 11px 0;
+        display: grid;
+        grid-template-columns: 20ch 1fr;
+        gap: 4px 18px;
+      }
+      .rows .r:last-child {
+        border-bottom: 1px dotted var(--rule-soft);
+      }
+      .rows .r .name {
+        color: var(--ink);
+      }
+      .rows .r .name b {
+        display: block;
+      }
+      .rows .r .name .fn {
+        color: var(--sage-2);
+        font-size: 12.5px;
+      }
+      .rows .r .desc {
+        color: var(--ink-soft);
+      }
+      @media (max-width: 620px) {
+        .rows .r {
+          grid-template-columns: 1fr;
+          gap: 2px;
+        }
+      }
+
+      /* Q & A */
+      .qa {
+        margin: 12px 0;
+        border-top: 1px dotted var(--rule-soft);
+        padding-top: 12px;
+      }
+      .qa .q::before {
+        content: "> ";
+        color: var(--sage-2);
+      }
+      .qa .q {
+        color: var(--ink);
+      }
+      .qa .a {
+        padding-left: 2.2ch;
+        margin-top: 4px;
+        color: var(--ink-faint);
+      }
+      .qa .a b {
+        color: var(--sage);
+        font-size: 15px;
+      }
+
+      /* nav toc anchors */
+      .toc a {
+        border-bottom: none;
+      }
+      .toc a:hover {
+        background: none;
+        color: var(--sage-2);
+        text-decoration: underline;
+      }
+
+      hr.dotted {
+        border: none;
+        border-top: 1px dotted var(--rule-soft);
+        margin: 22px 0;
+      }
+
+      footer {
+        margin-top: 40px;
+        color: var(--ink-faint);
+        font-size: 13px;
+      }
+      footer .jp {
+        color: var(--ink-soft);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="sheet">
+      <!-- ===================== MASTHEAD ===================== -->
+      <pre class="banner tight" aria-label="SETOKU"> <span class="g">.----------------------------------------------------------------------.</span>
+<span class="g"> :</span>   ______     ______     ______   ______     __  __     __  __      <span class="g">:</span>
+<span class="g"> :</span>  /\  ___\   /\  ___\   /\__  _\ /\  __ \   /\ \/ /    /\ \/\ \     <span class="g">:</span>
+<span class="g"> :</span>  \ \___  \  \ \  __\   \/_/\ \/ \ \ \/\ \  \ \  _"-.  \ \ \_\ \    <span class="g">:</span>
+<span class="g"> :</span>   \/\_____\  \ \_____\    \ \_\  \ \_____\  \ \_\ \_\  \ \_____\   <span class="g">:</span>
+<span class="g"> :</span>    \/_____/   \/_____/     \/_/   \/_____/   \/_/\/_/   \/_____/   <span class="g">:</span>
+<span class="g"> :</span>                                                                      <span class="g">:</span>
+<span class="g"> :</span>   an open-source MCP server between your AI and your company data     <span class="g">:</span>
+<span class="g"> '----------------------------------------------------------------------'</span></pre>
+
+      <p class="tagline">
+        make any AI fluent in your
+        <span
+          class="rot"
+          data-words="company,family,personal"
+          >company</span
+        >
+        data.<span class="cur" aria-hidden="true"></span>
+      </p>
+
+      <div class="frame">
+        <span class="tag">release.nfo</span>
+        <div class="kv">
+          <span class="k">supply .......</span>
+          <span
+            ><a
+              href="https://github.com/Hedgy-Labs/setoku"
+              target="_blank"
+              rel="noopener"
+              >github.com/Hedgy-Labs/setoku</a
+            ></span
+          >
+          <span class="k">packaged by ..</span>
+          <span>Hedgy Labs</span>
+          <span class="k">license ......</span>
+          <span>Apache-2.0 · you self-host it</span>
+          <span class="k">inference ....</span>
+          <span>none on the server · $0 added cost</span>
+          <span class="k">requires .....</span>
+          <span>one small box (a ~$12/mo VPS) + any MCP client</span>
+          <span class="k">works with ...</span>
+          <span>Claude, Codex, or whatever you already run</span>
+        </div>
+      </div>
+
+      <!-- ===================== TOC ===================== -->
+      <pre class="rule toc"> .-=[ CONTENTS ]=-.------------------------------------------------------
+   01 <a href="#synopsis">SYNOPSIS</a> ......... what this is
+   02 <a href="#quickstart">QUICKSTART</a> ....... install &amp; onboard in two steps
+   03 <a href="#how">HOW IT WORKS</a> ..... two tool families, one rule
+   04 <a href="#apps">APPS</a> ............. publish the tools Claude builds you
+   05 <a href="#arch">ARCHITECTURE</a> ..... the whole thing on one box
+   06 <a href="#connectors">CONNECTORS</a> ....... one lake, every source
+   07 <a href="#demo">DEMO</a> ............. try it on real-ish data
+   08 <a href="#why">RATIONALE</a> ........ curious / cheap / paranoid
+   09 <a href="#help">GREETZ &amp; CONTACT</a> . setup help
+ ----------------------------------------------------------------------</pre>
+
+      <!-- ===================== 01 SYNOPSIS ===================== -->
+      <section id="synopsis">
+        <pre class="rule"> .-=[ 01. SYNOPSIS ]=-.------------------------------------------------</pre>
+        <p class="lede">
+          Setoku is a small self-hosted MCP knowledge server + Claude Code
+          skills for hooking up your data. It does two things: it gives your AI
+          a read-only way to query your data, and it remembers what that data
+          means (the metric definitions, the gotchas), getting better the more
+          you use it. The MCP works with whatever AI you already have, and no
+          model runs on the server, so no added inference cost.
+        </p>
+        <ul class="list">
+          <li>
+            <a
+              href="https://github.com/Hedgy-Labs/setoku"
+              target="_blank"
+              rel="noopener"
+              >[ view on github ]</a
+            >
+          </li>
+          <li><a href="#demo">[ try the demo ]</a></li>
+        </ul>
+      </section>
+
+      <!-- ===================== 02 QUICKSTART ===================== -->
+      <section id="quickstart">
+        <pre class="rule"> .-=[ 02. QUICKSTART ]=-.----------------------------------------------</pre>
+        <p>
+          Setoku installs as a Claude Code plugin. Add the plugin, then run
+          onboarding from your main project directory, the codebase you want
+          Setoku to learn from:
+        </p>
+        <div class="code">
+          <pre><span class="c"># 1 · add the plugin (skills only)</span>
+/plugin marketplace add Hedgy-Labs/setoku
+/plugin install setoku@setoku
+
+<span class="c"># 2 · from your project directory</span>
+/setoku:onboard</pre>
+        </div>
+        <p>
+          Onboarding stands up the server, auths your Claude, wires your
+          database read-only, and generates the first knowledge from your code.
+          You stay in the loop for anything that touches your data. To start
+          onboarding, run <code class="inl">/setoku:onboard</code>.
+        </p>
+        <p>
+          You’ll need somewhere to host it. Something like OVH’s
+          <a href="https://us.ovhcloud.com/vps/" target="_blank" rel="noopener"
+            >VPS-2</a
+          >
+          is plenty.
+        </p>
+        <details>
+          <summary
+            class="muted"
+            style="cursor: pointer; margin-top: 8px"
+          >
+            [+] or stand up the server by hand
+          </summary>
+          <div class="code">
+            <pre><span class="c"># on a fresh Ubuntu VPS</span>
+git clone https://github.com/Hedgy-Labs/setoku /opt/setoku
+cd /opt/setoku
+SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
+          </div>
+          <p>
+            Installs Docker, generates secrets, gets an HTTPS certificate, and
+            prints the connect command. Then add the plugin and run
+            /setoku:onboard from your project; it’ll detect the box you just
+            made.
+          </p>
+        </details>
+      </section>
+
+      <!-- ===================== 03 HOW IT WORKS ===================== -->
+      <section id="how">
+        <pre class="rule"> .-=[ 03. HOW IT WORKS ]=-.--------------------------------------------</pre>
+        <p class="lede">
+          Setoku gives the AI two kinds of MCP tools, and one rule: look up what
+          the data means before you touch it.
+        </p>
+        <div class="rows">
+          <div class="r">
+            <div class="name">
+              <b>Context tools</b
+              ><span class="fn">find_context · get_metric</span>
+            </div>
+            <div class="desc">
+              The AI reads what your data means first: canonical metric
+              definitions, entity docs, and the gotchas that make a naive query
+              wrong.
+            </div>
+          </div>
+          <div class="r">
+            <div class="name">
+              <b>Read-only query</b
+              ><span class="fn">get_schema · run_query</span>
+            </div>
+            <div class="desc">
+              Read-only, with a row cap, a statement timeout, a table allow-list,
+              and an append-only audit log. Enforced by the database role, not by
+              parsing SQL.
+            </div>
+          </div>
+          <div class="r">
+            <div class="name">
+              <b>Human-approved</b><span class="fn">report_correction</span>
+            </div>
+            <div class="desc">
+              The AI can only propose changes to what Setoku knows. A person
+              accepts them on the admin page, outside the agent loop, so an
+              injected session can’t rewrite the brain.
+            </div>
+          </div>
+        </div>
+        <p class="muted">You set it up with <b>Claude Code</b> skills:</p>
+        <ul class="list">
+          <li>
+            <code class="inl">/setoku:onboard</code> sets Setoku up in a repo for
+            the first time.
+          </li>
+          <li>
+            <code class="inl">/setoku:connect</code> adds a data source or custom
+            integration.
+          </li>
+          <li>
+            <code class="inl">/setoku:generate</code> writes business context
+            from your code.
+          </li>
+          <li>
+            <code class="inl">/setoku:curate</code> reviews and approves pending
+            knowledge.
+          </li>
+        </ul>
+        <p>
+          Once it’s set up, <b>any MCP client</b> can use it: Claude, Codex, or
+          whatever you run. Just ask in plain language, and the tools do the
+          rest.
+        </p>
+      </section>
+
+      <!-- ===================== 04 APPS ===================== -->
+      <section id="apps">
+        <pre class="rule"> .-=[ 04. APPS // save &amp; share the tools Claude builds you ]=-.--------</pre>
+        <p class="lede">
+          Ask Claude to build a dashboard on your data. Then publish it to a link
+          as a Setoku App, the data stays live, and your whole team can view it.
+          Nothing to deploy, no frontend to maintain.
+        </p>
+        <div class="rows">
+          <div class="r">
+            <div class="name">
+              <b>Built by asking</b><span class="fn">publish_app</span>
+            </div>
+            <div class="desc">
+              Describe it in plain language; the agent writes the app and
+              publishes it to a URL. Edit it the same way, just ask for the
+              change.
+            </div>
+          </div>
+          <div class="r">
+            <div class="name">
+              <b>Backed by live data</b><span class="fn">read-only</span>
+            </div>
+            <div class="desc">
+              Apps read through the same governed path: row caps, audit, a
+              SELECT-only database role. They never get write access to your
+              sources.
+            </div>
+          </div>
+          <div class="r">
+            <div class="name">
+              <b>App-private state</b
+              ><span class="fn">no writes to your data</span>
+            </div>
+            <div class="desc">
+              Each app keeps its own state (todos, votes, annotations) in a
+              sandbox that belongs to the app, not your database. Worst case, an
+              app messes up its own notes.
+            </div>
+          </div>
+          <div class="r">
+            <div class="name">
+              <b>Share by link</b><span class="fn">team or public</span>
+            </div>
+            <div class="desc">
+              A team link is login-gated; an admin can flip one public for a
+              credential-free URL. The page runs in a locked-down sandbox with no
+              network, so a published app can’t phone home.
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== 05 ARCHITECTURE ===================== -->
+      <section id="arch">
+        <pre class="rule"> .-=[ 05. ARCHITECTURE ]=-.--------------------------------------------</pre>
+        <p class="lead lede">
+          You can host this on whatever infra you like. We put it all on one
+          small box (a ~$12/mo VPS). The <code class="inl">/setoku:connect</code>
+          skill helps you add custom integrations. Only the proxy is public, so
+          your databases aren’t exposed. Queries are read-only, and knowledge
+          changes pass through a person.
+        </p>
+        <pre
+          class="rule"
+          style="color: var(--ink-soft); margin-top: 18px"
+          aria-label="Setoku architecture and data flow: you and your AI connect over MCP to the gateway on your box, which holds a ClickHouse lake, a knowledge store, and a person who approves. Below the box, your Postgres database is queried read-only and mirrored into the lake, and your sources are ingested into the lake."
+>                          +---------------------+
+                          |    You + your AI    |
+                          +----------+----------+
+                                     |
+                                 MCP | bearer token in URL
+                                     |
+   +--------------------------- your box ----------------------------+
+   |                    +----------+----------+      approves        |
+   |                    |   Setoku gateway    |------------------.   |
+   |                    |  context * query    |                  v   |
+   |                    +--+--------------+---+           ( a person )
+   |         reads /       |              |                          |
+   |         proposes      |              |                          |
+   |             +---------+----+   +-----+--------+                 |
+   |             |  Knowledge   |   |     Lake     |                 |
+   |             |    store     |   |  ClickHouse  |<---.            |
+   |             +--------------+   +------+-------+     \           |
+   |                                  ^    |    ^         \ ingest   |
+   |                        read-only |    |    | mirror   \         |
+   +----------------------------------|----|----|-----------|-------+
+                            +---------+--+ |    +--------+   |
+                            | Your data  |-'    | Your   |---'
+                            | base (r/o) |      | sources|
+                            | Postgres   |      | gh·slk |
+                            +------------+      +--------+</pre>
+      </section>
+
+      <!-- ===================== 06 CONNECTORS ===================== -->
+      <section id="connectors">
+        <pre class="rule"> .-=[ 06. CONNECTORS // one lake, every source ]=-.-------------------</pre>
+        <p class="lede">
+          Point Setoku at the data you already have. Every source lands in a
+          local
+          <a href="https://clickhouse.com/" target="_blank" rel="noopener"
+            >ClickHouse</a
+          >
+          data lake, on purpose: agents write arbitrary queries (scans, GROUP
+          BYs, whole-table aggregations), and a columnar engine answers those in
+          about a second, so the apps and dashboards they build stay quick. Your
+          app database connects read-only and is mirrored in on a cron; the rest
+          is ingested as it happens.
+        </p>
+        <div class="frame">
+          <span class="tag">[o] ClickHouse · lake</span>
+          <div class="rows" style="margin: 0">
+            <div class="r">
+              <div class="name"><b>PostgreSQL</b></div>
+              <div class="desc">app database, mirrored read-only</div>
+            </div>
+            <div class="r">
+              <div class="name"><b>GitHub</b></div>
+              <div class="desc">issues, PRs &amp; commits</div>
+            </div>
+            <div class="r">
+              <div class="name"><b>Vercel</b></div>
+              <div class="desc">deploys &amp; logs</div>
+            </div>
+            <div class="r">
+              <div class="name"><b>Render</b></div>
+              <div class="desc">deploys &amp; logs</div>
+            </div>
+            <div class="r">
+              <div class="name"><b>Slack</b></div>
+              <div class="desc">messages</div>
+            </div>
+            <div class="r">
+              <div class="name"><b>Mercury</b></div>
+              <div class="desc">banking &amp; finance</div>
+            </div>
+          </div>
+        </div>
+        <p class="muted">
+          No connector for your source yet? The included setup skills give your
+          coding agent the patterns to wire one up itself. See
+          <a
+            href="https://github.com/Hedgy-Labs/setoku"
+            target="_blank"
+            rel="noopener"
+            >the repo</a
+          >, or open an issue.
+        </p>
+      </section>
+
+      <!-- ===================== 07 DEMO ===================== -->
+      <section id="demo">
+        <pre class="rule"> .-=[ 07. DEMO // try it on real-ish data ]=-.-----------------------</pre>
+        <p class="lede">
+          There’s a live demo wired to a fictional pro sports club, the Bonita
+          Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast
+          rights).
+        </p>
+
+        <div class="frame">
+          <span class="tag">step 1 · connect</span>
+          <p style="margin-top: 2px">
+            In Claude (or any MCP client) open Settings &rarr; Connectors &rarr;
+            Add custom connector, and paste this URL. The token rides in the URL,
+            so there’s no separate key to enter.
+          </p>
+          <div class="code">
+            <pre>https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</pre>
+          </div>
+        </div>
+
+        <p class="muted" style="margin-top: 20px">
+          step 2 · ask a question
+        </p>
+        <div class="qa">
+          <div class="q">How many unique fans do we have?</div>
+          <div class="a">
+            <b>71,204</b> &nbsp;deduped by normalized email, internal accounts
+            excluded. Not the raw 92,118.
+          </div>
+        </div>
+        <div class="qa">
+          <div class="q">
+            What’s our total annual revenue, and how much is media rights?
+          </div>
+          <div class="a">
+            <b>$192M</b> &nbsp;five systems reconciled to the same units. Media
+            rights is the biggest line, ~$90M.
+          </div>
+        </div>
+        <div class="qa">
+          <div class="q">What was ticket revenue this season?</div>
+          <div class="a">
+            <b>$46.8M</b> &nbsp;cents reconciled to dollars; refunds, exchanges,
+            and comps excluded.
+          </div>
+        </div>
+        <div class="qa">
+          <div class="q">What’s our total merchandise revenue?</div>
+          <div class="a">
+            <b>It flags it</b> &nbsp;most merch is sold via Fanatics, not in this
+            data, so it says so instead of returning a wrong total.
+          </div>
+        </div>
+        <div class="qa">
+          <div class="q">Chart revenue by line.</div>
+          <div class="a" style="padding-left: 0; margin-top: 8px">
+            <pre
+              class="rule"
+              style="color: var(--ink); margin: 6px 0"
+              aria-label="Annual revenue by line: media rights $90M, ticketing $47M, sponsorship $28M, concessions $14M, merch $8M, other $5M."
+>  Annual revenue by line  ·  ~$192M total
+
+  Media rights |<span style="color: var(--sage)">########################################</span>  $90M
+  Ticketing    |<span style="color: var(--sage)">#####################</span>                     $47M
+  Sponsorship  |<span style="color: var(--sage)">############</span>                              $28M
+  Concessions  |<span style="color: var(--sage)">######</span>                                    $14M
+  Merch        |<span style="color: var(--sage)">###</span>                                        $8M
+  Other        |<span style="color: var(--sage)">##</span>                                         $5M</pre>
+          </div>
+        </div>
+
+        <p class="muted" style="margin-top: 20px">step 3 · try an app</p>
+        <p>
+          Ask Claude to build a dashboard on the same data, then publish it to a
+          link. Two live examples, running on the demo data right now:
+        </p>
+        <ul class="list">
+          <li>
+            <a
+              href="https://demo.setoku.com/admin/p/7e38381ced6517329947b14d"
+              target="_blank"
+              rel="noopener"
+              >Sponsorship pricing table &rarr;</a
+            >
+            — inventory and rates for sponsorship placements.
+          </li>
+          <li>
+            <a
+              href="https://demo.setoku.com/admin/p/b059da830dcb3e70437d5dea"
+              target="_blank"
+              rel="noopener"
+              >Fan lifetime value &rarr;</a
+            >
+            — segment fans by spend across tickets, merch, and concessions.
+          </li>
+        </ul>
+      </section>
+
+      <!-- ===================== 08 RATIONALE ===================== -->
+      <section id="why">
+        <pre class="rule"> .-=[ 08. RATIONALE // why we built it ]=-.--------------------------</pre>
+        <p class="lede" style="color: var(--ink)"><b>We’re curious.</b></p>
+        <p>
+          There are plenty of AI memory stores, and plenty of data gateways.
+          Stapling the two together, and nudging the agent to gather knowledge
+          about the data as it goes, seemed useful and fun to tinker with.
+        </p>
+        <p class="lede" style="color: var(--ink)"><b>We’re cheap.</b></p>
+        <p>
+          We wanted something that runs on one small box, works on a Pro/Max
+          subscription or a cheap model with no added inference cost, mostly sets
+          itself up (no field engineer to pay for), stays portable between
+          providers, and is open source.
+        </p>
+        <p class="lede" style="color: var(--ink)"><b>We’re paranoid.</b></p>
+        <p>
+          HR platforms, CRMs, and clouds are all announcing “context layers.”
+          They’d like the meaning of your business to accumulate on their
+          servers, where it can never leave. Context is deeper lock-in than data,
+          and a hosted context layer has no export button. Setoku exists so that
+          understanding accumulates on a box you own instead. If we disappear
+          tomorrow, your context doesn’t.
+        </p>
+        <p class="lede" style="color: var(--ink)">
+          <b>We and some friends wanted the same thing.</b>
+        </p>
+        <ul class="list">
+          <li>
+            <b
+              ><a href="https://www.hedgy.works" target="_blank" rel="noopener"
+                >Hedgy</a
+              ></b
+            >: keep scaling without hiring. Debug from live logs and data, find
+            growth levers, and match candidates and companies better with more
+            data.
+          </li>
+          <li>
+            <b
+              ><a href="https://baggu.com" target="_blank" rel="noopener"
+                >Baggu</a
+              ></b
+            >: give employees state-of-the-art tools. Faster onboarding, and a
+            safe way to vibecode against real data.
+          </li>
+          <li>
+            <b
+              ><a href="https://tlon.io" target="_blank" rel="noopener"
+                >Tlon</a
+              ></b
+            >: experimenting with giving agents curated data to work from.
+          </li>
+          <li>
+            <b>Sports analysts</b>: query across data that doesn’t usually sit
+            together.
+          </li>
+          <li>
+            <b>Academic labs</b>: think through hypotheses against real papers,
+            data, and drafts.
+          </li>
+        </ul>
+      </section>
+
+      <!-- ===================== 09 GREETZ / CONTACT ===================== -->
+      <section id="help">
+        <pre class="rule"> .-=[ 09. GREETZ &amp; CONTACT // setup help ]=-.-----------------------</pre>
+        <p>
+          It’s open source, so you can self-host it today. If you like, we’re
+          happy to help set it up. Just email
+          <a href="mailto:hello@setoku.com">hello@setoku.com</a>.
+        </p>
+      </section>
+
+      <hr class="dotted" />
+      <footer>
+        <pre class="rule tight" style="color: var(--ink-faint); margin: 0 0 10px"> ----------------------------------------------------------------------</pre>
+        <div>
+          <a
+            href="https://github.com/Hedgy-Labs/setoku"
+            target="_blank"
+            rel="noopener"
+            >GitHub</a
+          >
+          &nbsp;·&nbsp; <a href="#demo">Demo</a> &nbsp;·&nbsp;
+          <a href="mailto:hello@setoku.com">Contact</a> &nbsp;·&nbsp;
+          <span class="muted">Apache-2.0</span>
+        </div>
+        <div class="jp" style="margin-top: 8px">
+          設 × 奥 · set (math) × oku (innermost)
+        </div>
+        <div class="muted" style="margin-top: 10px">
+          EOF · setoku.nfo · no model runs on the server
+        </div>
+      </footer>
+    </div>
+
+    <script>
+      (function () {
+        var el = document.querySelector(".rot");
+        if (!el) return;
+        var words = (el.getAttribute("data-words") || "")
+          .split(",")
+          .map(function (w) {
+            return w.trim();
+          })
+          .filter(Boolean);
+        if (words.length < 2) return;
+        var i = 0;
+        setInterval(function () {
+          i = (i + 1) % words.length;
+          el.style.opacity = "0.15";
+          setTimeout(function () {
+            el.textContent = words[i];
+            el.style.opacity = "1";
+          }, 130);
+        }, 2400);
+        el.style.transition = "opacity 130ms steps(2)";
+      })();
+    </script>
+  </body>
+</html>
