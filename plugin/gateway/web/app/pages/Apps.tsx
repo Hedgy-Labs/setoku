@@ -109,9 +109,10 @@ export function Apps() {
                     </div>
                     {panelCount ? (
                       <Badge tone="ok">live</Badge>
-                    ) : r.format === "app" ? (
-                      <Badge tone="idle">interactive</Badge>
                     ) : (
+                      // No live-data panels. "static" matches the list_apps tool +
+                      // the publish_app "static report" vocabulary; every app is a
+                      // fragment now (issue #62), so the old format-based split is gone.
                       <Badge tone="idle">static</Badge>
                     )}
                     <VisibilityBadge visibility={r.visibility} canManage={canManage} onOpen={() => setVisApp(r)} />
