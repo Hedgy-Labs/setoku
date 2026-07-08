@@ -29,6 +29,7 @@ import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote, mirrorSteerNote, panelMirrorNote, mirrorHits, type MirrorRef } from "./lib/nudge";
 import { mirroredTables, type MirroredTable } from "./lib/mirror";
 import { LAKE_SOURCES } from "./lib/sources";
+import { notifyActivity } from "./lib/notify";
 import { VERSION } from "./lib/version";
 
 /**
@@ -1125,6 +1126,9 @@ server.registerTool(
 // a clickhouse-dialect panel, see runPanel's membrane check).
 
 const MAX_REPORT_BYTES = 2_000_000; // ~2 MB of template HTML; keep it self-contained, not an asset bundle
+// A one-line changelog note for an update, shown in version history and the
+// activity notification (issue #63). A sentence, not a document.
+const MAX_UPDATE_MESSAGE_CHARS = 500;
 
 const mintShareId = (): string =>
   Array.from(crypto.getRandomValues(new Uint8Array(12)))
@@ -1446,6 +1450,15 @@ server.registerTool(
     for (const s of seeds)
       store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, truncated: s.truncated, error: null });
     store.audit(user, "publish_app", { id, title, bytes, panels: normalized.length });
+    // Announce it to the team channel (issue #63) — detached and best-effort, so
+    // a slow/absent webhook never delays the publish response.
+    void notifyActivity(projectDir, {
+      kind: "app_published",
+      title: title.trim() || "Untitled app",
+      url: publishUrl(id),
+      by: user,
+      panels: normalized.length,
+    });
 
     const noun = format === "app" ? "app" : "report";
     return text(
@@ -1472,6 +1485,8 @@ server.registerTool(
       "Only the app's AUTHOR can edit it. " +
       "Note: changing `panels` or `params` on an app that's currently public reverts it to team-only — an admin " +
       "must re-approve it for the public link, since the data it exposes changed. " +
+      "Pass a `message` describing WHAT changed — it shows in the app's version history and the team's activity " +
+      "notification. " +
       "The `html` template + `Setoku.*` helper + panels/params contract is documented by app_guide — call it if you haven't.",
     inputSchema: {
       id: z.string().describe("The app id (from publish_app / list_apps)"),
@@ -1480,9 +1495,13 @@ server.registerTool(
       panels: z.array(PANEL_SCHEMA).optional().describe("New panel set — REPLACES all panels. Pass [] for a state-only or static app."),
       params: z.array(PARAM_SCHEMA).optional().describe("New interactive inputs — REPLACES all params (pass [] to remove). See publish_app."),
       refreshSeconds: z.number().optional().describe(`New refresh interval (${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS})`),
+      message: z
+        .string()
+        .optional()
+        .describe('A short note on WHAT changed, shown in version history and the activity notification (e.g. "Added a weekly revenue panel").'),
     },
   },
-  async ({ id, title, html, panels, params, refreshSeconds }) => {
+  async ({ id, title, html, panels, params, refreshSeconds, message }) => {
     const tid = id.trim();
     const meta = store.getPublishedMeta(tid);
     if (!meta || meta.archivedAt)
@@ -1497,6 +1516,11 @@ server.registerTool(
       if (bytes > MAX_REPORT_BYTES)
         return errorText(`Template is ${(bytes / 1e6).toFixed(1)} MB — over the ${MAX_REPORT_BYTES / 1e6} MB cap.`);
     }
+    // Whitespace-only message is a no-op (same as an unset one); a real note is
+    // capped to a sentence — it's a changelog line, not a document.
+    const note = message?.trim() || undefined;
+    if (note && note.length > MAX_UPDATE_MESSAGE_CHARS)
+      return errorText(`message is ${note.length} chars — keep it under ${MAX_UPDATE_MESSAGE_CHARS} (a one-line summary of what changed).`);
 
     // Panels AND params both determine what the panels compute (params bind into
     // the SQL), so a change to EITHER must be validated and re-seeded — and, on a
@@ -1555,7 +1579,7 @@ server.registerTool(
       params: paramsChanged ? (params as AppParam[]) : undefined,
       format,
       refreshSeconds: refresh,
-    }, { editor: user });
+    }, { editor: user, note });
     if (!ok) return errorText(`Update failed — no active app "${id}".`);
     // Re-seed the cache for the re-derived panels (updatePublished cleared the old rows).
     if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, truncated: s.truncated, error: null });
@@ -1571,6 +1595,24 @@ server.registerTool(
       id: tid,
       changed: [newTitle !== undefined && "title", html !== undefined && "html", panelsChanged && "panels", paramsChanged && "params", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
       reverted,
+    });
+    // Announce it to the team channel (issue #63). The changed-facet vocabulary
+    // matches the version-history drawer (content/data/inputs) so the note and
+    // the UI read the same way. Detached + best-effort — never blocks the reply.
+    const changedFacets = [
+      newTitle !== undefined && "title",
+      html !== undefined && "content",
+      panelsChanged && "data",
+      paramsChanged && "inputs",
+      refreshSeconds !== undefined && "refresh",
+    ].filter(Boolean) as string[];
+    void notifyActivity(projectDir, {
+      kind: "app_updated",
+      title: newTitle ?? meta.title,
+      url: publishUrl(tid, reverted ? "team" : meta.visibility),
+      by: user,
+      changed: changedFacets,
+      message: note,
     });
 
     const finalHtml = html ?? store.getPublished(tid)?.body ?? "";

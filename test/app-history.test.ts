@@ -121,6 +121,30 @@ describe("retention", () => {
   });
 });
 
+describe("update message (issue #63)", () => {
+  it("stores a content edit's note and surfaces it in history", () => {
+    const store = new KnowledgeStore(dbPath);
+    store.createPublished({ id: "msgapp", title: "M", body: "b0", refreshSeconds: 60, createdBy: "alice" });
+    // A normal edit carrying a "what changed" note (update_app's `message`).
+    store.updatePublished("msgapp", { body: "b1" }, { editor: "bob", note: "Added the revenue panel" });
+    const revs = store.listAppHistory("msgapp"); // newest first
+    expect(revs[0].note).toBe("Added the revenue panel");
+    // v1 (the original publish) carries no note.
+    expect(revs[revs.length - 1].note).toBeNull();
+  });
+});
+
+describe("kv (deploy-notice bookkeeping, issue #63)", () => {
+  it("round-trips and upserts a value", () => {
+    const store = new KnowledgeStore(dbPath);
+    expect(store.getKv("last_deployed_version")).toBeNull();
+    store.setKv("last_deployed_version", "0.20.0");
+    expect(store.getKv("last_deployed_version")).toBe("0.20.0");
+    store.setKv("last_deployed_version", "0.21.0"); // upsert, not a second row
+    expect(store.getKv("last_deployed_version")).toBe("0.21.0");
+  });
+});
+
 describe("backfill", () => {
   it("gives an app published before history a v1 from its current row", () => {
     // Write a published row directly (no snapshot), then reopen the store to run

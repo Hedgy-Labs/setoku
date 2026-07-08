@@ -16,10 +16,23 @@ export interface LakeConfig {
   url?: string;
 }
 
+export interface NotificationsConfig {
+  /**
+   * Env var holding a Slack-compatible incoming-webhook URL (a POST of
+   * `{"text": "…"}`, the same shape deploy/monitor/alert.sh already uses).
+   * Default SETOKU_NOTIFY_WEBHOOK. The URL embeds a secret, so — like every
+   * other credential — config stores the env-var NAME, never the URL itself, so
+   * it never reaches the model.
+   */
+  slackWebhookEnv?: string;
+}
+
 export interface SetokuConfig {
   dataSource: DataSourceConfig;
   /** The bundled ClickHouse lake, target of run_query's `clickhouse` dialect (I5). */
   lake?: LakeConfig;
+  /** Outbound activity notifications — Slack today, more channels later (issue #63). */
+  notifications?: NotificationsConfig;
   allowTables: string[];
   denyTables: string[];
   rowCap: number;
@@ -208,6 +221,26 @@ export function resolveLakeUrl(
       `No lake configured: set ${varName} (e.g. http://user:pass@clickhouse:8123/setoku) ` +
       "or .setoku/config.json lake.urlEnv. The clickhouse dialect targets the bundled lake.",
   };
+}
+
+/**
+ * Resolve the Slack incoming-webhook URL for activity notifications, WITHOUT
+ * exposing it to the model. Mirrors resolveLakeUrl's precedence: env[varName]
+ * (varName from config.notifications.slackWebhookEnv, default
+ * SETOKU_NOTIFY_WEBHOOK) → project .env file. Returns null when no webhook is
+ * configured — notifications are opt-in, so an unset webhook is not an error,
+ * just a silent no-op.
+ */
+export function resolveNotifyWebhook(
+  projectDir: string,
+  config: SetokuConfig,
+): string | null {
+  const varName = config.notifications?.slackWebhookEnv ?? "SETOKU_NOTIFY_WEBHOOK";
+  if (process.env[varName]) return process.env[varName]!;
+  const parsed = parseEnvFile(
+    path.join(projectDir, config.dataSource?.envFile ?? ".env"),
+  );
+  return parsed[varName] ?? null;
 }
 
 /** Identity for audit attribution: SETOKU_USER env → git config user.email → "unknown". */

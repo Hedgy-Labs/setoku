@@ -169,6 +169,32 @@ describe("update_app — params are first-class (validate + I9 re-gate)", () => 
   });
 });
 
+describe("update_app — change message lands in version history (issue #63)", () => {
+  it("threads `message` into the app_revisions note the header drawer reads", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "Changelog", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const r = await call(c, "update_app", { id, html: "<div id=kpi>v2</div>", message: "Reworked the KPI header" });
+    expect(r.isError).toBeFalsy();
+
+    const { cookie } = await login();
+    const hist = await (await fetch(`${BASE}/admin/api/app_history?id=${id}`, { headers: { cookie } })).json();
+    // Newest first: the edit carries the note, the original publish does not.
+    expect(hist[0].note).toBe("Reworked the KPI header");
+    expect(hist[hist.length - 1].note).toBeNull();
+  });
+
+  it("rejects an over-long message and never mutates the app", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "Cap", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const r = await call(c, "update_app", { id, title: "Cap2", message: "x".repeat(501) });
+    expect(r.isError).toBe(true);
+    expect(r.text.toLowerCase()).toContain("under 500");
+    const { cookie } = await login();
+    const hist = await (await fetch(`${BASE}/admin/api/app_history?id=${id}`, { headers: { cookie } })).json();
+    expect(hist.length).toBe(1); // still just the original publish — no phantom edit
+  });
+});
+
 describe("public /frame — fresh-execution budget bounds prod load", () => {
   it("serves cache-only (soft error) once an app's budget is spent on distinct params", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");
