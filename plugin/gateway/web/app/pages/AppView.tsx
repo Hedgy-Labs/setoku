@@ -572,6 +572,7 @@ export function AppView() {
             : "The current app will be replaced with that version. The current version is kept in history, so you can undo this."
         }
         confirmLabel="Restore"
+        defaultAction
         onConfirm={() => {
           if (revertRev) void doRevert(revertRev.seq);
         }}
