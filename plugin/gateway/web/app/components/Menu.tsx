@@ -30,18 +30,22 @@ export function Menu({ label, children }: { label: string; children: ReactNode }
 export function MenuItem({
   onSelect,
   danger,
+  closeOnSelect,
   children,
 }: {
   onSelect: () => void;
   danger?: boolean;
+  /** Let Radix close the menu after selecting. Default keeps it open (avoids a
+   *  race with an async action / a dialog the item opens); pass this when the
+   *  item opens a side panel that would otherwise sit UNDER the still-open menu. */
+  closeOnSelect?: boolean;
   children: ReactNode;
 }) {
   return (
     <DropdownMenu.Item
       className={cn("menu-item", danger && "menu-item-danger")}
-      // preventDefault keeps the menu from racing a dialog open / async action.
       onSelect={(e) => {
-        e.preventDefault();
+        if (!closeOnSelect) e.preventDefault();
         onSelect();
       }}
     >
