@@ -111,16 +111,23 @@ export async function notifyActivity(projectDir: string, event: ActivityEvent): 
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), NOTIFY_TIMEOUT_MS);
     try {
-      await fetch(webhook, {
+      const res = await fetch(webhook, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ text: formatEvent(event) }),
         signal: ctl.signal,
       });
+      // A misconfigured webhook (wrong URL, revoked hook) fails silently
+      // otherwise — `fetch` resolves for a non-2xx. Give the operator a signal
+      // WITHOUT the webhook URL (a secret) or the response body.
+      if (!res.ok) console.error(`notify: webhook returned HTTP ${res.status} for a ${event.kind} event`);
     } finally {
       clearTimeout(timer);
     }
   } catch {
-    // A notification must never break the action it reports (issue #63).
+    // A notification must never break the action it reports (issue #63). The
+    // error is NOT logged — a fetch failure message can echo the (secret)
+    // webhook URL — so we surface only the event kind, not the transport error.
+    console.error(`notify: could not deliver a ${event.kind} event (webhook unreachable or timed out)`);
   }
 }
