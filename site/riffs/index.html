@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Setoku · 18 divergent design riffs</title>
+    <style>
+      :root {
+        --cream: #faf6ec;
+        --paper: #fff;
+        --ink: #212e26;
+        --ink-soft: #3f4a43;
+        --ink-faint: #4c554e;
+        --line: rgba(33, 46, 38, 0.14);
+        --sage-d: #33543d;
+        --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+        --sans: ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        background: var(--cream);
+        color: var(--ink);
+        font-family: var(--sans);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+      .wrap { max-width: 980px; margin: 0 auto; padding: 56px 24px 80px; }
+      .eyebrow {
+        font-family: var(--mono);
+        font-size: 12px;
+        letter-spacing: 0.06em;
+        color: var(--sage-d);
+        text-transform: uppercase;
+      }
+      h1 {
+        font-size: clamp(28px, 5vw, 40px);
+        letter-spacing: -0.02em;
+        line-height: 1.08;
+        margin: 14px 0 12px;
+        max-width: 16em;
+      }
+      .sub { color: var(--ink-soft); max-width: 44em; font-size: 17px; }
+      .batch {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--ink-faint);
+        margin: 40px 0 -4px;
+        padding-bottom: 6px;
+        border-bottom: 1px solid var(--line);
+      }
+      .grid {
+        margin-top: 16px;
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(3, 1fr);
+      }
+      @media (max-width: 820px) { .grid { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 540px) { .grid { grid-template-columns: 1fr; } }
+      .card {
+        display: block;
+        background: var(--paper);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 18px 18px 16px;
+        color: inherit;
+        text-decoration: none;
+        transition: border-color 140ms ease, transform 140ms ease;
+      }
+      .card:hover { border-color: var(--sage-d); transform: translateY(-2px); }
+      .num {
+        font-family: var(--mono);
+        font-size: 11.5px;
+        color: var(--ink-faint);
+        letter-spacing: 0.04em;
+      }
+      .card h2 {
+        font-size: 18.5px;
+        letter-spacing: -0.01em;
+        margin: 5px 0 7px;
+      }
+      .card p { color: var(--ink-soft); font-size: 13.5px; line-height: 1.5; }
+      .card .open {
+        display: inline-block;
+        margin-top: 12px;
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--sage-d);
+      }
+      .dark { background: #1b201d; border-color: #2c332e; }
+      .dark .card h2 { color: #f1ece0; }
+      .dark .num { color: #8fa090; }
+      .dark p { color: #c3ccc2; }
+      .dark .open { color: #7fae86; }
+      .dark:hover { border-color: #7fae86; }
+      footer {
+        margin-top: 44px;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+        font-size: 13.5px;
+        color: var(--ink-faint);
+      }
+      footer code {
+        font-family: var(--mono);
+        font-size: 12.5px;
+        background: rgba(33, 46, 38, 0.06);
+        padding: 1px 5px;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <span class="eyebrow">Setoku · design exploration</span>
+      <h1>Eighteen divergent riffs on the landing page</h1>
+      <p class="sub">
+        Same copy, eighteen aesthetics, each committing hard to a single idea and
+        steering well clear of the usual AI-SaaS look. Built for a Bookface / HN
+        audience that has seen every gradient. Open each in a new tab and
+        compare. Riffs 01 and 10 are refined; 10 has two variations of its own.
+      </p>
+
+      <div class="batch">Batch 1 · the first five</div>
+      <div class="grid">
+        <a class="card" href="1-manpage.html">
+          <span class="num">01 · manual page</span>
+          <h2>setoku(1)</h2>
+          <p>
+            The page as a premium Unix man page. NAME / SYNOPSIS / EXAMPLES, a
+            running header, architecture and revenue chart redrawn in box-drawing
+            characters, demo questions as <code>$ ask</code> examples.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="2-whitepaper.html">
+          <span class="num">02 · preprint</span>
+          <h2>Technical whitepaper</h2>
+          <p>
+            An academic preprint: title block, abstract, numbered sections,
+            Figure 1 / Figure 2, worked examples, footnotes, a serif measure with
+            a drop cap. Confident and un-hyped.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="3-blueprint.html">
+          <span class="num">03 · drawing sheet</span>
+          <h2>Engineering blueprint</h2>
+          <p>
+            One draftsman’s drawing: graph-paper ground, hairline linework, a
+            title block with drawing number, dimensioned architecture, a
+            bill-of-materials parts list, revision notes.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="4-spreadsheet.html">
+          <span class="num">04 · data grid</span>
+          <h2>Spreadsheet-native</h2>
+          <p>
+            The site as a real spreadsheet: formula bar, A–H columns, sheet tabs,
+            a status bar. Demo answers become cells with comment triangles and
+            sticky-note caveats. The product’s native habitat.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="5-swiss-brutalist.html">
+          <span class="num">05 · typographic</span>
+          <h2>Swiss brutalist</h2>
+          <p>
+            International Typographic Style pushed hard: giant grotesk, a strict
+            12-column grid, hairline rules, margin section numbers, one muted
+            accent. A manifesto poster, not a SaaS page.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+      </div>
+
+      <div class="batch">Batch 2 · going wider</div>
+      <div class="grid">
+        <a class="card" href="6-notebook.html">
+          <span class="num">06 · literate computing</span>
+          <h2>Jupyter notebook</h2>
+          <p>
+            Rendered as <code>setoku.ipynb</code>: a kernel status bar, In[n] /
+            Out[n] cells, the quickstart as code cells, and the demo Q&amp;As as
+            <code>ask(…)</code> cells whose outputs are the real numbers + a
+            matplotlib-style chart.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="7-fieldguide.html">
+          <span class="num">07 · specimen plate</span>
+          <h2>Naturalist field guide</h2>
+          <p>
+            A Victorian botanical monograph: aged paper, the clover as a
+            classified specimen (Kingdom → Etymology), numbered plates, engraved
+            captions, connectors as a checklist of collected species.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="8-transit.html">
+          <span class="num">08 · wayfinding</span>
+          <h2>Transit map</h2>
+          <p>
+            Vignelli signage: the architecture becomes a subway map (ride the MCP
+            line into the gateway interchange), enamel-sign section headers, and
+            an arrivals board for the demo figures.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="9-riso.html">
+          <span class="num">09 · zine</span>
+          <h2>Risograph print</h2>
+          <p>
+            A self-published two-ink riso zine: paper grain, halftone dots, a
+            misregistered headline, rubber-stamped labels, hand-circled numbers.
+            The open-source ethos, made tactile.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="10-classicmac.html">
+          <span class="num">10 · 1-bit GUI · polished</span>
+          <h2>Classic Macintosh</h2>
+          <p>
+            A black-and-white System 7 desktop, now with real embedded Chicago /
+            Geneva / Monaco bitmap fonts, window scrollbars + grow box,
+            active/inactive title bars, hover-invert menus, a live clock. Two
+            variations below.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+      </div>
+
+      <div class="batch">Batch 3 · wide + a couple of mono / hacker</div>
+      <div class="grid">
+        <a class="card" href="11-nfo.html">
+          <span class="num">11 · mono / hacker</span>
+          <h2>Scene .nfo</h2>
+          <p>
+            A Phrack-style e-zine text file: a figlet SETOKU masthead, a
+            <code>release.nfo</code> block, <code>.-=[ ]=-.</code> dividers, ASCII
+            architecture and chart. Ink on cream, not neon-on-black.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card dark" href="12-terminal.html">
+          <span class="num">12 · mono / hacker</span>
+          <h2>Dev terminal (TUI)</h2>
+          <p>
+            A tasteful dark tiling-terminal: tmux status bar, boxed panes, the
+            demo as a <code>❯</code> REPL, block-glyph bar chart. Warm charcoal,
+            one muted-sage accent, blinking caret.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="13-japanese.html">
+          <span class="num">13 · wabi-sabi</span>
+          <h2>Japanese editorial</h2>
+          <p>
+            Leans into 設×奥: sumi ink on washi cream, vast negative space,
+            tategaki section markers, a giant ghosted 奥, an inkan seal as the
+            mark, one muted vermilion accent.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="14-chart.html">
+          <span class="num">14 · cartography</span>
+          <h2>Nautical chart</h2>
+          <p>
+            The <em>data lake</em> as an antique Admiralty sea chart: compass
+            rose, rhumb lines, a title cartouche, the architecture as a harbour
+            survey, demo answers as recorded soundings.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="15-ledger.html">
+          <span class="num">15 · bookkeeping</span>
+          <h2>Accounting ledger</h2>
+          <p>
+            A bound double-entry daybook: ruled paper, red margin rule, folio
+            headings, the demo Q&amp;As as line-items ruled off to a
+            double-underlined $192M total. Ties to the finance data.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="16-exhibition.html">
+          <span class="num">16 · curatorial</span>
+          <h2>Museum exhibition</h2>
+          <p>
+            Presented as a curated show (ties to <code>/curate</code>): a title
+            wall, numbered gallery rooms, didactic wall labels with accession
+            numbers, the architecture hung as the principal work.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+      </div>
+
+      <div class="batch">Classic Mac family · two variations on riff 10</div>
+      <div class="grid">
+        <a class="card" href="10-classicmac.html">
+          <span class="num">10 · System 7</span>
+          <h2>Classic Macintosh (polished)</h2>
+          <p>
+            The one you liked, refined: real bitmap fonts, scrollbars, grow box,
+            active/inactive windows, a live clock, a Trash icon, window-shade
+            roll-up. The stark 1-bit original.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="10b-platinum.html">
+          <span class="num">10b · Mac OS 8</span>
+          <h2>Platinum</h2>
+          <p>
+            The refined grayscale-3D cousin: pinstripe title bars, beveled
+            buttons and wells, Platinum scrollbars, an application menu. More
+            legible, more “designed,” one muted-sage accent.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+        <a class="card" href="10c-compactmac.html">
+          <span class="num">10c · 1984</span>
+          <h2>Compact Macintosh</h2>
+          <p>
+            The original, as a showpiece: a molded beige Mac 128K case, its CRT
+            glowing a “Welcome to Setoku” Happy-Mac boot screen, the sections
+            spilling onto the desktop below.
+          </p>
+          <span class="open">open riff ↗</span>
+        </a>
+      </div>
+
+      <div class="batch">Reference</div>
+      <div class="grid">
+        <a class="card" href="../index.html">
+          <span class="num">00 · current</span>
+          <h2>The live site</h2>
+          <p>
+            The existing cream-and-sage page, so you can weigh each riff against
+            what ships today.
+          </p>
+          <span class="open">open current ↗</span>
+        </a>
+      </div>
+
+      <footer>
+        Preview locally with <code>bun x serve site</code> (or any static
+        server), then visit <code>/riffs/</code>. Every riff keeps all the copy
+        and follows the house rules: curly apostrophes, no em-dashes, no
+        accent-on-black (riff 12 is the one dark treatment, kept to a muted
+        charcoal with a single desaturated accent).
+      </footer>
+    </div>
+  </body>
+</html>
