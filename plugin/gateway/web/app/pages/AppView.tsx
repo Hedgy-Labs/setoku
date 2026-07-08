@@ -9,6 +9,7 @@ import { Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
 import { VisibilityBadge } from "../components/VisibilityBadge";
+import { VisibilityDialog } from "../components/VisibilityDialog";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
 import { appShareUrl, relTime } from "../format";
@@ -78,9 +79,8 @@ export function AppView() {
   // The version awaiting the restore confirm (null = none). Holds the whole
   // revision so the confirm can name what restoring it will change.
   const [revertRev, setRevertRev] = useState<AppRevision | null>(null);
-  // Making an app public is a deliberate exposure (I9), so the team→public step
-  // is confirmed; public→team (reducing exposure) is immediate.
-  const [makePublicOpen, setMakePublicOpen] = useState(false);
+  // Visibility picker (team/public), opened from the badge.
+  const [visOpen, setVisOpen] = useState(false);
   // null = not editing the title; a string = the in-progress new title.
   const [titleEdit, setTitleEdit] = useState<string | null>(null);
   const cancelRename = useRef(false);
@@ -429,14 +429,10 @@ export function AppView() {
           </h1>
         )}
         {data ? (
-          // The visibility badge doubles as its own control (promote is admin-only
-          // + confirmed via makePublicOpen; demote is immediate).
           <VisibilityBadge
             visibility={visibility}
             canManage={active && (mine || isAdmin)}
-            isAdmin={active && isAdmin}
-            onMakePublic={() => setMakePublicOpen(true)}
-            onMakeTeam={() => void act(() => api.setVisibility(id, "team"))}
+            onOpen={() => setVisOpen(true)}
           />
         ) : null}
         {data ? (
@@ -482,11 +478,8 @@ export function AppView() {
             {isApp ? <MenuItem onSelect={() => manualRefresh()}>Refresh data</MenuItem> : null}
             {isApp ? <MenuItem onSelect={() => setEditOpen(true)}>Edit…</MenuItem> : null}
             <MenuItem onSelect={() => void copy()}>Copy link</MenuItem>
-            {data && !data.archivedAt && visibility === "public" && (isAdmin || mine) ? (
-              <MenuItem onSelect={() => void act(() => api.setVisibility(id, "team"))}>Make team-only</MenuItem>
-            ) : null}
-            {data && !data.archivedAt && visibility === "team" && isAdmin ? (
-              <MenuItem onSelect={() => setMakePublicOpen(true)}>Make public</MenuItem>
+            {data && !data.archivedAt && (isAdmin || mine) ? (
+              <MenuItem onSelect={() => setVisOpen(true)}>Change visibility…</MenuItem>
             ) : null}
             {data && !data.archivedAt && (isAdmin || mine) ? (
               <MenuItem danger onSelect={() => setArchiveOpen(true)}>
@@ -599,17 +592,15 @@ export function AppView() {
         }}
         onClose={() => setRevertRev(null)}
       />
-      <Confirm
-        open={makePublicOpen}
-        title="Make this app public?"
-        body="Anyone with the public link can open it without signing in to the box. You can switch it back to team-only anytime."
-        confirmLabel="Make public"
-        defaultAction
-        onConfirm={() => {
-          setMakePublicOpen(false);
-          void act(() => api.setVisibility(id, "public"));
+      <VisibilityDialog
+        open={visOpen}
+        visibility={visibility}
+        canMakePublic={isAdmin}
+        onSubmit={(next) => {
+          setVisOpen(false);
+          void act(() => api.setVisibility(id, next));
         }}
-        onClose={() => setMakePublicOpen(false)}
+        onClose={() => setVisOpen(false)}
       />
       <EditDialog
         open={editOpen}
