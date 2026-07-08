@@ -39,7 +39,7 @@ import {
   type PublishedMeta,
   type PublishedReport,
 } from "./lib/store";
-import { newestComputedAt, renderApp, isFullDoc, type RenderedPanel } from "./lib/apps";
+import { newestComputedAt, renderApp, type RenderedPanel } from "./lib/apps";
 import { mirroredTables, mirrorAsOf, referencedBizTables } from "./lib/mirror";
 import { APP_RUNTIME } from "./lib/app-runtime";
 import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
@@ -679,17 +679,15 @@ function jsonForScript(value: unknown): string {
 }
 
 /** Assemble the sandboxed frame document: our skeleton + injected panel data +
- *  the agent's template fragment. Legacy zero-panel reports are full documents,
- *  served as-is. The payload is already byte-bounded by renderApp's
- *  capRenderBytes (shared with the provenance drawer so the two agree). `team`
- *  gates raw error text: a public frame must NOT inject a raw DB error (it can
- *  name tables/columns/env vars) — same scrub the public /data path applies. */
+ *  the agent's template fragment. Every published app is a fragment the runtime
+ *  wraps — even one with no panels (a state-only app: a todo, a poll) gets the
+ *  runtime + empty data injected, so its `Setoku.*` / `__SETOKU__` calls degrade
+ *  ("No data") instead of ReferenceError. The payload is already byte-bounded by
+ *  renderApp's capRenderBytes (shared with the provenance drawer so the two
+ *  agree). `team` gates raw error text: a public frame must NOT inject a raw DB
+ *  error (it can name tables/columns/env vars) — same scrub the public /data
+ *  path applies. */
 function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { team: boolean; params?: Record<string, string> }): string {
-  // A legacy full HTML document (pre-app report) is served as-is. But a
-  // FRAGMENT with no panels — e.g. an app the author turned static while
-  // keeping a Setoku.*/__SETOKU__ template — still gets the runtime + empty data
-  // injected, so those calls degrade ("No data") instead of ReferenceError.
-  if (!panels.length && isFullDoc(dash.body)) return dash.body;
   const scrub = (e: string | null | undefined): string | null =>
     e ? (opts.team ? e : "data temporarily unavailable") : null;
   const data = {
@@ -1054,17 +1052,13 @@ const httpServer = http.createServer(async (req, res) => {
       // the up-to-2MB body (this path is credential-free and cheap to hammer).
       const meta = store.getPublishedMeta(id);
       if (!meta || meta.archivedAt || meta.visibility !== "public") return notFound();
-      // An app renders via the runtime path whether or not it has data panels: a
-      // chart app has panels; a state-only app (todo/poll) has none but still
-      // wants the runtime + no-network frame. Only a legacy frozen report (format
-      // "html") is served whole at /p/<id>.
-      const isApp = meta.format === "app";
+      // Every app renders via the runtime path whether or not it has data panels:
+      // a chart app has panels; a state-only app (todo/poll) has none but still
+      // wants the runtime + no-network frame.
       const hasPanels = (meta.panels?.length ?? 0) > 0;
 
-      // The /frame and /data subpaths exist only for apps (the shell embeds
-      // /frame; /data is the freshness poll, meaningful only with panels).
-      if (sub === "frame" && !isApp) return notFound();
-      if (sub === "data" && !(isApp && hasPanels)) return notFound();
+      // /data is the freshness poll — meaningful only with panels.
+      if (sub === "data" && !hasPanels) return notFound();
 
       // /p/<id>/data — FRESHNESS ONLY for the public shell's "updated …" stamp.
       // The public surface exposes NO calculations (no SQL, descriptions, metrics).
@@ -1160,24 +1154,8 @@ const httpServer = http.createServer(async (req, res) => {
       if (sub) return notFound(); // unknown subpath
 
       store.audit("public", "published_viewed_public", { id });
-      if (!isApp) {
-        // Legacy static report: serve the self-contained body sandboxed, as before
-        // (opaque origin, no popups/top-navigation).
-        const rep = store.getPublished(id);
-        if (!rep) return notFound();
-        res.writeHead(200, {
-          "content-type": "text/html; charset=utf-8",
-          "content-security-policy": "sandbox allow-scripts",
-          "x-content-type-options": "nosniff",
-          "referrer-policy": "no-referrer",
-        });
-        // frameDocument serves a legacy full-doc as-is, but injects the runtime +
-        // empty data for a fragment template (so Setoku.* degrades, not throws).
-        res.end(frameDocument(rep, [], { team: false }));
-        return;
-      }
-      // Live app: serve the trusted outer shell (frames /p/<id>/frame, polls
-      // /p/<id>/data). The agent template never runs in this top-level origin.
+      // Serve the trusted outer shell (frames /p/<id>/frame, polls /p/<id>/data).
+      // The agent template never runs in this top-level origin.
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "content-security-policy": SHELL_CSP,
@@ -1244,9 +1222,6 @@ const httpServer = http.createServer(async (req, res) => {
           res.end("not found\n");
           return;
         }
-        // An app (with or without panels) renders via the runtime path; only a
-        // legacy frozen report (format "html") keeps the loose sandbox-only CSP.
-        const isApp = rep.format === "app";
         const raw = parseFrameParams(req.url);
         // ?force=1 bypasses the cache and re-runs the selected variant — author or
         // admin only, so a member (or a stale tab) can't hammer prod through the
@@ -1254,14 +1229,12 @@ const httpServer = http.createServer(async (req, res) => {
         const force =
           new URL(req.url ?? "", "http://x").searchParams.get("force") === "1" &&
           (rep.createdBy === session.identity || canApprove(session.role));
-        const panels = isApp && (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw, force }) : [];
+        const panels = (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw, force }) : [];
         store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
-        // A live app's template needs no network (data is injected) → strict
-        // CSP. A LEGACY report predates that contract and may inline a CDN script
-        // or remote image; keep its original sandbox-only CSP so it still renders.
+        // The app template needs no network (data is injected) → strict CSP.
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": isApp ? `${FRAME_CSP}; sandbox allow-scripts allow-forms` : "sandbox allow-scripts",
+          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms`,
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
@@ -1530,7 +1503,6 @@ const httpServer = http.createServer(async (req, res) => {
                 body: snap.body,
                 panels: snap.panels ?? [], // [] rewrites to no-panels + clears cache
                 params: snap.params ?? [],
-                format: snap.format,
                 refreshSeconds: snap.refreshSeconds,
               },
               { editor: session.identity, note: `Restored version ${seq}` },

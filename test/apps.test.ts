@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
-// Pure helpers in lib/apps.ts. isFullDoc decides "legacy full HTML document"
-// (served as-is) vs "fragment the runtime wraps" — it must be anchored so a
-// fragment that merely CONTAINS the literal `<html` (a code snippet, a template
-// string) isn't misclassified and served down the wrong path.
+// Pure helpers in lib/apps.ts. isFullDoc decides "full HTML document" (which
+// publish_app / update_app REJECT — apps are fragments the runtime wraps) vs
+// "fragment" — it must be anchored so a fragment that merely CONTAINS the literal
+// `<html` (a code snippet, a template string) isn't misclassified and rejected.
 import { describe, it, expect } from "bun:test";
 import { isFullDoc } from "../plugin/gateway/lib/apps";
 
