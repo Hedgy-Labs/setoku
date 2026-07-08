@@ -77,6 +77,9 @@ export function AppView() {
   // The version awaiting the restore confirm (null = none). Holds the whole
   // revision so the confirm can name what restoring it will change.
   const [revertRev, setRevertRev] = useState<AppRevision | null>(null);
+  // Making an app public is a deliberate exposure (I9), so the team→public step
+  // is confirmed; public→team (reducing exposure) is immediate.
+  const [makePublicOpen, setMakePublicOpen] = useState(false);
   // null = not editing the title; a string = the in-progress new title.
   const [titleEdit, setTitleEdit] = useState<string | null>(null);
   const cancelRename = useRef(false);
@@ -158,6 +161,17 @@ export function AppView() {
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
   const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
+  // Visibility control (mirrors the server gate): only an admin may PROMOTE to
+  // public (I9); author or admin may take it back to team-only. When either
+  // applies, the badge itself becomes the toggle.
+  const active = !!data && !data.archivedAt;
+  const canGoPublic = active && visibility === "team" && isAdmin;
+  const canGoTeam = active && visibility === "public" && (isAdmin || mine);
+  const canChangeVis = canGoPublic || canGoTeam;
+  const changeVisibility = () => {
+    if (visibility === "public") void act(() => api.setVisibility(id, "team"));
+    else setMakePublicOpen(true); // team→public is confirmed
+  };
   formatRef.current = fresh?.format; // for the watchdog's fire-time decision
 
   // Live numbers for the CURRENT frame only (echo token must match the nonce).
@@ -423,39 +437,60 @@ export function AppView() {
             ) : null}
           </h1>
         )}
-        {data ? <Badge tone={visibility === "public" ? "ok" : "idle"}>{visibility}</Badge> : null}
+        {data ? (
+          canChangeVis ? (
+            // The visibility badge doubles as its own control: click to switch
+            // team ↔ public (promote is admin-only + confirmed; see changeVisibility).
+            <button
+              type="button"
+              onClick={changeVisibility}
+              title={visibility === "public" ? "Make team-only" : "Make public"}
+              className="rounded-full transition hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-stone-300"
+            >
+              <Badge tone={visibility === "public" ? "ok" : "idle"}>{visibility}</Badge>
+            </button>
+          ) : (
+            <Badge tone={visibility === "public" ? "ok" : "idle"}>{visibility}</Badge>
+          )
+        ) : null}
         {data ? (
           <span className="hidden text-xs text-stone-500 sm:inline">
             published by {data.createdBy}
-            {data.versions && data.versions > 1 && data.editedBy && data.editedAt
-              ? ` · edited by ${data.editedBy} ${relTime(data.editedAt)}`
-              : ""}
+            {/* The "edited by" stamp doubles as the discoverable entry to version
+                history (Docs-style): the thing that says it changed opens the log.
+                Underlined-dotted to afford a click without a non-stone accent. The
+                ⋮ menu carries the always-available, named path. */}
+            {data.versions && data.versions > 1 && data.editedBy && data.editedAt ? (
+              <>
+                {" · "}
+                <button
+                  type="button"
+                  onClick={() => setShowHistory((v) => !v)}
+                  aria-expanded={showHistory}
+                  title="Version history"
+                  className="underline decoration-dotted underline-offset-2 hover:text-stone-800"
+                >
+                  edited by {data.editedBy} {relTime(data.editedAt)}
+                </button>
+              </>
+            ) : (
+              ""
+            )}
             {isApp && stampAt ? ` · data updated ${relTime(stampAt)}` : ""}
             {isApp && data.mirrorAsOf ? ` · source data as of ${relTime(data.mirrorAsOf)}` : ""}
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
           </span>
         ) : null}
-        <div className="ml-auto flex items-center gap-1">
-          {data ? (
-            <button
-              onClick={() => setShowHistory((v) => !v)}
-              aria-label="Version history"
-              aria-pressed={showHistory}
-              title="Version history"
-              className={`icon-btn ${showHistory ? "bg-stone-100 text-stone-800" : ""}`}
-            >
-              {/* History: a clock with a rewind arrow (inline SVG, no icon lib). */}
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <path d="M8 4.2v3.9l2.6 1.5" />
-                <path d="M2.6 6.6A5.6 5.6 0 1 1 2.4 9.3" />
-                <path d="M1.7 3.8v2.9h2.9" />
-              </svg>
-            </button>
-          ) : null}
+        <div className="ml-auto">
           <Menu label="App actions">
             {isApp ? (
               <MenuItem onSelect={() => setShowCalc((v) => !v)}>
                 {showCalc ? "Hide calculations" : "How it's calculated"}
+              </MenuItem>
+            ) : null}
+            {data ? (
+              <MenuItem onSelect={() => setShowHistory((v) => !v)}>
+                {showHistory ? "Hide version history" : "Version history"}
               </MenuItem>
             ) : null}
             {isApp ? <MenuItem onSelect={() => manualRefresh()}>Refresh data</MenuItem> : null}
@@ -465,7 +500,7 @@ export function AppView() {
               <MenuItem onSelect={() => void act(() => api.setVisibility(id, "team"))}>Make team-only</MenuItem>
             ) : null}
             {data && !data.archivedAt && visibility === "team" && isAdmin ? (
-              <MenuItem onSelect={() => void act(() => api.setVisibility(id, "public"))}>Make public</MenuItem>
+              <MenuItem onSelect={() => setMakePublicOpen(true)}>Make public</MenuItem>
             ) : null}
             {data && !data.archivedAt && (isAdmin || mine) ? (
               <MenuItem danger onSelect={() => setArchiveOpen(true)}>
@@ -577,6 +612,17 @@ export function AppView() {
           if (revertRev) void doRevert(revertRev.seq);
         }}
         onClose={() => setRevertRev(null)}
+      />
+      <Confirm
+        open={makePublicOpen}
+        title="Make this app public?"
+        body="Anyone with the public link can open it without signing in to the box. You can switch it back to team-only anytime."
+        confirmLabel="Make public"
+        onConfirm={() => {
+          setMakePublicOpen(false);
+          void act(() => api.setVisibility(id, "public"));
+        }}
+        onClose={() => setMakePublicOpen(false)}
       />
       <EditDialog
         open={editOpen}
