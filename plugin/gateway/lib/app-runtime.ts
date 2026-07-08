@@ -38,11 +38,11 @@ export const APP_RUNTIME = `(function () {
   function fmtOf(f) { return typeof f === "function" ? f : (fmt[f] || fmt.raw); }
   // src is a panel key (looked up in __SETOKU__, with its error/rows) or a rows array.
   function resolve(src) {
-    if (Array.isArray(src)) return { rows: src, error: null };
+    if (Array.isArray(src)) return { rows: src, error: null, truncated: false };
     var P = (window.__SETOKU__ && window.__SETOKU__.panels) || {};
     var p = P[src];
-    if (!p) return { rows: [], error: 'unknown panel "' + src + '"' };
-    return { rows: p.rows || [], error: p.error || p.refreshError || null };
+    if (!p) return { rows: [], error: 'unknown panel "' + src + '"', truncated: false };
+    return { rows: p.rows || [], error: p.error || p.refreshError || null, truncated: !!p.truncated };
   }
   function guard(el, r) {
     if (!el) return true;
@@ -79,7 +79,13 @@ export const APP_RUNTIME = `(function () {
     var body = r.rows.map(function (row) {
       return "<tr>" + cols.map(function (c, i) { var f = fmtOf(fmts[c] || "raw"); var nums = aligns[i] === "right";
         return '<td style="padding:6px 10px;border-bottom:1px solid #f1f4f7;text-align:' + aligns[i] + (nums ? ";font-variant-numeric:tabular-nums" : "") + '">' + esc(f(row[c])) + "</td>"; }).join("") + "</tr>"; }).join("");
-    el.innerHTML = '<table style="width:100%;border-collapse:collapse;font:13px system-ui">' + head + body + "</table>";
+    // The rows are a prefix of a larger result (byte-budget trim) — say so rather
+    // than render a silently-partial table. We only know ">this many exist", never
+    // the true total, so the copy is "first N", not "N of M".
+    var note = r.truncated
+      ? '<div style="padding:6px 10px;font:12px system-ui;color:#8a99a8">showing first ' + esc(fmt.int(r.rows.length)) + " rows</div>"
+      : "";
+    el.innerHTML = '<table style="width:100%;border-collapse:collapse;font:13px system-ui">' + head + body + "</table>" + note;
   }
   function stat(target, src, opts) {
     opts = opts || {}; var el = elOf(target); if (!el) return; var r = resolve(src);
@@ -165,7 +171,7 @@ export const APP_RUNTIME = `(function () {
       var prov = {};
       for (var pk in sp) if (Object.prototype.hasOwnProperty.call(sp, pk)) {
         var pv = sp[pk];
-        prov[pk] = { rowCount: pv.rowCount, computedAt: pv.computedAt, error: pv.error, refreshError: pv.refreshError, refreshing: pv.refreshing || false, durationMs: pv.durationMs == null ? null : pv.durationMs };
+        prov[pk] = { rowCount: pv.rowCount, truncated: pv.truncated || false, computedAt: pv.computedAt, error: pv.error, refreshError: pv.refreshError, refreshing: pv.refreshing || false, durationMs: pv.durationMs == null ? null : pv.durationMs };
       }
       var t = null;
       try { t = new URLSearchParams(location.search).get("t"); } catch (e2) { /* no location */ }

@@ -14,7 +14,7 @@ import path from "node:path";
 import pgPkg from "pg";
 import { Database } from "bun:sqlite";
 import { KnowledgeStore } from "../plugin/gateway/lib/store";
-import { renderApp, flushBackgroundPanelRefreshes } from "../plugin/gateway/lib/apps";
+import { renderApp, flushBackgroundPanelRefreshes, MAX_RENDER_ROW_BYTES } from "../plugin/gateway/lib/apps";
 import { hashPassword } from "../plugin/gateway/lib/accounts";
 import { spawnGateway, waitHealthy, connect as gwConnect, call, ROOT } from "./lib/gateway";
 
@@ -33,7 +33,7 @@ const idOf = (text: string): string => text.match(/update_app\("([^"]+)"/)?.[1] 
 
 /** Parse the injected window.__SETOKU__ from a rendered frame document. */
 function setokuOf(html: string): {
-  panels: Record<string, { rows: Record<string, unknown>[]; error: string | null }>;
+  panels: Record<string, { rows: Record<string, unknown>[]; error: string | null; truncated?: boolean; rowCount?: number }>;
   params: Record<string, string>;
 } {
   const json = html.split("window.__SETOKU__=")[1]?.split("</script>")[0]?.replace(/;\s*$/, "") ?? "{}";
@@ -337,6 +337,20 @@ describe("cache migration — pre-rename dashboard_cache carries forward", () =>
   });
 });
 
+describe("publish seeds the FULL result set (no silent 200-row prefix)", () => {
+  it("serves all rows on the first render after publish, not a 200-row seed", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "seed");
+    const panel = { key: "kpi", title: "rows", sql: "select g from generate_series(1, 500) g", dialect: "postgres" };
+    const id = idOf((await call(c, "publish_app", { title: "Big seed", html: "<div id=kpi></div>", panels: [panel] })).text);
+    // The FIRST view (well within the TTL) is served straight from the publish seed —
+    // it must already carry all 500 rows, not a 200-row prefix, and not flag truncated.
+    const { cookie } = await login();
+    const kpi = setokuOf(await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie } })).text()).panels.kpi;
+    expect(kpi.rows.length).toBe(500);
+    expect(kpi.truncated).toBe(false);
+  });
+});
+
 describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", () => {
   // renderApp resolves the business DB in-process (same config path the gateway
   // uses) — point it at this suite's throwaway Postgres.
@@ -433,6 +447,74 @@ describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", (
     expect(forced[0].refreshing).toBeFalsy();
     expect(Date.parse(forced[0].computedAt)).toBeGreaterThanOrEqual(Date.parse(cold[0].computedAt));
     expect(forced[0].computedAt).not.toBe(cold[0].computedAt);
+    store.db.close();
+  });
+});
+
+describe("panel row cap decoupled from run_query (byte-bounded render)", () => {
+  // Panels render to a human in the iframe, not into the model's context, so the
+  // render path passes RENDER_FETCH_CEILING to runPanel — NOT config.rowCap (200,
+  // which still governs run_query). The only bound on a panel is MAX_RENDER_ROW_BYTES.
+  process.env.SETOKU_DATABASE_URL = DB_URL;
+
+  const mkRowsDash = (id: string, sql: string) => ({
+    id, title: "t", format: "app" as const, body: "<div id=kpi></div>",
+    refreshSeconds: 30, visibility: "team" as const, createdBy: "test",
+    createdAt: new Date().toISOString(), archivedAt: null,
+    panels: [{ key: "kpi", title: "n", sql, dialect: "postgres" as const }],
+    params: [],
+  });
+
+  it("renders the full result set — no 200-row model-context cap on panels", async () => {
+    const store = new KnowledgeStore(":memory:");
+    // 500 rows > the 200 run_query rowCap; a panel must return them ALL.
+    const r = await renderApp(store, tmp, mkRowsDash("cap-full", "select g from generate_series(1, 500) g"));
+    expect(r[0].error).toBeNull();
+    expect(r[0].rows.length).toBe(500);
+    expect(r[0].truncated).toBe(false);
+    store.db.close();
+  });
+
+  it("trims to the byte budget and marks truncated (a partial table, never dropped)", async () => {
+    const store = new KnowledgeStore(":memory:");
+    // Wide rows whose full set (~12k × ~400B) blows past MAX_RENDER_ROW_BYTES (3.5MB).
+    const r = await renderApp(store, tmp, mkRowsDash("cap-bytes", "select g, repeat('x', 400) pad from generate_series(1, 12000) g"));
+    expect(r[0].error).toBeNull(); // trimmed to fit — NOT dropped with an error
+    expect(r[0].truncated).toBe(true);
+    expect(r[0].rows.length).toBeGreaterThan(0); // still a usable prefix
+    expect(r[0].rows.length).toBeLessThan(12000);
+    expect(JSON.stringify(r[0].rows).length).toBeLessThanOrEqual(MAX_RENDER_ROW_BYTES);
+    store.db.close();
+  });
+
+  it("splits the byte budget fairly across panels — none is dropped whole", async () => {
+    const store = new KnowledgeStore(":memory:");
+    // Two panels each ~3.3MB (under the 3.5MB per-panel budget on their own) but
+    // ~6.6MB together — capRenderBytes must trim BOTH to a fair share, not vanish one.
+    const wide = "select g, repeat('x', 400) pad from generate_series(1, 8000) g";
+    const dash = {
+      id: "cap-fair", title: "t", format: "app" as const, body: "<div></div>",
+      refreshSeconds: 30, visibility: "team" as const, createdBy: "test", createdAt: new Date().toISOString(), archivedAt: null,
+      panels: [{ key: "a", title: "a", sql: wide, dialect: "postgres" as const }, { key: "b", title: "b", sql: wide, dialect: "postgres" as const }],
+      params: [],
+    };
+    const r = await renderApp(store, tmp, dash);
+    const byKey = Object.fromEntries(r.map((p) => [p.key, p]));
+    for (const k of ["a", "b"]) {
+      expect(byKey[k].error).toBeNull();       // trimmed, not dropped with an error
+      expect(byKey[k].truncated).toBe(true);
+      expect(byKey[k].rows.length).toBeGreaterThan(0);
+    }
+    expect(r.reduce((n, p) => n + JSON.stringify(p.rows).length, 0)).toBeLessThanOrEqual(MAX_RENDER_ROW_BYTES);
+    store.db.close();
+  });
+
+  it("persists and reads back the truncated flag (rows without it read false)", () => {
+    const store = new KnowledgeStore(":memory:");
+    store.putPanelCache("t", "cut", { columns: ["g"], rows: [{ g: 1 }], rowCount: 1, truncated: true });
+    expect(store.getPanelCache("t", "cut")!.truncated).toBe(true);
+    store.putPanelCache("t", "whole", { columns: ["g"], rows: [{ g: 1 }], rowCount: 1 });
+    expect(store.getPanelCache("t", "whole")!.truncated).toBe(false);
     store.db.close();
   });
 });

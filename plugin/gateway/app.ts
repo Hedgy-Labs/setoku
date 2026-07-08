@@ -22,7 +22,7 @@ import { combineSynonyms, synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
 import type { DerivedSynonyms } from "./lib/derived-synonyms";
 import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
-import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, runPanel, compilePanel, isFullDoc } from "./lib/apps";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, MAX_RENDER_ROW_BYTES, RENDER_FETCH_CEILING, runPanel, trimRowsToBytes, compilePanel, isFullDoc } from "./lib/apps";
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
@@ -1056,7 +1056,7 @@ server.registerTool(
       }
       lines.push(
         "",
-        `${result.rowCount} row(s) in ${result.ms}ms${result.truncated ? ` — TRUNCATED at row cap (${config.rowCap}); add aggregation or LIMIT` : ""}`,
+        `${result.rowCount} row(s) in ${result.ms}ms${result.truncated ? ` — TRUNCATED at the model-context row cap (${config.rowCap}); this caps rows entering the model, NOT what an app renders. To see more: aggregate, add LIMIT/OFFSET to page, or build a panel (published panels render the full result set up to a ~3.5MB payload).` : ""}`,
       );
       // Success-path capture nudge: the query worked AND computed an aggregate
       // no curated metric covers — the one moment the definition is fresh and
@@ -1145,7 +1145,7 @@ const publishUrl = (id: string, visibility: "team" | "public" = "team"): string 
 const PANEL_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 type PanelInput = { key: string; title?: string; description?: string; sql: string; dialect?: "postgres" | "clickhouse"; metricId?: string };
-type PanelSeed = { key: string; columns: string[]; rows: Record<string, unknown>[]; rowCount: number };
+type PanelSeed = { key: string; columns: string[]; rows: Record<string, unknown>[]; rowCount: number; truncated: boolean };
 
 // Validate + dry-run a panel set through the governed path. Shared by publish and
 // update so the rules (keys, caps, the I2/I9 lake membrane via runPanel, "every
@@ -1218,8 +1218,15 @@ async function prepPanels(
     const variant = paramsVariant(compiled.referenced, resolved);
     const cacheKey = variant ? `${p.key}::${variant}` : p.key; // seed the default-params variant
     try {
-      const r = await runPanel(projectDir, config, p, compiled, { denyLakeRead });
-      seeds.push({ key: cacheKey, columns: r.columns, rows: r.rows, rowCount: r.rowCount });
+      // Seed the RENDER cache, not the model context: use the render fetch ceiling
+      // (not config.rowCap) and trim to the payload budget, exactly like a live
+      // render — otherwise the first views right after publish/update would serve a
+      // silent 200-row prefix (truncated=false) for the whole refresh TTL, breaking
+      // the "panels render the full result set" contract precisely when the author
+      // is validating the app.
+      const r = await runPanel(projectDir, config, p, compiled, { denyLakeRead, rowCap: RENDER_FETCH_CEILING });
+      const fit = trimRowsToBytes(r.rows, MAX_RENDER_ROW_BYTES);
+      seeds.push({ key: cacheKey, columns: r.columns, rows: fit.rows, rowCount: fit.rows.length, truncated: r.truncated || fit.truncated });
     } catch (e) {
       return { ok: false, error: `Panel "${p.key}" failed to run: ${(e as Error).message}\nFix the query and try again.` };
     }
@@ -1312,8 +1319,15 @@ const APP_GUIDE = [
   "`format` is one of: money | int | num (default) | pct | raw — an unknown token renders unformatted.",
   "",
   "## Raw panel data",
-  "`window.__SETOKU__.panels[<key>]` = `{ columns, rows, rowCount, computedAt, error }`.",
+  "`window.__SETOKU__.panels[<key>]` = `{ columns, rows, rowCount, truncated, computedAt, error }`.",
   "DB numerics arrive as STRINGS — wrap in Number() before any math.",
+  "",
+  "## Row limits",
+  "A panel renders its FULL result set — no 200-row cap. The only bound is a ~3.5MB payload; past it the",
+  "heaviest panel is trimmed to the rows that fit, `panels[key].truncated` is set, and the built-in",
+  "Setoku.table appends a 'showing first N rows' note. If a panel could return an unbounded table,",
+  "aggregate or add a page param rather than leaning on the byte trim. (Note: run_query itself still caps",
+  "at ~200 rows — that's the model-context cap for the agent, NOT the app render cap.)",
   "",
   "## Panels (the `panels` arg)",
   "Each panel: `{ key, sql, dialect?, title?, description?, metricId? }`.",
@@ -1430,7 +1444,7 @@ server.registerTool(
       createdBy: user,
     });
     for (const s of seeds)
-      store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
+      store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, truncated: s.truncated, error: null });
     store.audit(user, "publish_app", { id, title, bytes, panels: normalized.length });
 
     const noun = format === "app" ? "app" : "report";
@@ -1544,7 +1558,7 @@ server.registerTool(
     }, { editor: user });
     if (!ok) return errorText(`Update failed — no active app "${id}".`);
     // Re-seed the cache for the re-derived panels (updatePublished cleared the old rows).
-    if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, error: null });
+    if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, truncated: s.truncated, error: null });
 
     // Panels OR params alter what the public link exposes — if it was public,
     // revert to team so an admin re-approves (the human promotion gate, I9).

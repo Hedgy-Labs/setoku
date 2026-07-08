@@ -200,6 +200,9 @@ export interface PanelCacheRow {
   columns: string[];
   rows: Record<string, unknown>[];
   rowCount: number;
+  /** The cached rows are a PREFIX of a larger result (byte-budget trim). Legacy
+   *  rows written before this column read as false. */
+  truncated: boolean;
   computedAt: string;
   error: string | null;
   /** Wall-clock ms of the query execution that produced this row (null on
@@ -484,6 +487,7 @@ export class KnowledgeStore {
       PRIMARY KEY (app_id, panel_key)
     )`);
     this.ensureColumn("app_cache", "duration_ms", "INTEGER");
+    this.ensureColumn("app_cache", "truncated", "INTEGER");
     // Carry the pre-rename cache forward (dashboard_cache → app_cache, same shape
     // but for the renamed key column). Without this an upgraded box cold-starts
     // every app's cache — the first view of each re-runs all its panels against
@@ -1279,16 +1283,17 @@ export class KnowledgeStore {
   getPanelCache(appId: string, panelKey: string): PanelCacheRow | null {
     const row = this.db
       .query(
-        "SELECT columns, rows, row_count AS rowCount, computed_at AS computedAt, error, duration_ms AS durationMs FROM app_cache WHERE app_id = ? AND panel_key = ?",
+        "SELECT columns, rows, row_count AS rowCount, truncated, computed_at AS computedAt, error, duration_ms AS durationMs FROM app_cache WHERE app_id = ? AND panel_key = ?",
       )
       .get(appId, panelKey) as
-      | { columns: string; rows: string; rowCount: number; computedAt: string; error: string | null; durationMs: number | null }
+      | { columns: string; rows: string; rowCount: number; truncated: number | null; computedAt: string; error: string | null; durationMs: number | null }
       | null;
     if (!row) return null;
     return {
       columns: parseJsonArray(row.columns) as string[],
       rows: parseJsonArray(row.rows) as Record<string, unknown>[],
       rowCount: row.rowCount,
+      truncated: !!row.truncated,
       computedAt: row.computedAt,
       error: row.error,
       durationMs: row.durationMs,
@@ -1299,21 +1304,23 @@ export class KnowledgeStore {
   putPanelCache(
     appId: string,
     panelKey: string,
-    data: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; error?: string | null; durationMs?: number | null },
+    data: { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; truncated?: boolean; error?: string | null; durationMs?: number | null },
   ): string {
     const computedAt = new Date().toISOString();
     this.db.run(
-      `INSERT INTO app_cache (app_id, panel_key, columns, rows, row_count, computed_at, error, duration_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO app_cache (app_id, panel_key, columns, rows, row_count, truncated, computed_at, error, duration_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(app_id, panel_key) DO UPDATE SET
          columns = excluded.columns, rows = excluded.rows, row_count = excluded.row_count,
-         computed_at = excluded.computed_at, error = excluded.error, duration_ms = excluded.duration_ms`,
+         truncated = excluded.truncated, computed_at = excluded.computed_at,
+         error = excluded.error, duration_ms = excluded.duration_ms`,
       [
         appId,
         panelKey,
         JSON.stringify(data.columns ?? []),
         JSON.stringify(data.rows ?? []),
         data.rowCount ?? 0,
+        data.truncated ? 1 : 0,
         computedAt,
         data.error ?? null,
         data.durationMs ?? null,

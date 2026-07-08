@@ -706,6 +706,9 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
           columns: p.columns,
           rows: p.rows as unknown[],
           rowCount: p.rowCount,
+          // The served rows are a prefix of a larger result — drives the built-in
+          // table's "showing first N" note so a byte-trimmed panel isn't silent.
+          truncated: p.truncated ?? false,
           computedAt: p.computedAt,
           error: scrub(p.error),
           refreshError: scrub(p.refreshError),
@@ -765,6 +768,7 @@ function appProvenance(
         metricSummary: doc ? String(doc.meta.summary ?? "") : null,
         sql: p.sql,
         rowCount: r?.rowCount ?? 0,
+        truncated: r?.truncated ?? false,
         computedAt: r?.computedAt ?? null,
         error: r?.error ?? null,
         refreshError: r?.refreshError ?? null,

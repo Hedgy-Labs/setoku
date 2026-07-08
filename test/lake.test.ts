@@ -104,7 +104,7 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
       dialect: "clickhouse",
     });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain("TRUNCATED at row cap"); // fixture config caps at 50
+    expect(r.text).toContain("TRUNCATED at the model-context row cap (50)"); // fixture config caps at 50
   });
 
   it("rejects mutations at the statement gate", async () => {
