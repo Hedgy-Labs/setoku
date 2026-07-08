@@ -489,11 +489,9 @@ export function AppView() {
               </MenuItem>
             ) : null}
             {data ? (
-              // Closes the menu on select (else it'd sit over the drawer); the
-              // drawer has its own Close, so this is a plain "open", not a toggle.
-              <MenuItem closeOnSelect onSelect={() => setShowHistory(true)}>
-                Version history
-              </MenuItem>
+              // Plain "open" (the menu closes on select and the drawer has its own
+              // Close), so no "Hide version history" toggle state is needed.
+              <MenuItem onSelect={() => setShowHistory(true)}>Version history</MenuItem>
             ) : null}
             {isApp ? <MenuItem onSelect={() => manualRefresh()}>Refresh data</MenuItem> : null}
             {isApp ? <MenuItem onSelect={() => setEditOpen(true)}>Edit…</MenuItem> : null}

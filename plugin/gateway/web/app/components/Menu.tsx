@@ -3,10 +3,13 @@ import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import type { ReactNode } from "react";
 import { cn } from "../cn";
 
-/** A kebab (⋮) dropdown. Radix handles keyboard nav, Escape, focus, click-outside. */
+/** A kebab (⋮) dropdown. Radix handles keyboard nav, Escape, focus, click-outside.
+ *  Non-modal (like a macOS menu): selecting an item always closes it, and it
+ *  doesn't lock the page behind a scrim — so an item that opens a dialog can't
+ *  race the menu's body/pointer lock. */
 export function Menu({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <DropdownMenu.Root>
+    <DropdownMenu.Root modal={false}>
       <DropdownMenu.Trigger className="icon-btn" aria-label={label}>
         <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
           <circle cx="8" cy="3" r="1.4" />
@@ -30,24 +33,18 @@ export function Menu({ label, children }: { label: string; children: ReactNode }
 export function MenuItem({
   onSelect,
   danger,
-  closeOnSelect,
   children,
 }: {
   onSelect: () => void;
   danger?: boolean;
-  /** Let Radix close the menu after selecting. Default keeps it open (avoids a
-   *  race with an async action / a dialog the item opens); pass this when the
-   *  item opens a side panel that would otherwise sit UNDER the still-open menu. */
-  closeOnSelect?: boolean;
   children: ReactNode;
 }) {
   return (
     <DropdownMenu.Item
       className={cn("menu-item", danger && "menu-item-danger")}
-      onSelect={(e) => {
-        if (!closeOnSelect) e.preventDefault();
-        onSelect();
-      }}
+      // Selecting closes the menu (Radix default, macOS-style). Any dialog the
+      // handler opens then appears over the closed menu, not under it.
+      onSelect={() => onSelect()}
     >
       {children}
     </DropdownMenu.Item>
