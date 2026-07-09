@@ -12,7 +12,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const MCP_URL = process.env.DEMO_MCP_URL ?? "https://demo.setoku.com/mcp/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9";
+const MCP_URL = process.env.DEMO_MCP_URL ?? "https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0";
 
 // Each probe notes the TRAP — the gap it's hunting for.
 const PROBES: { ask: string; trap: string }[] = [

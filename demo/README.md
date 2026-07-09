@@ -21,7 +21,7 @@ Deployed on the hedgy box:
 
 | | URL |
 |---|---|
-| **Claude connector (MCP)** | `https://demo.setoku.com/mcp/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9` |
+| **Claude connector (MCP)** | `https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0` |
 | **Admin / approval surface** | https://demo.setoku.com/admin |
 | **Health** | https://demo.setoku.com/health |
 
