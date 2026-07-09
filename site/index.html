@@ -530,23 +530,19 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
             what the data means before you touch it.
           </p>
           <dl class="kv">
-            <dt>Context tools<span class="t">find_context · get_metric</span></dt>
+            <dt>Context tools<span class="t">find_context · get_metric · report_correction</span></dt>
             <dd>
               The AI reads what your data means first: canonical metric
               definitions, entity docs, and the gotchas that make a naive query
-              wrong.
+              wrong. It can propose changes to what Setoku knows, but a person
+              accepts them on the admin page, outside the agent loop, so an
+              injected session can’t rewrite the brain.
             </dd>
             <dt>Read-only query<span class="t">get_schema · run_query</span></dt>
             <dd>
               Read-only, with a row cap, a statement timeout, a table allow-list,
               and an append-only audit log. Enforced by the database role, not by
               parsing SQL.
-            </dd>
-            <dt>Human-approved<span class="t">report_correction</span></dt>
-            <dd>
-              The AI can only propose changes to what Setoku knows. A person
-              accepts them on the admin page, outside the agent loop, so an
-              injected session can’t rewrite the brain.
             </dd>
           </dl>
           <p>You set it up with <b>Claude Code</b> skills:</p>
