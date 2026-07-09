@@ -15,8 +15,6 @@ Setoku is a small self-hosted MCP knowledge server plus Claude Code skills for h
 
 One brain, two kinds of question: _"what was revenue last quarter?"_ and _"what's been erroring since the deploy?"_ The business metric and the operational truth, both answered the same read-only way.
 
-Today the brain mostly holds **data and operations** (what your tables, metrics, and logs mean). The same idea could hold more (personal context, house design conventions); see [docs/memory.md](./docs/memory.md).
-
 _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI._
 
 ---
