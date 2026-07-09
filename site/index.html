@@ -384,8 +384,98 @@
               rel="noopener"
               >github.com/Hedgy-Labs/setoku ↗</a
             >
-            &middot; <a href="#demo">jump to DEMO</a>
           </p>
+        </div>
+      </section>
+
+      <section id="demo">
+        <h2 class="man">DEMO</h2>
+        <div class="body">
+          <p>
+            There’s a live demo wired to a fictional pro sports club, the Bonita
+            Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast
+            rights).
+          </p>
+          <p class="dim">
+            <b class="dim" style="color: var(--ink)">1.</b> Connect to the demo
+            MCP server. In Claude (or any MCP client) open Settings → Connectors
+            → Add custom connector, and paste this URL. The token rides in the
+            URL, so there’s no separate key to enter.
+          </p>
+<pre class="block">https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</pre>
+          <p class="dim" style="color: var(--ink)">
+            <b>2.</b> Ask a question.
+          </p>
+
+          <div class="ex">
+            <div class="q">“How many unique fans do we have?”</div>
+            <div class="a">
+              <span class="big">71,204</span>. Deduped by normalized email,
+              internal accounts excluded. Not the raw 92,118.
+            </div>
+          </div>
+          <div class="ex">
+            <div class="q">
+              “What’s our total annual revenue, and how much is media rights?”
+            </div>
+            <div class="a">
+              <span class="big">$192M</span>. Five systems reconciled to the
+              same units. Media rights is the biggest line, ~$90M.
+            </div>
+          </div>
+          <div class="ex">
+            <div class="q">“What was ticket revenue this season?”</div>
+            <div class="a">
+              <span class="big">$46.8M</span>. Cents reconciled to dollars;
+              refunds, exchanges, and comps excluded.
+            </div>
+          </div>
+          <div class="ex">
+            <div class="q">“What’s our total merchandise revenue?”</div>
+            <div class="a">
+              <span class="big">It flags it</span>. Most merch is sold via
+              Fanatics, not in this data, so it says so instead of returning a
+              wrong total.
+            </div>
+          </div>
+          <div class="ex">
+            <div class="q">“Chart revenue by line.”</div>
+            <div class="a">Annual revenue by line · ~$192M total</div>
+<pre class="chart" role="img" aria-label="Annual revenue by line: media rights $90M, ticketing $47M, sponsorship $28M, concessions $14M, merch $8M, other $5M.">Media rights  <span class="bar">████████████████████████████</span>  <span class="num">$90M</span>
+Ticketing     <span class="bar">██████████████▋</span>            <span class="num">$47M</span>
+Sponsorship   <span class="bar">████████▋</span>                  <span class="num">$28M</span>
+Concessions   <span class="bar">████▍</span>                      <span class="num">$14M</span>
+Merch         <span class="bar">██▌</span>                        <span class="num">$8M</span>
+Other         <span class="bar">█▌</span>                         <span class="num">$5M</span></pre>
+          </div>
+
+          <p class="dim" style="color: var(--ink); margin-top: 22px">
+            <b>3.</b> Try an app.
+          </p>
+          <p>
+            Ask Claude to build a dashboard on the same data, then publish it to
+            a link. Two live examples, running on the demo data right now:
+          </p>
+          <ul class="man">
+            <li>
+              <a
+                href="https://demo.setoku.com/admin/p/7e38381ced6517329947b14d"
+                target="_blank"
+                rel="noopener"
+                >Sponsorship pricing table ↗</a
+              >
+              — inventory and rates for sponsorship placements.
+            </li>
+            <li>
+              <a
+                href="https://demo.setoku.com/admin/p/b059da830dcb3e70437d5dea"
+                target="_blank"
+                rel="noopener"
+                >Fan lifetime value ↗</a
+              >
+              — segment fans by spend across tickets, merch, and concessions.
+            </li>
+          </ul>
         </div>
       </section>
 
@@ -604,97 +694,6 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
               >pull request</a
             >!
           </p>
-        </div>
-      </section>
-
-      <section id="demo">
-        <h2 class="man">DEMO</h2>
-        <div class="body">
-          <p>
-            There’s a live demo wired to a fictional pro sports club, the Bonita
-            Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast
-            rights).
-          </p>
-          <p class="dim">
-            <b class="dim" style="color: var(--ink)">1.</b> Connect to the demo
-            MCP server. In Claude (or any MCP client) open Settings → Connectors
-            → Add custom connector, and paste this URL. The token rides in the
-            URL, so there’s no separate key to enter.
-          </p>
-<pre class="block">https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</pre>
-          <p class="dim" style="color: var(--ink)">
-            <b>2.</b> Ask a question.
-          </p>
-
-          <div class="ex">
-            <div class="q">“How many unique fans do we have?”</div>
-            <div class="a">
-              <span class="big">71,204</span>. Deduped by normalized email,
-              internal accounts excluded. Not the raw 92,118.
-            </div>
-          </div>
-          <div class="ex">
-            <div class="q">
-              “What’s our total annual revenue, and how much is media rights?”
-            </div>
-            <div class="a">
-              <span class="big">$192M</span>. Five systems reconciled to the
-              same units. Media rights is the biggest line, ~$90M.
-            </div>
-          </div>
-          <div class="ex">
-            <div class="q">“What was ticket revenue this season?”</div>
-            <div class="a">
-              <span class="big">$46.8M</span>. Cents reconciled to dollars;
-              refunds, exchanges, and comps excluded.
-            </div>
-          </div>
-          <div class="ex">
-            <div class="q">“What’s our total merchandise revenue?”</div>
-            <div class="a">
-              <span class="big">It flags it</span>. Most merch is sold via
-              Fanatics, not in this data, so it says so instead of returning a
-              wrong total.
-            </div>
-          </div>
-          <div class="ex">
-            <div class="q">“Chart revenue by line.”</div>
-            <div class="a">Annual revenue by line · ~$192M total</div>
-<pre class="chart" role="img" aria-label="Annual revenue by line: media rights $90M, ticketing $47M, sponsorship $28M, concessions $14M, merch $8M, other $5M.">Media rights  <span class="bar">████████████████████████████</span>  <span class="num">$90M</span>
-Ticketing     <span class="bar">██████████████▋</span>            <span class="num">$47M</span>
-Sponsorship   <span class="bar">████████▋</span>                  <span class="num">$28M</span>
-Concessions   <span class="bar">████▍</span>                      <span class="num">$14M</span>
-Merch         <span class="bar">██▌</span>                        <span class="num">$8M</span>
-Other         <span class="bar">█▌</span>                         <span class="num">$5M</span></pre>
-          </div>
-
-          <p class="dim" style="color: var(--ink); margin-top: 22px">
-            <b>3.</b> Try an app.
-          </p>
-          <p>
-            Ask Claude to build a dashboard on the same data, then publish it to
-            a link. Two live examples, running on the demo data right now:
-          </p>
-          <ul class="man">
-            <li>
-              <a
-                href="https://demo.setoku.com/admin/p/7e38381ced6517329947b14d"
-                target="_blank"
-                rel="noopener"
-                >Sponsorship pricing table ↗</a
-              >
-              — inventory and rates for sponsorship placements.
-            </li>
-            <li>
-              <a
-                href="https://demo.setoku.com/admin/p/b059da830dcb3e70437d5dea"
-                target="_blank"
-                rel="noopener"
-                >Fan lifetime value ↗</a
-              >
-              — segment fans by spend across tickets, merch, and concessions.
-            </li>
-          </ul>
         </div>
       </section>
 
