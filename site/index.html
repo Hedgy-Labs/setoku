@@ -212,14 +212,64 @@
         white-space: pre;
         user-select: none;
         transform-origin: 50% 100%; /* sway pivots at the stem base */
+        position: relative; /* anchors the wind marks */
+      }
+      pre.fig .wind {
+        position: absolute;
+        opacity: 0;
+        color: var(--ink-faint);
+        pointer-events: none;
       }
       @media (prefers-reduced-motion: no-preference) {
-        pre.fig:hover {
-          animation: fig-sway 2.6s ease-in-out infinite;
+        pre.fig.sway {
+          animation: fig-sway 2.8s ease-in-out;
+        }
+        pre.fig.poke {
+          animation: fig-poke 0.9s ease-out;
         }
         pre.fig .row {
           opacity: 0;
           animation: fig-grow 0.5s ease-out forwards;
+        }
+        pre.fig.sway .wind {
+          animation: wind-drift 1.6s ease-out;
+        }
+        pre.fig.sway .wind:nth-of-type(2) {
+          animation-delay: 0.25s;
+        }
+        pre.fig.sway .wind:nth-of-type(3) {
+          animation-delay: 0.5s;
+        }
+      }
+      @keyframes wind-drift {
+        0% {
+          opacity: 0;
+          transform: translateX(-1.5ch);
+        }
+        30% {
+          opacity: 0.7;
+        }
+        100% {
+          opacity: 0;
+          transform: translateX(3ch);
+        }
+      }
+      @keyframes fig-poke {
+        0%,
+        100% {
+          transform: rotate(0deg);
+        }
+        15% {
+          transform: rotate(1.8deg);
+        }
+        40% {
+          transform: rotate(-1.2deg);
+        }
+        65% {
+          transform: rotate(0.7deg);
+        }
+        85% {
+          transform: rotate(-0.3deg);
         }
       }
       @keyframes fig-sway {
@@ -227,8 +277,11 @@
         100% {
           transform: rotate(0deg);
         }
-        50% {
-          transform: rotate(1.5deg);
+        35% {
+          transform: rotate(1.4deg);
+        }
+        70% {
+          transform: rotate(-0.6deg);
         }
       }
       @keyframes fig-grow {
@@ -858,6 +911,43 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
           fig.appendChild(row);
           fig.appendChild(document.createTextNode("\n"));
         });
+        // wind marks: little curls that drift in when the breeze hits
+        [
+          ["12%", "-5ch", "~"],
+          ["32%", "-6.5ch", "~~"],
+          ["52%", "-4.5ch", "~"],
+        ].forEach(function (w) {
+          var curl = document.createElement("span");
+          curl.className = "wind";
+          curl.textContent = w[2];
+          curl.style.top = w[0];
+          curl.style.left = w[1];
+          fig.appendChild(curl);
+        });
+        // an occasional breeze: one sway every 8-16s
+        function scheduleSway() {
+          setTimeout(function () {
+            fig.classList.add("sway");
+          }, 8000 + Math.random() * 8000);
+        }
+        fig.addEventListener("animationend", function (e) {
+          if (e.animationName === "fig-sway") {
+            fig.classList.remove("sway");
+            scheduleSway();
+          } else if (e.animationName === "fig-poke") {
+            fig.classList.remove("poke");
+          }
+        });
+        // poke it: a quick damped shake on mouseover
+        fig.addEventListener("mouseenter", function () {
+          if (fig.classList.contains("sway")) {
+            // cut the breeze short; its animationend won't fire, so reschedule
+            fig.classList.remove("sway");
+            scheduleSway();
+          }
+          fig.classList.add("poke");
+        });
+        scheduleSway();
       })();
 
       (function () {
