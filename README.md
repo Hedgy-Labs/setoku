@@ -87,7 +87,7 @@ Setoku installs as a Claude Code plugin, so setup runs inside Claude. Add the pl
 /setoku:onboard
 ```
 
-`/setoku:onboard` stands up the server (provisions and bootstraps a small VPS, or connects to one you already have), connects this Claude to it, wires your database read-only, and generates the first knowledge from your code. You'll need a VPS it can use (something like OVH's [VPS-2](https://us.ovhcloud.com/vps/), ~$12/mo, is plenty) and an admin connection URL for the database. You stay in the loop for anything that touches your data. (Or just tell Claude "set up setoku.")
+`/setoku:onboard` stands up the server (provisions and bootstraps a small VPS, or connects to one you already have), connects this Claude to it, wires your database read-only, and generates the first knowledge from your code. You'll need a VPS it can use and an admin connection URL for the database. Something like OVH's [VPS-2](https://us.ovhcloud.com/vps/) (~$12/mo) is plenty for a team; for a personal or hobby box serving a few users, the ~$5 VPS-1 does fine (we run one). You stay in the loop for anything that touches your data. (Or just tell Claude "set up setoku.")
 
 The plugin ships the whole workflow as skills:
 
@@ -99,7 +99,7 @@ The plugin ships the whole workflow as skills:
 <details>
 <summary>Or stand up the server by hand</summary>
 
-One command on a fresh Ubuntu VPS (~$12/mo):
+One command on a fresh Ubuntu VPS ($5–12/mo):
 
 ```bash
 git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku
