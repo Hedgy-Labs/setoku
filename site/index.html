@@ -3,35 +3,26 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Setoku · open-source MCP server for company data</title>
-    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <title>SETOKU(7) · open-source MCP server for company data</title>
     <meta
       name="description"
       content="Setoku is an open-source MCP server that gives your AI a read-only view of your company’s data, plus the context to use it correctly."
     />
-    <link rel="preconnect" href="https://use.typekit.net" crossorigin />
-    <!-- Display/body sans via Adobe Fonts (kit zcb5teq) -->
-    <link rel="stylesheet" href="https://use.typekit.net/zcb5teq.css" />
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
     <style>
       :root {
-        --cream: #faf6ec;
-        --cream-2: #f1eadb;
         --paper: #ffffff;
-        /* AAA (≥7:1 on cream/white) for all body, faint, and link text. */
-        --ink: #212e26;
-        --ink-soft: #3f4a43;
-        --ink-faint: #4c554e;
-        --line: rgba(33, 46, 38, 0.13);
-        --line-soft: rgba(33, 46, 38, 0.07);
-        --sage: #5f8c6b;
+        --paper-2: #f5f4f1;
+        --ink: #201f1a;
+        --ink-soft: #423f36;
+        --ink-faint: #6a675c;
+        --line: rgba(32, 31, 26, 0.16);
+        --line-soft: rgba(32, 31, 26, 0.08);
+        --sage: #4d7357;
         --sage-d: #33543d;
-        /* Indivisible (variable sans, wght 110–900) for display/body/wordmark; Degular Mono for code.
-       --serif is the DISPLAY voice (var name kept to avoid churn across the headline rules). */
-        --serif: "indivisible-variable", sans-serif;
-        --sans: "indivisible-variable", sans-serif;
-        --mono: "degular-mono", monospace;
-        --w: 760px;
-        --brand: "indivisible-variable", sans-serif;
+        --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas,
+          "Liberation Mono", monospace;
+        --w: 74ch;
       }
       * {
         box-sizing: border-box;
@@ -39,656 +30,278 @@
         padding: 0;
       }
       html {
-        scroll-behavior: smooth;
         -webkit-font-smoothing: antialiased;
-        font-optical-sizing: auto;
         text-rendering: optimizeLegibility;
+        scroll-behavior: smooth;
       }
       body {
-        background: var(--cream);
+        background: var(--paper);
         color: var(--ink);
-        font-family: var(--sans);
-        font-weight: 450;
-        font-size: 16.5px;
-        line-height: 1.65;
+        font-family: var(--mono);
+        font-size: 14.5px;
+        line-height: 1.75;
+        padding: 0 20px 80px;
       }
       a {
         color: var(--sage-d);
         text-decoration: none;
+        border-bottom: 1px solid rgba(51, 84, 61, 0.35);
       }
       a:hover {
-        text-decoration: underline;
-        text-underline-offset: 3px;
-      }
-      svg {
-        display: block;
-      }
-      .wrap {
-        max-width: var(--w);
-        margin: 0 auto;
-        padding-inline: 24px;
-      }
-      code {
-        font-family: var(--mono);
-        font-size: 0.86em;
-        background: var(--cream-2);
-        padding: 1.5px 6px;
-        border-radius: 6px;
-        color: var(--sage-d);
+        background: var(--paper-2);
+        border-bottom-color: var(--sage-d);
       }
       ::selection {
         background: var(--sage);
-        color: #fff;
+        color: var(--paper);
       }
 
-      /* header */
-      header {
-        position: sticky;
-        top: 0;
-        z-index: 10;
-        background: color-mix(in srgb, var(--cream) 86%, transparent);
-        backdrop-filter: blur(10px);
-        border-bottom: 1px solid var(--line-soft);
-      }
-      .bar {
+      /* running man header/footer */
+      .runline {
+        /* font-size stays at the body size here so 74ch matches main's
+           column exactly; the smaller text is set on the children */
         max-width: var(--w);
         margin: 0 auto;
-        padding: 13px 24px;
         display: flex;
-        align-items: center;
         justify-content: space-between;
+        gap: 12px;
+        letter-spacing: 0.02em;
+        color: var(--ink-faint);
+        white-space: nowrap;
+        overflow: hidden;
       }
-      .brand {
-        display: flex;
-        align-items: center;
-        gap: 4px;
-        color: var(--ink);
-        font-family: var(--brand);
-        font-weight: 700;
-        font-size: 17px;
-        letter-spacing: -0.02em;
+      .runline > span {
+        font-size: 12.5px;
       }
-      .brand:hover {
-        text-decoration: none;
+      .runline .mid {
+        flex: 1;
+        text-align: center;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      .brand .mark {
-        width: 22px;
-        height: 22px;
-        margin-right: -2px;
-        color: #1a1a19;
+      .runline.top {
+        padding: 16px 0 8px;
+        border-bottom: 1px solid var(--line-soft);
       }
-      .nav {
-        display: flex;
-        gap: 18px;
-        align-items: center;
+      .runline.bot {
+        padding: 14px 0;
+        margin-top: 40px;
+        border-top: 1px solid var(--line-soft);
       }
-      .nav a {
-        color: var(--ink-soft);
-        font-size: 14.5px;
-      }
-      .nav a:hover {
-        color: var(--ink);
-        text-decoration: none;
-      }
-      @media (max-width: 560px) {
-        .nav a.hideable {
+      @media (max-width: 620px) {
+        .runline .mid {
           display: none;
         }
       }
 
-      /* intro */
-      .intro {
-        padding-block: 56px 12px;
-      }
-      .eyebrow {
-        font-family: var(--mono);
-        font-size: 12px;
-        letter-spacing: 0.06em;
-        color: var(--sage-d);
-      }
-      h1 {
-        font-family: var(--serif);
-        font-weight: 700;
-        font-size: clamp(33px, 5.6vw, 50px);
-        line-height: 1.05;
-        letter-spacing: -0.02em;
-        margin: 16px 0 0;
-        max-width: 15em;
-      }
-      .rotator {
+      main {
+        max-width: var(--w);
+        margin: 0 auto;
         position: relative;
-        display: inline-block;
-        text-align: left;
-        vertical-align: baseline;
-        color: var(--sage-d);
-        transition: width 480ms cubic-bezier(0.22, 1, 0.36, 1);
       }
-      .rotator-word {
-        display: inline-block;
-        white-space: nowrap;
-        will-change: transform, opacity;
-        border-bottom: 0.06em solid rgba(51, 84, 61, 0.28);
-        padding-bottom: 0.02em;
+
+      /* section headers, man-page style */
+      h2.man {
+        font-size: 14.5px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        color: var(--ink);
+        margin: 46px 0 6px;
+        scroll-margin-top: 60px;
       }
-      /* Off-screen twin used only to measure each word's width. */
-      .rotator-measure {
-        position: absolute;
-        left: 0;
-        top: 0;
-        visibility: hidden;
-        pointer-events: none;
-        white-space: nowrap;
+      section {
+        padding-left: 0;
       }
-      @media (prefers-reduced-motion: reduce) {
-        .rotator {
-          transition: none;
+      .body {
+        padding-left: 5ch;
+      }
+      @media (max-width: 560px) {
+        .body {
+          padding-left: 2.5ch;
         }
       }
-      .intro p.lede {
+      p {
         color: var(--ink-soft);
-        font-size: 18px;
-        margin-top: 18px;
-        max-width: 42em;
+        margin: 12px 0;
+        max-width: 66ch;
       }
-      .actions {
-        margin-top: 24px;
-        display: flex;
-        gap: 10px;
-        flex-wrap: wrap;
-      }
-      .btn {
-        display: inline-flex;
-        align-items: center;
-        gap: 7px;
-        font-size: 14.5px;
-        font-weight: 600;
-        padding: 9px 16px;
-        border-radius: 9px;
-        border: 1px solid var(--ink);
-        background: var(--ink);
-        color: var(--cream);
-      }
-      .btn:hover {
-        background: var(--sage-d);
-        border-color: var(--sage-d);
-        text-decoration: none;
-      }
-      .btn.ghost {
-        background: transparent;
+      b,
+      strong {
         color: var(--ink);
-        border-color: var(--line);
+        font-weight: 700;
       }
-      .btn.ghost:hover {
-        background: transparent;
-        border-color: var(--sage);
+      .dim {
+        color: var(--ink-faint);
+      }
+      .cmd {
+        color: var(--sage-d);
+        font-weight: 600;
+      }
+
+      /* NAME line + rotator */
+      .nameline {
+        color: var(--ink);
+        margin-top: 8px;
+      }
+      .rotator {
+        display: inline-block;
+        color: var(--sage-d);
+        border-bottom: 1px solid rgba(51, 84, 61, 0.4);
+      }
+
+      pre.block {
+        background: var(--paper-2);
+        border: 1px solid var(--line);
+        border-radius: 4px;
+        padding: 14px 16px;
+        overflow-x: auto;
+        margin: 14px 0;
+        line-height: 1.7;
+        color: var(--ink);
+      }
+      pre.block .c {
+        color: var(--ink-faint);
+      }
+      pre.block .cmd {
         color: var(--sage-d);
       }
 
-      /* sections */
-      section {
-        padding: 40px 0;
-        border-top: 1px solid var(--line-soft);
-        scroll-margin-top: 80px;
+      .kv {
+        margin: 16px 0;
       }
-      section:first-of-type {
-        border-top: none;
-      }
-      h2 {
-        font-family: var(--serif);
-        font-weight: 600;
-        font-size: 25px;
-        letter-spacing: -0.02em;
-        margin-bottom: 6px;
-        scroll-margin-top: 70px;
-      }
-      .diagram {
-        margin-top: 24px;
-      }
-      .diagram svg {
-        width: 100%;
-        height: auto;
-        display: block;
-        margin: 0 auto;
-      }
-      .diagram .node {
-        fill: #fff;
-        stroke: var(--ink);
-        stroke-width: 1.4;
-      }
-      .diagram .box {
-        fill: none;
-        stroke: var(--ink-faint);
-        stroke-width: 1.2;
-        stroke-dasharray: 4 5;
-      }
-      .diagram .t {
-        font-family: var(--sans);
-        font-size: 13px;
-        fill: var(--ink);
-      }
-      .diagram .s {
-        font-family: var(--sans);
-        font-size: 10.5px;
-        fill: var(--ink-soft);
-      }
-      .diagram .e {
-        font-family: var(--mono);
-        font-size: 10.5px;
-        fill: var(--ink-soft);
-      }
-      .diagram .arr {
-        stroke: var(--ink-soft);
-        stroke-width: 1.4;
-        fill: none;
-      }
-      .why h3 {
-        font-family: var(--sans);
-        font-weight: 600;
-        font-size: 16px;
-        margin: 22px 0 4px;
+      .kv dt {
         color: var(--ink);
+        font-weight: 700;
       }
-      .why p {
-        color: var(--ink-soft);
-        max-width: 44em;
-      }
-      .uses {
-        list-style: none;
-        margin-top: 12px;
-        display: grid;
-        gap: 9px;
-      }
-      .uses li {
-        color: var(--ink-soft);
-        font-size: 15px;
-        line-height: 1.5;
-        padding-left: 18px;
-        position: relative;
-        max-width: 44em;
-      }
-      .uses li::before {
-        content: "–";
-        position: absolute;
-        left: 2px;
+      .kv dt .t {
         color: var(--ink-faint);
+        font-weight: 400;
+        margin-left: 1ch;
       }
-      .uses b {
-        color: var(--ink);
-        font-weight: 600;
-      }
-      section > .wrap > p {
+      .kv dd {
         color: var(--ink-soft);
-        margin-top: 8px;
-        max-width: 44em;
-      }
-      .lead {
-        margin-bottom: 20px;
-      }
-      .irole {
-        font-size: 13px;
-        color: var(--ink-faint);
-        margin: 2px 0 14px;
-        max-width: 40em;
-      }
-      .lakebox {
-        border: 1px dashed var(--line);
-        border-radius: 12px;
-        padding: 13px 14px 14px;
-        display: inline-block;
-      }
-      .lakebox .lk {
-        font-family: var(--mono);
-        font-size: 11px;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: var(--ink-faint);
-        margin-bottom: 11px;
-        display: flex;
-        align-items: center;
-        gap: 7px;
-      }
-      .lakebox .lk .dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--sage);
+        margin: 2px 0 14px 4ch;
+        max-width: 62ch;
       }
 
-      /* code */
-      pre {
-        background: var(--paper);
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        padding: 18px 20px;
+      ul.man {
+        list-style: none;
+        margin: 12px 0;
+      }
+      ul.man li {
+        color: var(--ink-soft);
+        padding-left: 3ch;
+        position: relative;
+        margin: 6px 0;
+        max-width: 64ch;
+      }
+      ul.man li::before {
+        content: "•";
+        position: absolute;
+        left: 0.6ch;
+        color: var(--ink-faint);
+      }
+
+      /* clover: centered above NAME, a title plate */
+      pre.fig {
+        width: max-content;
+        margin: 38px auto -8px;
+        color: var(--sage-d);
+        font-size: 11px;
+        line-height: 1.15;
+        white-space: pre;
+        user-select: none;
+      }
+
+      /* ascii art wrapper */
+      .ascii-wrap {
         overflow-x: auto;
         margin: 16px 0;
       }
-      pre code {
-        font-family: var(--mono);
-        font-size: 13.5px;
-        line-height: 1.8;
-        background: none;
-        padding: 0;
+      pre.ascii {
+        line-height: 1.2; /* box-drawing verticals must touch; >1.2 leaves gaps */
+        font-size: 13px;
         color: var(--ink);
         white-space: pre;
+        min-width: min-content;
+        letter-spacing: 0;
       }
-      pre code .c {
+      pre.ascii .lbl {
+        color: var(--sage-d);
+      }
+      pre.ascii .an {
         color: var(--ink-faint);
-      }
-      .note {
-        font-size: 14.5px;
-        color: var(--ink-soft);
-        margin-top: 14px;
-      }
-      .step {
-        margin-top: 26px;
-      }
-      .step-h {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        font-family: var(--serif);
-        font-weight: 700;
-        font-size: 20px;
-        letter-spacing: -0.02em;
-        margin-bottom: 10px;
-      }
-      .step-n {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 27px;
-        height: 27px;
-        border-radius: 50%;
-        background: var(--ink);
-        color: var(--cream);
-        font-size: 14px;
-        font-weight: 700;
-        flex: 0 0 auto;
-      }
-      .say {
-        background: var(--paper);
-        border: 1px solid var(--line);
-        border-left: 3px solid var(--sage);
-        border-radius: 10px;
-        padding: 15px 18px;
-        margin-top: 16px;
-      }
-      .say-label {
-        display: block;
-        font-family: var(--mono);
-        font-size: 10.5px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        color: var(--sage-d);
-        margin-bottom: 7px;
-      }
-      .say-text {
-        font-family: var(--serif);
-        font-weight: 500;
-        font-size: 17px;
-        letter-spacing: -0.015em;
-        color: var(--ink);
-        line-height: 1.4;
-        word-break: break-word;
-      }
-      .manual {
-        margin-top: 18px;
-      }
-      .manual summary {
-        cursor: pointer;
-        font-size: 14px;
-        color: var(--sage-d);
-        font-weight: 600;
-        list-style: none;
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .manual summary::-webkit-details-marker {
-        display: none;
-      }
-      .manual summary::before {
-        content: "›";
-        display: inline-block;
-        transition: transform 0.2s;
-      }
-      .manual[open] summary::before {
-        transform: rotate(90deg);
-      }
-      .manual summary:hover {
-        text-decoration: underline;
       }
 
-      /* how it works list */
-      .steps {
-        margin-top: 18px;
-        display: grid;
-        gap: 2px;
-      }
-      .row {
-        display: grid;
-        grid-template-columns: 160px 1fr;
-        gap: 18px;
-        padding: 14px 0;
-        border-top: 1px solid var(--line-soft);
-        align-items: start;
-      }
-      .row:first-child {
-        border-top: none;
-      }
-      @media (max-width: 560px) {
-        .row {
-          grid-template-columns: 1fr;
-          gap: 4px;
-        }
-      }
-      .row .k {
-        font-weight: 600;
-        font-size: 15px;
-      }
-      .row .k .t {
-        display: block;
-        font-family: var(--mono);
-        font-size: 11.5px;
-        color: var(--sage-d);
-        font-weight: 500;
-        margin-top: 3px;
-      }
-      .row .v {
-        color: var(--ink-soft);
-        font-size: 15px;
-      }
-
-      /* integrations */
-      .integ {
-        margin-top: 8px;
-        display: grid;
-        gap: 26px;
-      }
-      .igroup h3 {
-        font-size: 13px;
-        font-family: var(--mono);
-        letter-spacing: 0.04em;
-        color: var(--ink-faint);
-        font-weight: 500;
-        margin-bottom: 12px;
-        text-transform: uppercase;
-      }
-      .chips {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-      .chip {
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 10px 14px;
-        background: var(--paper);
-        font-size: 14.5px;
-        min-width: 0;
-      }
-      .chip .dot {
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: var(--sage);
-        flex: 0 0 auto;
-      }
-      .chip b {
-        font-weight: 600;
-      }
-      .chip span {
-        color: var(--ink-faint);
-        font-size: 13px;
-      }
-      .chip.muted {
-        border-style: dashed;
-        background: transparent;
-        color: var(--ink-faint);
-      }
-      .chip.muted .dot {
-        background: var(--ink-faint);
-      }
-
-      /* demo example — a Q&A transcript, not a grid of cards */
-      .examples {
-        margin-top: 22px;
-        border-top: 1px solid var(--line-soft);
-      }
+      /* examples */
       .ex {
-        padding: 16px 0 17px;
-        border-bottom: 1px solid var(--line-soft);
+        margin: 18px 0;
       }
       .ex .q {
-        font-family: var(--serif);
-        font-weight: 450;
-        font-size: 15.5px;
-        color: var(--ink-soft);
-        letter-spacing: -0.012em;
-        line-height: 1.3;
+        color: var(--ink);
+      }
+      .ex .q::before {
+        content: "Q  ";
+        color: var(--sage-d);
+        font-weight: 600;
       }
       .ex .a {
-        margin-top: 8px;
-        padding-left: 16px;
-        border-left: 2px solid var(--line);
-      }
-      .ex .a b {
-        display: block;
-        font-family: var(--serif);
-        font-weight: 700;
-        font-size: 23px;
-        letter-spacing: -0.03em;
-        line-height: 1;
-      }
-      .ex .a span {
-        display: block;
-        margin-top: 6px;
         color: var(--ink-soft);
-        font-size: 13.5px;
-        line-height: 1.45;
+        padding-left: 0;
+        margin-top: 2px;
+        max-width: 64ch;
       }
-      .chart {
-        border: 1px solid var(--line);
-        border-radius: 12px;
-        background: var(--paper);
-        padding: 16px 18px 12px;
-        margin-top: 12px;
+      .ex .a::before {
+        content: "A  ";
+        color: var(--sage-d);
+        font-weight: 600;
       }
-      .chart .cl {
-        font-family: var(--mono);
-        font-size: 11px;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        color: var(--ink-faint);
-        margin-bottom: 10px;
-      }
-      .chart svg {
-        width: 100%;
-        height: auto;
-        display: block;
+      .ex .a .big {
+        color: var(--ink);
+        font-weight: 700;
       }
 
-      /* footer */
-      footer {
-        border-top: 1px solid var(--line);
-        margin-top: 24px;
-        padding: 30px 0 0;
-        overflow: hidden;
+      /* ascii chart */
+      pre.chart {
+        line-height: 1.5;
+        font-size: 12.5px;
+        color: var(--ink);
+        white-space: pre;
+        margin: 8px 0 4px 3ch;
+        overflow-x: auto;
       }
-      .foot-brand {
-        display: block;
-        width: 100%;
-        margin: 40px 0 -1.4vw;
-        user-select: none;
-        transform-origin: 50% 100%;
-        transform: translateZ(0);
-        backface-visibility: hidden;
-        will-change: transform;
+      pre.chart .bar {
+        color: var(--sage);
       }
-      .foot-brand text {
-        font-family: var(--brand);
-        font-weight: 950;
-        font-variation-settings: "wght" 950;
+      pre.chart .num {
+        color: var(--ink);
       }
-      .foot-brand .gl {
-        transition: stroke-width 0.5s cubic-bezier(0.25, 0.6, 0.3, 1);
+
+      details {
+        margin: 14px 0;
+        max-width: 66ch;
       }
-      .foot-brand:hover .gl {
-        stroke-width: 9;
+      summary {
+        cursor: pointer;
+        color: var(--sage-d);
       }
-      .foot-brand:hover {
-        animation: footripple 0.9s cubic-bezier(0.22, 0.61, 0.31, 1);
+      details p {
+        margin-top: 8px;
       }
-      @keyframes footripple {
-        0% {
-          transform: translateZ(0) scale(1, 1) skewX(0);
-        }
-        18% {
-          transform: translateZ(0) scale(1.014, 0.964) skewX(-1.3deg);
-        }
-        38% {
-          transform: translateZ(0) scale(0.987, 1.023) skewX(0.85deg);
-        }
-        58% {
-          transform: translateZ(0) scale(1.007, 0.991) skewX(-0.45deg);
-        }
-        78% {
-          transform: translateZ(0) scale(0.997, 1.005) skewX(0.22deg);
-        }
-        100% {
-          transform: translateZ(0) scale(1, 1) skewX(0);
-        }
+
+      .mark {
+        width: 15px;
+        height: 15px;
+        display: inline-block;
+        vertical-align: -2px;
+        color: var(--ink);
+        margin-right: 2px;
       }
-      @media (prefers-reduced-motion: reduce) {
-        .foot-brand:hover text {
-          animation: none;
-        }
-      }
-      .foot {
-        display: flex;
-        justify-content: space-between;
-        gap: 20px;
-        flex-wrap: wrap;
-        align-items: center;
-        font-size: 13.5px;
+      .foot-etym {
         color: var(--ink-faint);
-      }
-      .foot .l {
-        display: flex;
-        gap: 18px;
-        flex-wrap: wrap;
-        align-items: center;
-      }
-      .foot a {
-        color: var(--ink-soft);
-      }
-      .foot .jp {
-        font-family: var(--mono);
-        font-size: 12px;
+        font-size: 12.5px;
+        text-align: center;
+        margin-top: 26px;
       }
     </style>
   </head>
@@ -710,96 +323,106 @@
       </symbol>
     </svg>
 
-    <header>
-      <div class="bar">
-        <a class="brand" href="#top"
-          ><svg class="mark" viewBox="0 0 64 64"><use href="#clover" /></svg>
-          Setoku</a
-        >
-        <nav class="nav">
-          <a class="hideable" href="#how">How it works</a>
-          <a class="hideable" href="#apps">Apps</a>
-          <a class="hideable" href="#connectors">Connectors</a>
-          <a
-            href="https://github.com/Hedgy-Labs/setoku"
-            target="_blank"
-            rel="noopener"
-            >GitHub ↗</a
-          >
-        </nav>
-      </div>
-    </header>
+    <div class="runline top">
+      <span
+        ><svg class="mark"><use href="#clover" /></svg>SETOKU(7)</span
+      >
+      <span class="mid">User Manual</span>
+      <span>SETOKU(7)</span>
+    </div>
 
     <main id="top">
-      <div class="intro wrap">
-        <span class="eyebrow">Open source · MCP server · Apache-2.0</span>
-        <h1>Make any AI fluent in your <span
-            class="rotator"
-            data-words="company data,family data,personal data"
-          ><span class="rotator-word">company data</span><span
-              class="rotator-measure"
-              aria-hidden="true"
-            ></span></span></h1>
-        <p class="lede">
-          Setoku is a small self-hosted MCP knowledge server + Claude Code
-          skills for hooking up your data. It does two things: it gives your AI
-          a read-only way to query your data, and it remembers what that data
-          means (the metric definitions, the gotchas), getting better the more
-          you use it. Ask for a dashboard and publish it to a link your whole
-          team can view, on live data. The MCP works with whatever AI you
-          already have, and no model runs on the server, so no added inference
-          cost.
-        </p>
-        <div class="actions">
-          <a
-            class="btn"
-            href="https://github.com/Hedgy-Labs/setoku"
-            target="_blank"
-            rel="noopener"
-            >View on GitHub ↗</a
-          >
-          <a class="btn ghost" href="#demo">Try the demo</a>
+      <!-- masthead clover: the actual mark, rasterized from its SVG paths -->
+<pre class="fig" aria-hidden="true">
+ .*%@@@%*.
+:@@@@@@@@@*
+@@@@@@@@@@@:     :*%%*.
+@@@@@@@@@@@@:   %@@@@@@*
+.%@@@@@@@@@@@. %@@@@@@@@
+  :**%%@@@@@@*.@@@@@@@%:
+        .:*@@%%@@%**:.
+            :%%:.
+            .@@.
+            :@@:
+            %@@:
+           .@@@.
+           %@@@.
+          .@@@@
+</pre>
+      <section>
+        <h2 class="man">NAME</h2>
+        <div class="body">
+          <p class="nameline">
+            <b>setoku</b> &mdash; make any AI fluent in your
+            <span
+              class="rotator"
+              data-words="company data,family data,personal data"
+              >company data</span
+            >
+          </p>
         </div>
-      </div>
+      </section>
 
-      <!-- QUICKSTART -->
+      <section>
+        <h2 class="man">SYNOPSIS</h2>
+        <div class="body">
+<p>
+            Setoku is a small self-hosted MCP knowledge server + Claude Code
+            skills for hooking up your data. It does two things: it gives your
+            AI a read-only way to query your data, and it remembers what that
+            data means (the metric definitions, the gotchas), getting better the
+            more you use it. Ask for a dashboard and publish it to a link your
+            whole team can view, on live data. The MCP works with whatever AI
+            you already have, and no model runs on the server, so no added
+            inference cost.
+          </p>
+          <p class="dim">
+            Open source &middot; MCP server &middot; Apache-2.0 &middot;
+            <a
+              href="https://github.com/Hedgy-Labs/setoku"
+              target="_blank"
+              rel="noopener"
+              >github.com/Hedgy-Labs/setoku ↗</a
+            >
+            &middot; <a href="#demo">jump to DEMO</a>
+          </p>
+        </div>
+      </section>
+
       <section id="quickstart">
-        <div class="wrap">
-          <h2>Quickstart</h2>
+        <h2 class="man">QUICKSTART</h2>
+        <div class="body">
           <p>
             Setoku installs as a Claude Code plugin. Add the plugin, then run
             onboarding from your main project directory, the codebase you want
             Setoku to learn from:
           </p>
-          <pre><code><span class="c"># 1 · add the plugin (skills only)</span>
-/plugin marketplace add Hedgy-Labs/setoku
-/plugin install setoku@setoku
+<pre class="block"><span class="c"># 1 · add the plugin (skills only)</span>
+<span class="cmd">/plugin</span> marketplace add Hedgy-Labs/setoku
+<span class="cmd">/plugin</span> install setoku@setoku
 
 <span class="c"># 2 · from your project directory</span>
-/setoku:onboard</code></pre>
+<span class="cmd">/setoku:onboard</span></pre>
           <p>
             Onboarding stands up the server, auths your Claude, wires your
             database read-only, and generates the first knowledge from your
             code. You stay in the loop for anything that touches your data. To
-            start onboarding, run <code>/setoku:onboard</code>.
+            start onboarding, run <span class="cmd">/setoku:onboard</span>.
           </p>
           <p>
             You’ll need somewhere to host it. Something like OVH’s
-            <a
-              href="https://us.ovhcloud.com/vps/"
-              target="_blank"
-              rel="noopener"
+            <a href="https://us.ovhcloud.com/vps/" target="_blank" rel="noopener"
               >VPS-2</a
             >
             is plenty.
           </p>
-          <details class="manual">
+          <details>
             <summary>Or stand up the server by hand</summary>
-            <pre><code><span class="c"># on a fresh Ubuntu VPS</span>
+<pre class="block"><span class="c"># on a fresh Ubuntu VPS</span>
 git clone https://github.com/Hedgy-Labs/setoku /opt/setoku
 cd /opt/setoku
-SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
-            <p style="margin-top: 12px">
+SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
+            <p>
               Installs Docker, generates secrets, gets an HTTPS certificate, and
               prints the connect command. Then add the plugin and run
               /setoku:onboard from your project; it’ll detect the box you just
@@ -809,351 +432,171 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         </div>
       </section>
 
-      <!-- HOW IT WORKS -->
       <section id="how">
-        <div class="wrap">
-          <h2>How it works</h2>
-          <p class="lead">
+        <h2 class="man">DESCRIPTION</h2>
+        <div class="body">
+          <p>
             Setoku gives the AI two kinds of MCP tools, and one rule: look up
             what the data means before you touch it.
           </p>
-          <div class="steps">
-            <div class="row">
-              <div class="k">
-                Context tools<span class="t">find_context · get_metric</span>
-              </div>
-              <div class="v">
-                The AI reads what your data means first: canonical metric
-                definitions, entity docs, and the gotchas that make a naive
-                query wrong.
-              </div>
-            </div>
-            <div class="row">
-              <div class="k">
-                Read-only query<span class="t">get_schema · run_query</span>
-              </div>
-              <div class="v">
-                Read-only, with a row cap, a statement timeout, a table
-                allow-list, and an append-only audit log. Enforced by the
-                database role, not by parsing SQL.
-              </div>
-            </div>
-            <div class="row">
-              <div class="k">
-                Human-approved<span class="t">report_correction</span>
-              </div>
-              <div class="v">
-                The AI can only propose changes to what Setoku knows. A person
-                accepts them on the admin page, outside the agent loop, so an
-                injected session can’t rewrite the brain.
-              </div>
-            </div>
-          </div>
-          <p class="note" style="margin-top: 20px">
-            You set it up with <b>Claude Code</b> skills:
-          </p>
-          <ul class="uses">
+          <dl class="kv">
+            <dt>Context tools<span class="t">find_context · get_metric</span></dt>
+            <dd>
+              The AI reads what your data means first: canonical metric
+              definitions, entity docs, and the gotchas that make a naive query
+              wrong.
+            </dd>
+            <dt>Read-only query<span class="t">get_schema · run_query</span></dt>
+            <dd>
+              Read-only, with a row cap, a statement timeout, a table allow-list,
+              and an append-only audit log. Enforced by the database role, not by
+              parsing SQL.
+            </dd>
+            <dt>Human-approved<span class="t">report_correction</span></dt>
+            <dd>
+              The AI can only propose changes to what Setoku knows. A person
+              accepts them on the admin page, outside the agent loop, so an
+              injected session can’t rewrite the brain.
+            </dd>
+          </dl>
+          <p>You set it up with <b>Claude Code</b> skills:</p>
+          <ul class="man">
             <li>
-              <code>/setoku:onboard</code> sets Setoku up in a repo for the
-              first time.
+              <span class="cmd">/setoku:onboard</span> sets Setoku up in a repo
+              for the first time.
             </li>
             <li>
-              <code>/setoku:connect</code> adds a data source or custom
-              integration.
+              <span class="cmd">/setoku:connect</span> adds a data source or
+              custom integration.
             </li>
             <li>
-              <code>/setoku:generate</code> writes business context from your
-              code.
+              <span class="cmd">/setoku:generate</span> writes business context
+              from your code.
             </li>
             <li>
-              <code>/setoku:curate</code> reviews and approves pending
-              knowledge.
+              <span class="cmd">/setoku:curate</span> reviews and approves
+              pending knowledge.
             </li>
           </ul>
-          <p class="note">
-            Once it’s set up, <b>any MCP client</b> can use it: Claude, Codex,
-            or whatever you run. Just ask in plain language, and the tools do
-            the rest.
+          <p>
+            Once it’s set up, <b>any MCP client</b> can use it: Claude, Codex, or
+            whatever you run. Just ask in plain language, and the tools do the
+            rest.
           </p>
         </div>
       </section>
 
-      <!-- APPS -->
       <section id="apps">
-        <div class="wrap">
-          <h2>Apps: save and share the tools Claude builds you</h2>
-          <p class="lead">
+        <h2 class="man">APPS</h2>
+        <div class="body">
+          <p>
             Ask Claude to build a dashboard on your data. Then publish it to a
-            link as a Setoku App — the data stays live, and your whole team can
+            link as a Setoku App, the data stays live, and your whole team can
             view it. Nothing to deploy, no frontend to maintain.
           </p>
-          <div class="steps">
-            <div class="row">
-              <div class="k">
-                Built by asking<span class="t">publish_app</span>
-              </div>
-              <div class="v">
-                Describe it in plain language; the agent writes the app and
-                publishes it to a URL. Edit it the same way, just ask for the
-                change.
-              </div>
-            </div>
-            <div class="row">
-              <div class="k">
-                Backed by live data<span class="t">read-only</span>
-              </div>
-              <div class="v">
-                Apps read through the same governed path: row caps, audit, a
-                SELECT-only database role. They never get write access to your
-                sources.
-              </div>
-            </div>
-            <div class="row">
-              <div class="k">
-                App-private state<span class="t">no writes to your data</span>
-              </div>
-              <div class="v">
-                Each app keeps its own state (todos, votes, annotations) in a
-                sandbox that belongs to the app, not your database. Worst case,
-                an app messes up its own notes.
-              </div>
-            </div>
-            <div class="row">
-              <div class="k">
-                Share by link<span class="t">team or public</span>
-              </div>
-              <div class="v">
-                A team link is login-gated; an admin can flip one public for a
-                credential-free URL. The page runs in a locked-down sandbox with
-                no network, so a published app can’t phone home.
-              </div>
-            </div>
-          </div>
+          <dl class="kv">
+            <dt>Built by asking<span class="t">publish_app</span></dt>
+            <dd>
+              Describe it in plain language; the agent writes the app and
+              publishes it to a URL. Edit it the same way, just ask for the
+              change.
+            </dd>
+            <dt>Backed by live data<span class="t">read-only</span></dt>
+            <dd>
+              Apps read through the same governed path: row caps, audit, a
+              SELECT-only database role. They never get write access to your
+              sources.
+            </dd>
+            <dt>App-private state<span class="t">no writes to your data</span></dt>
+            <dd>
+              Each app keeps its own state (todos, votes, annotations) in a
+              sandbox that belongs to the app, not your database. Worst case, an
+              app messes up its own notes.
+            </dd>
+            <dt>Share by link<span class="t">team or public</span></dt>
+            <dd>
+              A team link is login-gated; an admin can flip one public for a
+              credential-free URL. The page runs in a locked-down sandbox with no
+              network, so a published app can’t phone home.
+            </dd>
+          </dl>
         </div>
       </section>
 
-      <!-- ARCHITECTURE -->
       <section id="architecture">
-        <div class="wrap">
-          <h2>Architecture</h2>
-          <p class="lead">
+        <h2 class="man">ARCHITECTURE</h2>
+        <div class="body">
+          <p>
             You can host this on whatever infra you like. We put it all on one
-            small box (a ~$12/mo VPS). The <code>/setoku:connect</code> skill
-            helps you add custom integrations. Only the proxy is public, so your
-            databases aren’t exposed. Queries are read-only, and knowledge
-            changes pass through a person.
+            small box (a ~$12/mo VPS). The
+            <span class="cmd">/setoku:connect</span> skill helps you add custom
+            integrations. Only the proxy is public, so your databases aren’t
+            exposed. Queries are read-only, and knowledge changes pass through a
+            person.
           </p>
-          <div class="diagram">
-            <svg
-              viewBox="0 0 680 520"
-              role="img"
-              aria-label="Setoku architecture and data flow: you and your AI connect over MCP to the gateway on your box, which holds a ClickHouse lake, a knowledge store, and a person who approves. Below the box, your Postgres database is queried read-only and mirrored into the lake for analytics, and your sources (GitHub, Vercel, Render, Slack, Mercury) are ingested into the lake."
-            >
-              <defs>
-                <marker
-                  id="ah"
-                  markerWidth="9"
-                  markerHeight="9"
-                  refX="6"
-                  refY="3"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M0 0 L6 3 L0 6 Z" fill="#54615A" />
-                </marker>
-              </defs>
-
-              <!-- you + your AI -->
-              <rect
-                class="node"
-                x="250"
-                y="14"
-                width="180"
-                height="44"
-                rx="10"
-              />
-              <text class="t" x="340" y="41" text-anchor="middle">
-                You + your AI
-              </text>
-              <path
-                class="arr"
-                d="M340 58 L340 142"
-                marker-start="url(#ah)"
-                marker-end="url(#ah)"
-              />
-              <text class="e" x="348" y="86">MCP</text>
-
-              <!-- the box -->
-              <rect
-                class="box"
-                x="60"
-                y="110"
-                width="560"
-                height="300"
-                rx="14"
-              />
-              <text class="e" x="76" y="130" fill="#8E968C">
-                your box
-              </text>
-              <rect
-                class="node"
-                x="250"
-                y="146"
-                width="180"
-                height="58"
-                rx="10"
-              />
-              <text class="t" x="340" y="171" text-anchor="middle">
-                Setoku gateway
-              </text>
-              <text class="s" x="340" y="189" text-anchor="middle">
-                context · query tools
-              </text>
-              <rect
-                class="node"
-                x="452"
-                y="150"
-                width="150"
-                height="50"
-                rx="10"
-              />
-              <text class="t" x="527" y="179" text-anchor="middle">
-                a person
-              </text>
-              <rect
-                class="node"
-                x="92"
-                y="322"
-                width="180"
-                height="66"
-                rx="10"
-              />
-              <text class="t" x="182" y="350" text-anchor="middle">
-                Lake (ClickHouse)
-              </text>
-              <text class="s" x="182" y="368" text-anchor="middle">
-                logs · events · DB mirror
-              </text>
-              <rect
-                class="node"
-                x="408"
-                y="322"
-                width="190"
-                height="66"
-                rx="10"
-              />
-              <text class="t" x="503" y="359" text-anchor="middle">
-                Knowledge store
-              </text>
-
-              <!-- your external data (below the box) -->
-              <rect
-                class="node"
-                x="92"
-                y="440"
-                width="180"
-                height="64"
-                rx="10"
-              />
-              <text class="t" x="182" y="468" text-anchor="middle">
-                Your sources
-              </text>
-              <text class="s" x="182" y="486" text-anchor="middle">
-                GitHub · Vercel · Slack…
-              </text>
-              <rect
-                class="node"
-                x="300"
-                y="440"
-                width="180"
-                height="64"
-                rx="10"
-              />
-              <text class="t" x="390" y="468" text-anchor="middle">
-                Your database
-              </text>
-              <text class="s" x="390" y="486" text-anchor="middle">
-                Postgres · read-only
-              </text>
-
-              <!-- flows -->
-              <path
-                class="arr"
-                d="M412 204 L508 322"
-                marker-start="url(#ah)"
-                marker-end="url(#ah)"
-              />
-              <text class="e" x="424" y="266" text-anchor="middle">
-                reads ·
-              </text>
-              <text class="e" x="424" y="282" text-anchor="middle">
-                proposes
-              </text>
-              <path class="arr" d="M527 200 L513 322" marker-end="url(#ah)" />
-              <text class="e" x="534" y="262">approves</text>
-              <path class="arr" d="M210 322 L300 204" marker-end="url(#ah)" />
-              <path class="arr" d="M182 440 L182 388" marker-end="url(#ah)" />
-              <text class="e" x="190" y="420">ingest</text>
-              <path class="arr" d="M388 440 L366 206" marker-end="url(#ah)" />
-              <text class="e" x="300" y="300">read-only</text>
-            </svg>
+          <div class="ascii-wrap">
+<pre class="ascii" role="img" aria-label="Setoku architecture: you and your AI connect over MCP to the Setoku gateway on your box. A person approves changes into the gateway. The gateway reads a ClickHouse lake and a knowledge store. Below the box, your sources are ingested into the lake and your Postgres database feeds it read-only, mirrored on a cron.">
+                        <span class="lbl">┌───────────────────┐</span>
+                        <span class="lbl">│</span>   <span class="lbl">You</span> <span class="lbl">+</span> <span class="lbl">your</span> <span class="lbl">AI</span>   <span class="lbl">│</span>
+                        <span class="lbl">└─────────┬─────────┘</span>
+                                  <span class="lbl">│</span>  <span class="an">MCP · read · propose</span>
+  <span class="an">your box</span>                        <span class="lbl">│</span>
+ <span class="lbl">┌────────────────────────────────┬─────────────────────────────────┐</span>
+ <span class="lbl">│</span>                                <span class="lbl">│</span>                                 <span class="lbl">│</span>
+ <span class="lbl">│</span>                  <span class="lbl">┌─────────────┴──────┐</span>          <span class="lbl">┌───────────┐</span>   <span class="lbl">│</span>
+ <span class="lbl">│</span>                  <span class="lbl">│</span>   <span class="lbl">Setoku</span> <span class="lbl">gateway</span>   <span class="lbl">│</span> <span class="an">approves</span> <span class="lbl">│</span>  <span class="lbl">a</span> <span class="lbl">person</span> <span class="lbl">│</span>   <span class="lbl">│</span>
+ <span class="lbl">│</span>                  <span class="lbl">│</span> <span class="lbl">context</span> <span class="lbl">·</span> <span class="lbl">queries</span>  <span class="lbl">│◀─────────┤</span>           <span class="lbl">│</span>   <span class="lbl">│</span>
+ <span class="lbl">│</span>                  <span class="lbl">└───┬─────────────┬──┘</span>          <span class="lbl">└───────────┘</span>   <span class="lbl">│</span>
+ <span class="lbl">│</span>               <span class="an">reads</span>  <span class="lbl">│</span>             <span class="lbl">│</span> <span class="an">reads · proposes</span>            <span class="lbl">│</span>
+ <span class="lbl">│</span>                      <span class="lbl">│</span>             <span class="lbl">│</span>                             <span class="lbl">│</span>
+ <span class="lbl">│</span> <span class="lbl">┌────────────────────┴───────┐</span>  <span class="lbl">┌──┴────────────────┐</span>            <span class="lbl">│</span>
+ <span class="lbl">│</span> <span class="lbl">│</span>     <span class="lbl">Lake</span> <span class="lbl">(ClickHouse)</span>      <span class="lbl">│</span>  <span class="lbl">│</span>  <span class="lbl">Knowledge</span> <span class="lbl">store</span>  <span class="lbl">│</span>            <span class="lbl">│</span>
+ <span class="lbl">│</span> <span class="lbl">│</span> <span class="lbl">logs</span> <span class="lbl">·</span> <span class="lbl">events</span> <span class="lbl">·</span> <span class="lbl">DB</span> <span class="lbl">mirror</span>  <span class="lbl">│</span>  <span class="lbl">└───────────────────┘</span>            <span class="lbl">│</span>
+ <span class="lbl">│</span> <span class="lbl">└─────▲─────────────────▲────┘</span>                                   <span class="lbl">│</span>
+ <span class="lbl">│</span>       <span class="lbl">│</span>                 <span class="lbl">│</span>                                        <span class="lbl">│</span>
+ <span class="lbl">└───────┼─────────────────┼────────────────────────────────────────┘</span>
+  <span class="an">ingest</span> <span class="lbl">│</span>       <span class="an">read-only</span> <span class="lbl">│</span>   <span class="an">(mirrored on a cron)</span>
+  <span class="lbl">┌──────┴──────────┐</span>   <span class="lbl">┌──┴──────────────────┐</span>
+  <span class="lbl">│</span>   <span class="lbl">Your</span> <span class="lbl">sources</span>  <span class="lbl">│</span>   <span class="lbl">│</span>    <span class="lbl">Your</span> <span class="lbl">database</span>    <span class="lbl">│</span>
+  <span class="lbl">│</span> <span class="lbl">GH·Vercel·Slack…│</span>   <span class="lbl">│</span> <span class="lbl">Postgres</span> <span class="lbl">·</span> <span class="lbl">read-only│</span>
+  <span class="lbl">└─────────────────┘</span>   <span class="lbl">└─────────────────────┘</span>
+</pre>
           </div>
         </div>
       </section>
 
-      <!-- CONNECTORS -->
       <section id="connectors">
-        <div class="wrap">
-          <h2>Connectors</h2>
-          <p class="lead">
-            Point Setoku at the data you already have. Every source lands in
-            a local
+        <h2 class="man">CONNECTORS</h2>
+        <div class="body">
+          <p>
+            Point Setoku at the data you already have. Every source lands in a
+            local
             <a href="https://clickhouse.com/" target="_blank" rel="noopener"
               >ClickHouse</a
             >
-            data lake, on purpose: agents write arbitrary queries (scans,
-            GROUP&nbsp;BYs, whole-table aggregations), and a columnar engine
-            answers those in about a second, so the apps and dashboards they
-            build stay quick. Your app database connects read-only and is
-            mirrored in on a cron; the rest is ingested as it happens.
+            data lake, on purpose: agents write arbitrary queries (scans, GROUP
+            BYs, whole-table aggregations), and a columnar engine answers those
+            in about a second, so the apps and dashboards they build stay quick.
+            Your app database connects read-only and is mirrored in on a cron;
+            the rest is ingested as it happens.
           </p>
-          <div class="integ">
-            <div class="igroup">
-              <div class="lakebox">
-                <div class="lk">
-                  <span class="dot"></span>ClickHouse · one lake, every source
-                </div>
-                <div class="chips">
-                  <div class="chip">
-                    <span class="dot"></span><b>PostgreSQL</b
-                    ><span>app database, mirrored read-only</span>
-                  </div>
-                  <div class="chip">
-                    <span class="dot"></span><b>GitHub</b
-                    ><span>issues, PRs &amp; commits</span>
-                  </div>
-                  <div class="chip">
-                    <span class="dot"></span><b>Vercel</b
-                    ><span>deploys &amp; logs</span>
-                  </div>
-                  <div class="chip">
-                    <span class="dot"></span><b>Render</b
-                    ><span>deploys &amp; logs</span>
-                  </div>
-                  <div class="chip">
-                    <span class="dot"></span><b>Slack</b><span>messages</span>
-                  </div>
-                  <div class="chip">
-                    <span class="dot"></span><b>Mercury</b
-                    ><span>banking &amp; finance</span>
-                  </div>
-                </div>
-              </div>
-            </div>
+          <div class="ascii-wrap">
+<pre class="ascii">
+  <span class="an">ClickHouse · one lake, every source</span>
+  <span class="lbl">┌────────────┬──────────────────────────────────┐</span>
+  <span class="lbl">│</span> <span class="cmd">PostgreSQL</span> <span class="lbl">│</span> app database, mirrored read-only <span class="lbl">│</span>
+  <span class="lbl">│</span> <span class="cmd">GitHub</span>     <span class="lbl">│</span> issues, PRs &amp; commits            <span class="lbl">│</span>
+  <span class="lbl">│</span> <span class="cmd">Vercel</span>     <span class="lbl">│</span> deploys &amp; logs                   <span class="lbl">│</span>
+  <span class="lbl">│</span> <span class="cmd">Render</span>     <span class="lbl">│</span> deploys &amp; logs                   <span class="lbl">│</span>
+  <span class="lbl">│</span> <span class="cmd">Slack</span>      <span class="lbl">│</span> messages                         <span class="lbl">│</span>
+  <span class="lbl">│</span> <span class="cmd">Mercury</span>    <span class="lbl">│</span> banking &amp; finance                <span class="lbl">│</span>
+  <span class="lbl">└────────────┴──────────────────────────────────┘</span>
+</pre>
           </div>
-          <p class="note">
-            No connector for your source yet? The included setup skills give
-            your coding agent the patterns to wire one up itself. If you make
-            a cool one, send a
+          <p>
+            No connector for your source yet? The included setup skills give your
+            coding agent the patterns to wire one up itself. If you make a cool
+            one, send a
             <a
               href="https://github.com/Hedgy-Labs/setoku"
               target="_blank"
@@ -1164,346 +607,252 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</code></pre>
         </div>
       </section>
 
-      <!-- DEMO -->
       <section id="demo">
-        <div class="wrap">
-          <h2>Try it on real-ish data</h2>
-          <p class="lead">
+        <h2 class="man">DEMO</h2>
+        <div class="body">
+          <p>
             There’s a live demo wired to a fictional pro sports club, the Bonita
             Bulldogs (ticketing, sponsorship, concessions, payroll, broadcast
             rights).
           </p>
+          <p class="dim">
+            <b class="dim" style="color: var(--ink)">1.</b> Connect to the demo
+            MCP server. In Claude (or any MCP client) open Settings → Connectors
+            → Add custom connector, and paste this URL. The token rides in the
+            URL, so there’s no separate key to enter.
+          </p>
+<pre class="block">https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</pre>
+          <p class="dim" style="color: var(--ink)">
+            <b>2.</b> Ask a question.
+          </p>
 
-          <div class="step">
-            <h3 class="step-h">
-              <span class="step-n">1</span>Connect to the demo MCP server
-            </h3>
-            <p class="note" style="margin-top: 0">
-              In Claude (or any MCP client) open Settings → Connectors → Add
-              custom connector, and paste this URL. The token rides in the URL,
-              so there’s no separate key to enter.
-            </p>
-            <pre><code>https://demo.setoku.com/i/55e767ea376aa3783cfb4653e2bf81772876b9b5c36339d9</code></pre>
-          </div>
-
-          <div class="step">
-            <h3 class="step-h"><span class="step-n">2</span>Ask a question</h3>
-            <div class="examples">
-              <div class="ex">
-                <div class="q">"How many unique fans do we have?"</div>
-                <div class="a">
-                  <b>71,204</b>
-                  <span
-                    >deduped by normalized email, internal accounts excluded.
-                    Not the raw 92,118.</span
-                  >
-                </div>
-              </div>
-              <div class="ex">
-                <div class="q">
-                  "What’s our total annual revenue, and how much is media
-                  rights?"
-                </div>
-                <div class="a">
-                  <b>$192M</b>
-                  <span
-                    >five systems reconciled to the same units. Media rights is
-                    the biggest line, ~$90M.</span
-                  >
-                </div>
-              </div>
-              <div class="ex">
-                <div class="q">"What was ticket revenue this season?"</div>
-                <div class="a">
-                  <b>$46.8M</b>
-                  <span
-                    >cents reconciled to dollars; refunds, exchanges, and comps
-                    excluded.</span
-                  >
-                </div>
-              </div>
-              <div class="ex">
-                <div class="q">"What’s our total merchandise revenue?"</div>
-                <div class="a">
-                  <b>It flags it</b>
-                  <span
-                    >most merch is sold via Fanatics, not in this data, so it
-                    says so instead of returning a wrong total.</span
-                  >
-                </div>
-              </div>
-              <div class="ex">
-                <div class="q">"Chart revenue by line."</div>
-                <div class="a">
-                  <div class="chart">
-                    <div class="cl">Annual revenue by line · ~$192M total</div>
-                    <svg
-                      viewBox="0 0 640 214"
-                      role="img"
-                      aria-label="Annual revenue by line: media rights $90M, ticketing $47M, sponsorship $28M, concessions $14M, merch $8M, other $5M."
-                    >
-                      <g fill="#5F8C6B">
-                        <rect x="148" y="14" width="400" height="16" rx="3" />
-                        <rect x="148" y="48" width="209" height="16" rx="3" />
-                        <rect x="148" y="82" width="124" height="16" rx="3" />
-                        <rect x="148" y="116" width="62" height="16" rx="3" />
-                        <rect x="148" y="150" width="36" height="16" rx="3" />
-                        <rect x="148" y="184" width="22" height="16" rx="3" />
-                      </g>
-                      <g
-                        font-family="indivisible-variable,sans-serif"
-                        font-size="12.5"
-                        fill="#54615A"
-                      >
-                        <text x="8" y="26">Media rights</text>
-                        <text x="8" y="60">Ticketing</text>
-                        <text x="8" y="94">Sponsorship</text>
-                        <text x="8" y="128">Concessions</text>
-                        <text x="8" y="162">Merch</text>
-                        <text x="8" y="196">Other</text>
-                      </g>
-                      <g
-                        font-family="degular-mono,monospace"
-                        font-size="12"
-                        fill="#212E26"
-                      >
-                        <text x="555" y="26">$90M</text>
-                        <text x="364" y="60">$47M</text>
-                        <text x="279" y="94">$28M</text>
-                        <text x="217" y="128">$14M</text>
-                        <text x="191" y="162">$8M</text>
-                        <text x="177" y="196">$5M</text>
-                      </g>
-                    </svg>
-                  </div>
-                </div>
-              </div>
+          <div class="ex">
+            <div class="q">“How many unique fans do we have?”</div>
+            <div class="a">
+              <span class="big">71,204</span>. Deduped by normalized email,
+              internal accounts excluded. Not the raw 92,118.
             </div>
           </div>
-
-          <div class="step">
-            <h3 class="step-h">
-              <span class="step-n">3</span>Try an app
-            </h3>
-            <p class="note" style="margin-top: 0">
-              Ask Claude to build a dashboard on the same data, then publish it
-              to a link. Two live examples, running on the demo data right now:
-            </p>
-            <ul class="uses">
-              <li>
-                <a
-                  href="https://demo.setoku.com/admin/p/7e38381ced6517329947b14d"
-                  target="_blank"
-                  rel="noopener"
-                  >Sponsorship pricing table ↗</a
-                >
-                — inventory and rates for sponsorship placements.
-              </li>
-              <li>
-                <a
-                  href="https://demo.setoku.com/admin/p/b059da830dcb3e70437d5dea"
-                  target="_blank"
-                  rel="noopener"
-                  >Fan lifetime value ↗</a
-                >
-                — segment fans by spend across tickets, merch, and concessions.
-              </li>
-            </ul>
+          <div class="ex">
+            <div class="q">
+              “What’s our total annual revenue, and how much is media rights?”
+            </div>
+            <div class="a">
+              <span class="big">$192M</span>. Five systems reconciled to the
+              same units. Media rights is the biggest line, ~$90M.
+            </div>
           </div>
+          <div class="ex">
+            <div class="q">“What was ticket revenue this season?”</div>
+            <div class="a">
+              <span class="big">$46.8M</span>. Cents reconciled to dollars;
+              refunds, exchanges, and comps excluded.
+            </div>
+          </div>
+          <div class="ex">
+            <div class="q">“What’s our total merchandise revenue?”</div>
+            <div class="a">
+              <span class="big">It flags it</span>. Most merch is sold via
+              Fanatics, not in this data, so it says so instead of returning a
+              wrong total.
+            </div>
+          </div>
+          <div class="ex">
+            <div class="q">“Chart revenue by line.”</div>
+            <div class="a">Annual revenue by line · ~$192M total</div>
+<pre class="chart" role="img" aria-label="Annual revenue by line: media rights $90M, ticketing $47M, sponsorship $28M, concessions $14M, merch $8M, other $5M.">Media rights  <span class="bar">████████████████████████████</span>  <span class="num">$90M</span>
+Ticketing     <span class="bar">██████████████▋</span>            <span class="num">$47M</span>
+Sponsorship   <span class="bar">████████▋</span>                  <span class="num">$28M</span>
+Concessions   <span class="bar">████▍</span>                      <span class="num">$14M</span>
+Merch         <span class="bar">██▌</span>                        <span class="num">$8M</span>
+Other         <span class="bar">█▌</span>                         <span class="num">$5M</span></pre>
+          </div>
+
+          <p class="dim" style="color: var(--ink); margin-top: 22px">
+            <b>3.</b> Try an app.
+          </p>
+          <p>
+            Ask Claude to build a dashboard on the same data, then publish it to
+            a link. Two live examples, running on the demo data right now:
+          </p>
+          <ul class="man">
+            <li>
+              <a
+                href="https://demo.setoku.com/admin/p/7e38381ced6517329947b14d"
+                target="_blank"
+                rel="noopener"
+                >Sponsorship pricing table ↗</a
+              >
+              — inventory and rates for sponsorship placements.
+            </li>
+            <li>
+              <a
+                href="https://demo.setoku.com/admin/p/b059da830dcb3e70437d5dea"
+                target="_blank"
+                rel="noopener"
+                >Fan lifetime value ↗</a
+              >
+              — segment fans by spend across tickets, merch, and concessions.
+            </li>
+          </ul>
         </div>
       </section>
 
-      <!-- WHY -->
-      <section id="why" class="why">
-        <div class="wrap">
-          <h2>Why we built it</h2>
-          <h3>We’re curious.</h3>
+      <section id="why">
+        <h2 class="man">RATIONALE</h2>
+        <div class="body">
+          <p><b>We’re curious.</b></p>
           <p>
             There are plenty of AI memory stores, and plenty of data gateways.
             Stapling the two together, and nudging the agent to gather knowledge
             about the data as it goes, seemed useful and fun to tinker with.
           </p>
-          <h3>We’re cheap.</h3>
+          <p><b>We’re cheap.</b></p>
           <p>
             We wanted something that runs on one small box, works on a Pro/Max
             subscription or a cheap model with no added inference cost, mostly
-            sets itself up (no field engineer to pay for), stays portable
-            between providers, and is open source.
+            sets itself up (no field engineer to pay for), stays portable between
+            providers, and is open source.
           </p>
-          <h3>We’re paranoid.</h3>
+          <p><b>We’re paranoid.</b></p>
           <p>
             HR platforms, CRMs, and clouds are all announcing “context layers.”
             They’d like the meaning of your business to accumulate on their
-            servers, where it can never leave. Context is deeper
-            lock-in than data, and a hosted context layer has no export button.
-            Setoku exists so that understanding accumulates on a box you own
-            instead. If we disappear tomorrow, your context
-            doesn’t.
+            servers, where it can never leave. Context is deeper lock-in than
+            data, and a hosted context layer has no export button. Setoku exists
+            so that understanding accumulates on a box you own instead. If we
+            disappear tomorrow, your context doesn’t.
           </p>
-          <h3>We and some friends wanted the same thing.</h3>
-          <ul class="uses">
+          <p><b>We and some friends wanted the same thing.</b></p>
+          <ul class="man">
             <li>
-              <b><a href="https://www.hedgy.works" target="_blank" rel="noopener">Hedgy</a></b>: keep scaling without hiring. Debug from live logs
-              and data, find growth levers, and match candidates and companies
-              better with more data.
+              <b
+                ><a href="https://www.hedgy.works" target="_blank" rel="noopener"
+                  >Hedgy</a
+                ></b
+              >: keep scaling without hiring. Debug from live logs and data, find
+              growth levers, and match candidates and companies better with more
+              data.
             </li>
             <li>
-              <b><a href="https://baggu.com" target="_blank" rel="noopener">Baggu</a></b>: give employees state-of-the-art tools. Faster
-              onboarding, and a safe way to vibecode against real data.
+              <b
+                ><a href="https://baggu.com" target="_blank" rel="noopener"
+                  >Baggu</a
+                ></b
+              >: give employees state-of-the-art tools. Faster onboarding, and a
+              safe way to vibecode against real data.
             </li>
             <li>
-              <b><a href="https://tlon.io" target="_blank" rel="noopener">Tlon</a></b>: experimenting with giving agents curated data to work
-              from.
+              <b
+                ><a href="https://tlon.io" target="_blank" rel="noopener"
+                  >Tlon</a
+                ></b
+              >: experimenting with giving agents curated data to work from.
             </li>
             <li>
               <b>Sports analysts</b>: query across data that doesn’t usually sit
               together.
             </li>
             <li>
-              <b>Academic labs</b>: think through hypotheses against real
-              papers, data, and drafts.
+              <b>Academic labs</b>: think through hypotheses against real papers,
+              data, and drafts.
             </li>
           </ul>
         </div>
       </section>
 
-      <!-- SETUP HELP -->
-      <section id="help">
-        <div class="wrap">
-          <h2>Setup help</h2>
+      <section id="bugs">
+        <h2 class="man">BUGS</h2>
+        <div class="body">
           <p>
-            It’s open source, so you can self-host it today. If you like,
-            we’re happy to help set it up. Just email
+            Your AI can still be confidently wrong. Setoku just makes that
+            harder to do quietly.
+          </p>
+          <p class="dim">
+            Everything else:
+            <a
+              href="https://github.com/Hedgy-Labs/setoku/issues"
+              target="_blank"
+              rel="noopener"
+              >github.com/Hedgy-Labs/setoku/issues ↗</a
+            >
+          </p>
+        </div>
+      </section>
+
+      <section id="help">
+        <h2 class="man">SEE ALSO</h2>
+        <div class="body">
+          <p>
+            It’s open source, so you can self-host it today. If you like, we’re
+            happy to help set it up. Just email
             <a href="mailto:hello@setoku.com">hello@setoku.com</a>.
+          </p>
+          <ul class="man">
+            <li>
+              <a
+                href="https://github.com/Hedgy-Labs/setoku"
+                target="_blank"
+                rel="noopener"
+                >github.com/Hedgy-Labs/setoku ↗</a
+              >
+            </li>
+            <li><a href="#demo">DEMO</a> — try it on real-ish data</li>
+            <li>
+              <a href="mailto:hello@setoku.com">hello@setoku.com</a> — setup help
+            </li>
+          </ul>
+          <p class="foot-etym">
+            設 × 奥 · set (math) × oku (innermost) · Apache-2.0
           </p>
         </div>
       </section>
     </main>
 
-    <footer>
-      <div class="wrap foot">
-        <div class="l">
-          <a class="brand" href="#top" style="font-size: 15px"
-            ><svg
-              class="mark"
-              viewBox="0 0 64 64"
-              style="width: 18px; height: 18px"
-            >
-              <use href="#clover" />
-            </svg>
-            Setoku</a
-          >
-          <a
-            href="https://github.com/Hedgy-Labs/setoku"
-            target="_blank"
-            rel="noopener"
-            >GitHub</a
-          >
-          <a href="#demo">Demo</a>
-          <a href="/man" title="this page, as a man page">Man</a>
-          <a href="/mac" title="this page, on System 7">Mac</a>
-          <a href="mailto:hello@setoku.com">Contact</a>
-        </div>
-        <span class="jp">設 × 奥 · set (math) × oku (innermost)</span>
-      </div>
-      <svg
-        id="footmark"
-        class="foot-brand"
-        viewBox="0 0 1000 230"
-        preserveAspectRatio="xMidYMax meet"
-        aria-hidden="true"
-      >
-        <defs>
-          <pattern
-            id="footgrid"
-            width="30"
-            height="30"
-            patternUnits="userSpaceOnUse"
-          >
-            <rect width="30" height="30" fill="#FFFFFF" />
-            <path
-              class="gl"
-              d="M30 0V30M0 30H30"
-              stroke="var(--cream)"
-              stroke-width="2.4"
-            />
-          </pattern>
-        </defs>
-        <text
-          x="0"
-          y="216"
-          font-size="300"
-          textLength="1000"
-          lengthAdjust="spacingAndGlyphs"
-          fill="url(#footgrid)"
-        >
-          Setoku
-        </text>
-      </svg>
-    </footer>
+    <div class="runline bot">
+      <span>Hedgy Labs</span>
+      <span class="mid">2026</span>
+      <span>SETOKU(7)</span>
+    </div>
+
     <script>
       (function () {
         var box = document.querySelector(".rotator");
         if (!box) return;
-        var word = box.querySelector(".rotator-word");
-        var measure = box.querySelector(".rotator-measure");
         var words = (box.getAttribute("data-words") || "")
           .split(",")
-          .map(function (w) { return w.trim(); })
+          .map(function (w) {
+            return w.trim();
+          })
           .filter(Boolean);
         if (words.length < 2) return;
-
-        var reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        var LIFT = "0.72em";
-        var HALF = 240;
-        var HOLD = 2400;
+        var reduce = window.matchMedia(
+          "(prefers-reduced-motion: reduce)"
+        ).matches;
         var i = 0;
-
-        function widthOf(w) {
-          measure.textContent = w;
-          return measure.getBoundingClientRect().width;
-        }
-
-        // Pin the starting width so the sentence never jumps on first swap.
-        box.style.width = widthOf(words[0]) + "px";
-
         function swap() {
-          var next = words[(i + 1) % words.length];
-
-          if (reduce || !word.animate) {
-            word.textContent = next;
-            box.style.width = widthOf(next) + "px";
-            i = (i + 1) % words.length;
+          i = (i + 1) % words.length;
+          if (reduce || !box.animate) {
+            box.textContent = words[i];
             return;
           }
-
-          word
-            .animate(
-              [
-                { transform: "translateY(0)", opacity: 1 },
-                { transform: "translateY(-" + LIFT + ")", opacity: 0 },
-              ],
-              { duration: HALF, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" }
-            )
+          box
+            .animate([{ opacity: 1 }, { opacity: 0 }], {
+              duration: 220,
+              easing: "ease-in",
+              fill: "forwards",
+            })
             .finished.then(function () {
-              word.textContent = next;
-              box.style.width = widthOf(next) + "px"; // width eases via CSS
-              word.animate(
-                [
-                  { transform: "translateY(" + LIFT + ")", opacity: 0 },
-                  { transform: "translateY(0)", opacity: 1 },
-                ],
-                { duration: HALF, easing: "cubic-bezier(0, 0, 0.2, 1)", fill: "forwards" }
-              );
-              i = (i + 1) % words.length;
+              box.textContent = words[i];
+              box.animate([{ opacity: 0 }, { opacity: 1 }], {
+                duration: 220,
+                easing: "ease-out",
+                fill: "forwards",
+              });
             })
             .catch(function () {});
         }
-
-        setInterval(swap, HOLD);
-        window.addEventListener("resize", function () {
-          box.style.width = widthOf(words[i]) + "px";
-        });
+        setInterval(swap, 2600);
       })();
     </script>
   </body>
