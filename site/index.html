@@ -526,7 +526,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
         <h2 class="man">DESCRIPTION</h2>
         <div class="body">
           <p>
-            Setoku gives the AI two kinds of MCP tools, and one rule: look up
+            Setoku gives the AI three kinds of MCP tools, and one rule: look up
             what the data means before you touch it.
           </p>
           <dl class="kv">
@@ -543,6 +543,11 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
               Read-only, with a row cap, a statement timeout, a table allow-list,
               and an append-only audit log. Enforced by the database role, not by
               parsing SQL.
+            </dd>
+            <dt>App tools<span class="t">publish_app · update_app</span></dt>
+            <dd>
+              Turn an answer into a small web app on live data, published at a
+              link anyone on the team can open. No SQL required.
             </dd>
           </dl>
           <p>You set it up with <b>Claude Code</b> skills:</p>
@@ -581,7 +586,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
             view it. Nothing to deploy, no frontend to maintain.
           </p>
           <dl class="kv">
-            <dt>Built by asking<span class="t">publish_app</span></dt>
+            <dt>Vibe dashboarding<span class="t">sandbox safety</span></dt>
             <dd>
               Describe it in plain language; the agent writes the app and
               publishes it to a URL. Edit it the same way, just ask for the
