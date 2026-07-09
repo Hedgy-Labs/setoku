@@ -77,8 +77,6 @@ Once your AI can read and _understand_ the data, the natural next step is buildi
 - **Sports analysts**: query across data that doesn't usually sit together.
 - **Academic labs**: think through hypotheses against real papers, data, and drafts.
 
-It's a small thing, but it's been useful for us. Maybe it's useful for you.
-
 ## How to deploy it
 
 Setoku installs as a Claude Code plugin, so setup runs inside Claude. Add the plugin (no server needed yet), then run onboarding from your main project directory, the codebase you want Setoku to learn from:
