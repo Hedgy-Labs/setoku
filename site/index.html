@@ -211,6 +211,30 @@
         line-height: 1.15;
         white-space: pre;
         user-select: none;
+        transform-origin: 50% 100%; /* sway pivots at the stem base */
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        pre.fig:hover {
+          animation: fig-sway 2.6s ease-in-out infinite;
+        }
+        pre.fig .row {
+          opacity: 0;
+          animation: fig-grow 0.5s ease-out forwards;
+        }
+      }
+      @keyframes fig-sway {
+        0%,
+        100% {
+          transform: rotate(0deg);
+        }
+        50% {
+          transform: rotate(1.5deg);
+        }
+      }
+      @keyframes fig-grow {
+        to {
+          opacity: 1;
+        }
       }
 
       /* ascii art wrapper */
@@ -816,6 +840,26 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
     </div>
 
     <script>
+      // grow the clover: wrap each row so it can fade in stem-first
+      (function () {
+        var fig = document.querySelector("pre.fig");
+        if (!fig) return;
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches)
+          return;
+        var rows = fig.textContent.split("\n").filter(function (t) {
+          return t.trim() !== "";
+        });
+        fig.textContent = "";
+        rows.forEach(function (text, i) {
+          var row = document.createElement("span");
+          row.className = "row";
+          row.textContent = text;
+          row.style.animationDelay = (rows.length - 1 - i) * 70 + "ms";
+          fig.appendChild(row);
+          fig.appendChild(document.createTextNode("\n"));
+        });
+      })();
+
       (function () {
         var box = document.querySelector(".rotator");
         if (!box) return;
