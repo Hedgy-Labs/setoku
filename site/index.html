@@ -38,7 +38,7 @@
         background: var(--paper);
         color: var(--ink);
         font-family: var(--mono);
-        font-size: 14.5px;
+        font-size: 15.5px;
         line-height: 1.75;
         padding: 0 20px 80px;
       }
@@ -73,6 +73,13 @@
       .runline > span {
         font-size: 12.5px;
       }
+      .runline a {
+        color: inherit;
+        border-bottom: none;
+      }
+      .runline a:hover {
+        text-decoration: underline;
+      }
       .runline .mid {
         flex: 1;
         text-align: center;
@@ -102,7 +109,7 @@
 
       /* section headers, man-page style */
       h2.man {
-        font-size: 14.5px;
+        font-size: 15.5px;
         font-weight: 700;
         letter-spacing: 0.08em;
         color: var(--ink);
@@ -405,7 +412,14 @@
         ><svg class="mark"><use href="#clover" /></svg>SETOKU</span
       >
       <span class="mid">User Manual</span>
-      <span>SETOKU(7)</span>
+      <span
+        ><a
+          href="https://github.com/Hedgy-Labs/setoku"
+          target="_blank"
+          rel="noopener"
+          >GitHub</a
+        ></span
+      >
     </div>
 
     <main id="top">
@@ -660,7 +674,7 @@ Other         <span class="bar">█▌</span>                            <span c
             person.
           </p>
           <div class="ascii-wrap">
-<pre class="ascii" role="img" aria-label="Setoku architecture: you and your AI connect over MCP to the Setoku gateway on your box. A person approves changes into the gateway. The gateway reads a ClickHouse lake and a knowledge store. Below the box, your sources are ingested into the lake and your Postgres database feeds it read-only, mirrored on a cron.">
+<pre class="ascii" role="img" aria-label="Setoku architecture: you and your AI connect over MCP to the Setoku gateway on your box. A person approves proposed knowledge into the knowledge store. The gateway reads a ClickHouse lake and a knowledge store. Below the box, your sources are ingested into the lake and your Postgres database feeds it read-only, mirrored on a cron.">
                         <span class="lbl">┌───────────────────┐</span>
                         <span class="lbl">│</span>   <span class="lbl">You</span> <span class="lbl">+</span> <span class="lbl">your</span> <span class="lbl">AI</span>   <span class="lbl">│</span>
                         <span class="lbl">└─────────┬─────────┘</span>
@@ -669,13 +683,13 @@ Other         <span class="bar">█▌</span>                            <span c
  <span class="lbl">┌────────────────────────────────┬─────────────────────────────────┐</span>
  <span class="lbl">│</span>                                <span class="lbl">│</span>                                 <span class="lbl">│</span>
  <span class="lbl">│</span>                  <span class="lbl">┌─────────────┴──────┐</span>          <span class="lbl">┌───────────┐</span>   <span class="lbl">│</span>
- <span class="lbl">│</span>                  <span class="lbl">│</span>   <span class="lbl">Setoku</span> <span class="lbl">gateway</span>   <span class="lbl">│</span> <span class="an">approves</span> <span class="lbl">│</span>  <span class="lbl">a</span> <span class="lbl">person</span> <span class="lbl">│</span>   <span class="lbl">│</span>
- <span class="lbl">│</span>                  <span class="lbl">│</span> <span class="lbl">context</span> <span class="lbl">·</span> <span class="lbl">queries</span>  <span class="lbl">│◀─────────┤</span>           <span class="lbl">│</span>   <span class="lbl">│</span>
- <span class="lbl">│</span>                  <span class="lbl">└───┬─────────────┬──┘</span>          <span class="lbl">└───────────┘</span>   <span class="lbl">│</span>
- <span class="lbl">│</span>               <span class="an">reads</span>  <span class="lbl">│</span>             <span class="lbl">│</span> <span class="an">reads · proposes</span>            <span class="lbl">│</span>
- <span class="lbl">│</span>                      <span class="lbl">│</span>             <span class="lbl">│</span>                             <span class="lbl">│</span>
- <span class="lbl">│</span> <span class="lbl">┌────────────────────┴───────┐</span>  <span class="lbl">┌──┴────────────────┐</span>            <span class="lbl">│</span>
- <span class="lbl">│</span> <span class="lbl">│</span>     <span class="lbl">Lake</span> <span class="lbl">(ClickHouse)</span>      <span class="lbl">│</span>  <span class="lbl">│</span>  <span class="lbl">Knowledge</span> <span class="lbl">store</span>  <span class="lbl">│</span>            <span class="lbl">│</span>
+ <span class="lbl">│</span>                  <span class="lbl">│</span>   <span class="lbl">Setoku</span> <span class="lbl">gateway</span>   <span class="lbl">│</span>          <span class="lbl">│</span>  <span class="lbl">a</span> <span class="lbl">person</span> <span class="lbl">│</span>   <span class="lbl">│</span>
+ <span class="lbl">│</span>                  <span class="lbl">│</span> <span class="lbl">context</span> <span class="lbl">·</span> <span class="lbl">queries</span>  <span class="lbl">│</span>          <span class="lbl">│</span>           <span class="lbl">│</span>   <span class="lbl">│</span>
+ <span class="lbl">│</span>                  <span class="lbl">└───┬─────────────┬──┘</span>          <span class="lbl">└─────┬─────┘</span>   <span class="lbl">│</span>
+ <span class="lbl">│</span>               <span class="an">reads</span>  <span class="lbl">│</span>             <span class="lbl">│</span> <span class="an">reads · proposes</span>  <span class="lbl">│</span>         <span class="lbl">│</span>
+ <span class="lbl">│</span>                      <span class="lbl">│</span>             <span class="lbl">│</span>          <span class="an">approves</span> <span class="lbl">│</span>         <span class="lbl">│</span>
+ <span class="lbl">│</span> <span class="lbl">┌────────────────────┴───────┐</span>  <span class="lbl">┌──┴────────────────┐</span>  <span class="lbl">│</span>         <span class="lbl">│</span>
+ <span class="lbl">│</span> <span class="lbl">│</span>     <span class="lbl">Lake</span> <span class="lbl">(ClickHouse)</span>      <span class="lbl">│</span>  <span class="lbl">│</span>  <span class="lbl">Knowledge</span> <span class="lbl">store</span>  <span class="lbl">│◀─┘</span>         <span class="lbl">│</span>
  <span class="lbl">│</span> <span class="lbl">│</span> <span class="lbl">logs</span> <span class="lbl">·</span> <span class="lbl">events</span> <span class="lbl">·</span> <span class="lbl">DB</span> <span class="lbl">mirror</span>  <span class="lbl">│</span>  <span class="lbl">└───────────────────┘</span>            <span class="lbl">│</span>
  <span class="lbl">│</span> <span class="lbl">└─────▲─────────────────▲────┘</span>                                   <span class="lbl">│</span>
  <span class="lbl">│</span>       <span class="lbl">│</span>                 <span class="lbl">│</span>                                        <span class="lbl">│</span>
