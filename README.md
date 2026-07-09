@@ -6,7 +6,7 @@
 
 **Make any AI fluent in your company's data.**
 
-Setoku is a small self-hosted MCP server that does two things: it gives your AI a read-only way to query your data, and it remembers what that data _means_ (the metric definitions, the gotchas), getting better the more you use it. The MCP works with whatever AI you already pay for, and no model runs on the server, so no added inference cost.
+Setoku is a small self-hosted MCP knowledge server plus Claude Code skills for hooking up your data. It does two things: it gives your AI a read-only way to query your data, and it remembers what that data _means_ (the metric definitions, the gotchas), getting better the more you use it. Ask for a dashboard and publish it to a link your whole team can view, on live data. The MCP works with whatever AI you already have, and no model runs on the server, so no added inference cost.
 
 - **The problem.** What your company knows about itself lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
 - **What it does.** Setoku is the shared, curated memory of what your data and operations mean. It holds those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
@@ -17,13 +17,13 @@ One brain, two kinds of question: _"what was revenue last quarter?"_ and _"what'
 
 Today the brain mostly holds **data and operations** (what your tables, metrics, and logs mean). The same idea could hold more (personal context, house design conventions); see [docs/memory.md](./docs/memory.md).
 
-\_Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI.
+_Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer underneath your AI._
 
 ---
 
 ## Try it live
 
-There's a public demo wired to a synthetic dataset for a fictional pro baseball club, the **Bonita Bulldogs**, covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, marketing, gameday incidents, and broadcast media rights.
+There's a public demo wired to a synthetic dataset for a fictional pro sports club, the **Bonita Bulldogs**, covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, marketing, gameday incidents, and broadcast media rights.
 
 1. In **Claude.ai** (or any MCP client), open **Settings → Connectors → Add custom connector** and paste this as the server URL. The token rides in the URL, so there's no separate key to enter.
    ```
@@ -35,6 +35,9 @@ There's a public demo wired to a synthetic dataset for a fictional pro baseball 
    - _"What's our season-ticket renewal rate?"_ → spans three seasons of ticketing history.
    - _"What's our total annual revenue, and how much is media rights?"_ → **~$192M** across five systems reconciled to the same units; media rights is the biggest line, ~$90M.
    - _"What's our total merchandise revenue?"_ → it **flags** that most merch is sold via Fanatics, not in this data, instead of returning a wrong total.
+3. Try an app. Ask Claude to build a dashboard on the same data, then publish it to a link. Two live examples, running on the demo data right now:
+   - [Sponsorship pricing table](https://demo.setoku.com/admin/p/7e38381ced6517329947b14d): inventory and rates for sponsorship placements.
+   - [Fan lifetime value](https://demo.setoku.com/admin/p/b059da830dcb3e70437d5dea): segment fans by spend across tickets, merch, and concessions.
 
 Full walkthrough, the `/admin` approval surface, and the data model: [`demo/README.md`](./demo/README.md).
 
@@ -42,12 +45,13 @@ Full walkthrough, the `/admin` approval surface, and the data model: [`demo/READ
 
 ## How it works
 
-Setoku gives the AI two kinds of MCP tools, and one rule: look up what the data means before you touch it. It works with any MCP client (Claude today).
+Setoku gives the AI three kinds of MCP tools, and one rule: look up what the data means before you touch it.
 
-1. **Context tools** (`find_context`, `get_metric`) read what your data means first: canonical metric definitions, entity docs, and the gotchas that make a naive query wrong (e.g. "active user" excludes internal test accounts; refunds must be subtracted from revenue; a status column is current-state only, so you count events from the log table instead).
+1. **Context tools** (`find_context`, `get_metric`, `report_correction`) read what your data means first: canonical metric definitions, entity docs, and the gotchas that make a naive query wrong (e.g. "active user" excludes internal test accounts; refunds must be subtracted from revenue; a status column is current-state only, so you count events from the log table instead). The AI can propose changes to what Setoku knows, but a person accepts them on the admin page, outside the agent loop, so an injected session can't rewrite the brain.
 2. **Read-only query** (`get_schema`, `run_query`) runs with a row cap, a statement timeout, a table allow-list, and an append-only audit log. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
+3. **App tools** (`publish_app`, `update_app`) turn an answer into a small web app on live data, published at a link anyone on the team can open. No SQL required.
 
-The agent looks up the context first, then runs the query, so it answers the way your business actually computes things instead of guessing from column names.
+The agent looks up the context first, then runs the query, so it answers the way your business actually computes things instead of guessing from column names. Once it's set up, **any MCP client** can use it: Claude, Codex, or whatever you run.
 
 It ships **tools, not models**. No AI runs on the server; the reasoning happens in the AI you already use. That means no AI API keys and no per-query AI cost: a whole deployment is one small VPS plus the AI seats your team already have.
 
@@ -61,11 +65,11 @@ Once your AI can read and _understand_ the data, the natural next step is buildi
 
 ## Why we built it
 
-**We're curious.** There are plenty of AI memory stores, and plenty of data gateways. Stapling the two together, and nudging the agent to gather knowledge about the data as it goes, seemed worth trying and fun to tinker with.
+**We're curious.** There are plenty of AI memory stores, and plenty of data gateways. Stapling the two together, and nudging the agent to gather knowledge about the data as it goes, seemed useful and fun to tinker with.
 
 **We're cheap.** We wanted something that runs on one small box, works on a Pro/Max subscription or a cheap model with no added inference cost, mostly sets itself up (no field engineer to pay for), stays portable between providers, and is open source.
 
-**We're wary.** HR platforms, CRMs, and clouds are all announcing "context layers." They'd like the meaning of your business to accumulate on their servers, where it can never leave. Context is deeper lock-in than data, and a hosted context layer has no export button. Setoku exists so that understanding accumulates on a box you own instead. If we disappear tomorrow, your context doesn't.
+**We're paranoid.** HR platforms, CRMs, and clouds are all announcing "context layers." They'd like the meaning of your business to accumulate on their servers, where it can never leave. Context is deeper lock-in than data, and a hosted context layer has no export button. Setoku exists so that understanding accumulates on a box you own instead. If we disappear tomorrow, your context doesn't.
 
 **We and some friends wanted the same thing.**
 
@@ -87,7 +91,14 @@ Setoku installs as a Claude Code plugin, so setup runs inside Claude. Add the pl
 /setoku:onboard
 ```
 
-`/setoku:onboard` stands up the server (provisions and bootstraps a small VPS, or connects to one you already have), connects this Claude to it, wires your database read-only, and generates the first knowledge from your code. You'll need a VPS it can use (~$12/mo) and an admin connection URL for the database. You stay in the loop for anything that touches your data. (Or just tell Claude "set up setoku.")
+`/setoku:onboard` stands up the server (provisions and bootstraps a small VPS, or connects to one you already have), connects this Claude to it, wires your database read-only, and generates the first knowledge from your code. You'll need a VPS it can use (something like OVH's [VPS-2](https://us.ovhcloud.com/vps/), ~$12/mo, is plenty) and an admin connection URL for the database. You stay in the loop for anything that touches your data. (Or just tell Claude "set up setoku.")
+
+The plugin ships the whole workflow as skills:
+
+- `/setoku:onboard` sets Setoku up in a repo for the first time.
+- `/setoku:connect` adds a data source or custom integration.
+- `/setoku:generate` writes business context from your code.
+- `/setoku:curate` reviews and approves pending knowledge.
 
 <details>
 <summary>Or stand up the server by hand</summary>
