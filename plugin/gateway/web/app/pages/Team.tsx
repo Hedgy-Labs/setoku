@@ -316,8 +316,7 @@ function handoffMessage(creds: Creds): string {
     parts.push(
       `Web login${origin ? ` (${origin}/admin)` : " (/admin)"}:\n` +
         `  Username: ${creds.newLogin.username}\n` +
-        `  Password: ${creds.newLogin.tempPassword}\n` +
-        "  (temporary — you'll be asked to pick your own at first sign-in)",
+        `  Temp password: ${creds.newLogin.tempPassword}`,
     );
   if (creds.invite)
     parts.push('Once connected, just ask in plain language ("show me signups by week").');
