@@ -1612,7 +1612,11 @@ const httpServer = http.createServer(async (req, res) => {
           if (api === "egress_threshold") {
             const body = (await readBody(req)) as { gb?: number | null } | undefined;
             const gb = body?.gb;
-            if (gb !== null && gb !== undefined && (!Number.isFinite(gb) || gb < 0 || gb > 100_000))
+            // `gb` must be PRESENT: a body that never expressed a threshold
+            // (empty/malformed) must not silently switch the alarm off —
+            // disabling is an explicit gb: 0 or gb: null.
+            if (gb === undefined) return json(400, { ok: false, error: "Pass gb — a GB/day number (0 disables)." });
+            if (gb !== null && (typeof gb !== "number" || !Number.isFinite(gb) || gb < 0 || gb > 100_000))
               return json(400, { ok: false, error: "Threshold must be a GB/day number (0 disables)." });
             setEgressThreshold(store, gb ? gb * 1e9 : null);
             store.audit(session.identity, "egress_threshold_set", { gb: gb ?? 0 });

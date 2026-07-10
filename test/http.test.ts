@@ -554,6 +554,9 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     // nonsense is rejected, and a member is refused on ROLE even with valid csrf
     const bad = await apiPost("egress_threshold", { cookie: admin.cookie, csrf: admin.csrf, body: { gb: -3 } });
     expect(bad.status).toBe(400);
+    // a body that never expressed a threshold must NOT silently disable alerts
+    const missing = await apiPost("egress_threshold", { cookie: admin.cookie, csrf: admin.csrf, body: {} });
+    expect(missing.status).toBe(400);
     const member = await session("viewer", "viewer-pass");
     const denied = await apiPost("egress_threshold", { cookie: member.cookie, csrf: member.csrf, body: { gb: 1 } });
     expect(denied.status).toBe(403);

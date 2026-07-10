@@ -52,7 +52,21 @@ describe("built-in Mirror egress app", () => {
     const store = freshStore();
     expect(ensureEgressApp(store, { ...LEDGER, configured: false })).toBeNull();
     expect(ensureEgressApp(store, { ...LEDGER, days: [] })).toBeNull();
-    expect(store.listPublished?.().length ?? 0).toBe(0);
+    expect(store.listPublished().length).toBe(0);
+  });
+
+  it("a failed seed retries next tick — the one-shot guard is stamped only after the app row exists", () => {
+    const store = freshStore();
+    const orig = store.createPublished.bind(store);
+    store.createPublished = () => {
+      throw new Error("simulated SQLITE_BUSY");
+    };
+    expect(() => ensureEgressApp(store, LEDGER)).toThrow(/SQLITE_BUSY/); // egressTick's catch swallows this in prod
+    store.createPublished = orig;
+    // the fluke must not have burned the seed — the next tick succeeds
+    const id = ensureEgressApp(store, LEDGER);
+    expect(id).toMatch(/^[0-9a-f]{24}$/);
+    expect(store.getPublishedMeta(id!)).toBeTruthy();
   });
 
   it("seeds exactly once, as an ordinary team-only app", () => {

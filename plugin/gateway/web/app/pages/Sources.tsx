@@ -9,8 +9,8 @@ import { Status } from "../components/Status";
 import { Sparkline } from "../components/Sparkline";
 import { Button } from "../components/Button";
 import { toast } from "../components/Toast";
-import { densify } from "../series";
 import { relTime, freshness, type StatusColor } from "../format";
+import { formatBytes } from "../../../lib/format";
 import type { SourcesData, SourceSeriesData, EgressData, EgressDay } from "../types";
 
 export function Sources() {
@@ -39,44 +39,14 @@ export function Sources() {
   );
 }
 
-function gb(bytes: number): string {
-  if (bytes === 0) return "0"; // a quiet day is 0, never a phantom "1 MB"
-  const g = bytes / 1e9;
-  if (g >= 10) return `${g.toFixed(0)} GB`;
-  if (g >= 0.1) return `${g.toFixed(1)} GB`;
-  return `${Math.max(1, Math.round(bytes / 1e6))} MB`;
-}
-
-/** Daily egress bars — Sparkline's shape, but byte-labeled. Stone only. */
-function EgressBars({ days }: { days: EgressDay[] }) {
-  const dense = densify(days.map((d) => ({ day: d.day, rows: d.bytes })));
-  if (dense.length < 2) return <span className="text-stone-400">not enough history</span>;
-  const W = 168;
-  const H = 34;
-  const GAP = 1;
-  const max = Math.max(1, ...dense.map((d) => d.rows));
-  const bw = (W - GAP * (dense.length - 1)) / dense.length;
-  const last = dense.length - 1;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} width={W} height={H} role="img" aria-label={`Daily mirror egress, last ${dense.length} days`}>
-      {dense.map((d, i) => {
-        const h = d.rows === 0 ? 0.75 : Math.max(1, (d.rows / max) * (H - 2));
-        return (
-          <rect
-            key={d.day}
-            x={i * (bw + GAP)}
-            y={H - h}
-            width={bw}
-            height={h}
-            rx={bw > 2 ? 1 : 0}
-            fill={i === last ? "#57534e" : d.rows === 0 ? "#e7e5e4" : "#d6d3d1"}
-          >
-            <title>{`${d.day}: ${gb(d.rows)}`}</title>
-          </rect>
-        );
-      })}
-    </svg>
-  );
+/** Ledger days as sparkline points, extended through TODAY: a mirror that died
+ *  days ago must show trailing zero bars with today as the (empty) latest bar,
+ *  not dark-highlight a stale day as if the chart were current. */
+function egressPoints(days: EgressDay[]): { day: string; rows: number }[] {
+  const points = days.map((d) => ({ day: d.day, rows: d.bytes }));
+  const today = new Date().toISOString().slice(0, 10);
+  if (points.length && points[points.length - 1].day < today) points.push({ day: today, rows: 0 });
+  return points;
 }
 
 /** The mirror's source-egress card: what pg-mirror pulled out of the business
@@ -112,8 +82,10 @@ function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void
   };
   return (
     <Row name="Business-DB mirror · egress" status={status}>
-      {kv("pulled today", gb(egress.todayBytes))}
-      {egress.days.length ? kv("last 30 days", <EgressBars days={egress.days} />) : null}
+      {kv("pulled today", formatBytes(egress.todayBytes))}
+      {egress.days.length
+        ? kv("last 30 days", <Sparkline points={egressPoints(egress.days)} format={formatBytes} label="Daily mirror egress" />)
+        : null}
       {kv(
         "alert threshold",
         editing ? (
@@ -138,7 +110,7 @@ function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void
             <span>
               {egress.thresholdBytes === null
                 ? "alerts off"
-                : `${gb(egress.thresholdBytes)}/day → Slack`}
+                : `${formatBytes(egress.thresholdBytes)}/day → Slack`}
             </span>
             {mayEdit ? (
               <button

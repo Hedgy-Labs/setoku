@@ -19,7 +19,7 @@
 import { loadConfig, resolveLakeUrl } from "./config";
 import { runLakeQuery } from "./lake";
 import { notifyActivity } from "./notify";
-import type { KnowledgeStore } from "./store";
+import { mintShareId, type KnowledgeStore } from "./store";
 
 export interface EgressDay {
   day: string; // YYYY-MM-DD (UTC)
@@ -32,8 +32,10 @@ export interface EgressData {
   todayBytes: number;
   /** null = alerts disabled. */
   thresholdBytes: number | null;
-  /** False when the lake is unreachable or the mirror never ran — the UI
-   *  shows "no ledger" instead of a zero that reads as "no egress". */
+  /** True only when the ledger has actual entries. The runs table exists on
+   *  EVERY lake box (initdb ships the schema), so "query succeeded" is not the
+   *  test — an empty ledger on a mirror-less box must read "n/a", not a zero
+   *  that looks like "no egress". */
   configured: boolean;
   /** The built-in "Mirror egress" app, when seeded and still live. */
   appId: string | null;
@@ -104,7 +106,7 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
       bytes: Number(r.bytes ?? 0),
     }));
     out.todayBytes = out.days.find((d) => d.day === todayUTC())?.bytes ?? 0;
-    out.configured = true;
+    out.configured = out.days.length > 0;
   } catch {
     /* lake down, table absent, or bytes column not yet migrated — no ledger */
   }
@@ -117,7 +119,7 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
  * ledger stays visible on /admin/sources regardless).
  */
 async function maybeAlert(projectDir: string, store: KnowledgeStore, data: EgressData): Promise<void> {
-  const threshold = egressThreshold(store);
+  const threshold = data.thresholdBytes; // gatherEgress already read the knob
   if (threshold === null || !data.configured || data.todayBytes < threshold) return;
   const today = todayUTC();
   if (store.getKv(KV_NOTIFIED) === today) return;
@@ -199,7 +201,13 @@ export const EGRESS_APP_TEMPLATE = `<div style="font:13px system-ui;color:#5b6b7
 <h3 style="font:600 13px system-ui;color:#5b6b7a;margin:0 0 6px">By table · last 7 days</h3>
 <div id="by_table"></div>
 <script>
-var gbf = function (v) { v = Setoku.num(v); return (v >= 10 ? v.toFixed(0) : v.toFixed(1)) + " GB"; };
+var gbf = function (v) {
+  v = Setoku.num(v); // GB in, per the panel SQL (3-decimal resolution = 1 MB)
+  if (v === 0) return "0";
+  if (v >= 10) return v.toFixed(0) + " GB";
+  if (v >= 0.1) return v.toFixed(1) + " GB";
+  return Math.max(1, Math.round(v * 1000)) + " MB";
+};
 Setoku.stat('today', 'today', { label: 'pulled today', value: 'gb', format: gbf });
 Setoku.stat('week', 'week', { label: 'past 7 days', value: 'gb', format: gbf });
 Setoku.stat('skip_rate', 'skip_rate', { label: 'reloads skipped · 7d', value: 'pct', format: 'pct' });
@@ -223,11 +231,10 @@ Setoku.table('by_table', 'by_table', {
 export function ensureEgressApp(store: KnowledgeStore, data: EgressData): string | null {
   if (store.getKv(KV_APP_SEEDED) !== null) return liveEgressAppId(store);
   if (!data.configured || !data.days.length) return null;
-  const id = Array.from(crypto.getRandomValues(new Uint8Array(12)))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  store.setKv(KV_APP_SEEDED, new Date().toISOString());
-  store.setKv(KV_APP_ID, id);
+  const id = mintShareId();
+  // The app row FIRST, the one-shot guard after: a transient store failure
+  // (SQLITE_BUSY, full disk) must throw out to the tick's catch and retry next
+  // tick — stamping the guard first would burn the seed forever on a fluke.
   store.createPublished({
     id,
     title: "Mirror egress",
@@ -236,6 +243,8 @@ export function ensureEgressApp(store: KnowledgeStore, data: EgressData): string
     refreshSeconds: 3600,
     createdBy: "setoku",
   });
+  store.setKv(KV_APP_SEEDED, new Date().toISOString());
+  store.setKv(KV_APP_ID, id);
   store.audit("setoku", "publish_app", { id, builtin: "egress" });
   return id;
 }
@@ -247,6 +256,9 @@ export function ensureEgressApp(store: KnowledgeStore, data: EgressData): string
  */
 export async function egressTick(projectDir: string, store: KnowledgeStore): Promise<void> {
   try {
+    // Nothing this tick could possibly do → skip the lake round-trip. (The
+    // admin GET gathers its own data; this early-out only gates the watchdog.)
+    if (egressThreshold(store) === null && store.getKv(KV_APP_SEEDED) !== null) return;
     const data = await gatherEgress(projectDir, store);
     ensureEgressApp(store, data);
     await maybeAlert(projectDir, store, data);

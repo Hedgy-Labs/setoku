@@ -20,6 +20,7 @@
  * differently without touching the call sites.
  */
 import { loadConfig, resolveNotifyWebhook } from "./config";
+import { formatBytes } from "./format";
 
 /** An app was published for the first time. */
 export interface AppPublishedEvent {
@@ -108,17 +109,11 @@ export function formatEvent(event: ActivityEvent): string {
     case "egress_alert":
       return (
         `⚠️ *Setoku ${event.box ? `(${event.box}) ` : ""}mirror egress:* ` +
-        `${formatGB(event.bytes)} pulled from the business database today (${event.day}) — ` +
-        `over the ${formatGB(event.thresholdBytes)}/day alert threshold.` +
+        `${formatBytes(event.bytes)} pulled from the business database today (${event.day}) — ` +
+        `over the ${formatBytes(event.thresholdBytes)}/day alert threshold.` +
         `\n_Tune the mirror (interval, denyColumns) or the threshold on the admin Sources page._`
       );
   }
-}
-
-/** Decimal GB, the unit hosted-Postgres vendors bill egress in. */
-export function formatGB(bytes: number): string {
-  const gb = bytes / 1e9;
-  return `${gb >= 10 ? gb.toFixed(0) : gb.toFixed(1)} GB`;
 }
 
 /**

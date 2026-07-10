@@ -615,11 +615,14 @@ export async function mirrorTable(
   ch: ChOptions,
   t: MirrorTable,
   existing: Set<string>,
-  onProgress?: (rows: number) => void,
-  /** Mutated as each buffer flushes, so the caller still knows what was pulled
-   *  out of the source when the reload THROWS — a failed-and-retrying stream
-   *  is the most expensive egress there is, and the ledger must see it. */
-  tally?: { bytes: number },
+  opts?: {
+    onProgress?: (rows: number) => void;
+    /** Mutated as each cursor FETCH lands, so the caller still knows what was
+     *  pulled out of the source when the reload THROWS — a failed-and-retrying
+     *  stream is the most expensive egress there is, and the ledger must see
+     *  it even when the failure hits before the first ClickHouse flush. */
+    tally?: { bytes: number };
+  },
 ): Promise<{ rows: number; bytes: number }> {
   const target = bizTableName(t.schema, t.name);
   const staging = `${target}__staging`;
@@ -639,18 +642,25 @@ export async function mirrorTable(
     await tx.unsafe("SET TRANSACTION READ ONLY");
     await tx.unsafe(`DECLARE setoku_mirror_cur CURSOR FOR ${buildSelect(t)}`);
     let buf = "";
+    let bufBytes = 0; // bytes of `buf` not yet folded into `bytes` (per-chunk, so it's O(n) total)
     for (;;) {
       const batch: Record<string, unknown>[] = await tx.unsafe(`FETCH ${FETCH_ROWS} FROM setoku_mirror_cur`);
-      for (const row of batch) buf += serializeRow(row, t.columns);
+      let chunk = "";
+      for (const row of batch) chunk += serializeRow(row, t.columns);
+      buf += chunk;
+      bufBytes += Buffer.byteLength(chunk, "utf8");
       streamed += batch.length;
+      // The tally advances per FETCH, not per flush: these bytes left the
+      // source DB (the billable event) the moment the cursor returned them,
+      // so a throw anywhere past this point — including before the first
+      // ClickHouse flush — must not erase them from the ledger.
+      if (opts?.tally) opts.tally.bytes = bytes + bufBytes;
       if (buf.length >= FLUSH_BYTES || (batch.length < FETCH_ROWS && buf.length)) {
-        // Counted BEFORE the insert: these bytes already left the source DB
-        // (the billable event) whether or not ClickHouse accepts them.
-        bytes += Buffer.byteLength(buf, "utf8");
-        if (tally) tally.bytes = bytes;
+        bytes += bufBytes;
+        bufBytes = 0;
         await chInsert(ch, db, staging, buf);
         buf = "";
-        onProgress?.(streamed);
+        opts?.onProgress?.(streamed);
       }
       if (batch.length < FETCH_ROWS) break;
     }
@@ -764,7 +774,7 @@ export async function runOnce(
 
     const tally = { bytes: 0 };
     try {
-      const { rows, bytes } = await mirrorTable(pg, ch, t, existing, undefined, tally);
+      const { rows, bytes } = await mirrorTable(pg, ch, t, existing, { tally });
       results.push({ target, source, rows, bytes, status: "ok", error: "" });
       // Only after a successful swap — a failed reload keeps the old signature
       // so the table retries next pass instead of skipping on a stale mirror.
