@@ -351,6 +351,10 @@ services:
       # config` valid for non-mirror deploys (matches the other connectors).
       SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
       SETOKU_MIRROR_INTERVAL_MS: ${SETOKU_MIRROR_INTERVAL_MS:-900000}
+      # Per-box column excludes (comma-separated "schema.table.column" globs,
+      # merged with the baked config's denyColumns) — real column names are
+      # tenant data (I3), so they live in the box's .env, not the repo.
+      SETOKU_MIRROR_DENY_COLUMNS: ${SETOKU_MIRROR_DENY_COLUMNS:-}
       CLICKHOUSE_URL: http://clickhouse:8123
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
