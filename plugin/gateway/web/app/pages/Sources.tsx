@@ -40,6 +40,7 @@ export function Sources() {
 }
 
 function gb(bytes: number): string {
+  if (bytes === 0) return "0"; // a quiet day is 0, never a phantom "1 MB"
   const g = bytes / 1e9;
   if (g >= 10) return `${g.toFixed(0)} GB`;
   if (g >= 0.1) return `${g.toFixed(1)} GB`;
@@ -120,7 +121,7 @@ function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void
             <input
               type="number"
               min={0}
-              step={1}
+              step="any"
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && void save()}
@@ -143,7 +144,9 @@ function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void
               <button
                 className="text-xs text-stone-500 underline underline-offset-2 hover:text-stone-800"
                 onClick={() => {
-                  setDraft(egress.thresholdBytes === null ? "0" : String(Math.round(egress.thresholdBytes / 1e9)));
+                  // Exact GB, never rounded: a 0.4 GB threshold must round-trip
+                  // through open-and-save unchanged, not collapse to 0 (= off).
+                  setDraft(egress.thresholdBytes === null ? "0" : String(egress.thresholdBytes / 1e9));
                   setEditing(true);
                 }}
               >

@@ -529,6 +529,11 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     expect(fake.tables.get("biz.orders")).toBe(before); // untouched
     expect(fake.runs.length).toBe(1);
     expect(fake.runs[0].status).toBe("error");
+    // the failed stream still PULLED bytes from the source — the ledger must
+    // see them (a failing table retries every pass; recording 0 hides exactly
+    // the repeated-restream overage the ledger exists to catch)
+    expect(Number(fake.runs[0].bytes)).toBeGreaterThan(0);
+    expect(r.bytes).toBeGreaterThan(0);
     // the failure must NOT have stored the new signature — the next pass
     // reloads instead of skipping on a mirror that never got the change
     const retry = await runOnce(pg as never, ch, cfg);

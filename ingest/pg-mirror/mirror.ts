@@ -597,9 +597,10 @@ export interface TableResult {
   rows: number;
   /** NDJSON bytes streamed for this reload — a close proxy for what the copy
    *  pulled OUT of the source database, which is what hosted-Postgres vendors
-   *  meter as egress. 0 on error/unchanged. This is the box's own egress
-   *  ledger: queryable per table/day from setoku.pg_mirror_runs without any
-   *  vendor usage API. */
+   *  meter as egress. 0 on unchanged; on error, what had already streamed
+   *  before the failure (a failing table retries every pass, so those bytes
+   *  are the ledger's most important entries). Queryable per table/day from
+   *  setoku.pg_mirror_runs without any vendor usage API. */
   bytes: number;
   /** "unchanged" = the source verifiably didn't move since the last reload —
    *  no restream, but the mirror is known current as of this check. */
@@ -615,6 +616,10 @@ export async function mirrorTable(
   t: MirrorTable,
   existing: Set<string>,
   onProgress?: (rows: number) => void,
+  /** Mutated as each buffer flushes, so the caller still knows what was pulled
+   *  out of the source when the reload THROWS — a failed-and-retrying stream
+   *  is the most expensive egress there is, and the ledger must see it. */
+  tally?: { bytes: number },
 ): Promise<{ rows: number; bytes: number }> {
   const target = bizTableName(t.schema, t.name);
   const staging = `${target}__staging`;
@@ -639,7 +644,10 @@ export async function mirrorTable(
       for (const row of batch) buf += serializeRow(row, t.columns);
       streamed += batch.length;
       if (buf.length >= FLUSH_BYTES || (batch.length < FETCH_ROWS && buf.length)) {
+        // Counted BEFORE the insert: these bytes already left the source DB
+        // (the billable event) whether or not ClickHouse accepts them.
         bytes += Buffer.byteLength(buf, "utf8");
+        if (tally) tally.bytes = bytes;
         await chInsert(ch, db, staging, buf);
         buf = "";
         onProgress?.(streamed);
@@ -754,8 +762,9 @@ export async function runOnce(
       continue;
     }
 
+    const tally = { bytes: 0 };
     try {
-      const { rows, bytes } = await mirrorTable(pg, ch, t, existing);
+      const { rows, bytes } = await mirrorTable(pg, ch, t, existing, undefined, tally);
       results.push({ target, source, rows, bytes, status: "ok", error: "" });
       // Only after a successful swap — a failed reload keeps the old signature
       // so the table retries next pass instead of skipping on a stale mirror.
@@ -766,7 +775,11 @@ export async function runOnce(
       // Best-effort staging cleanup; the previous good copy (if any) stays live.
       await chCommand(ch, `DROP TABLE IF EXISTS ${chIdent(ch.mirrorDb)}.${chIdent(`${target}__staging`)} SYNC`).catch(() => {});
       existing.delete(`${target}__staging`);
-      results.push({ target, source, rows: 0, bytes: 0, status: "error", error: (e as Error).message.slice(0, 500) });
+      // The failure still PULLED tally.bytes out of the source — and a failing
+      // table retries every pass, which is the most expensive egress pattern
+      // there is. Recording 0 here would blind the ledger (and the alert) to
+      // exactly the overage it exists to catch.
+      results.push({ target, source, rows: 0, bytes: tally.bytes, status: "error", error: (e as Error).message.slice(0, 500) });
       console.error(`pg-mirror: ${source} failed: ${(e as Error).message}`);
     }
     await recordRun(ch, startedAt, results[results.length - 1]).catch((e) =>
@@ -790,7 +803,8 @@ export async function runOnce(
   const ok = results.filter((r) => r.status === "ok");
   const unchanged = results.filter((r) => r.status === "unchanged").length;
   const rows = ok.reduce((a, r) => a + r.rows, 0);
-  const bytes = ok.reduce((a, r) => a + r.bytes, 0);
+  // Bytes across ALL results — failed streams pulled real egress too.
+  const bytes = results.reduce((a, r) => a + r.bytes, 0);
   return { ok: ok.length, failed: results.length - ok.length - unchanged, rows, bytes, unchanged };
 }
 
