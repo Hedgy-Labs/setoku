@@ -6,9 +6,12 @@
  * The first admin cannot arrive through an authenticated channel, so it is
  * created here — a deliberate local command run on the box itself:
  *
- *   docker compose exec server bun gateway/admin-cli.ts create-user alice --role admin
+ *   docker compose exec server bun gateway/admin-cli.ts add-person alice@co.com --role admin
  *   bun plugin/gateway/admin-cli.ts list-users
- *   bun plugin/gateway/admin-cli.ts set-password alice
+ *   bun plugin/gateway/admin-cli.ts set-password alice@co.com
+ *
+ * add-person is the default way to add ANYONE: one identity = a web login +
+ * a read-only analyst connector, created together (users ↔ connectors 1:1).
  *
  * The password is read from the SETOKU_NEW_PASSWORD env var if set (for
  * scripted/CI use), otherwise prompted interactively (never echoed, never
@@ -62,15 +65,90 @@ async function readPassword(prompt: string): Promise<string> {
 function usage(): never {
   console.error(
     "usage:\n" +
-      "  admin-cli create-user <username> [--role admin|member]\n" +
+      "  admin-cli add-person <identity> [--role admin|member]   (login + analyst connector, one identity — the default way to add anyone)\n" +
+      "  admin-cli add-teammate <identity>          (alias: add-person --role member)\n" +
+      "  admin-cli create-user <username> [--role admin|member]  (login only — repair/escape hatch)\n" +
       "  admin-cli set-password <username>\n" +
       "  admin-cli list-users\n" +
-      "  admin-cli add-teammate <identity>          (mint an analyst connector for a teammate)\n" +
       "  admin-cli create-curator-token <identity>\n" +
       "  admin-cli create-janitor-token <identity>  (mint an auto-draft/reject token for the curation cron)\n" +
       "(password via SETOKU_NEW_PASSWORD env, else interactive prompt)",
   );
   process.exit(2);
+}
+
+/** The connector hand-off instructions, shared by add-person / add-teammate. */
+function printConnectorInstructions(token: string): void {
+  const origin = boxOrigin();
+  console.log(`✓ connector live now — no restart needed.\n`);
+  console.log("Send them ONE of these:");
+  console.log(`  • Claude Code (CLI):   curl -fsSL ${origin}/i/${token} | sh`);
+  console.log(`  • Claude.ai / Desktop app (anyone, incl. non-technical) — Settings → Connectors →`);
+  console.log(`    Add custom connector. The dialog has NO header field, so paste the token-in-URL as`);
+  console.log(`    the "Remote MCP server URL" (leave OAuth blank):`);
+  console.log(`        ${origin}/mcp/${token}`);
+  console.log(`    (this URL carries the access token — treat it like a password). Then just ask in`);
+  console.log(`    plain language ("show me signups by week").`);
+}
+
+/**
+ * One person = one login + one analyst connector under the SAME identity.
+ * Creates the account if missing (password from SETOKU_NEW_PASSWORD, else
+ * prompted) and mints a DB-backed analyst token — live immediately.
+ *
+ * OUTPUT CONTRACT with deploy/bootstrap.sh: exactly one line of the form
+ * `token=<48 hex>` (parsed with `sed -n 's/^token=//p'`) — keep it stable.
+ *
+ * Membrane (I2/I9): this mints ANALYST capability only (read + propose). The
+ * account's approve power is role-gated server-side per request; curator and
+ * janitor tokens stay env-pinned via their own deliberate commands below.
+ */
+async function addPerson(
+  store: KnowledgeStore,
+  identity: string,
+  role: string,
+  opts: { generatePassword?: boolean } = {},
+): Promise<void> {
+  if (!isRole(role)) {
+    console.error(`invalid role "${role}" (one of: ${ROLES.join(", ")})`);
+    process.exit(1);
+  }
+  if (store.getAccount(identity)) {
+    console.log(`account "${identity}" already exists — keeping it (reset with set-password)`);
+  } else {
+    let pw: string;
+    let generated = false;
+    if (opts.generatePassword && !process.env.SETOKU_NEW_PASSWORD) {
+      // add-teammate: the admin doesn't know the teammate's password — mint a
+      // temp one (same as the web invite) and print it once.
+      pw = randomToken().slice(0, 16);
+      generated = true;
+    } else {
+      pw = await readPassword(`password for ${identity}: `);
+      if (pw.length < MIN_PASSWORD_LENGTH) {
+        console.error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
+        process.exit(1);
+      }
+    }
+    store.createAccount({
+      username: identity,
+      pwhash: await hashPassword(pw),
+      role,
+      createdBy: "admin-cli",
+      // A generated password is shared over some channel to reach its owner —
+      // arm the forced-change gate (#73), same as the web invite.
+      mustChangePassword: generated,
+    });
+    console.log(
+      `created ${role} login "${identity}"${generated ? ` — password (share once): ${pw}` : ""}`,
+    );
+  }
+  const token = randomToken();
+  store.addAnalystToken(token, identity, "admin-cli");
+  store.audit("admin-cli", "person_added", { identity, role });
+  console.log(`analyst connector for ${identity} (shown once):\n`);
+  console.log(`token=${token}\n`);
+  printConnectorInstructions(token);
 }
 
 async function main() {
@@ -115,30 +193,22 @@ async function main() {
     return;
   }
 
+  if (cmd === "add-person") {
+    // One person = login + analyst connector, same identity (see addPerson).
+    if (!username) usage();
+    let role = "member";
+    const ri = rest.indexOf("--role");
+    if (ri >= 0 && rest[ri + 1]) role = rest[ri + 1];
+    await addPerson(store, username, role);
+    return;
+  }
+
   if (cmd === "add-teammate") {
-    // Mint an analyst connector for a teammate — the "share with the team" path.
-    // Analyst tokens are read-only + propose-only (the safe default for everyone).
-    const identity = username;
-    if (!identity) usage();
-    const token = randomToken();
-    const origin = boxOrigin();
-
-    // Write it to the store, which the running server reads per request — so the
-    // token is live IMMEDIATELY, no restart, no .env/file surgery.
-    store.addAnalystToken(token, identity, "admin-cli");
-    store.audit("admin-cli", "analyst_token_created", { identity });
-
-    console.log(`analyst connector for ${identity} (token shown once):\n`);
-    console.log(`  ${token}=${identity}\n`);
-    console.log(`✓ live now — no restart needed.\n`);
-    console.log("Send your teammate ONE of these:");
-    console.log(`  • Claude Code (CLI):   curl -fsSL ${origin}/i/${token} | sh`);
-    console.log(`  • Claude.ai / Desktop app (anyone, incl. non-technical) — Settings → Connectors →`);
-    console.log(`    Add custom connector. The dialog has NO header field, so paste the token-in-URL as`);
-    console.log(`    the "Remote MCP server URL" (leave OAuth blank):`);
-    console.log(`        ${origin}/mcp/${token}`);
-    console.log(`    (this URL carries the access token — treat it like a password). Then just ask in`);
-    console.log(`    plain language ("show me signups by week").`);
+    // The "share with the team" path — now a full person, not just a token:
+    // a member login (temp password printed once) + a read-only, propose-only
+    // analyst connector, so users and connectors stay 1:1.
+    if (!username) usage();
+    await addPerson(store, username, "member", { generatePassword: true });
     return;
   }
 

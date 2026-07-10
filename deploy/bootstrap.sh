@@ -45,10 +45,11 @@ if [ ! -f .env ]; then
   fi
   gen() { openssl rand -hex 24; }
   umask 077
+  # No SETOKU_TOKENS here: agent connectors are provisioned in the gateway's DB
+  # (step 5 creates the operator's), so they're rotatable/revocable at runtime.
   cat > .env <<EOF
 SETOKU_DOMAIN=$DOMAIN
 COMPOSE_PROFILES=lake,ingest
-SETOKU_TOKENS=$(gen)=admin@example.com
 SETOKU_INGEST_TOKEN=$(gen)
 POSTGRES_PASSWORD=$(gen)
 CLICKHOUSE_USER=setoku
@@ -68,7 +69,7 @@ EOF
     } >> .env
     log "isolated stack '$SETOKU_STACK' on edge ports ${SETOKU_EDGE_HTTP_PORT:-8080}/${SETOKU_EDGE_HTTPS_PORT:-8443} (separate containers + volumes)"
   fi
-  log "wrote .env (edit SETOKU_TOKENS identity, and add SETOKU_DATABASE_URL if you want run_query against a business DB)"
+  log "wrote .env (add SETOKU_DATABASE_URL if you want run_query against a business DB)"
 else
   log ".env exists — keeping it"
 fi
@@ -88,37 +89,60 @@ else
 fi
 log "stack healthy."
 
-# 5. Admin account for the approval surface ---------------------------------
+# 5. The operator: ONE person = your /admin login AND your agent connector ---
+# (same identity for both — users and connectors are 1:1)
 ADMIN_LOGIN_MSG=""
+MCP_TOKEN=""
+OPERATOR=""
 if dc exec -T server bun gateway/admin-cli.ts list-users 2>/dev/null | grep -qE '\S'; then
-  log "admin account already exists"
+  log "operator already exists — keeping accounts"
   ADMIN_LOGIN_MSG="login: existing account (reset with: docker compose exec server bun gateway/admin-cli.ts set-password <user>)"
-elif [ -n "${SETOKU_ADMIN_USER:-}" ]; then
-  # non-interactive path: SETOKU_ADMIN_USER=<name> skips the prompt (good for SSH/automation).
-  # A password is REQUIRED — generate one (or take SETOKU_ADMIN_PASSWORD) and print it below.
-  ADMIN_PW="${SETOKU_ADMIN_PASSWORD:-$(openssl rand -hex 12)}"
-  dc exec -T -e SETOKU_NEW_PASSWORD="$ADMIN_PW" server bun gateway/admin-cli.ts create-user "$SETOKU_ADMIN_USER" --role admin
-  log "created admin user '$SETOKU_ADMIN_USER'"
-  ADMIN_LOGIN_MSG="login: $SETOKU_ADMIN_USER / $ADMIN_PW   (change it: docker compose exec server bun gateway/admin-cli.ts set-password $SETOKU_ADMIN_USER)"
-elif [ -r /dev/tty ]; then
-  echo
-  log "create your admin login (for https://$SETOKU_DOMAIN/admin):"
-  read -rp "  admin username: " ADMINU </dev/tty
-  dc exec server bun gateway/admin-cli.ts create-user "${ADMINU:-admin}" --role admin
-  ADMIN_LOGIN_MSG="login: ${ADMINU:-admin} / (the password you just set)"
 else
-  log "no TTY and SETOKU_ADMIN_USER unset — skipping admin account; create one later with:"
-  log "  docker compose exec server bun gateway/admin-cli.ts create-user <name> --role admin"
-  ADMIN_LOGIN_MSG="no admin account yet — create one: docker compose exec server bun gateway/admin-cli.ts create-user <name> --role admin"
+  if [ -n "${SETOKU_ADMIN_USER:-}" ]; then
+    # non-interactive path: SETOKU_ADMIN_USER=<email> skips the prompt (SSH/automation).
+    OPERATOR="$SETOKU_ADMIN_USER"
+  elif [ -r /dev/tty ]; then
+    echo
+    log "create the operator (this ONE identity is both your /admin login and your agent connector):"
+    read -rp "  your email (login + connector identity) [admin]: " OPERATOR </dev/tty
+    OPERATOR="${OPERATOR:-admin}"
+  else
+    log "no TTY and SETOKU_ADMIN_USER unset — skipping the operator; create one later with:"
+    log "  docker compose exec server bun gateway/admin-cli.ts add-person <email> --role admin"
+    ADMIN_LOGIN_MSG="no operator yet — create one: docker compose exec server bun gateway/admin-cli.ts add-person <email> --role admin"
+  fi
+  if [ -n "$OPERATOR" ]; then
+    # The password is generated (SETOKU_ADMIN_PASSWORD overrides) because the
+    # add-person output is captured below — an interactive prompt inside $( )
+    # would hang invisibly. It's printed once in the report; change it after.
+    ADMIN_PW="${SETOKU_ADMIN_PASSWORD:-$(openssl rand -hex 12)}"
+    OUT="$(dc exec -T -e SETOKU_NEW_PASSWORD="$ADMIN_PW" server bun gateway/admin-cli.ts add-person "$OPERATOR" --role admin)"
+    # add-person's output contract: exactly one `token=<48 hex>` line.
+    MCP_TOKEN="$(printf '%s\n' "$OUT" | sed -n 's/^token=//p' | head -n1)"
+    log "created operator '$OPERATOR' (login + agent connector)"
+    ADMIN_LOGIN_MSG="login: $OPERATOR / $ADMIN_PW   (change it: docker compose exec server bun gateway/admin-cli.ts set-password $OPERATOR)"
+  fi
 fi
 
 # 6. Report -----------------------------------------------------------------
-MCP_TOKEN="$(printf '%s' "$SETOKU_TOKENS" | cut -d= -f1)"
+# Legacy fallback: an old .env may still carry env-pinned SETOKU_TOKENS.
+[ -z "$MCP_TOKEN" ] && MCP_TOKEN="$(printf '%s' "${SETOKU_TOKENS:-}" | cut -d= -f1)"
 # Give this box a distinct connector name so a second box (a demo, another
 # deployment) doesn't collide with a bare `setoku` connector. Defaults to the
-# admin username; /onboard confirms/renames it (writes `name` to config.json).
-NAME_SLUG="$(printf '%s' "${SETOKU_NAME:-${SETOKU_ADMIN_USER:-${ADMINU:-}}}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//')"
+# operator's name (the part before @ for an email); /onboard confirms/renames
+# it (writes `name` to config.json).
+NAME_BASE="${SETOKU_NAME:-${OPERATOR%%@*}}"
+NAME_SLUG="$(printf '%s' "$NAME_BASE" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]\{1,\}/-/g; s/^-//; s/-$//')"
 if [ -n "$NAME_SLUG" ]; then CONNECTOR="${NAME_SLUG}-setoku"; else CONNECTOR="setoku"; fi
+if [ -n "$MCP_TOKEN" ]; then
+  CONNECT_MSG=" Connect Claude Code (/onboard can rename this to your company — <name>-setoku):
+   claude mcp add --transport http $CONNECTOR https://$SETOKU_DOMAIN/mcp \\
+     --header \"Authorization: Bearer $MCP_TOKEN\""
+else
+  CONNECT_MSG=" Mint an agent connector (none was created this run):
+   docker compose exec server bun gateway/admin-cli.ts add-person <email>
+   (or sign in at https://$SETOKU_DOMAIN/admin → Team → Invite)"
+fi
 cat <<EOF
 
 ===================================================================
@@ -128,9 +152,7 @@ cat <<EOF
      $ADMIN_LOGIN_MSG
      (this is where you accept proposed knowledge — sign in once now)
 
- Connect Claude Code (/onboard can rename this to your company — <name>-setoku):
-   claude mcp add --transport http $CONNECTOR https://$SETOKU_DOMAIN/mcp \\
-     --header "Authorization: Bearer $MCP_TOKEN"
+$CONNECT_MSG
 
  Ingest token (for Vercel/Render drains + app events):
    $SETOKU_INGEST_TOKEN

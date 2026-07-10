@@ -78,7 +78,7 @@ jobs:
       - name: Compose config validation
         env:
           # dummies for the :?-required vars; CI has no .env by design
-          SETOKU_TOKENS: ci=ci@ci.test
+          # (SETOKU_TOKENS is optional now — connectors live in the gateway DB)
           SETOKU_INGEST_TOKEN: ci
           POSTGRES_PASSWORD: ci
           CLICKHOUSE_PASSWORD: ci

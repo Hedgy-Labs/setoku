@@ -9,10 +9,21 @@ const W = 168;
 const H = 34;
 const GAP = 1;
 
-export function Sparkline({ points }: { points: SourceSeriesPoint[] }) {
+export function Sparkline({
+  points,
+  format,
+  label = "Daily ingestion",
+}: {
+  points: SourceSeriesPoint[];
+  /** Value formatter for tooltips and the /day caption. Defaults to row
+   *  counts; the egress card passes a bytes formatter. */
+  format?: (n: number) => string;
+  label?: string;
+}) {
   const days = densify(points);
   if (days.length < 2) return <span className="text-stone-400">not enough history</span>;
 
+  const fmt = format ?? ((n: number) => `${n.toLocaleString("en-US")} rows`);
   const max = Math.max(1, ...days.map((d) => d.rows));
   const bw = (W - GAP * (days.length - 1)) / days.length;
   const total = days.reduce((a, d) => a + d.rows, 0);
@@ -26,7 +37,7 @@ export function Sparkline({ points }: { points: SourceSeriesPoint[] }) {
         width={W}
         height={H}
         role="img"
-        aria-label={`Daily ingestion, last ${days.length} days, ~${compact(avg)} per day`}
+        aria-label={`${label}, last ${days.length} days, ~${format ? fmt(avg) : compact(avg)} per day`}
         className="shrink-0"
       >
         {days.map((d, i) => {
@@ -42,12 +53,12 @@ export function Sparkline({ points }: { points: SourceSeriesPoint[] }) {
               // most-recent day stone-600, the rest stone-300; zero-days barely there
               fill={i === last ? "#57534e" : d.rows === 0 ? "#e7e5e4" : "#d6d3d1"}
             >
-              <title>{`${d.day}: ${d.rows.toLocaleString("en-US")} rows`}</title>
+              <title>{`${d.day}: ${fmt(d.rows)}`}</title>
             </rect>
           );
         })}
       </svg>
-      <span className="whitespace-nowrap text-xs text-stone-500">~{compact(avg)}/day</span>
+      <span className="whitespace-nowrap text-xs text-stone-500">~{format ? fmt(avg) : compact(avg)}/day</span>
     </span>
   );
 }

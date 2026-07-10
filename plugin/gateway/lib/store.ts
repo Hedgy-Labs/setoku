@@ -293,6 +293,14 @@ const MAX_CACHE_ROWS_PER_APP = 256;
  *  pruned to the newest N. 100 genuine edits is already a heavily-worked app. */
 const MAX_APP_REVISIONS = 100;
 
+/** Mint an opaque share id for a published app/report (24 hex chars). Lives
+ *  with the store because `published.id` is its only consumer — publish_app
+ *  and the built-in-app seeder both mint through here. */
+export const mintShareId = (): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(12)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+
 export class KnowledgeStore {
   db: Database;
 
@@ -1060,8 +1068,10 @@ export class KnowledgeStore {
     this.db.run("DELETE FROM sessions WHERE sid = ?", [sid]);
   }
 
-  /** End every OTHER session an identity holds (post-password-change hygiene:
-   *  a shared temp password must not keep someone else's tab alive). */
+  /** Kill an identity's live sessions — on person removal, role change, or a
+   *  password change/reset, so a stale session can't keep the old authority
+   *  (or a shared temp password) for the 14-day lifetime. Pass `exceptSid` to
+   *  spare the caller's own session (self password change / self-reset). */
   destroySessionsFor(identity: string, exceptSid?: string): number {
     return this.db.run("DELETE FROM sessions WHERE identity = ? AND sid <> ?", [
       identity,
