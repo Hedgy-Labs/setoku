@@ -154,7 +154,7 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
     const message = await page.locator("pre").innerText();
     expect(message).toContain("/mcp/"); // connector URL
     expect(message).toContain("Username: e2e-newhire@co.test");
-    expect(message).toContain("Password: ");
+    expect(message).toContain("Temp password: ");
     expect(await page.locator('button:has-text("Copy message")').isVisible()).toBe(true);
     await page.click('button:has-text("Done")');
     expect(errors).toEqual([]);

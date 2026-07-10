@@ -8,8 +8,14 @@ interface AuthValue {
   loading: boolean;
   /** true when a previously-signed-in session expired (drives the login notice). */
   expired: boolean;
+  /** The password just used to sign in, held in memory ONLY while the forced
+   *  change gate is up — so the form needn't ask for the temp password the
+   *  user typed seconds ago. Gone on reload (the gate then asks). */
+  loginPassword: string | null;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Called after a successful self-service change — drops the forced gate. */
+  passwordChanged: () => void;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -19,6 +25,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [me, setMe] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
   const [expired, setExpired] = useState(false);
+  const [loginPassword, setLoginPassword] = useState<string | null>(null);
   // mirror `me` into a ref so the (mount-once) 401 handler reads the live value
   const meRef = useRef<Me | null>(null);
   meRef.current = me;
@@ -30,6 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUnauthorizedHandler(() => {
       if (meRef.current) setExpired(true);
       setMe(null);
+      setLoginPassword(null);
       setCsrf("");
     });
     return () => setUnauthorizedHandler(null);
@@ -51,16 +59,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const r = await api.login(username, password);
     setCsrf(r.csrf);
     setExpired(false);
-    setMe({ identity: r.identity, role: r.role, csrf: r.csrf });
+    // Keep the verified password ONLY while the gate needs it as "current".
+    setLoginPassword(r.mustChangePassword ? password : null);
+    setMe({ identity: r.identity, role: r.role, csrf: r.csrf, mustChangePassword: r.mustChangePassword });
   };
 
   const logout = async (): Promise<void> => {
     await api.logout();
+    setLoginPassword(null);
     setMe(null);
   };
 
+  const passwordChanged = (): void => {
+    setLoginPassword(null);
+    setMe((m) => (m ? { ...m, mustChangePassword: false } : m));
+  };
+
   return (
-    <AuthContext.Provider value={{ me, loading, expired, login, logout }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider value={{ me, loading, expired, loginPassword, login, logout, passwordChanged }}>
+      {children}
+    </AuthContext.Provider>
   );
 }
 

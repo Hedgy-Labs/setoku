@@ -4,6 +4,7 @@ import { useAuth } from "./auth";
 import { Layout } from "./Layout";
 import { Brand } from "./components/Brand";
 import { Login } from "./pages/Login";
+import { ForcePasswordChange } from "./pages/ChangePassword";
 import { Review } from "./pages/Review";
 import { Knowledge } from "./pages/Knowledge";
 import { Sources } from "./pages/Sources";
@@ -24,6 +25,9 @@ export function App() {
     );
 
   if (!me) return <Login />;
+
+  // Temp (admin-minted) password: force a change before anything else (#73).
+  if (me.mustChangePassword) return <ForcePasswordChange />;
 
   return (
     <Routes>

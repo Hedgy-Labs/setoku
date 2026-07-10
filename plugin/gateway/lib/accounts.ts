@@ -20,6 +20,10 @@ import type { KnowledgeStore } from "./store";
 export type Role = "admin" | "member";
 export const ROLES: readonly Role[] = ["admin", "member"];
 
+/** Minimum password length, enforced everywhere a password is set (web
+ *  self-service change, admin-cli). Mirrored by hand in web/app/types.ts. */
+export const MIN_PASSWORD_LENGTH = 8;
+
 export function isRole(s: string): s is Role {
   return (ROLES as readonly string[]).includes(s);
 }
@@ -44,7 +48,7 @@ export async function authenticate(
   store: KnowledgeStore,
   username: string,
   password: string,
-): Promise<{ ok: true; role: string } | { ok: false }> {
+): Promise<{ ok: true; role: string; mustChangePassword: boolean } | { ok: false }> {
   const acct = store.getAccount(username);
   // Constant-ish work whether or not the user exists.
   const hash = acct?.pwhash ?? DUMMY_HASH;
@@ -54,7 +58,8 @@ export async function authenticate(
   } catch {
     matched = false;
   }
-  if (acct && matched) return { ok: true, role: acct.role };
+  if (acct && matched)
+    return { ok: true, role: acct.role, mustChangePassword: acct.mustChangePassword };
   return { ok: false };
 }
 

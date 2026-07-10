@@ -128,6 +128,12 @@ export class SessionStore {
   destroy(sid: string | undefined): void {
     if (sid) this.store.destroySession(sid);
   }
+
+  /** End every OTHER session for an identity — called after a password change
+   *  so a shared temp password can't keep another tab signed in. */
+  destroyOthers(identity: string, keepSid: string | undefined): number {
+    return this.store.destroySessionsFor(identity, keepSid);
+  }
 }
 
 const COOKIE = "setoku_session";

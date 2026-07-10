@@ -473,8 +473,18 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(result.flash).toContain("login for dana@co.test");
     danaPw = result.newLogin.tempPassword;
 
-    // the new login works, and dana (a member) cannot manage accounts
+    // the new login works; the temp password gates the API server-side (#73),
+    // so dana settles on her own password first — the forced flow.
     const dana = await session("dana@co.test", danaPw);
+    const changed = await apiPost("password", {
+      cookie: dana.cookie,
+      csrf: dana.csrf,
+      body: { current: danaPw, next: "dana-own-pass" },
+    });
+    expect(changed.status).toBe(200);
+    danaPw = "dana-own-pass";
+
+    // and dana (a member) cannot manage accounts
     const denied = await apiPost("users", {
       cookie: dana.cookie,
       csrf: dana.csrf,
@@ -734,6 +744,160 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const row = check.query("SELECT expires FROM sessions WHERE sid = ?").get(sid) as { expires: number };
     check.close();
     expect(row.expires).toBeGreaterThan(Date.now() + 13 * 24 * 60 * 60 * 1000);
+  });
+
+  // ---- temp passwords are temporary (#73) ----
+
+  it("an admin-minted login is flagged mustChangePassword until the owner changes it; the temp password then stops working", async () => {
+    const admin = await session("boss", "s3cret-pass");
+    const created = await apiPost("users", {
+      cookie: admin.cookie,
+      csrf: admin.csrf,
+      body: { op: "create", username: "temp@co.test", role: "member" },
+    });
+    const tempPw = ((await created.json()) as { newLogin: { tempPassword: string } }).newLogin.tempPassword;
+
+    // login succeeds, but the response carries the forced-change flag the SPA
+    // gates on — the recipient lands on the change form, not the app.
+    const r = await login("temp@co.test", tempPw);
+    expect(r.status).toBe(200);
+    const body = (await r.json()) as { csrf: string; mustChangePassword: boolean };
+    expect(body.mustChangePassword).toBe(true);
+    const cookie = (r.headers.get("set-cookie") ?? "").split(";")[0];
+
+    // the session endpoint reports it too (a page reload re-enters the gate)
+    const sess = (await (await apiGet("session", cookie)).json()) as { mustChangePassword: boolean };
+    expect(sess.mustChangePassword).toBe(true);
+
+    // and the gate is SERVER-side, not just SPA routing: a flagged session is
+    // refused everywhere except session/password/logout, so curl can't keep
+    // living on the shared temp password.
+    expect((await apiGet("pending", cookie)).status).toBe(403);
+    expect((await apiGet("knowledge", cookie)).status).toBe(403);
+    // ... including the frame endpoint OUTSIDE /admin/api, which renders real
+    // business data (403 before the app lookup — not even existence leaks)
+    expect((await fetch(`${BASE}/admin/frame/anything`, { headers: { cookie } })).status).toBe(403);
+
+    // CSRF is required, the current password is verified, and the new one has a floor
+    expect((await apiPost("password", { cookie, csrf: "wrong", body: { current: tempPw, next: "my-own-password" } })).status).toBe(403);
+    expect((await apiPost("password", { cookie, csrf: body.csrf, body: { current: "not-it", next: "my-own-password" } })).status).toBe(403);
+    expect((await apiPost("password", { cookie, csrf: body.csrf, body: { current: tempPw, next: "short" } })).status).toBe(400);
+
+    // a second session on the shared temp password — the "stray tab"
+    const other = await session("temp@co.test", tempPw);
+
+    // happy path: current password in hand → changed
+    const ok = await apiPost("password", { cookie, csrf: body.csrf, body: { current: tempPw, next: "my-own-password" } });
+    expect(ok.status).toBe(200);
+
+    // the flag clears for the session that changed it ...
+    const after = (await (await apiGet("session", cookie)).json()) as { mustChangePassword: boolean };
+    expect(after.mustChangePassword).toBe(false);
+    // ... the OTHER session is dead ...
+    expect((await apiGet("session", other.cookie)).status).toBe(401);
+    // ... the temp password stops working, and the chosen one signs in unflagged
+    expect((await login("temp@co.test", tempPw)).status).toBe(401);
+    const relogin = await login("temp@co.test", "my-own-password");
+    expect(relogin.status).toBe(200);
+    expect(((await relogin.json()) as { mustChangePassword: boolean }).mustChangePassword).toBe(false);
+  });
+
+  it("an admin password reset re-arms the forced-change gate and ends the target's live sessions", async () => {
+    // self-contained: provision a fresh target settled on their own password
+    const admin = await session("boss", "s3cret-pass");
+    const created = await apiPost("users", {
+      cookie: admin.cookie,
+      csrf: admin.csrf,
+      body: { op: "create", username: "reset-me@co.test", role: "member" },
+    });
+    const firstPw = ((await created.json()) as { newLogin: { tempPassword: string } }).newLogin.tempPassword;
+    const target = await session("reset-me@co.test", firstPw);
+    expect(
+      (await apiPost("password", { cookie: target.cookie, csrf: target.csrf, body: { current: firstPw, next: "settled-password" } })).status,
+    ).toBe(200);
+
+    // the target is signed in when the reset lands (the leaked-credential case)
+    const reset = await apiPost("users", {
+      cookie: admin.cookie,
+      csrf: admin.csrf,
+      body: { op: "reset", username: "reset-me@co.test" },
+    });
+    expect(reset.status).toBe(200);
+    // the target's old session is dead, the admin's own survives
+    expect((await apiGet("session", target.cookie)).status).toBe(401);
+    expect((await apiGet("session", admin.cookie)).status).toBe(200);
+    const pw = ((await reset.json()) as { newLogin: { tempPassword: string } }).newLogin.tempPassword;
+    const r = await login("reset-me@co.test", pw);
+    expect(r.status).toBe(200);
+    expect(((await r.json()) as { mustChangePassword: boolean }).mustChangePassword).toBe(true);
+  });
+
+  it("a SELF-reset stays unflagged and keeps the session — no sole-admin lockout", async () => {
+    // a fresh admin, settled on their own password
+    const boss = await session("boss", "s3cret-pass");
+    const created = await apiPost("users", {
+      cookie: boss.cookie,
+      csrf: boss.csrf,
+      body: { op: "create", username: "solo@co.test", role: "admin" },
+    });
+    const firstPw = ((await created.json()) as { newLogin: { tempPassword: string } }).newLogin.tempPassword;
+    const solo = await session("solo@co.test", firstPw);
+    expect(
+      (await apiPost("password", { cookie: solo.cookie, csrf: solo.csrf, body: { current: firstPw, next: "solo-own-pass" } })).status,
+    ).toBe(200);
+
+    // resetting THEMSELVES mints a password they alone have seen: no forced
+    // gate (which would demand the shown-once dialog's contents as "current"),
+    // and their session survives to copy it.
+    const reset = await apiPost("users", {
+      cookie: solo.cookie,
+      csrf: solo.csrf,
+      body: { op: "reset", username: "solo@co.test" },
+    });
+    expect(reset.status).toBe(200);
+    const sess = (await (await apiGet("session", solo.cookie)).json()) as { mustChangePassword: boolean };
+    expect(sess.mustChangePassword).toBe(false);
+    expect((await apiGet("pending", solo.cookie)).status).toBe(200); // not gated
+  });
+
+  it("removing an account ends its live sessions (offboarding closes the open tab)", async () => {
+    const boss = await session("boss", "s3cret-pass");
+    const created = await apiPost("users", {
+      cookie: boss.cookie,
+      csrf: boss.csrf,
+      body: { op: "create", username: "del-me@co.test", role: "member" },
+    });
+    const pw = ((await created.json()) as { newLogin: { tempPassword: string } }).newLogin.tempPassword;
+    const target = await session("del-me@co.test", pw);
+    const del = await apiPost("users", {
+      cookie: boss.cookie,
+      csrf: boss.csrf,
+      body: { op: "delete", username: "del-me@co.test" },
+    });
+    expect(del.status).toBe(200);
+    expect((await apiGet("session", target.cookie)).status).toBe(401);
+  });
+
+  it("the SPA's hand-mirrored MIN_PASSWORD_LENGTH matches the server's", async () => {
+    const accounts = await import(path.join(ROOT, "plugin", "gateway", "lib", "accounts.ts"));
+    const types = await import(path.join(ROOT, "plugin", "gateway", "web", "app", "types.ts"));
+    expect(types.MIN_PASSWORD_LENGTH).toBe(accounts.MIN_PASSWORD_LENGTH);
+  });
+
+  it("a web invite's minted login is flagged; a self-set password (boss) is not", async () => {
+    const admin = await session("boss", "s3cret-pass");
+    const inv = await apiPost("invite", {
+      cookie: admin.cookie,
+      csrf: admin.csrf,
+      body: { identity: "flagged@co.test" },
+    });
+    const nl = ((await inv.json()) as { newLogin?: { tempPassword: string } }).newLogin;
+    expect(nl).toBeDefined();
+    const r = await login("flagged@co.test", nl!.tempPassword);
+    expect(((await r.json()) as { mustChangePassword: boolean }).mustChangePassword).toBe(true);
+    // boss bootstrapped their own password — no gate
+    const boss = await login("boss", "s3cret-pass");
+    expect(((await boss.json()) as { mustChangePassword: boolean }).mustChangePassword).toBe(false);
   });
 });
 

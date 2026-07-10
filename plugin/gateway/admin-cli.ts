@@ -18,7 +18,7 @@
  * logged). It is argon2id-hashed before it touches the store.
  */
 import { KnowledgeStore, defaultDbPath } from "./lib/store";
-import { hashPassword, isRole, ROLES } from "./lib/accounts";
+import { hashPassword, isRole, ROLES, MIN_PASSWORD_LENGTH } from "./lib/accounts";
 import { resolveProjectDir, loadConfig, connectorName } from "./lib/config";
 
 function randomToken(): string {
@@ -125,8 +125,8 @@ async function addPerson(
       generated = true;
     } else {
       pw = await readPassword(`password for ${identity}: `);
-      if (pw.length < 8) {
-        console.error("password must be at least 8 characters");
+      if (pw.length < MIN_PASSWORD_LENGTH) {
+        console.error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
         process.exit(1);
       }
     }
@@ -135,6 +135,9 @@ async function addPerson(
       pwhash: await hashPassword(pw),
       role,
       createdBy: "admin-cli",
+      // A generated password is shared over some channel to reach its owner —
+      // arm the forced-change gate (#73), same as the web invite.
+      mustChangePassword: generated,
     });
     console.log(
       `created ${role} login "${identity}"${generated ? ` — password (share once): ${pw}` : ""}`,
@@ -176,8 +179,8 @@ async function main() {
       process.exit(1);
     }
     const pw = await readPassword(`password for ${username}: `);
-    if (pw.length < 8) {
-      console.error("password must be at least 8 characters");
+    if (pw.length < MIN_PASSWORD_LENGTH) {
+      console.error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       process.exit(1);
     }
     store.createAccount({
@@ -257,12 +260,17 @@ async function main() {
       process.exit(1);
     }
     const pw = await readPassword(`new password for ${username}: `);
-    if (pw.length < 8) {
-      console.error("password must be at least 8 characters");
+    if (pw.length < MIN_PASSWORD_LENGTH) {
+      console.error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       process.exit(1);
     }
     store.setPassword(username, await hashPassword(pw));
-    console.log(`password updated for "${username}"`);
+    // This is the box-side recovery path for a compromised login — the
+    // rotation must also end any live web sessions, like the web reset does.
+    const ended = store.destroySessionsFor(username);
+    console.log(
+      `password updated for "${username}"${ended ? ` (${ended} live web session${ended === 1 ? "" : "s"} signed out)` : ""}`,
+    );
     return;
   }
 
