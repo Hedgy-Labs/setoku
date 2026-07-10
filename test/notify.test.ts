@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { resolveNotifyWebhook } from "../plugin/gateway/lib/config";
 import { formatEvent, notifyActivity, type ActivityEvent } from "../plugin/gateway/lib/notify";
+import { formatBytes } from "../plugin/gateway/lib/format";
 
 const dirs: string[] = [];
 function projectWith(config: Record<string, unknown>, env?: string): string {
@@ -57,6 +58,31 @@ describe("formatEvent", () => {
     expect(t).toContain("0.21.0");
     expect(t).toContain("was v0.20.0");
     expect(t).toContain("campsh");
+  });
+
+  it("renders an egress alert in the vendor's billing unit (decimal GB)", () => {
+    const t = formatEvent({
+      kind: "egress_alert",
+      day: "2026-07-09",
+      bytes: 12_400_000_000,
+      thresholdBytes: 10e9,
+      box: "campsh",
+    });
+    expect(t).toContain("mirror egress");
+    expect(t).toContain("12 GB"); // ≥10 GB rounds to whole GB
+    expect(t).toContain("10 GB/day alert threshold");
+    expect(t).toContain("2026-07-09");
+    expect(t).toContain("campsh");
+  });
+
+  it("formatBytes is honest at every tier (shared by Slack text and the admin card)", () => {
+    expect(formatBytes(0)).toBe("0"); // never a phantom floor
+    expect(formatBytes(300)).toBe("<1 KB");
+    expect(formatBytes(3_000)).toBe("3 KB");
+    expect(formatBytes(40_000_000)).toBe("40 MB"); // a 0.04 GB threshold reads as MB, not "0.0 GB"
+    expect(formatBytes(400_000_000)).toBe("0.4 GB");
+    expect(formatBytes(1_230_000_000)).toBe("1.2 GB"); // <10 GB keeps a decimal
+    expect(formatBytes(12_400_000_000)).toBe("12 GB");
   });
 });
 

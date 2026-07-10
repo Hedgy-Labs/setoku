@@ -12,6 +12,7 @@ import type {
   AuditRow,
   SourcesData,
   SourceSeriesData,
+  EgressData,
   TeamData,
   Role,
   PublishedMeta,
@@ -99,6 +100,10 @@ export const api = {
   knowledgeView: () => req<KnowledgeView>("knowledge_view"),
   sources: () => req<SourcesData>("sources"),
   sourceSeries: () => req<SourceSeriesData>("source_series"),
+  egress: () => req<EgressData>("egress"),
+  // GB/day; 0 or null disables the daily Slack alert (admin only).
+  setEgressThreshold: (gb: number | null) =>
+    req<MutationResult>("egress_threshold", { method: "POST", body: { gb } }),
   audit: () => req<AuditRow[]>("audit"),
   team: () => req<TeamData>("team"),
   invite: (identity: string, rotate = false) =>

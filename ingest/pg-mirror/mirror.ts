@@ -421,6 +421,10 @@ export async function ensureMirrorObjects(ch: ChOptions): Promise<void> {
      (target LowCardinality(String), source String, signature String, checked_at DateTime64(3))
      ENGINE = ReplacingMergeTree(checked_at) ORDER BY target`,
   );
+  // Existing boxes predate the bytes column (the numbered schema files only run
+  // on a fresh ClickHouse) — idempotent in-place migration, like store.ts's
+  // ensureColumn.
+  await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS bytes UInt64 AFTER rows`);
 }
 
 /* ---------------------------- discovery ----------------------------- */
@@ -591,6 +595,13 @@ export interface TableResult {
   target: string;
   source: string;
   rows: number;
+  /** NDJSON bytes streamed for this reload — a close proxy for what the copy
+   *  pulled OUT of the source database, which is what hosted-Postgres vendors
+   *  meter as egress. 0 on unchanged; on error, what had already streamed
+   *  before the failure (a failing table retries every pass, so those bytes
+   *  are the ledger's most important entries). Queryable per table/day from
+   *  setoku.pg_mirror_runs without any vendor usage API. */
+  bytes: number;
   /** "unchanged" = the source verifiably didn't move since the last reload —
    *  no restream, but the mirror is known current as of this check. */
   status: "ok" | "error" | "unchanged";
@@ -604,8 +615,15 @@ export async function mirrorTable(
   ch: ChOptions,
   t: MirrorTable,
   existing: Set<string>,
-  onProgress?: (rows: number) => void,
-): Promise<number> {
+  opts?: {
+    onProgress?: (rows: number) => void;
+    /** Mutated as each cursor FETCH lands, so the caller still knows what was
+     *  pulled out of the source when the reload THROWS — a failed-and-retrying
+     *  stream is the most expensive egress there is, and the ledger must see
+     *  it even when the failure hits before the first ClickHouse flush. */
+    tally?: { bytes: number };
+  },
+): Promise<{ rows: number; bytes: number }> {
   const target = bizTableName(t.schema, t.name);
   const staging = `${target}__staging`;
   const db = ch.mirrorDb;
@@ -619,18 +637,30 @@ export async function mirrorTable(
   // (works through transaction-pooling proxies like Supabase's pooler, where a
   // session-level cursor wouldn't survive outside an explicit transaction).
   let streamed = 0;
+  let bytes = 0;
   await pg.begin(async (tx) => {
     await tx.unsafe("SET TRANSACTION READ ONLY");
     await tx.unsafe(`DECLARE setoku_mirror_cur CURSOR FOR ${buildSelect(t)}`);
     let buf = "";
+    let bufBytes = 0; // bytes of `buf` not yet folded into `bytes` (per-chunk, so it's O(n) total)
     for (;;) {
       const batch: Record<string, unknown>[] = await tx.unsafe(`FETCH ${FETCH_ROWS} FROM setoku_mirror_cur`);
-      for (const row of batch) buf += serializeRow(row, t.columns);
+      let chunk = "";
+      for (const row of batch) chunk += serializeRow(row, t.columns);
+      buf += chunk;
+      bufBytes += Buffer.byteLength(chunk, "utf8");
       streamed += batch.length;
+      // The tally advances per FETCH, not per flush: these bytes left the
+      // source DB (the billable event) the moment the cursor returned them,
+      // so a throw anywhere past this point — including before the first
+      // ClickHouse flush — must not erase them from the ledger.
+      if (opts?.tally) opts.tally.bytes = bytes + bufBytes;
       if (buf.length >= FLUSH_BYTES || (batch.length < FETCH_ROWS && buf.length)) {
+        bytes += bufBytes;
+        bufBytes = 0;
         await chInsert(ch, db, staging, buf);
         buf = "";
-        onProgress?.(streamed);
+        opts?.onProgress?.(streamed);
       }
       if (batch.length < FETCH_ROWS) break;
     }
@@ -655,7 +685,7 @@ export async function mirrorTable(
     existing.add(target);
   }
   existing.delete(staging);
-  return streamed;
+  return { rows: streamed, bytes };
 }
 
 const runStamp = (d: Date): string => d.toISOString().replace("T", " ").replace("Z", "");
@@ -668,6 +698,7 @@ async function recordRun(ch: ChOptions, startedAt: Date, r: TableResult): Promis
     target_table: r.target,
     source_table: r.source,
     rows: r.rows,
+    bytes: r.bytes,
     status: r.status,
     error: r.error,
   });
@@ -681,7 +712,7 @@ export async function runOnce(
   ch: ChOptions,
   cfg: MirrorConfig,
   setState?: (s: string) => void,
-): Promise<{ ok: number; failed: number; rows: number; unchanged: number }> {
+): Promise<{ ok: number; failed: number; rows: number; bytes: number; unchanged: number }> {
   const { tables, failed: discoveryFailed } = await discoverTables(pg, cfg);
   const existing = new Set<string>(
     (await chSelect(ch, `SELECT name FROM system.tables WHERE database = ${sqlString(ch.mirrorDb)}`)).map((r) => String(r.name)),
@@ -696,7 +727,7 @@ export async function runOnce(
       console.error(
         `pg-mirror: discovery returned no allowlisted tables — refusing to prune ${existing.size} existing mirror table(s) (revoked grants or misconfig? fix the source, the next pass reconciles)`,
       );
-    return { ok: 0, failed: 0, rows: 0, unchanged: 0 };
+    return { ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0 };
   }
 
   // Signatures the CURRENT mirror tables were built from. A state row whose
@@ -709,7 +740,7 @@ export async function runOnce(
 
   const results: TableResult[] = [];
   for (const f of discoveryFailed) {
-    const r: TableResult = { target: bizTableName(f.schema, f.name), source: `${f.schema}.${f.name}`, rows: 0, status: "error", error: f.error };
+    const r: TableResult = { target: bizTableName(f.schema, f.name), source: `${f.schema}.${f.name}`, rows: 0, bytes: 0, status: "error", error: f.error };
     results.push(r);
     console.error(`pg-mirror: ${r.source} not mirrorable: ${f.error}`);
     await recordRun(ch, new Date(), r).catch(() => {});
@@ -730,7 +761,7 @@ export async function runOnce(
     const signature = `${schemaSignature(t)}/${counters ?? "no-stats"}`;
 
     if (counters !== null && existing.has(target) && state.get(target) === signature) {
-      const r: TableResult = { target, source, rows: 0, status: "unchanged", error: "" };
+      const r: TableResult = { target, source, rows: 0, bytes: 0, status: "unchanged", error: "" };
       results.push(r);
       // Re-stamp checked_at: freshness surfaces read "verified equal to the
       // source at this time" from pg_mirror_runs/pg_mirror_state.
@@ -741,9 +772,10 @@ export async function runOnce(
       continue;
     }
 
+    const tally = { bytes: 0 };
     try {
-      const rows = await mirrorTable(pg, ch, t, existing);
-      results.push({ target, source, rows, status: "ok", error: "" });
+      const { rows, bytes } = await mirrorTable(pg, ch, t, existing, { tally });
+      results.push({ target, source, rows, bytes, status: "ok", error: "" });
       // Only after a successful swap — a failed reload keeps the old signature
       // so the table retries next pass instead of skipping on a stale mirror.
       await saveMirrorState(ch, target, source, signature).catch((e) =>
@@ -753,7 +785,11 @@ export async function runOnce(
       // Best-effort staging cleanup; the previous good copy (if any) stays live.
       await chCommand(ch, `DROP TABLE IF EXISTS ${chIdent(ch.mirrorDb)}.${chIdent(`${target}__staging`)} SYNC`).catch(() => {});
       existing.delete(`${target}__staging`);
-      results.push({ target, source, rows: 0, status: "error", error: (e as Error).message.slice(0, 500) });
+      // The failure still PULLED tally.bytes out of the source — and a failing
+      // table retries every pass, which is the most expensive egress pattern
+      // there is. Recording 0 here would blind the ledger (and the alert) to
+      // exactly the overage it exists to catch.
+      results.push({ target, source, rows: 0, bytes: tally.bytes, status: "error", error: (e as Error).message.slice(0, 500) });
       console.error(`pg-mirror: ${source} failed: ${(e as Error).message}`);
     }
     await recordRun(ch, startedAt, results[results.length - 1]).catch((e) =>
@@ -777,7 +813,9 @@ export async function runOnce(
   const ok = results.filter((r) => r.status === "ok");
   const unchanged = results.filter((r) => r.status === "unchanged").length;
   const rows = ok.reduce((a, r) => a + r.rows, 0);
-  return { ok: ok.length, failed: results.length - ok.length - unchanged, rows, unchanged };
+  // Bytes across ALL results — failed streams pulled real egress too.
+  const bytes = results.reduce((a, r) => a + r.bytes, 0);
+  return { ok: ok.length, failed: results.length - ok.length - unchanged, rows, bytes, unchanged };
 }
 
 /* ------------------------------- main -------------------------------- */
@@ -864,7 +902,7 @@ async function main(): Promise<void> {
         });
         state = r.failed
           ? `partial: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.failed} failed — see setoku.pg_mirror_runs`
-          : `ok: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.rows} row(s) in ${Math.round((Date.now() - t0) / 1000)}s`;
+          : `ok: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.rows} row(s) / ${(r.bytes / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)}s`;
         console.error(`pg-mirror: ${state}`);
       } finally {
         await pg.end().catch(() => {});

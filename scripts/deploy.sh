@@ -14,8 +14,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-# load the box target (gitignored) if present
+# Load the box target (gitignored) if present — as DEFAULTS only. Explicit env
+# wins, per the contract in the header ("env or deploy/target.local"): otherwise
+# a one-off `SETOKU_DEPLOY_SSH=... bash scripts/deploy.sh` to a second box gets
+# silently re-pointed at the canonical box by the sourced file.
+_env_ssh="${SETOKU_DEPLOY_SSH:-}"; _env_dir="${SETOKU_DEPLOY_DIR:-}"; _env_domain="${SETOKU_DEPLOY_DOMAIN-__unset__}"
 [ -f deploy/target.local ] && . deploy/target.local
+[ -n "$_env_ssh" ] && SETOKU_DEPLOY_SSH="$_env_ssh"
+[ -n "$_env_dir" ] && SETOKU_DEPLOY_DIR="$_env_dir"
+[ "$_env_domain" != "__unset__" ] && SETOKU_DEPLOY_DOMAIN="$_env_domain"
 
 SSH="${SETOKU_DEPLOY_SSH:?set SETOKU_DEPLOY_SSH (e.g. ubuntu@1.2.3.4) in env or deploy/target.local}"
 DIR="${SETOKU_DEPLOY_DIR:-/opt/setoku}"
