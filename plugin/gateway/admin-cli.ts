@@ -15,7 +15,7 @@
  * logged). It is argon2id-hashed before it touches the store.
  */
 import { KnowledgeStore, defaultDbPath } from "./lib/store";
-import { hashPassword, isRole, ROLES } from "./lib/accounts";
+import { hashPassword, isRole, ROLES, MIN_PASSWORD_LENGTH } from "./lib/accounts";
 import { resolveProjectDir, loadConfig, connectorName } from "./lib/config";
 
 function randomToken(): string {
@@ -101,8 +101,8 @@ async function main() {
       process.exit(1);
     }
     const pw = await readPassword(`password for ${username}: `);
-    if (pw.length < 8) {
-      console.error("password must be at least 8 characters");
+    if (pw.length < MIN_PASSWORD_LENGTH) {
+      console.error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       process.exit(1);
     }
     store.createAccount({
@@ -190,12 +190,17 @@ async function main() {
       process.exit(1);
     }
     const pw = await readPassword(`new password for ${username}: `);
-    if (pw.length < 8) {
-      console.error("password must be at least 8 characters");
+    if (pw.length < MIN_PASSWORD_LENGTH) {
+      console.error(`password must be at least ${MIN_PASSWORD_LENGTH} characters`);
       process.exit(1);
     }
     store.setPassword(username, await hashPassword(pw));
-    console.log(`password updated for "${username}"`);
+    // This is the box-side recovery path for a compromised login — the
+    // rotation must also end any live web sessions, like the web reset does.
+    const ended = store.destroySessionsFor(username);
+    console.log(
+      `password updated for "${username}"${ended ? ` (${ended} live web session${ended === 1 ? "" : "s"} signed out)` : ""}`,
+    );
     return;
   }
 

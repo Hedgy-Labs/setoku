@@ -124,8 +124,8 @@ function ChangePasswordDialog({
             Your other sessions will be signed out.
           </Dialog.Description>
           <div className="mt-4">
-            {/* remount per open so a reopened dialog starts blank */}
-            {open ? <ChangePasswordForm onDone={onChanged} /> : null}
+            {/* the portal unmounts on close, so a reopened dialog starts blank */}
+            <ChangePasswordForm onDone={onChanged} />
           </div>
         </Dialog.Popup>
       </Dialog.Portal>

@@ -4,6 +4,9 @@
 
 export type Role = "admin" | "member";
 
+/** Mirrors MIN_PASSWORD_LENGTH in lib/accounts.ts (the server enforces it). */
+export const MIN_PASSWORD_LENGTH = 8;
+
 export interface Me {
   identity: string;
   role: Role;

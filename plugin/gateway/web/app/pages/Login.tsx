@@ -2,6 +2,7 @@
 import { useState, type FormEvent } from "react";
 import { useAuth } from "../auth";
 import { Brand } from "../components/Brand";
+import { FormError } from "../components/FormError";
 
 export function Login() {
   const { login, expired } = useAuth();
@@ -37,11 +38,7 @@ export function Login() {
             Your session expired — please sign in again.
           </div>
         ) : null}
-        {error ? (
-          <div className="mb-4 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700">
-            {error}
-          </div>
-        ) : null}
+        {error ? <FormError className="mb-4">{error}</FormError> : null}
         <form onSubmit={onSubmit} className="space-y-3">
           <input className="input" type="text" name="username" placeholder="username" autoComplete="username" autoFocus />
           <input

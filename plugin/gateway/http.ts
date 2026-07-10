@@ -58,7 +58,7 @@ import {
   type SourceSeries,
   type SourceSeriesData,
 } from "./lib/approval";
-import { authenticate, canApprove, hashPassword, isRole } from "./lib/accounts";
+import { authenticate, canApprove, hashPassword, isRole, MIN_PASSWORD_LENGTH } from "./lib/accounts";
 import { buildKnowledgeView } from "./lib/facts";
 import { VERSION } from "./lib/version";
 import { resolveDatabaseUrl, resolveLakeUrl } from "./lib/config";
@@ -1304,6 +1304,14 @@ const httpServer = http.createServer(async (req, res) => {
         // Throttled inside, and the re-issued cookie slides the browser's copy too.
         if (sessions.renew(sid, session)) renewedCookie = sessionSetCookie(sid!);
 
+        // The forced-change gate is enforced HERE, not only by the SPA (#73): a
+        // flagged (temp-password) session may only ask who it is or change the
+        // password — a raw HTTP client can't sidestep the React routing and
+        // keep using the shared password indefinitely. (logout is handled
+        // above, before the session lookup.)
+        if (api !== "session" && api !== "password" && store.getAccount(session.identity)?.mustChangePassword)
+          return json(403, { ok: false, error: "You must change your password before doing anything else." });
+
         // who am I — drives the SPA's auth state + the CSRF token for mutations.
         // mustChangePassword reads the ACCOUNT (not the session row) so an admin
         // reset re-arms the gate for a session that was already signed in.
@@ -1462,8 +1470,8 @@ const httpServer = http.createServer(async (req, res) => {
           if (api === "password") {
             const body = (await readBody(req)) as { current?: string; next?: string } | undefined;
             const next = body?.next ?? "";
-            if (next.length < 8)
-              return json(400, { ok: false, error: "New password must be at least 8 characters." });
+            if (next.length < MIN_PASSWORD_LENGTH)
+              return json(400, { ok: false, error: `New password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
             const auth = await authenticate(store, session.identity, body?.current ?? "");
             if (!auth.ok) {
               store.audit(session.identity, "password_change_rejected", {});
@@ -1750,13 +1758,19 @@ const httpServer = http.createServer(async (req, res) => {
             if (op === "reset") {
               if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
               const pw = tempPw();
-              store.setPassword(uname, await hashPassword(pw), true);
+              // Resetting SOMEONE ELSE mints a temp password → arm the forced-
+              // change gate. A SELF-reset stays unflagged: the password isn't
+              // shared with anyone, and arming it would lock a sole admin out
+              // of the UI if they lose the shown-once dialog (the gate demands
+              // the temp password as "current").
+              const self = uname === session.identity;
+              store.setPassword(uname, await hashPassword(pw), !self);
               // A reset is the recovery move for a suspected-leaked credential:
               // end the target's live sessions too, so the next thing they do
-              // is sign in with the new temp password and hit the change gate.
-              // (Keeping `sid` only matters on a self-reset — don't cut off the
-              // admin mid-dialog before they've copied the new password.)
-              store.destroySessionsFor(uname, sid);
+              // is sign in with the new password. (`sid` only matters on a
+              // self-reset — don't cut the admin off mid-dialog before they've
+              // copied the new password.)
+              sessions.destroyOthers(uname, sid);
               store.audit(session.identity, "account_password_reset", { username: uname });
               return json(200, {
                 ok: true,
@@ -1769,7 +1783,10 @@ const httpServer = http.createServer(async (req, res) => {
               if (isLastAdmin(acct)) return json(409, { ok: false, error: "Can't remove the last admin." });
               store.deleteAccount(uname);
               const { removed, envBacked } = removeAnalystTokens(uname);
-              store.audit(session.identity, "account_deleted", { username: uname, tokensRevoked: removed });
+              // Removing the account must also end its live sessions — an open
+              // /admin tab would otherwise keep its role for up to 14 days.
+              const sessionsEnded = sessions.destroyOthers(uname, undefined);
+              store.audit(session.identity, "account_deleted", { username: uname, tokensRevoked: removed, sessionsEnded });
               return json(200, {
                 ok: true,
                 flash: `Removed ${uname} (account + ${removed} connector${removed === 1 ? "" : "s"} revoked).${envBacked ? " One token is in SETOKU_TOKENS env — remove it from .env to fully revoke." : ""}`,

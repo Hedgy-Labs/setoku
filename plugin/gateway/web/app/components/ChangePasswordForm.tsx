@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState, type FormEvent } from "react";
 import { api } from "../api";
+import { MIN_PASSWORD_LENGTH } from "../types";
+import { FormError } from "./FormError";
 
 /**
  * Self-service password change (#73). Used in two places: the forced gate a
@@ -33,11 +35,7 @@ export function ChangePasswordForm({ onDone }: { onDone: () => void }) {
 
   return (
     <form onSubmit={onSubmit} className="space-y-3">
-      {error ? (
-        <div className="rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700">
-          {error}
-        </div>
-      ) : null}
+      {error ? <FormError>{error}</FormError> : null}
       <input
         className="input"
         type="password"
@@ -51,9 +49,9 @@ export function ChangePasswordForm({ onDone }: { onDone: () => void }) {
         className="input"
         type="password"
         name="next"
-        placeholder="new password (8+ characters)"
+        placeholder={`new password (${MIN_PASSWORD_LENGTH}+ characters)`}
         autoComplete="new-password"
-        minLength={8}
+        minLength={MIN_PASSWORD_LENGTH}
         required
       />
       <input
@@ -62,7 +60,7 @@ export function ChangePasswordForm({ onDone }: { onDone: () => void }) {
         name="confirm"
         placeholder="repeat new password"
         autoComplete="new-password"
-        minLength={8}
+        minLength={MIN_PASSWORD_LENGTH}
         required
       />
       <button className="btn btn-primary w-full" type="submit" disabled={busy}>

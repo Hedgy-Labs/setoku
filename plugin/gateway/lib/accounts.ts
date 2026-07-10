@@ -20,6 +20,10 @@ import type { KnowledgeStore } from "./store";
 export type Role = "admin" | "member";
 export const ROLES: readonly Role[] = ["admin", "member"];
 
+/** Minimum password length, enforced everywhere a password is set (web
+ *  self-service change, admin-cli). Mirrored by hand in web/app/types.ts. */
+export const MIN_PASSWORD_LENGTH = 8;
+
 export function isRole(s: string): s is Role {
   return (ROLES as readonly string[]).includes(s);
 }
