@@ -380,7 +380,7 @@ function SourceList({
   // business DB itself when no SETOKU_DATABASE_URL is bound.
   const avail: { name: string; desc: string }[] = [];
   if (!pg.configured) {
-    avail.push({ name: "Postgres", desc: "your business database — the primary source Setoku answers from" });
+    avail.push({ name: "Postgres", desc: "any Postgres you want to query — read-only, table allowlist" });
   }
   const catalogFamilies = new Map<string, LakeSource[]>();
   for (const s of LAKE_SOURCES) {
