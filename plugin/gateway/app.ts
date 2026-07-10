@@ -802,7 +802,10 @@ server.registerTool(
           });
           const present = new Set(res.rows.map((r) => String(Object.values(r)[0] ?? "")));
           const known = LAKE_SOURCES.filter((s) => present.has(s.table));
-          const extra = [...present].filter((t) => !LAKE_SOURCES.some((s) => s.table === t));
+          // plumbing tables (connector liveness beats) aren't a queryable source
+          const extra = [...present].filter(
+            (t) => t !== "ingest_heartbeats" && !LAKE_SOURCES.some((s) => s.table === t),
+          );
           if (known.length || extra.length) {
             lines.push("", 'DATA LAKE (ClickHouse) — run_query with dialect:"clickhouse" — tables:');
             for (const s of known) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
