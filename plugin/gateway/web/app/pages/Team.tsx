@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState, type ReactNode } from "react";
+import { AlertDialog } from "@base-ui-components/react/alert-dialog";
 import { api, type MutationResult } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
-import { Status } from "../components/Status";
 import { Badge } from "../components/Badge";
+import { cn } from "../cn";
 import { Button } from "../components/Button";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
@@ -21,12 +22,20 @@ interface ConfirmSpec {
   run: () => Promise<MutationResult>;
 }
 
+/** The shown-once credentials a mutation just minted — drives the dialog.
+ *  Any combination: both (fresh invite), invite-only (reset connector /
+ *  configure agent), login-only (reset password / grant login). */
+interface Creds {
+  identity: string;
+  invite: Invite | null;
+  newLogin: NewLogin | null;
+}
+
 export function Team() {
   const { me } = useAuth();
   const mayManage = me?.role === "admin";
   const { data, loading, error, reload } = useApi<TeamData>(() => api.team(), []);
-  const [invite, setInvite] = useState<Invite | null>(null);
-  const [newLogin, setNewLogin] = useState<NewLogin | null>(null);
+  const [creds, setCreds] = useState<Creds | null>(null);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
 
@@ -34,8 +43,12 @@ export function Team() {
     try {
       const r = await p;
       if (r.flash) toast(r.flash);
-      setInvite(r.invite ?? null);
-      setNewLogin(r.newLogin ?? null);
+      if (r.invite || r.newLogin)
+        setCreds({
+          identity: r.invite?.identity ?? r.newLogin!.username,
+          invite: r.invite ?? null,
+          newLogin: r.newLogin ?? null,
+        });
       reload();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Failed.");
@@ -43,87 +56,66 @@ export function Team() {
   };
 
   const people = data?.people ?? [];
-  const adminCount = data?.adminCount ?? 0;
-  const noAgent = people.filter((p) => !p.hasToken).length;
 
   return (
     <>
-      <Heading title="Team">
-        Who can sign in here and what their agent may do. Everyone gets an account with a read-only,
-        propose-only agent connector; members use the agent and view, admins also approve knowledge.
-        The curated context the team builds is shared across everyone. (Curator <i>write</i> connectors
-        are a separate, deliberate step — <code className="kbd">admin-cli</code> on the box — never a
-        default.)
-      </Heading>
-      {noAgent > 0 && mayManage ? (
-        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-700">
-          {noAgent} {noAgent === 1 ? "person has" : "people have"} a login but no agent connector — click{" "}
-          <b>Configure agent</b> on their row so they can actually query.
+      <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+        <div className="min-w-[16rem] max-w-xl flex-1">
+          <Heading title="Team">
+            Everyone you invite gets a web login and a read-only agent connector; admins also approve
+            knowledge.
+          </Heading>
         </div>
-      ) : null}
-
-      {invite ? <InviteResult invite={invite} /> : null}
-      {newLogin ? <NewLoginResult newLogin={newLogin} /> : null}
-
-      <div className="mt-3">
         {mayManage ? (
-          <>
-            <form
-              className="card flex flex-wrap items-end gap-2 p-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                if (inviteEmail.trim()) {
-                  void apply(api.invite(inviteEmail.trim()));
-                  setInviteEmail("");
-                }
-              }}
-            >
-              <label className="min-w-[14rem] flex-1">
-                <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-stone-500">
-                  Add a teammate (email)
-                </span>
-                <input
-                  className="input"
-                  type="email"
-                  placeholder="teammate@yourco.com"
-                  autoComplete="off"
-                  required
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                />
-              </label>
-              <Button type="submit">Invite</Button>
-            </form>
-            <p className="mt-2 text-xs text-stone-500">
-              Creates their account + a read-only, propose-only agent connector. They join as a{" "}
-              <b className="text-stone-700">member</b> (can use the agent + view); promote to{" "}
-              <b className="text-stone-700">admin</b> in their row if they should approve knowledge.
-            </p>
-          </>
+          <form
+            className="flex shrink-0"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (inviteEmail.trim()) {
+                void apply(api.invite(inviteEmail.trim()));
+                setInviteEmail("");
+              }
+            }}
+          >
+            <input
+              className="input w-60 rounded-r-none"
+              type="email"
+              placeholder="teammate@yourco.com"
+              aria-label="Teammate email"
+              autoComplete="off"
+              required
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+            />
+            <Button type="submit" className="-ml-px rounded-l-none">
+              Invite
+            </Button>
+          </form>
         ) : (
-          <div className="card px-3 py-2 text-sm text-stone-600">
-            You are signed in as a <b className="text-stone-800">member</b> — viewing only. Ask an admin to
-            manage the team.
-          </div>
+          <p className="mt-1 text-xs text-stone-500">Viewing only — ask an admin to manage the team.</p>
         )}
       </div>
 
       <div className="mb-2 mt-6 text-xs font-medium uppercase tracking-wide text-stone-500">
         People ({people.length})
+        {(() => {
+          const n = people.filter((p) => !(p.hasToken && p.role)).length;
+          return n > 0 ? <span className="ml-2 text-stone-400">· {n} need setup</span> : null;
+        })()}
       </div>
       {loading ? (
         <Loading />
       ) : error ? (
         <ErrorMsg>{error}</ErrorMsg>
       ) : people.length ? (
-        <ul className="card divide-y divide-stone-200">
+        <ul className="card divide-y divide-stone-100 overflow-hidden">
           {people.map((p) => (
             <PersonRow
               key={p.identity}
               p={p}
               me={me?.identity ?? ""}
               mayManage={!!mayManage}
-              adminCount={adminCount}
+              adminCount={data?.adminCount ?? 0}
               onApply={apply}
               onConfirm={setConfirm}
             />
@@ -145,6 +137,7 @@ export function Team() {
         }}
         onClose={() => setConfirm(null)}
       />
+      <CredentialsDialog creds={creds} onClose={() => setCreds(null)} />
     </>
   );
 }
@@ -167,22 +160,24 @@ function PersonRow({
   const isSelf = p.identity === me;
   const isLastAdmin = p.role === "admin" && adminCount <= 1;
 
-  const agent = !p.hasToken ? (
-    <Status color="yellow">no agent</Status>
-  ) : p.used ? (
-    <Status color="green">connected</Status>
-  ) : (
-    <Status color="yellow">invited · not connected yet</Status>
-  );
+  // One quiet sub-line says the state in words; the monogram's dot says it at
+  // a glance (green only when the person is fully set up AND has connected).
+  const complete = p.hasToken && !!p.role;
+  let subline: string;
+  if (complete && p.used) subline = "agent connected";
+  else if (complete) subline = "invited · agent not connected yet";
+  else if (!p.hasToken) subline = "no agent connector";
+  else subline = p.used ? "agent connected · no web login" : "no web login";
+  if (p.envBacked) subline += " · pinned in .env";
 
   let access: ReactNode;
   if (p.role) {
     access = mayManage ? (
       <select
-        className="input w-auto py-1 text-sm"
+        className="input w-auto border-transparent bg-transparent py-1 text-sm text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900"
         aria-label={`role for ${p.identity}`}
+        title={isLastAdmin ? "Last admin — the server refuses demotion or removal" : undefined}
         value={p.role}
-        disabled={isLastAdmin}
         onChange={(e) => onApply(api.users("role", p.identity, e.target.value))}
       >
         {ROLES.map((r) => (
@@ -195,47 +190,41 @@ function PersonRow({
       <Badge tone={p.role === "admin" ? "ok" : "idle"}>{p.role}</Badge>
     );
   } else {
-    access = <span className="text-xs text-stone-500">no login</span>;
+    access = null;
   }
 
   const items: ReactNode[] = [];
   if (mayManage) {
-    if (!p.hasToken)
+    if (p.hasToken)
+      items.push(
+        <MenuItem
+          key="reset-connector"
+          onSelect={() =>
+            onConfirm({
+              title: "Reset agent connector?",
+              body: "A new connector is issued and the old token stops working immediately.",
+              confirmLabel: "Reset",
+              run: () => api.invite(p.identity, true),
+            })
+          }
+        >
+          Reset agent connector
+        </MenuItem>,
+      );
+    else
       items.push(
         <MenuItem key="cfg" onSelect={() => onApply(api.invite(p.identity))}>
           Configure agent
         </MenuItem>,
       );
-    else
+    if (p.role)
       items.push(
         <MenuItem
-          key="rot"
-          onSelect={() =>
-            onConfirm({
-              title: "Rotate agent connector?",
-              body: "Revoke the current connector and issue a new one? The old token stops working immediately.",
-              confirmLabel: "Rotate",
-              run: () => api.invite(p.identity, true),
-            })
-          }
-        >
-          Rotate agent connector
-        </MenuItem>,
-      );
-    if (!p.role)
-      items.push(
-        <MenuItem key="grant" onSelect={() => onApply(api.users("create", p.identity, "member"))}>
-          Grant login
-        </MenuItem>,
-      );
-    if (p.role) {
-      items.push(
-        <MenuItem
-          key="reset"
+          key="reset-password"
           onSelect={() =>
             onConfirm({
               title: "Reset password?",
-              body: "Reset this password? The current one stops working.",
+              body: "A new password is issued and the current one stops working.",
               confirmLabel: "Reset",
               run: () => api.users("reset", p.identity),
             })
@@ -244,100 +233,134 @@ function PersonRow({
           Reset password
         </MenuItem>,
       );
-      if (!isLastAdmin)
-        items.push(
-          <MenuItem
-            key="del"
-            danger
-            onSelect={() =>
-              onConfirm({
-                title: "Remove person?",
-                body: "Remove this person, deleting their login and revoking their agent connector?",
-                confirmLabel: "Remove",
-                run: () => api.users("delete", p.identity),
-              })
-            }
-          >
-            Remove person
-          </MenuItem>,
-        );
-    }
+    else
+      items.push(
+        <MenuItem key="grant" onSelect={() => onApply(api.users("create", p.identity, "member"))}>
+          Grant login
+        </MenuItem>,
+      );
+    items.push(
+      <MenuItem
+        key="remove"
+        danger
+        onSelect={() =>
+          onConfirm({
+            title: "Remove person?",
+            body:
+              `Remove ${p.identity}? Their login is deleted and their agent connector stops working immediately.` +
+              (p.envBacked
+                ? " Their connector token is pinned in the box's .env, so it returns on restart — the server explains how to remove it for good."
+                : ""),
+            confirmLabel: "Remove",
+            run: () => api.users("delete", p.identity),
+          })
+        }
+      >
+        Remove
+      </MenuItem>,
+    );
   }
 
   return (
-    <li className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3 text-sm">
-      <span className="min-w-0 truncate font-medium text-stone-900">{p.identity}</span>
-      {isSelf ? <span className="text-xs text-stone-500">you</span> : null}
-      {agent}
+    <li className="flex items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-stone-50">
+      <Monogram p={p} complete={complete} />
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-baseline gap-2">
+          <span className="truncate font-medium text-stone-900">{p.identity}</span>
+          {isSelf ? (
+            <span className="rounded bg-stone-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-stone-500">
+              you
+            </span>
+          ) : null}
+        </span>
+        <span className="mt-0.5 block truncate text-xs text-stone-500">{subline}</span>
+      </span>
       {access}
-      {isLastAdmin ? <span className="text-xs text-stone-500">last admin</span> : null}
-      {items.length ? (
-        <div className="ml-auto">
-          <Menu label={`Actions for ${p.identity}`}>{items}</Menu>
-        </div>
-      ) : null}
+      {items.length ? <Menu label={`Actions for ${p.identity}`}>{items}</Menu> : null}
     </li>
   );
 }
 
-function InviteResult({ invite }: { invite: Invite }) {
+/** Monochrome monogram disc with a presence dot: green = set up and connected,
+ *  amber = anything still pending (invited, or a legacy half-person). */
+function Monogram({ p, complete }: { p: Person; complete: boolean }) {
   return (
-    <div className="card border-lime-300 bg-lime-50 p-4">
-      <div className="mb-2 text-sm font-medium text-lime-700">
-        Agent connector for {invite.identity} — send them ONE of these (shown once):
-      </div>
-      <div className="mb-1 text-xs uppercase tracking-wide text-stone-500">Claude Code (CLI)</div>
-      <pre className="mb-3 overflow-x-auto rounded-md bg-stone-100 px-3 py-2 text-xs text-stone-800">
-        curl -fsSL {invite.installerUrl} | sh
-      </pre>
-      <div className="mb-1 text-xs uppercase tracking-wide text-stone-500">
-        Claude.ai / Desktop app — "Add custom connector" (anyone, incl. non-technical)
-      </div>
-      <div className="rounded-md bg-stone-100 px-3 py-2 text-xs text-stone-800">
-        <div>
-          Paste as <b className="text-stone-900">Remote MCP server URL</b>:
-        </div>
-        <div className="mt-1 break-all">
-          <span className="select-all">
-            {invite.mcpUrl}/{invite.token}
-          </span>
-        </div>
-        <div className="mt-1 text-amber-600">
-          This URL carries the access token — treat it like a password; rotate it if it leaks.
-        </div>
-      </div>
-      <div className="mt-2 text-xs text-stone-500">
-        Once connected (either way), just ask in plain language ("show me signups by week") — Claude charts
-        it, using the team's curated context.
-      </div>
-      {!invite.persisted ? (
-        <div className="mt-2 text-xs text-amber-600">
-          ⚠ SETOKU_TOKENS_FILE isn't set, so this token is in memory only and is lost on restart. Set it to
-          persist invites.
-        </div>
-      ) : null}
-    </div>
+    <span
+      className="relative flex h-9 w-9 shrink-0 select-none items-center justify-center rounded-full bg-stone-200 text-sm font-semibold uppercase text-stone-600"
+      title={p.envBacked ? "Connector pinned in the box's .env (legacy)" : undefined}
+    >
+      {p.identity.slice(0, 1)}
+      <span
+        className={cn(
+          "absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full ring-2 ring-white",
+          complete && p.used ? "bg-lime-500" : "bg-amber-500",
+        )}
+      />
+    </span>
   );
 }
 
-function NewLoginResult({ newLogin }: { newLogin: NewLogin }) {
+/** The one thing to send: a ready-to-paste message with whatever this mutation
+ *  minted (connector, login, or both). The recipient picks their own path. */
+function handoffMessage(creds: Creds): string {
+  const origin = creds.invite?.mcpUrl.replace(/\/mcp$/, "");
+  const parts: string[] = [];
+  if (creds.invite)
+    parts.push(
+      "Connect your agent — pick ONE:\n" +
+        "• Claude.ai / Claude Desktop: add a custom connector (Settings → Connectors) with this URL:\n" +
+        `  ${creds.invite.mcpUrl}/${creds.invite.token}\n` +
+        `• Claude Code (terminal): curl -fsSL ${creds.invite.installerUrl} | sh`,
+    );
+  if (creds.newLogin)
+    parts.push(
+      `Web login${origin ? ` (${origin}/admin)` : " (/admin)"}:\n` +
+        `  Username: ${creds.newLogin.username}\n` +
+        `  Password: ${creds.newLogin.tempPassword}`,
+    );
+  if (creds.invite)
+    parts.push('Once connected, just ask in plain language ("show me signups by week").');
+  parts.push("This message carries your access — don't forward it.");
+  return parts.join("\n\n");
+}
+
+/** The shown-once hand-off: ONE ready-to-send message, one copy button.
+ *  Closing discards it (reset the connector/password to issue new ones). */
+function CredentialsDialog({ creds, onClose }: { creds: Creds | null; onClose: () => void }) {
+  const message = creds ? handoffMessage(creds) : "";
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(message);
+      toast("Message copied — send it over a private channel.");
+    } catch {
+      toast("Couldn't reach the clipboard — select the message text and copy it.");
+    }
+  };
   return (
-    <div className="card mt-3 border-lime-300 bg-lime-50 p-4">
-      <div className="mb-1 text-sm font-medium text-lime-700">
-        Web login for {newLogin.username} ({newLogin.role}) — share once:
-      </div>
-      <div className="rounded-md bg-stone-100 px-3 py-2 text-xs text-stone-800">
-        <div>
-          Sign in at <span className="select-all">/admin</span>
-        </div>
-        <div>
-          Username: <span className="select-all">{newLogin.username}</span>
-        </div>
-        <div>
-          Temp password: <span className="select-all">{newLogin.tempPassword}</span>
-        </div>
-        <div className="mt-1 text-stone-500">They should change it after first sign-in.</div>
-      </div>
-    </div>
+    <AlertDialog.Root open={!!creds} onOpenChange={(o) => (o ? null : onClose())}>
+      <AlertDialog.Portal>
+        <AlertDialog.Backdrop className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
+        <AlertDialog.Popup className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
+          {creds ? (
+            <>
+              <AlertDialog.Title className="text-base font-semibold text-stone-900">
+                {creds.identity} — send them this
+              </AlertDialog.Title>
+              <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
+                One message with everything they need. Shown once — it can’t be retrieved after you
+                close this; reset the agent connector or the password to issue new ones.
+              </AlertDialog.Description>
+              <pre className="mt-3 max-h-72 select-text overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 font-mono text-xs leading-relaxed text-stone-700">
+                {message}
+              </pre>
+              <div className="mt-5 flex justify-end gap-2">
+                <AlertDialog.Close className="btn btn-ghost">Done</AlertDialog.Close>
+                <Button onClick={() => void copy()}>Copy message</Button>
+              </div>
+            </>
+          ) : null}
+        </AlertDialog.Popup>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }

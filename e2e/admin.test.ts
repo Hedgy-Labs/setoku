@@ -149,8 +149,14 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
     await page.waitForSelector("text=People (");
     await page.fill('input[type="email"]', "e2e-newhire@co.test");
     await page.click('button:has-text("Invite")');
-    await page.waitForSelector("text=Agent connector for e2e-newhire@co.test");
-    expect(await page.locator("text=/mcp/").first().isVisible()).toBe(true);
+    // the shown-once dialog: ONE ready-to-send message with connector + login
+    await page.waitForSelector("text=e2e-newhire@co.test — send them this");
+    const message = await page.locator("pre").innerText();
+    expect(message).toContain("/mcp/"); // connector URL
+    expect(message).toContain("Username: e2e-newhire@co.test");
+    expect(message).toContain("Password: ");
+    expect(await page.locator('button:has-text("Copy message")').isVisible()).toBe(true);
+    await page.click('button:has-text("Done")');
     expect(errors).toEqual([]);
     await page.context().close();
   }, 20_000);
@@ -161,7 +167,9 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
     await page.waitForSelector("text=People (");
     await page.locator('button[aria-label^="Actions for"]').first().click();
     await page.waitForSelector('[role="menu"]');
-    expect(await page.locator('[role="menuitem"]:has-text("Rotate agent connector")').isVisible()).toBe(true);
+    expect(await page.locator('[role="menuitem"]:has-text("Reset agent connector")').isVisible()).toBe(true);
+    // Remove is present on EVERY row — even the last admin's (the server 409s with the reason)
+    expect(await page.locator('[role="menuitem"]:has-text("Remove")').isVisible()).toBe(true);
     await page.keyboard.press("Escape");
     await page.waitForTimeout(150);
     expect(await page.locator('[role="menu"]').count()).toBe(0);

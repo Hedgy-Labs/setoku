@@ -1052,6 +1052,12 @@ export class KnowledgeStore {
     this.db.run("DELETE FROM sessions WHERE sid = ?", [sid]);
   }
 
+  /** Kill every live session for an identity — on person removal or role change,
+   *  so a stale session can't keep the old authority for the 14-day lifetime. */
+  destroySessionsFor(identity: string): number {
+    return this.db.run("DELETE FROM sessions WHERE identity = ?", [identity]).changes;
+  }
+
   pruneSessions(): void {
     this.db.run("DELETE FROM sessions WHERE expires < ?", [Date.now()]);
   }

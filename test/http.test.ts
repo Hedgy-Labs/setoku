@@ -51,11 +51,11 @@ beforeAll(async () => {
     recursive: true,
   });
 
-  // a teammate token added the way `admin-cli add-teammate` writes it: a JSON
-  // {token: identity} file loaded via SETOKU_TOKENS_FILE (the hot-pluggable path)
+  // teammate tokens in the legacy file mechanism, loaded via SETOKU_TOKENS_FILE:
+  // carol exercises auth, filedel is sacrificial (deleted by a person-remove test)
   fs.writeFileSync(
     path.join(tmpRepo, "teammates.json"),
-    JSON.stringify({ "tok-carol": "carol@co.test" }),
+    JSON.stringify({ "tok-carol": "carol@co.test", "tok-filedel": "filedel@co.test" }),
   );
 
   // bootstrap admin + member accounts the way the CLI does (Phase 5.1)
@@ -78,7 +78,8 @@ beforeAll(async () => {
     SETOKU_DB_PATH: path.join(tmpRepo, "knowledge.db"),
     SETOKU_E2E_DB_URL: DB_URL,
     SETOKU_HTTP_PORT: String(PORT),
-    SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test",
+    // envdel is sacrificial: an env-pinned identity deleted by a person-remove test
+    SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test,tok-envdel=envdel@co.test",
     SETOKU_CURATOR_TOKENS: "tok-curator=curator@co.test",
     SETOKU_JANITOR_TOKENS: "tok-janitor=janitor@co.test",
     SETOKU_TOKENS_FILE: path.join(tmpRepo, "teammates.json"),
@@ -387,6 +388,17 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(team.people.some((p) => p.identity === "newhire@co.test")).toBe(true);
   });
 
+  it("an invite creates the PAIR — the web login comes with the connector (1:1)", async () => {
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const r = await apiPost("invite", { cookie, csrf, body: { identity: "pair@co.test" } });
+    const result = (await r.json()) as { invite: { token: string }; newLogin?: { username: string; tempPassword: string } };
+    expect(result.newLogin).toBeDefined();
+    expect(result.newLogin!.username).toBe("pair@co.test");
+    // the minted login signs in
+    const pair = await session("pair@co.test", result.newLogin!.tempPassword);
+    expect(pair.cookie).toBeTruthy();
+  });
+
   it("a teammate shows 'invited' (not used) until they use the agent, then 'connected' (used)", async () => {
     const { cookie, csrf } = await session("boss", "s3cret-pass");
     const inv = await apiPost("invite", { cookie, csrf, body: { identity: "usage@co.test" } });
@@ -483,6 +495,113 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
       body: { op: "create", username: "newbie@co.test", role: "member" },
     });
     expect(((await ok.json()) as { flash: string }).flash).toContain("login for newbie@co.test");
+  });
+
+  it("the /i/<token> installer works for DB-invited teammates (the default path)", async () => {
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const inv = await apiPost("invite", { cookie, csrf, body: { identity: "installer@co.test" } });
+    const { invite } = (await inv.json()) as { invite: { token: string; installerUrl: string } };
+    // installerUrl is absolute against SETOKU_PUBLIC_URL (https); hit the test
+    // server's real base with the same path instead.
+    const r = await fetch(`${BASE}/i/${invite.token}`);
+    expect(r.status).toBe(200);
+    const script = await r.text();
+    expect(script).toContain("installer@co.test");
+    expect(script).toContain(invite.token);
+    // and a bogus token still 404s
+    expect((await fetch(`${BASE}/i/not-a-token`)).status).toBe(404);
+  });
+
+  it("the team list marks env-pinned connectors (envBacked) so the UI can explain them", async () => {
+    const { cookie } = await session("boss", "s3cret-pass");
+    const team = (await (await apiGet("team", cookie)).json()) as {
+      people: { identity: string; envBacked: boolean }[];
+    };
+    const by = (id: string) => team.people.find((p) => p.identity === id);
+    expect(by("alice@co.test")?.envBacked).toBe(true); // SETOKU_TOKENS env
+    expect(by("carol@co.test")?.envBacked).toBe(false); // tokens file
+    expect(by("newhire@co.test")?.envBacked).toBe(false); // DB-invited
+  });
+
+  it("Remove works for a token-only identity (file-backed): connector revoked, no account needed", async () => {
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    // filedel has a connector (teammates.json) but no login — deletable anyway
+    const c = await connect("tok-filedel");
+    expect((await c.listTools()).tools.length).toBeGreaterThan(0);
+    await c.close();
+    const r = await apiPost("users", { cookie, csrf, body: { op: "delete", username: "filedel@co.test" } });
+    expect(r.status).toBe(200);
+    const { flash } = (await r.json()) as { flash: string };
+    expect(flash).toContain("Removed filedel@co.test");
+    expect(flash).not.toContain(".env"); // file tokens revoke cleanly, no env warning
+    // the token is dead and the person is gone from the team list
+    expect(connect("tok-filedel")).rejects.toThrow();
+    const team = (await (await apiGet("team", cookie)).json()) as { people: { identity: string }[] };
+    expect(team.people.some((p) => p.identity === "filedel@co.test")).toBe(false);
+    // audited as a person-level removal
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(path.join(tmpRepo, "knowledge.db"), { readonly: true });
+    const row = db
+      .query("SELECT user, payload FROM audit WHERE tool = 'person_removed' ORDER BY id DESC")
+      .get() as { user: string; payload: string } | null;
+    db.close();
+    expect(row?.user).toBe("boss");
+    expect(row?.payload).toContain("filedel@co.test");
+  });
+
+  it("Remove works for an env-pinned identity — revoked now, with the .env warning", async () => {
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const r = await apiPost("users", { cookie, csrf, body: { op: "delete", username: "envdel@co.test" } });
+    expect(r.status).toBe(200);
+    const { flash } = (await r.json()) as { flash: string };
+    expect(flash).toContain("SETOKU_TOKENS"); // explains the env pinning
+    expect(flash).toContain(".env");
+    // revoked in-memory: the token no longer authenticates (until a restart)
+    expect(connect("tok-envdel")).rejects.toThrow();
+  });
+
+  it("Remove deletes the whole person: login, connector, and live sessions", async () => {
+    const admin = await session("boss", "s3cret-pass");
+    // mint a full person and sign them in
+    const inv = await apiPost("invite", { cookie: admin.cookie, csrf: admin.csrf, body: { identity: "gone@co.test" } });
+    const { invite, newLogin } = (await inv.json()) as {
+      invite: { token: string };
+      newLogin: { tempPassword: string };
+    };
+    const victim = await session("gone@co.test", newLogin.tempPassword);
+    expect((await apiGet("session", victim.cookie)).status).toBe(200);
+    // remove them
+    const r = await apiPost("users", { cookie: admin.cookie, csrf: admin.csrf, body: { op: "delete", username: "gone@co.test" } });
+    expect(r.status).toBe(200);
+    // login deleted, session killed, connector dead
+    expect((await apiGet("session", victim.cookie)).status).toBe(401);
+    expect((await login("gone@co.test", newLogin.tempPassword)).status).toBe(401);
+    expect(connect(invite.token)).rejects.toThrow();
+  });
+
+  it("Remove on an unknown identity explains itself (404 'No person')", async () => {
+    const { cookie, csrf } = await session("boss", "s3cret-pass");
+    const r = await apiPost("users", { cookie, csrf, body: { op: "delete", username: "nobody@co.test" } });
+    expect(r.status).toBe(404);
+    expect(((await r.json()) as { error: string }).error).toContain('No person "nobody@co.test"');
+  });
+
+  it("a role change kills the old session — the new authority applies on re-login only", async () => {
+    const admin = await session("boss", "s3cret-pass");
+    const inv = await apiPost("invite", { cookie: admin.cookie, csrf: admin.csrf, body: { identity: "rolechange@co.test" } });
+    const { newLogin } = (await inv.json()) as { newLogin: { tempPassword: string } };
+    const before = await session("rolechange@co.test", newLogin.tempPassword);
+    expect((await apiGet("session", before.cookie)).status).toBe(200);
+    const r = await apiPost("users", {
+      cookie: admin.cookie,
+      csrf: admin.csrf,
+      body: { op: "role", username: "rolechange@co.test", role: "admin" },
+    });
+    expect(((await r.json()) as { flash: string }).flash).toContain("sign in again");
+    // the pre-change session is dead; re-login carries the new role
+    expect((await apiGet("session", before.cookie)).status).toBe(401);
+    const after = await session("rolechange@co.test", newLogin.tempPassword);
+    expect(((await (await apiGet("session", after.cookie)).json()) as { role: string }).role).toBe("admin");
   });
 
   it("rejects a resolve POST with a bad CSRF token", async () => {

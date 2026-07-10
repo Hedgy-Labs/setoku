@@ -14,6 +14,9 @@ export interface Person {
   identity: string;
   hasToken: boolean;
   used: boolean;
+  /** Connector is pinned in SETOKU_TOKENS env (legacy — Remove only revokes it
+   *  until the next restart). */
+  envBacked: boolean;
   role?: Role;
 }
 
@@ -27,6 +30,7 @@ export interface Invite {
   token: string;
   installerUrl: string;
   mcpUrl: string;
+  /** Always true (tokens are DB-backed now); kept for wire compat. */
   persisted: boolean;
 }
 
