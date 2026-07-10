@@ -96,6 +96,8 @@ const page = await browser.newPage({
   deviceScaleFactor: 2,
 });
 await page.setContent(html, { waitUntil: "networkidle" });
-await page.screenshot({ path: OUT });
+// render at 2x, emit at CSS pixels: exactly 1200×630 (what the platforms
+// expect) with the crisper antialiasing of the retina render
+await page.screenshot({ path: OUT, scale: "css" });
 await browser.close();
 console.log(`✓ wrote ${OUT}`);
