@@ -1280,7 +1280,9 @@ const httpServer = http.createServer(async (req, res) => {
           const { sid, csrf } = sessions.create(username, auth.role);
           store.audit(username, "admin_login", { role: auth.role });
           res.writeHead(200, { "content-type": "application/json", "set-cookie": sessionSetCookie(sid) });
-          res.end(JSON.stringify({ ok: true, identity: username, role: auth.role, csrf }));
+          // mustChangePassword: an admin-minted (temp) password — login succeeds
+          // but the SPA routes to the forced change-password form first (#73).
+          res.end(JSON.stringify({ ok: true, identity: username, role: auth.role, csrf, mustChangePassword: auth.mustChangePassword }));
           return;
         }
 
@@ -1302,9 +1304,16 @@ const httpServer = http.createServer(async (req, res) => {
         // Throttled inside, and the re-issued cookie slides the browser's copy too.
         if (sessions.renew(sid, session)) renewedCookie = sessionSetCookie(sid!);
 
-        // who am I — drives the SPA's auth state + the CSRF token for mutations
+        // who am I — drives the SPA's auth state + the CSRF token for mutations.
+        // mustChangePassword reads the ACCOUNT (not the session row) so an admin
+        // reset re-arms the gate for a session that was already signed in.
         if (api === "session")
-          return json(200, { identity: session.identity, role: session.role, csrf: session.csrf });
+          return json(200, {
+            identity: session.identity,
+            role: session.role,
+            csrf: session.csrf,
+            mustChangePassword: !!store.getAccount(session.identity)?.mustChangePassword,
+          });
 
         // read endpoints — any signed-in user (members included) may view
         // pending list for the cockpit: each item carries the best-available
@@ -1442,6 +1451,28 @@ const httpServer = http.createServer(async (req, res) => {
               if (e instanceof AppStoreQuotaError) return json(413, { ok: false, error: e.message });
               throw e;
             }
+          }
+
+          // Self-service password change (#73) — any signed-in user, own account
+          // ONLY, current password in hand. Clears must_change_password (the
+          // forced first-sign-in gate) and ends the user's OTHER sessions so a
+          // shared temp password can't keep a stray tab alive. Grants no
+          // authority and never touches another account (I9) — admins reset
+          // other people via users op=reset, which re-arms the gate.
+          if (api === "password") {
+            const body = (await readBody(req)) as { current?: string; next?: string } | undefined;
+            const next = body?.next ?? "";
+            if (next.length < 8)
+              return json(400, { ok: false, error: "New password must be at least 8 characters." });
+            const auth = await authenticate(store, session.identity, body?.current ?? "");
+            if (!auth.ok) {
+              store.audit(session.identity, "password_change_rejected", {});
+              return json(403, { ok: false, error: "Current password is incorrect." });
+            }
+            store.setPassword(session.identity, await hashPassword(next));
+            const otherSessionsEnded = sessions.destroyOthers(session.identity, sid);
+            store.audit(session.identity, "password_changed", { otherSessionsEnded });
+            return json(200, { ok: true, flash: "Password changed." });
           }
 
           // Author-or-admin gate for a per-app mutation (archive, visibility):
@@ -1673,7 +1704,7 @@ const httpServer = http.createServer(async (req, res) => {
             let newLogin: { username: string; role: string; tempPassword: string } | undefined;
             if (!store.getAccount(identity)) {
               const pw = tempPw();
-              store.createAccount({ username: identity, pwhash: await hashPassword(pw), role: "member", createdBy: session.identity });
+              store.createAccount({ username: identity, pwhash: await hashPassword(pw), role: "member", createdBy: session.identity, mustChangePassword: true });
               store.audit(session.identity, "account_created", { username: identity, role: "member" });
               newLogin = { username: identity, role: "member", tempPassword: pw };
             }
@@ -1696,7 +1727,7 @@ const httpServer = http.createServer(async (req, res) => {
               if (!isRole(role)) return json(400, { ok: false, error: `Invalid role "${role}".` });
               if (store.getAccount(uname)) return json(409, { ok: false, error: `"${uname}" already has a login.` });
               const pw = tempPw();
-              store.createAccount({ username: uname, pwhash: await hashPassword(pw), role, createdBy: session.identity });
+              store.createAccount({ username: uname, pwhash: await hashPassword(pw), role, createdBy: session.identity, mustChangePassword: true });
               store.audit(session.identity, "account_created", { username: uname, role });
               const newLogin = { username: uname, role, tempPassword: pw };
               const invite = analystIdentities().includes(uname) ? undefined : buildInvite(uname);
@@ -1719,7 +1750,7 @@ const httpServer = http.createServer(async (req, res) => {
             if (op === "reset") {
               if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
               const pw = tempPw();
-              store.setPassword(uname, await hashPassword(pw));
+              store.setPassword(uname, await hashPassword(pw), true);
               store.audit(session.identity, "account_password_reset", { username: uname });
               return json(200, {
                 ok: true,

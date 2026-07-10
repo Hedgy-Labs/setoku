@@ -8,6 +8,8 @@ export interface Me {
   identity: string;
   role: Role;
   csrf: string;
+  /** Password was admin-minted (temp) — the app forces a change first (#73). */
+  mustChangePassword?: boolean;
 }
 
 export interface Person {

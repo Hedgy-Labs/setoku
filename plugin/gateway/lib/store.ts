@@ -100,6 +100,8 @@ export interface Account {
   role: string;
   createdAt: string;
   createdBy: string | null;
+  /** Password was minted by an admin — the login flow forces a change (#73). */
+  mustChangePassword: boolean;
 }
 
 /** One row of the append-only audit log (the 5.6 page). */
@@ -397,6 +399,11 @@ export class KnowledgeStore {
       created_at TEXT NOT NULL,
       created_by TEXT
     )`);
+    // Temp passwords must actually be temporary (#73): every path that mints a
+    // password FOR someone else (invite, create, reset) arms this flag, and the
+    // SPA forces a self-service change before anything else. Cleared only by
+    // setting a password yourself (web change / admin-cli set-password).
+    this.ensureColumn("accounts", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
     // Web admin sessions (Phase 5.1). Persisted here — NOT in process memory — so
     // a server restart/redeploy doesn't sign everyone out. Lives on the same
     // durable volume as the store. The cookie carries only the opaque `sid`; the
@@ -883,31 +890,35 @@ export class KnowledgeStore {
 
   /* -------------------------------- accounts ---------------------------- */
 
-  /** Create a local account (Phase 5.1). pwhash must already be argon2id. */
+  /** Create a local account (Phase 5.1). pwhash must already be argon2id.
+   *  `mustChangePassword` marks an admin-minted (temp) password (#73). */
   createAccount(rec: {
     username: string;
     pwhash: string;
     role: string;
     createdBy?: string;
+    mustChangePassword?: boolean;
   }): void {
     this.db.run(
-      "INSERT INTO accounts (username, pwhash, role, created_at, created_by) VALUES (?, ?, ?, ?, ?)",
+      "INSERT INTO accounts (username, pwhash, role, created_at, created_by, must_change_password) VALUES (?, ?, ?, ?, ?, ?)",
       [
         rec.username,
         rec.pwhash,
         rec.role,
         new Date().toISOString(),
         rec.createdBy ?? null,
+        rec.mustChangePassword ? 1 : 0,
       ],
     );
   }
 
   getAccount(username: string): Account | null {
-    return (this.db
+    const row = this.db
       .query(
-        "SELECT username, pwhash, role, created_at AS createdAt, created_by AS createdBy FROM accounts WHERE username = ?",
+        "SELECT username, pwhash, role, created_at AS createdAt, created_by AS createdBy, must_change_password AS mustChangePassword FROM accounts WHERE username = ?",
       )
-      .get(username) as unknown as Account) ?? null;
+      .get(username) as unknown as (Omit<Account, "mustChangePassword"> & { mustChangePassword: number }) | null;
+    return row ? { ...row, mustChangePassword: !!row.mustChangePassword } : null;
   }
 
   listAccounts(): Omit<Account, "pwhash">[] {
@@ -922,10 +933,13 @@ export class KnowledgeStore {
     return (this.db.query("SELECT count(*) AS n FROM accounts").get() as { n: number }).n;
   }
 
-  setPassword(username: string, pwhash: string): boolean {
+  /** Replace a password. `mustChange` arms the forced-change gate — true for an
+   *  admin RESET (a temp password), false when the owner sets it themselves. */
+  setPassword(username: string, pwhash: string, mustChange = false): boolean {
     return (
-      this.db.run("UPDATE accounts SET pwhash = ? WHERE username = ?", [
+      this.db.run("UPDATE accounts SET pwhash = ?, must_change_password = ? WHERE username = ?", [
         pwhash,
+        mustChange ? 1 : 0,
         username,
       ]).changes > 0
     );
@@ -1042,6 +1056,15 @@ export class KnowledgeStore {
 
   destroySession(sid: string): void {
     this.db.run("DELETE FROM sessions WHERE sid = ?", [sid]);
+  }
+
+  /** End every OTHER session an identity holds (post-password-change hygiene:
+   *  a shared temp password must not keep someone else's tab alive). */
+  destroySessionsFor(identity: string, exceptSid?: string): number {
+    return this.db.run("DELETE FROM sessions WHERE identity = ? AND sid <> ?", [
+      identity,
+      exceptSid ?? "",
+    ]).changes;
   }
 
   pruneSessions(): void {

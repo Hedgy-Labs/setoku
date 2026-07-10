@@ -336,7 +336,7 @@ function NewLoginResult({ newLogin }: { newLogin: NewLogin }) {
         <div>
           Temp password: <span className="select-all">{newLogin.tempPassword}</span>
         </div>
-        <div className="mt-1 text-stone-500">They should change it after first sign-in.</div>
+        <div className="mt-1 text-stone-500">They’ll be asked to change it at first sign-in.</div>
       </div>
     </div>
   );

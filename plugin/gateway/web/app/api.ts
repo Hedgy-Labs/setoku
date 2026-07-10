@@ -72,6 +72,7 @@ export interface LoginResult {
   identity: string;
   role: Role;
   csrf: string;
+  mustChangePassword: boolean;
 }
 export interface MutationResult {
   ok: boolean;
@@ -85,6 +86,9 @@ export const api = {
   login: (username: string, password: string) =>
     req<LoginResult>("login", { method: "POST", body: { username, password } }),
   logout: () => req<{ ok: boolean }>("logout", { method: "POST" }),
+  // Change the SESSION'S OWN password (current one required); other sessions end.
+  changePassword: (current: string, next: string) =>
+    req<MutationResult>("password", { method: "POST", body: { current, next } }),
   pending: () => req<Correction[]>("pending"),
   rejected: () => req<Correction[]>("rejected"),
   // On accept, an optional edited draft is the doc-edit committed into context.

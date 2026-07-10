@@ -44,7 +44,7 @@ export async function authenticate(
   store: KnowledgeStore,
   username: string,
   password: string,
-): Promise<{ ok: true; role: string } | { ok: false }> {
+): Promise<{ ok: true; role: string; mustChangePassword: boolean } | { ok: false }> {
   const acct = store.getAccount(username);
   // Constant-ish work whether or not the user exists.
   const hash = acct?.pwhash ?? DUMMY_HASH;
@@ -54,7 +54,8 @@ export async function authenticate(
   } catch {
     matched = false;
   }
-  if (acct && matched) return { ok: true, role: acct.role };
+  if (acct && matched)
+    return { ok: true, role: acct.role, mustChangePassword: acct.mustChangePassword };
   return { ok: false };
 }
 

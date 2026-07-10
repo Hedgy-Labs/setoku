@@ -10,6 +10,8 @@ interface AuthValue {
   expired: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  /** Called after a successful self-service change — drops the forced gate. */
+  passwordChanged: () => void;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -51,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const r = await api.login(username, password);
     setCsrf(r.csrf);
     setExpired(false);
-    setMe({ identity: r.identity, role: r.role, csrf: r.csrf });
+    setMe({ identity: r.identity, role: r.role, csrf: r.csrf, mustChangePassword: r.mustChangePassword });
   };
 
   const logout = async (): Promise<void> => {
@@ -59,8 +61,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setMe(null);
   };
 
+  const passwordChanged = (): void => {
+    setMe((m) => (m ? { ...m, mustChangePassword: false } : m));
+  };
+
   return (
-    <AuthContext.Provider value={{ me, loading, expired, login, logout }}>{children}</AuthContext.Provider>
+    <AuthContext.Provider value={{ me, loading, expired, login, logout, passwordChanged }}>{children}</AuthContext.Provider>
   );
 }
 
