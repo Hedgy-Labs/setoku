@@ -10,7 +10,7 @@ Setoku is a small self-hosted MCP knowledge server plus Claude Code skills for h
 
 - **The problem.** What your company knows about itself lives in people's heads: which metric is the real one, why "paying customer" is trickier than it looks, the gotchas that make an obvious query wrong, what the logs say when something breaks. Agents never had that, so they guess and get it confidently wrong.
 - **What it does.** Setoku is the shared, curated memory of what your data and operations mean. It holds those definitions and gotchas and hands them to your AI right before it answers, so it computes things the way your company actually does, and gets better at it the more you use it.
-- **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows; a human approves that, outside the agent's loop.
+- **It's safe to point at your data.** The agent only runs read-only, audited queries, and can't change what Setoku knows; a human approves that, outside the agent's loop. Connector URLs are per-person credentials (like a database connection string), revocable from `/admin`. Full posture: [SECURITY.md](./SECURITY.md).
 - **It's cheap.** No AI runs in Setoku itself; the thinking happens in the AI you already pay for. A whole deployment is one small VPS.
 
 One brain, two kinds of question: _"what was revenue last quarter?"_ and _"what's been erroring since the deploy?"_ The business metric and the operational truth, both answered the same read-only way.
@@ -23,7 +23,7 @@ _Setoku = **set** (math) × **oku** (奥, innermost): the innermost layer undern
 
 There's a public demo wired to a synthetic dataset for a fictional pro sports club, the **Bonita Bulldogs**, covering ticketing, fans/CRM, sponsorship, merchandise, concessions, staffing, payroll, marketing, gameday incidents, and broadcast media rights.
 
-1. In **Claude.ai** (or any MCP client), open **Settings → Connectors → Add custom connector** and paste this as the server URL. The token rides in the URL, so there's no separate key to enter.
+1. In **Claude.ai** (or any MCP client), open **Settings → Connectors → Add custom connector** and paste this as the server URL. The token rides in the URL: the link is the key, like a database connection string. This demo's is public on purpose; on your own box, each person gets their own, revocable from `/admin`.
    ```
    https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0
    ```

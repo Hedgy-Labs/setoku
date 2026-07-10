@@ -14,6 +14,15 @@ layer. The core security posture is enforced structurally, not by policy:
 - **No server-side inference; zero AI keys required (I8).** Setoku holds no AI
   API keys and performs no server-side inference.
 
+## Connector URLs are credentials
+
+An MCP connector URL embeds its bearer token; treat the whole URL like a
+database connection string. Tokens are per-person and revocable from `/admin`,
+and every query they run lands in the append-only audit log. The tradeoff of
+carrying the token in the URL (MCP clients have no good separate-secret UX) is
+that a pasted link can end up in browser history or intermediary logs; if one
+leaks, revoke it and mint a new one from `/admin`.
+
 ## Reporting a vulnerability
 
 Please report security issues privately to the maintainers (see

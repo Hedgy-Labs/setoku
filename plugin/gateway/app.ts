@@ -21,7 +21,7 @@ import { buildLinkGraph, docRef, matchByTokens, retrieve, selectGotchas } from "
 import { combineSynonyms, synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
 import type { DerivedSynonyms } from "./lib/derived-synonyms";
-import { KnowledgeStore, type AppPanel, type DocType } from "./lib/store";
+import { KnowledgeStore, mintShareId, type AppPanel, type DocType } from "./lib/store";
 import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, MAX_RENDER_ROW_BYTES, RENDER_FETCH_CEILING, runPanel, trimRowsToBytes, compilePanel, isFullDoc } from "./lib/apps";
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
@@ -1130,11 +1130,6 @@ const MAX_REPORT_BYTES = 2_000_000; // ~2 MB of template HTML; keep it self-cont
 // A one-line changelog note for an update, shown in version history and the
 // activity notification (issue #63). A sentence, not a document.
 const MAX_UPDATE_MESSAGE_CHARS = 500;
-
-const mintShareId = (): string =>
-  Array.from(crypto.getRandomValues(new Uint8Array(12)))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
 
 // Where a published app lives. SETOKU_PUBLIC_URL is the box's public origin
 // (also used by the installer links); without it we return the path and tell the

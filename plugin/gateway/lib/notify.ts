@@ -20,6 +20,7 @@
  * differently without touching the call sites.
  */
 import { loadConfig, resolveNotifyWebhook } from "./config";
+import { formatBytes } from "./format";
 
 /** An app was published for the first time. */
 export interface AppPublishedEvent {
@@ -55,7 +56,20 @@ export interface DeployEvent {
   box?: string | null;
 }
 
-export type ActivityEvent = AppPublishedEvent | AppUpdatedEvent | DeployEvent;
+/** The mirror pulled more from the business DB today than the operator's daily
+ *  alert threshold — hosted-Postgres vendors meter this as (billable) egress.
+ *  Fired at most once per UTC day (lib/egress.ts dedups via the kv store). */
+export interface EgressAlertEvent {
+  kind: "egress_alert";
+  /** UTC day being reported (YYYY-MM-DD). */
+  day: string;
+  /** Bytes the mirror streamed out of the source DB so far today. */
+  bytes: number;
+  thresholdBytes: number;
+  box?: string | null;
+}
+
+export type ActivityEvent = AppPublishedEvent | AppUpdatedEvent | DeployEvent | EgressAlertEvent;
 
 /** How long we'll wait on the webhook before giving up — a notification must
  *  never keep a request (or shutdown) hanging on a slow Slack. */
@@ -91,6 +105,13 @@ export function formatEvent(event: ActivityEvent): string {
       return (
         `🚀 *Setoku ${event.box ? `(${event.box}) ` : ""}updated* to v${event.version}` +
         (event.previous ? ` (was v${event.previous})` : "")
+      );
+    case "egress_alert":
+      return (
+        `⚠️ *Setoku ${event.box ? `(${event.box}) ` : ""}mirror egress:* ` +
+        `${formatBytes(event.bytes)} pulled from the business database today (${event.day}) — ` +
+        `over the ${formatBytes(event.thresholdBytes)}/day alert threshold.` +
+        `\n_Tune the mirror (interval, denyColumns) or the threshold on the admin Sources page._`
       );
   }
 }

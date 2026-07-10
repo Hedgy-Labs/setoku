@@ -53,12 +53,14 @@ async function refresh(lakeUrl: string): Promise<MirroredTable[]> {
   lastRefreshErred = false;
   try {
     // Only tables that still exist in biz count — pg_mirror_runs keeps history
-    // for pruned tables, which must not resurrect steering hints.
+    // for pruned tables, which must not resurrect steering hints. 'unchanged'
+    // runs are verified-fresh checks (the source provably didn't move since
+    // the last reload, so no restream) — they advance "as of" like a reload.
     const res = await runLakeQuery(
       lakeUrl,
       `SELECT r.target_table AS target, anyLast(r.source_table) AS source, toString(max(r.finished_at)) AS as_of
        FROM setoku.pg_mirror_runs AS r
-       WHERE r.status = 'ok' AND r.target_table IN (SELECT name FROM system.tables WHERE database = 'biz')
+       WHERE r.status IN ('ok', 'unchanged') AND r.target_table IN (SELECT name FROM system.tables WHERE database = 'biz')
        GROUP BY r.target_table`,
       { rowCap: 500, statementTimeoutMs: 5_000 },
     );

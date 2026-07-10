@@ -3,11 +3,28 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>SETOKU · open-source MCP server for company data</title>
+    <title>Setoku · data knowledge MCP server</title>
     <meta
       name="description"
       content="Setoku is an open-source MCP server that gives your AI a read-only view of your company’s data, plus the context to use it correctly."
     />
+    <link rel="canonical" href="https://setoku.com/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Setoku" />
+    <meta property="og:title" content="Setoku · data knowledge MCP server" />
+    <meta
+      property="og:description"
+      content="An open-source MCP server that gives your AI a read-only view of your company’s data, plus the context to use it correctly."
+    />
+    <meta property="og:url" content="https://setoku.com/" />
+    <meta property="og:image" content="https://setoku.com/assets/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="A sprout drawn in ASCII art above the line: setoku — make any AI fluent in your company data."
+    />
+    <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
     <style>
       :root {
@@ -491,7 +508,9 @@
             <b class="dim" style="color: var(--ink)">1.</b> Connect to the demo
             MCP server. In Claude (or any MCP client) open Settings → Connectors
             → Add custom connector, and paste this URL. The token rides in the
-            URL, so there’s no separate key to enter.
+            URL: the link is the key, like a database connection string. This
+            demo’s is public on purpose; on your own box, each person gets
+            their own, revocable from /admin.
           </p>
 <pre class="block">https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0</pre>
           <p class="dim" style="color: var(--ink)">
@@ -701,6 +720,40 @@ Other         <span class="bar">█▌</span>                            <span c
   <span class="lbl">└─────────────────┘</span>   <span class="lbl">└─────────────────────┘</span>
 </pre>
           </div>
+        </div>
+      </section>
+
+      <section id="security">
+        <h2 class="man">SECURITY</h2>
+        <div class="body">
+          <dl class="kv">
+            <dt>The link is the key<span class="t">per-person · revocable</span></dt>
+            <dd>
+              An MCP connector URL is a credential, like a database connection
+              string: the token rides in it, so treat the whole link that way.
+              Each person gets their own, so you revoke one person, not rotate
+              the team’s. App links are different: those are login-gated, and
+              public only when an admin flips one.
+            </dd>
+            <dt>Your data stays on your box<span class="t">single-tenant</span></dt>
+            <dd>
+              Nothing is hosted by us. The whole stack runs on a box you own;
+              only the proxy faces the internet, and Postgres and ClickHouse
+              never do.
+            </dd>
+            <dt>Reads are governed<span class="t">SELECT-only role</span></dt>
+            <dd>
+              Read-only is enforced by the database engine, not by parsing SQL.
+              Row caps, statement timeouts, and an append-only audit log on
+              every query.
+            </dd>
+            <dt>Writes pass through you<span class="t">human approval</span></dt>
+            <dd>
+              Agents can only propose knowledge; a person accepts it on the
+              admin page, outside the agent loop. So a prompt-injected session
+              can suggest nonsense, but nothing sticks without a human click.
+            </dd>
+          </dl>
         </div>
       </section>
 

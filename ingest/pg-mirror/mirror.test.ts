@@ -19,7 +19,10 @@ import path from "node:path";
 import {
   tableMatches,
   isTableAllowed,
+  isColumnDenied,
   loadMirrorConfig,
+  schemaSignature,
+  fetchChangeCounters,
   mapColumn,
   numericTypmod,
   bizTableName,
@@ -48,10 +51,17 @@ describe("allowlist semantics (parity with gateway lib/config.ts)", () => {
     expect(tableMatches("public.*", "public.a.b")).toBe(false);
   });
   it("deny wins over allow", () => {
-    const cfg = { allowTables: ["public.*"], denyTables: ["public.internal_notes"] };
+    const cfg = { allowTables: ["public.*"], denyTables: ["public.internal_notes"], denyColumns: [] };
     expect(isTableAllowed(cfg, "public", "orders")).toBe(true);
     expect(isTableAllowed(cfg, "public", "internal_notes")).toBe(false);
     expect(isTableAllowed(cfg, "ticketing", "seat_txn")).toBe(false);
+  });
+  it("denyColumns matches schema.table.column with the same glob semantics", () => {
+    const cfg = { allowTables: ["public.*"], denyTables: [], denyColumns: ["public.orders.blob", "public.*.raw_html"] };
+    expect(isColumnDenied(cfg, "public", "orders", "blob")).toBe(true);
+    expect(isColumnDenied(cfg, "public", "orders", "note")).toBe(false);
+    expect(isColumnDenied(cfg, "public", "scrapes", "raw_html")).toBe(true);
+    expect(isColumnDenied(cfg, "crm", "scrapes", "raw_html")).toBe(false); // * stays within a segment
   });
 });
 
@@ -74,7 +84,20 @@ describe("loadMirrorConfig fails closed (I2 — never mirror with an unknown lis
     fs.writeFileSync(path.join(dir, ".setoku", "config.json"), "{not json");
     expect(() => loadMirrorConfig(dir)).toThrow(/refusing to mirror/);
     fs.writeFileSync(path.join(dir, ".setoku", "config.json"), JSON.stringify({ denyTables: ["public.x"] }));
-    expect(loadMirrorConfig(dir)).toEqual({ allowTables: ["public.*"], denyTables: ["public.x"] });
+    expect(loadMirrorConfig(dir)).toEqual({ allowTables: ["public.*"], denyTables: ["public.x"], denyColumns: [] });
+  });
+  it("SETOKU_MIRROR_DENY_COLUMNS merges into (never replaces) the config's denyColumns", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "setoku-mirror-cfg-"));
+    fs.mkdirSync(path.join(dir, ".setoku"));
+    fs.writeFileSync(path.join(dir, ".setoku", "config.json"), JSON.stringify({ denyColumns: ["public.a.b"] }));
+    const prev = process.env.SETOKU_MIRROR_DENY_COLUMNS;
+    process.env.SETOKU_MIRROR_DENY_COLUMNS = " public.c.d ,,public.e.f ";
+    try {
+      expect(loadMirrorConfig(dir).denyColumns).toEqual(["public.a.b", "public.c.d", "public.e.f"]);
+    } finally {
+      if (prev === undefined) delete process.env.SETOKU_MIRROR_DENY_COLUMNS;
+      else process.env.SETOKU_MIRROR_DENY_COLUMNS = prev;
+    }
   });
 });
 
@@ -225,6 +248,7 @@ class FakeClickHouse {
   queries: string[] = [];
   heartbeats: Record<string, unknown>[] = [];
   runs: Record<string, unknown>[] = [];
+  state: Record<string, unknown>[] = []; // pg_mirror_state, insert order
   failInserts = false;
 
   constructor() {
@@ -256,6 +280,7 @@ class FakeClickHouse {
       const rows = body.split("\n").filter(Boolean).map((l) => JSON.parse(l));
       if (key.endsWith(".ingest_heartbeats")) this.heartbeats.push(...rows);
       else if (key.endsWith(".pg_mirror_runs")) this.runs.push(...rows);
+      else if (key.endsWith(".pg_mirror_state")) this.state.push(...rows);
       else {
         if (this.failInserts) return new Response("boom", { status: 500 });
         if (!this.tables.has(key)) return new Response(`no such table ${key}`, { status: 404 });
@@ -265,6 +290,7 @@ class FakeClickHouse {
     }
     if ((m = q.match(/^CREATE DATABASE IF NOT EXISTS/i))) return ok();
     if ((m = q.match(/^CREATE TABLE IF NOT EXISTS/i))) return ok();
+    if ((m = q.match(/^ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS/i))) return ok();
     if ((m = q.match(/^CREATE TABLE (\S+)/i))) {
       this.tables.set(this.key(m[1]), []);
       return ok();
@@ -293,6 +319,12 @@ class FakeClickHouse {
       const rows = this.tables.get(this.key(m[1]));
       if (!rows) return new Response("missing table", { status: 404 });
       return ok(JSON.stringify({ data: [{ c: String(rows.length) }] }));
+    }
+    if ((m = q.match(/^SELECT target, signature FROM \S+\.pg_mirror_state FINAL/i))) {
+      // ReplacingMergeTree(checked_at) ORDER BY target — last write per target wins
+      const latest = new Map<string, Record<string, unknown>>();
+      for (const r of this.state) latest.set(String(r.target), r);
+      return ok(JSON.stringify({ data: [...latest.values()].map((r) => ({ target: r.target, signature: r.signature })) }));
     }
     if ((m = q.match(/^SELECT name FROM system\.tables WHERE database = '([^']*)'/i))) {
       const db = m[1];
@@ -353,7 +385,17 @@ const SCHEMA_STATEMENTS = [
   `INSERT INTO public.internal_notes VALUES (1, 'do not mirror')`,
 ];
 
-const CFG = { allowTables: ["public.*", "ticketing.*"], denyTables: ["public.internal_notes"] };
+const CFG = { allowTables: ["public.*", "ticketing.*"], denyTables: ["public.internal_notes"], denyColumns: [] as string[] };
+
+/** pg flushes pg_stat counters asynchronously (on backend idle/exit) — poll
+ *  until a write becomes visible so the unchanged-skip tests can't flake. */
+async function waitForCounterChange(pgc: unknown, schema: string, name: string, before: string | null): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    if ((await fetchChangeCounters(pgc as never, schema, name)) !== before) return;
+    await Bun.sleep(50);
+  }
+  throw new Error(`pg_stat counters for ${schema}.${name} never moved`);
+}
 
 async function pgAdmin(statements: string[], database: string): Promise<void> {
   const sql = new SQL(pgOptions(`postgresql:///${database}?host=${encodeURIComponent(PG_HOST)}`) as never);
@@ -429,15 +471,29 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     const okRun = fake.runs.find((r2) => r2.target_table === "ticketing_seat_txn")!;
     expect(okRun.rows).toBe(25000);
     expect(okRun.source_table).toBe("ticketing.seat_txn");
+    // the egress ledger: streamed NDJSON bytes land on the run record
+    expect(Number(okRun.bytes)).toBeGreaterThan(25000 * 30); // 25k rows of several fields each
+    expect(r.bytes).toBeGreaterThan(0);
   });
 
-  it("second run swaps atomically via EXCHANGE and picks up new rows", async () => {
+  it("second run reloads only what changed (EXCHANGE swap), skips the rest as unchanged", async () => {
+    const before = await fetchChangeCounters(pg as never, "public", "no_pk");
     await pgAdmin([`INSERT INTO public.no_pk VALUES ('c')`], DB_NAME);
+    await waitForCounterChange(pg, "public", "no_pk", before);
     fake.queries.length = 0;
+    fake.runs.length = 0;
     const r = await runOnce(pg as never, ch, CFG);
-    expect(r.ok).toBe(3);
+    // no_pk changed → restreamed via EXCHANGE; orders and seat_txn are
+    // verifiably unchanged → no restream (the egress point of the skip)
+    expect(r.ok).toBe(1);
+    expect(r.unchanged).toBe(2);
     expect(fake.tables.get("biz.no_pk")!.length).toBe(3);
     expect(fake.queries.some((q) => q.startsWith("EXCHANGE TABLES `biz`.`no_pk` AND `biz`.`no_pk__staging`"))).toBe(true);
+    expect(fake.queries.some((q) => q.includes("`biz`.`orders__staging`"))).toBe(false);
+    expect(fake.queries.some((q) => q.includes("`biz`.`ticketing_seat_txn__staging`"))).toBe(false);
+    // unchanged checks still land in pg_mirror_runs — freshness advances
+    const unchangedRuns = fake.runs.filter((r2) => r2.status === "unchanged").map((r2) => r2.target_table).sort();
+    expect(unchangedRuns).toEqual(["orders", "ticketing_seat_txn"]);
     // staging never survives a run
     expect([...fake.tables.keys()].filter((k) => k.includes("__staging"))).toEqual([]);
   });
@@ -452,21 +508,65 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
 
   it("zero-discovery guard: an empty discovery never prunes the mirror", async () => {
     const before = [...fake.tables.keys()].sort();
-    const r = await runOnce(pg as never, ch, { allowTables: ["nosuch.*"], denyTables: [] });
-    expect(r).toEqual({ ok: 0, failed: 0, rows: 0 });
+    const r = await runOnce(pg as never, ch, { allowTables: ["nosuch.*"], denyTables: [], denyColumns: [] });
+    expect(r).toEqual({ ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0 });
     expect([...fake.tables.keys()].sort()).toEqual(before); // nothing dropped
   });
 
-  it("a failed load keeps the previous good mirror and records the error", async () => {
+  it("a failed load keeps the previous good mirror, records the error, and retries (no skip on a stale signature)", async () => {
+    // touch orders so the unchanged-skip can't bypass the failing load
+    const counters = await fetchChangeCounters(pg as never, "public", "orders");
+    // id 2: the e2e below re-mirrors this fixture and asserts id 1's original note
+    await pgAdmin([`UPDATE public.orders SET note = 'touched' WHERE id = 2`], DB_NAME);
+    await waitForCounterChange(pg, "public", "orders", counters);
     const before = fake.tables.get("biz.orders")!;
     fake.failInserts = true;
     fake.runs.length = 0;
-    const r = await runOnce(pg as never, ch, { allowTables: ["public.orders"], denyTables: [] });
+    const cfg = { allowTables: ["public.orders"], denyTables: [], denyColumns: [] };
+    const r = await runOnce(pg as never, ch, cfg);
     fake.failInserts = false;
     expect(r.failed).toBe(1);
     expect(fake.tables.get("biz.orders")).toBe(before); // untouched
     expect(fake.runs.length).toBe(1);
     expect(fake.runs[0].status).toBe("error");
+    // the failed stream still PULLED bytes from the source — the ledger must
+    // see them (a failing table retries every pass; recording 0 hides exactly
+    // the repeated-restream overage the ledger exists to catch)
+    expect(Number(fake.runs[0].bytes)).toBeGreaterThan(0);
+    expect(r.bytes).toBeGreaterThan(0);
+    // the failure must NOT have stored the new signature — the next pass
+    // reloads instead of skipping on a mirror that never got the change
+    const retry = await runOnce(pg as never, ch, cfg);
+    expect(retry.ok).toBe(1);
+    expect(retry.unchanged).toBe(0);
+    expect(fake.tables.get("biz.orders")!.find((o) => String(o.id) === "2")!.note).toBe("touched");
+  });
+
+  it("denyColumns drops the column from the mirror and can rescue an unmappable table", async () => {
+    await pgAdmin([`INSERT INTO public.has_interval VALUES (1, interval '1 day')`], DB_NAME);
+    const cfg = {
+      allowTables: ["public.orders", "public.has_interval"],
+      denyTables: [],
+      denyColumns: ["public.orders.blob", "public.has_interval.span"],
+    };
+    const r = await runOnce(pg as never, ch, cfg);
+    // orders reloads (its shape changed vs the stored signature) without blob;
+    // has_interval becomes mirrorable once its interval column is excluded
+    expect(r.ok).toBe(2);
+    expect(r.failed).toBe(0);
+    const o1 = fake.tables.get("biz.orders")!.find((o) => String(o.id) === "1")!;
+    expect("blob" in o1).toBe(false);
+    expect(fake.tables.get("biz.orders")!.find((o) => String(o.id) === "2")!.note).toBe("touched");
+    expect(fake.tables.get("biz.has_interval")!.length).toBe(1);
+    expect("span" in fake.tables.get("biz.has_interval")![0]).toBe(false);
+    // a table with EVERY column denied fails loudly instead of mirroring nothing
+    const { failed } = await discoverTables(pg as never, { ...cfg, denyColumns: ["public.has_interval.*"] });
+    expect(failed.find((f) => f.name === "has_interval")!.error).toContain("every column is deny-listed");
+    // same source, same config → the denyColumns shape is IN the signature, so
+    // an immediate re-run skips both
+    const again = await runOnce(pg as never, ch, cfg);
+    expect(again.unchanged).toBe(2);
+    expect(again.ok).toBe(0);
   });
 });
 
@@ -564,14 +664,24 @@ describe.skipIf(!CH_URL)("mirror e2e (real ClickHouse)", () => {
     const key = await adminRows(`SELECT sorting_key FROM system.tables WHERE database = '${rch.mirrorDb}' AND name = 'ticketing_seat_txn'`);
     expect(key[0].sorting_key).toBe("acct_id, seq");
 
-    // second run: EXCHANGE path, still consistent, no staging leftovers
+    // second run: the changed table takes the EXCHANGE path, the quiet ones
+    // are verified unchanged and skipped — no staging leftovers either way
+    const before = await fetchChangeCounters(rpg as never, "public", "no_pk");
+    await rpg.unsafe(`INSERT INTO public.no_pk VALUES ('d')`);
+    await waitForCounterChange(rpg, "public", "no_pk", before);
     const r2 = await runOnce(rpg as never, rch, CFG);
-    expect(r2.ok).toBe(3);
+    expect(r2.ok).toBe(1);
+    expect(r2.unchanged).toBe(2);
     const tables = await adminRows(`SELECT name FROM system.tables WHERE database = '${rch.mirrorDb}' ORDER BY name`);
     expect(tables.map((t) => t.name)).toEqual(["no_pk", "orders", "ticketing_seat_txn"]);
 
-    // runs + heartbeat metadata landed in the meta db
+    // runs + heartbeat + state metadata landed in the meta db; unchanged
+    // checks advance freshness the way the gateway reads it (ok OR unchanged)
     const runs = await adminRows(`SELECT count() AS c FROM ${rch.db}.pg_mirror_runs WHERE status = 'ok'`);
-    expect(Number(runs[0].c)).toBeGreaterThanOrEqual(6);
+    expect(Number(runs[0].c)).toBeGreaterThanOrEqual(4);
+    const unchangedRuns = await adminRows(`SELECT count() AS c FROM ${rch.db}.pg_mirror_runs WHERE status = 'unchanged'`);
+    expect(Number(unchangedRuns[0].c)).toBe(2);
+    const stateRows = await adminRows(`SELECT target, signature FROM ${rch.db}.pg_mirror_state FINAL ORDER BY target`);
+    expect(stateRows.map((s) => s.target)).toEqual(["no_pk", "orders", "ticketing_seat_txn"]);
   });
 });
