@@ -89,6 +89,59 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
     expect(r.text).toContain("12");
   });
 
+  it("list_sources splits connected sources from never-connected empty tables", async () => {
+    // These are the CANONICAL production table names — refuse to touch a lake
+    // that already holds data in any of them (someone pointed SETOKU_E2E_CH_URL
+    // at a real box), rather than CREATE OR REPLACE-ing away real archives (I4).
+    const TABLES = ["slack_messages", "logs_vercel", "github_issues", "mercury_accounts", "mercury_events", "ingest_heartbeats"];
+    for (const t of TABLES) {
+      const probe = await chAdmin(`SELECT count() FROM setoku.${t}`, true);
+      if (probe.ok && Number((await probe.text()).trim()) > 0) {
+        throw new Error(`refusing to run: setoku.${t} already holds data — SETOKU_E2E_CH_URL points at a non-disposable lake`);
+      }
+    }
+    // bootstrap-style footprint: a flowing source, an empty one, a quiet-but-
+    // beating one, and a partially-connected family (mercury accounts flowing,
+    // mercury webhooks empty)
+    await chAdmin("CREATE DATABASE IF NOT EXISTS setoku");
+    await chAdmin(
+      "CREATE OR REPLACE TABLE setoku.slack_messages (event_ts DateTime64(3), text String) ENGINE = MergeTree ORDER BY event_ts",
+    );
+    await chAdmin("INSERT INTO setoku.slack_messages VALUES (now64(3), 'hi')");
+    await chAdmin("CREATE OR REPLACE TABLE setoku.logs_vercel (ts DateTime64(3)) ENGINE = MergeTree ORDER BY ts");
+    await chAdmin(
+      "CREATE OR REPLACE TABLE setoku.github_issues (ingested_at DateTime64(3)) ENGINE = MergeTree ORDER BY ingested_at",
+    );
+    await chAdmin(
+      "CREATE OR REPLACE TABLE setoku.mercury_accounts (snapshot_ts DateTime64(3)) ENGINE = MergeTree ORDER BY snapshot_ts",
+    );
+    await chAdmin("INSERT INTO setoku.mercury_accounts VALUES (now64(3))");
+    await chAdmin(
+      "CREATE OR REPLACE TABLE setoku.mercury_events (received_at DateTime64(3)) ENGINE = MergeTree ORDER BY received_at",
+    );
+    await chAdmin(
+      "CREATE OR REPLACE TABLE setoku.ingest_heartbeats (connector LowCardinality(String), beat_at DateTime64(3), detail String) ENGINE = ReplacingMergeTree(beat_at) ORDER BY connector",
+    );
+    await chAdmin("INSERT INTO setoku.ingest_heartbeats VALUES ('github-poller', now64(3), 'test')");
+    try {
+      const r = await call("list_sources");
+      expect(r.isError).toBe(false);
+      expect(r.text).toContain("setoku.slack_messages"); // has rows → listed
+      expect(r.text).toContain("setoku.github_issues"); // empty but a live beat → listed
+      expect(r.text).toMatch(/Not connected[^\n]*Vercel logs/); // empty, no beat → segregated
+      // family-level classification: the empty webhooks sibling neither flags
+      // Mercury as not-connected nor vanishes — the family is connected, so
+      // all its present tables list
+      expect(r.text).not.toMatch(/Not connected[^\n]*Mercury/);
+      expect(r.text).toContain("setoku.mercury_events");
+      expect(r.text).not.toContain("ingest_heartbeats"); // plumbing, never listed
+    } finally {
+      for (const t of TABLES) {
+        await chAdmin(`DROP TABLE IF EXISTS setoku.${t}`);
+      }
+    }
+  });
+
   it("supports lake discovery via DESCRIBE", async () => {
     const r = await call("run_query", {
       sql: `DESCRIBE TABLE ${TABLE}`,

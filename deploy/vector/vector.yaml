@@ -18,6 +18,7 @@
 #   /ingest/monarch/transactions → monarch_transactions (poller, ReplacingMergeTree)
 #   /ingest/monarch/budgets      → monarch_budgets      (poller; monthly budget vs actual)
 #   /ingest/monarch/holdings     → monarch_holdings     (poller; investment portfolio breakdown)
+#   /ingest/heartbeat            → ingest_heartbeats    (poller liveness beats — no CH creds in pollers)
 #   anything else                → ingest_raw    (catch-all; nothing is silently dropped)
 #
 # Buffer policy (I4): app events block when the disk buffer fills (never shed
@@ -59,6 +60,7 @@ transforms:
       monarch_txn: '._path == "/ingest/monarch/transactions"'
       monarch_budget: '._path == "/ingest/monarch/budgets"'
       monarch_holding: '._path == "/ingest/monarch/holdings"'
+      heartbeat: '._path == "/ingest/heartbeat"'
 
   vercel_parse:
     type: remap
@@ -398,6 +400,22 @@ transforms:
       if e1 != null { ts_snap = now() }
       .snapshot_ts = format_timestamp!(ts_snap, "%F %T%.3f")
 
+  heartbeat_parse:
+    type: remap
+    inputs: [router.heartbeat]
+    source: |
+      # Poller liveness beats (slack-listener/pg-mirror insert directly; the
+      # pollers hold no ClickHouse creds, so their beats route through here).
+      # beat_at is stamped HERE, not by the sender — a beat delayed in a buffer
+      # must not claim the pipeline was alive at flush time.
+      del(.source_type)
+      del(._path)
+      . = {
+        "connector": to_string(.connector) ?? "unknown",
+        "beat_at": format_timestamp!(now(), "%F %T%.3f"),
+        "detail": to_string(.detail) ?? ""
+      }
+
   to_raw:
     type: remap
     inputs: [router._unmatched]
@@ -579,6 +597,20 @@ sinks:
     compression: gzip
     batch: { timeout_secs: 10, max_events: 10000 }
     buffer: { type: disk, max_size: 536870912, when_full: block }
+
+  lake_heartbeats:
+    type: clickhouse
+    inputs: [heartbeat_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: ingest_heartbeats
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    # beats are a point-in-time liveness signal: flush fast (the Sources page's
+    # "flowing" window is 10 minutes) and shed under pressure — a lost beat is
+    # re-emitted next tick, and buffering one would backdate it anyway
+    batch: { timeout_secs: 5, max_events: 100 }
+    buffer: { type: memory, max_events: 500, when_full: drop_newest }
 
   lake_raw:
     type: clickhouse

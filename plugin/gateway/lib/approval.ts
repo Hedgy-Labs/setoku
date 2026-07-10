@@ -168,6 +168,7 @@ export function sessionClearCookie(): string {
 // Returned by the JSON API and mirrored client-side in web/app/types.ts.
 
 export interface SourceTable {
+  table: string; // lake table name (stable key; labels are display-only)
   source: string;
   rows: number | null;
   last: string | null; // data recency: max(freshness column)

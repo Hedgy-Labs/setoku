@@ -245,6 +245,7 @@ export interface AppRevision {
 }
 
 export interface SourceTable {
+  table: string; // lake table name (stable key; labels are display-only)
   source: string;
   rows: number | null;
   last: string | null; // data recency: max(freshness column)
