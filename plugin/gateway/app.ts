@@ -28,7 +28,7 @@ import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote, mirrorSteerNote, panelMirrorNote, mirrorHits, type MirrorRef } from "./lib/nudge";
 import { mirroredTables, type MirroredTable } from "./lib/mirror";
-import { LAKE_SOURCES } from "./lib/sources";
+import { LAKE_SOURCES, BEAT_LIVE_MS } from "./lib/sources";
 import { notifyActivity } from "./lib/notify";
 import { VERSION } from "./lib/version";
 
@@ -802,11 +802,71 @@ server.registerTool(
           });
           const present = new Set(res.rows.map((r) => String(Object.values(r)[0] ?? "")));
           const known = LAKE_SOURCES.filter((s) => present.has(s.table));
-          const extra = [...present].filter((t) => !LAKE_SOURCES.some((s) => s.table === t));
-          if (known.length || extra.length) {
+          // plumbing tables (connector liveness beats) aren't a queryable source
+          const extra = [...present].filter(
+            (t) => t !== "ingest_heartbeats" && !LAKE_SOURCES.some((s) => s.table === t),
+          );
+          // Bootstrap creates every lake table up front, so existence alone
+          // doesn't mean a source is hooked up. Split connected (has rows, or a
+          // live connector beat) from never-connected, so the agent neither
+          // queries an empty feed nor promises data that isn't flowing — the
+          // same split the /admin Sources page draws. Classification is by
+          // FAMILY ("Mercury"), not per table: one empty sibling (webhooks)
+          // must not flag a family whose other tables are flowing right above.
+          const beats = new Map<string, number>();
+          try {
+            const hb = await runLakeQuery(
+              lake.url,
+              "SELECT connector, toUnixTimestamp(max(beat_at)) AS beat FROM setoku.ingest_heartbeats GROUP BY connector",
+              { rowCap: 50, statementTimeoutMs: 8000 },
+            );
+            for (const r of hb.rows as Array<Record<string, unknown>>) {
+              beats.set(String(r.connector), Number(r.beat) * 1000);
+            }
+          } catch {
+            /* heartbeat table absent (older box) — data recency decides alone */
+          }
+          const hasData = await Promise.all(
+            known.map(async (s) => {
+              try {
+                const c = await runLakeQuery(lake.url, `SELECT count() AS n FROM setoku.${s.table}`, {
+                  rowCap: 5,
+                  statementTimeoutMs: 8000,
+                });
+                return Number((c.rows[0] as Record<string, unknown> | undefined)?.n ?? 0) > 0;
+              } catch {
+                return true; // probe failed — don't hide a table we couldn't assess
+              }
+            }),
+          );
+          const familyOf = (s: (typeof known)[number]): string => s.source.split(" · ")[0];
+          const connectedFams = new Set(
+            known
+              .filter((s, i) => {
+                if (hasData[i]) return true;
+                const beatMs = s.connector ? beats.get(s.connector) : undefined;
+                return beatMs != null && Date.now() - beatMs < BEAT_LIVE_MS;
+              })
+              .map(familyOf),
+          );
+          // A connected family lists ALL its present tables (an empty sibling is
+          // still queryable and its blurb still documents it). The raw catch-all
+          // is a diagnostic sink, not a source anyone "connects" — never flagged.
+          const connected = known.filter((s) => connectedFams.has(familyOf(s)));
+          const notConnected = known.filter(
+            (s) => !connectedFams.has(familyOf(s)) && s.table !== "ingest_raw",
+          );
+          const families = (list: typeof known): string =>
+            [...new Set(list.map(familyOf))].join(", ");
+          if (connected.length || extra.length) {
             lines.push("", 'DATA LAKE (ClickHouse) — run_query with dialect:"clickhouse" — tables:');
-            for (const s of known) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
+            for (const s of connected) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
             for (const t of extra) lines.push(`  - setoku.${t}`);
+            if (notConnected.length) {
+              lines.push(`  Not connected (tables exist but hold no data — don't query or promise these): ${families(notConnected)}.`);
+            }
+          } else if (notConnected.length) {
+            lines.push("", `DATA LAKE: configured, but no source is flowing yet. Ready to ingest: ${families(notConnected)}.`);
           } else {
             lines.push("", "DATA LAKE: configured but empty.");
           }

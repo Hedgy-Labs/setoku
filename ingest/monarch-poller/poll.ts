@@ -234,6 +234,32 @@ async function pushToVector(suffix: string, lines: string[]): Promise<void> {
   if (!r.ok) throw new Error(`vector ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
 }
 
+/**
+ * Liveness beat → Vector (routed to setoku.ingest_heartbeats). Beats fire after
+ * each fully-clean tick AND on a fast re-beat timer gated on the last completed
+ * tick having succeeded — essential here, where the default poll interval (1h)
+ * is far longer than the gateway's 10-minute liveness window. A dead session
+ * cookie fails the tick, stops the timer, and goes dark. Best-effort: a lost
+ * beat just reads as quiet until the next one.
+ */
+const BEAT_MS = 4 * 60_000; // < the gateway's 10-minute liveness window
+let lastTickOk = false;
+let lastBeatDetail = "";
+
+async function beat(detail: string): Promise<void> {
+  try {
+    const r = await fetch(`${VECTOR_BASE}/ingest/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/x-ndjson" },
+      body: JSON.stringify({ connector: "monarch-poller", detail }) + "\n",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    console.error(`monarch-poller: heartbeat failed: ${e}`);
+  }
+}
+
 // ---------------------------------------------------------------- accounts
 const Q_ACCOUNTS = `query GetAccounts {
   accounts { ...AccountFields __typename }
@@ -614,6 +640,9 @@ async function tick(): Promise<void> {
     st.backfilled = true;
     saveState(st);
   }
+  lastTickOk = true;
+  lastBeatDetail = `${accounts.length} account(s)`;
+  await beat(lastBeatDetail);
 }
 
 async function main(): Promise<void> {
@@ -632,10 +661,14 @@ async function main(): Promise<void> {
     `monarch-poller: polling ${GQL} every ${INTERVAL}ms → ${VECTOR_BASE}/ingest/monarch/* ` +
       `(txn window ${TXN_WINDOW_DAYS}d/backfill ${TXN_BACKFILL_DAYS}d)`,
   );
+  setInterval(() => {
+    if (lastTickOk) void beat(lastBeatDetail);
+  }, BEAT_MS);
   for (;;) {
     try {
       await tick();
     } catch (e) {
+      lastTickOk = false;
       console.error(`monarch-poller: tick failed: ${e}`);
     }
     await Bun.sleep(ALIGN_TO_HOUR ? msToNextHourTick() : INTERVAL);

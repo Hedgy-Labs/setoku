@@ -462,3 +462,21 @@ tests:
               assert!(.comment_type == "review", "comment_type")
               assert!(.path == "src/widget.ts", "path")
               assert!(starts_with!(.updated_at, "2026-06-10 09:05:00"), "updated_at")
+
+  - name: heartbeat route maps a poller beat to a typed row (beat_at stamped by vector)
+    inputs:
+      - insert_at: router
+        type: log
+        log_fields:
+          _path: /ingest/heartbeat
+          connector: github-poller
+          detail: "2 repo(s) · 5 item(s)"
+    outputs:
+      - extract_from: heartbeat_parse
+        conditions:
+          - type: vrl
+            source: |
+              assert!(.connector == "github-poller", "connector")
+              assert!(.detail == "2 repo(s) · 5 item(s)", "detail")
+              assert!(match(string!(.beat_at), r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$'), "beat_at stamped: " + string!(.beat_at))
+              assert!(!exists(._path), "_path dropped")

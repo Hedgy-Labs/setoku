@@ -146,6 +146,33 @@ async function* pages<T>(base: string, stop?: (item: T) => boolean): AsyncGenera
   }
 }
 
+/**
+ * Liveness beat → Vector (routed to setoku.ingest_heartbeats) — the Sources
+ * page reads "flowing" from this, so a quiet repo isn't a false "stale".
+ * Beats fire after each successful tick AND on a fast re-beat timer gated on
+ * the last completed tick having succeeded — so liveness stays inside the
+ * 10-minute window even when the poll interval is longer, while a dead token
+ * (failing ticks) still goes dark. Best-effort: a lost beat just reads as
+ * quiet until the next one.
+ */
+const BEAT_MS = 4 * 60_000; // < the gateway's 10-minute liveness window
+let lastTickOk = false;
+let lastBeatDetail = "";
+
+async function beat(detail: string): Promise<void> {
+  try {
+    const r = await fetch(`${VECTOR_BASE}/ingest/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/x-ndjson" },
+      body: JSON.stringify({ connector: "github-poller", detail }) + "\n",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    console.error(`github-poller: heartbeat failed: ${e}`);
+  }
+}
+
 async function pushToVector(suffix: string, lines: string[]): Promise<void> {
   if (!lines.length) return;
   const r = await fetch(`${VECTOR_BASE}/ingest/github/${suffix}`, {
@@ -327,6 +354,8 @@ async function tick(): Promise<void> {
   // next cursor: this tick's start minus overlap — anything updated mid-fetch
   // is re-observed next tick; the ReplacingMergeTree absorbs the re-emits
   const next = isoSeconds(now - OVERLAP_MS);
+  let okRepos = 0;
+  let items = 0;
 
   for (const repo of REPOS) {
     const cur = st[repo] ?? {};
@@ -343,6 +372,8 @@ async function tick(): Promise<void> {
         commentsSince: comments.cursor,
       };
       saveState(st); // per-repo: one repo failing doesn't reset the others
+      okRepos++;
+      items += issues.n + pulls.n + commits.n + comments.n;
       console.error(
         `github-poller: ${repo} → ${issues.n} issue(s), ${pulls.n} pull(s), ${commits.n} commit(s), ${comments.n} comment(s)${cur.issuesSince ? "" : " (backfill)"}`,
       );
@@ -352,6 +383,11 @@ async function tick(): Promise<void> {
       console.error(`github-poller: ${repo} tick failed (cursor kept): ${e}`);
     }
   }
+  lastTickOk = okRepos > 0;
+  if (lastTickOk) {
+    lastBeatDetail = `${okRepos}/${REPOS.length} repo(s) ok · ${items} item(s)`;
+    await beat(lastBeatDetail);
+  }
 }
 
 async function main(): Promise<void> {
@@ -359,10 +395,14 @@ async function main(): Promise<void> {
     `github-poller: polling ${REPOS.length} repo(s) every ${INTERVAL}ms → ${VECTOR_BASE}/ingest/github/* ` +
       `(commit backfill ${BACKFILL_DAYS}d)`,
   );
+  setInterval(() => {
+    if (lastTickOk) void beat(lastBeatDetail);
+  }, BEAT_MS);
   for (;;) {
     try {
       await tick();
     } catch (e) {
+      lastTickOk = false;
       console.error(`github-poller: tick failed: ${e}`);
     }
     await Bun.sleep(INTERVAL);
