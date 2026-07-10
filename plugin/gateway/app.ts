@@ -28,7 +28,7 @@ import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote, mirrorSteerNote, panelMirrorNote, mirrorHits, type MirrorRef } from "./lib/nudge";
 import { mirroredTables, type MirroredTable } from "./lib/mirror";
-import { LAKE_SOURCES } from "./lib/sources";
+import { LAKE_SOURCES, BEAT_LIVE_MS } from "./lib/sources";
 import { notifyActivity } from "./lib/notify";
 import { VERSION } from "./lib/version";
 
@@ -810,7 +810,9 @@ server.registerTool(
           // doesn't mean a source is hooked up. Split connected (has rows, or a
           // live connector beat) from never-connected, so the agent neither
           // queries an empty feed nor promises data that isn't flowing — the
-          // same split the /admin Sources page draws.
+          // same split the /admin Sources page draws. Classification is by
+          // FAMILY ("Mercury"), not per table: one empty sibling (webhooks)
+          // must not flag a family whose other tables are flowing right above.
           const beats = new Map<string, number>();
           try {
             const hb = await runLakeQuery(
@@ -837,16 +839,25 @@ server.registerTool(
               }
             }),
           );
-          const isConnected = (i: number): boolean => {
-            if (hasData[i]) return true;
-            const beatMs = known[i].connector ? beats.get(known[i].connector!) : undefined;
-            return beatMs != null && Date.now() - beatMs < 10 * 60_000;
-          };
-          const connected = known.filter((_, i) => isConnected(i));
-          const notConnected = known.filter((_, i) => !isConnected(i));
-          // family names ("Mercury", not three mercury_* tables) keep the line short
+          const familyOf = (s: (typeof known)[number]): string => s.source.split(" · ")[0];
+          const connectedFams = new Set(
+            known
+              .filter((s, i) => {
+                if (hasData[i]) return true;
+                const beatMs = s.connector ? beats.get(s.connector) : undefined;
+                return beatMs != null && Date.now() - beatMs < BEAT_LIVE_MS;
+              })
+              .map(familyOf),
+          );
+          // A connected family lists ALL its present tables (an empty sibling is
+          // still queryable and its blurb still documents it). The raw catch-all
+          // is a diagnostic sink, not a source anyone "connects" — never flagged.
+          const connected = known.filter((s) => connectedFams.has(familyOf(s)));
+          const notConnected = known.filter(
+            (s) => !connectedFams.has(familyOf(s)) && s.table !== "ingest_raw",
+          );
           const families = (list: typeof known): string =>
-            [...new Set(list.map((s) => s.source.split(" · ")[0]))].join(", ");
+            [...new Set(list.map(familyOf))].join(", ");
           if (connected.length || extra.length) {
             lines.push("", 'DATA LAKE (ClickHouse) — run_query with dialect:"clickhouse" — tables:');
             for (const s of connected) lines.push(`  - setoku.${s.table} — ${s.blurb}`);

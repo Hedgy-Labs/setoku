@@ -144,10 +144,16 @@ async function pushToVector(suffix: string, lines: string[]): Promise<void> {
 }
 
 /**
- * Liveness beat → Vector (routed to setoku.ingest_heartbeats) — sent only after
- * a clean tick, so a revoked token never reads as alive. Best-effort: a lost
- * beat just reads as quiet until the next tick.
+ * Liveness beat → Vector (routed to setoku.ingest_heartbeats). Beats fire after
+ * each clean tick AND on a fast re-beat timer gated on the last completed tick
+ * having succeeded — so liveness stays inside the gateway's 10-minute window
+ * even if the poll interval is raised, while a revoked token (failing ticks)
+ * still goes dark. Best-effort: a lost beat just reads as quiet until the next.
  */
+const BEAT_MS = 4 * 60_000; // < the gateway's 10-minute liveness window
+let lastTickOk = false;
+let lastBeatDetail = "";
+
 async function beat(detail: string): Promise<void> {
   try {
     const r = await fetch(`${VECTOR_BASE}/ingest/heartbeat`, {
@@ -314,9 +320,14 @@ async function tick(): Promise<void> {
   // the old guard caught — keep warning on it specifically, not on the merged set.
   if (!deposit.length) console.error("mercury-poller: no deposit accounts returned (token scope?)");
   const ids = [...deposit.map((a) => a.id), ...credit.map((a) => a.id)];
-  if (!ids.length) return;
+  if (!ids.length) {
+    lastTickOk = false; // zero accounts = token-scope smell, not a healthy tick
+    return;
+  }
   await pollTransactions(ids, now);
-  await beat(`${ids.length} account(s)`);
+  lastTickOk = true;
+  lastBeatDetail = `${ids.length} account(s)`;
+  await beat(lastBeatDetail);
 }
 
 async function main(): Promise<void> {
@@ -324,10 +335,14 @@ async function main(): Promise<void> {
     `mercury-poller: polling every ${INTERVAL}ms → ${VECTOR_BASE}/ingest/mercury/* ` +
       `(window ${WINDOW_DAYS}d, backfill ${BACKFILL_DAYS}d)`,
   );
+  setInterval(() => {
+    if (lastTickOk) void beat(lastBeatDetail);
+  }, BEAT_MS);
   for (;;) {
     try {
       await tick();
     } catch (e) {
+      lastTickOk = false;
       console.error(`mercury-poller: tick failed: ${e}`);
     }
     await Bun.sleep(INTERVAL);

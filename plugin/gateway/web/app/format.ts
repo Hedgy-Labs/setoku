@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Display helpers ported from the old server renderer (lib/approval.ts) — these
 // run client-side now that the API returns raw freshness data.
+import { BEAT_LIVE_MS } from "../../lib/sources";
 
 export type StatusColor = "green" | "yellow" | "red";
 
@@ -29,7 +30,7 @@ export function relTime(s: string | null | undefined): string {
 /** True when a connector liveness beat is recent enough to mean "pipeline up". */
 export function beatIsLive(beat?: string | null): boolean {
   const ms = lakeTsToMs(beat);
-  return ms != null && Date.now() - ms < 10 * 60 * 1000;
+  return ms != null && Date.now() - ms < BEAT_LIVE_MS;
 }
 
 /**

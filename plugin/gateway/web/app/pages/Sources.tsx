@@ -296,8 +296,18 @@ function SourceList({
   const lake = data.lake;
 
   // The mirror is the business DB's read replica in the lake — its run log and
-  // egress ledger render inside the Postgres card, not as sibling sources.
+  // egress ledger render inside the Postgres card, not as sibling sources. Its
+  // warning states must survive the fold: a dead mirror (stale biz.* data) or
+  // an egress overrun still turns the card's status chip yellow.
   const mirror = lake.tables.find((t) => t.table === MIRROR_TABLE && (t.rows ?? 0) > 0) ?? null;
+  const mirrorStale = mirror !== null && freshness(mirror.rows, mirror.last, mirror.beat).label === "stale";
+  const overThreshold =
+    egress?.configured === true && egress.thresholdBytes !== null && egress.todayBytes >= egress.thresholdBytes;
+  const mirrorWarning = mirrorStale
+    ? { color: "yellow" as const, label: "mirror stale" }
+    : overThreshold
+      ? { color: "yellow" as const, label: "egress over threshold" }
+      : null;
   const mirrorKvs =
     mirror || egress?.configured ? (
       <>
@@ -308,9 +318,9 @@ function SourceList({
     ) : null;
 
   if (pg.configured) {
-    const status = pg.ok
-      ? { color: "green" as const, label: "healthy" }
-      : { color: "red" as const, label: "unreachable" };
+    const status = !pg.ok
+      ? { color: "red" as const, label: "unreachable" }
+      : (mirrorWarning ?? { color: "green" as const, label: "healthy" });
     rows.push(
       <Row key="pg" name="Postgres" status={status}>
         {pg.error ? kv("error", <span className="text-red-600">{pg.error}</span>) : kv("status", "reachable")}
@@ -333,7 +343,7 @@ function SourceList({
     // A box that mirrors without the gateway's own Postgres binding (unusual,
     // but the ledger shouldn't vanish just because the direct path is off).
     rows.push(
-      <Row key="pg-mirror" name="Postgres · mirror" status={{ color: "green", label: "healthy" }}>
+      <Row key="pg-mirror" name="Postgres · mirror" status={mirrorWarning ?? { color: "green", label: "healthy" }}>
         {mirrorKvs}
       </Row>,
     );
@@ -377,20 +387,25 @@ function SourceList({
   );
 
   // Everything the catalog knows that isn't connected here — including the
-  // business DB itself when no SETOKU_DATABASE_URL is bound.
+  // business DB itself when no SETOKU_DATABASE_URL is bound. Suppressed while
+  // the lake is unreachable: with zero probes, "Available" would claim every
+  // connected source is unconnected rather than temporarily unprobeable.
+  const lakeDown = lake.configured && !lake.ok;
   const avail: { name: string; desc: string }[] = [];
-  if (!pg.configured) {
-    avail.push({ name: "Postgres", desc: "read-only, table allowlist" });
-  }
-  const catalogFamilies = new Map<string, LakeSource[]>();
-  for (const s of LAKE_SOURCES) {
-    if (s.table === MIRROR_TABLE || s.table === RAW_TABLE) continue;
-    const fam = familyOf(s.source);
-    if (!catalogFamilies.has(fam)) catalogFamilies.set(fam, []);
-    catalogFamilies.get(fam)!.push(s);
-  }
-  for (const [fam, members] of catalogFamilies) {
-    if (!connectedFamilies.has(fam)) avail.push({ name: fam, desc: availDesc(members) });
+  if (!lakeDown) {
+    if (!pg.configured) {
+      avail.push({ name: "Postgres", desc: "read-only, table allowlist" });
+    }
+    const catalogFamilies = new Map<string, LakeSource[]>();
+    for (const s of LAKE_SOURCES) {
+      if (s.table === MIRROR_TABLE || s.table === RAW_TABLE) continue;
+      const fam = familyOf(s.source);
+      if (!catalogFamilies.has(fam)) catalogFamilies.set(fam, []);
+      catalogFamilies.get(fam)!.push(s);
+    }
+    for (const [fam, members] of catalogFamilies) {
+      if (!connectedFamilies.has(fam)) avail.push({ name: fam, desc: availDesc(members) });
+    }
   }
 
   return (

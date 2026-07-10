@@ -5,6 +5,11 @@
  * /admin Sources page (http.ts) and the `list_sources` MCP tool (app.ts) so the
  * agent and the operator see the same capability list.
  */
+/** A connector beat within this window means "pipeline up" — the liveness
+ *  signal shared by the /admin Sources page and list_sources. Pollers re-beat
+ *  every ~4 minutes while healthy so long poll intervals stay inside it. */
+export const BEAT_LIVE_MS = 10 * 60_000;
+
 export interface LakeSource {
   table: string;
   source: string; // friendly label (also used by the /admin Sources page)

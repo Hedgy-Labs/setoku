@@ -99,6 +99,7 @@ let fetchErrors = 0;
 async function fetchLogs(service: string, start: string, end: string): Promise<RenderLog[]> {
   const out: RenderLog[] = [];
   let cursor = start;
+  let sawOk = false;
   for (let page = 0; page < 50; page++) {
     const u = new URL(`${API}/logs`);
     u.searchParams.set("ownerId", OWNER);
@@ -117,11 +118,15 @@ async function fetchLogs(service: string, start: string, end: string): Promise<R
       fetchErrors++;
       break;
     }
+    sawOk = true;
     const d = (await r.json()) as { logs?: RenderLog[]; hasMore?: boolean; nextStartTime?: string };
     out.push(...(d.logs ?? []));
     if (!d.hasMore || !d.nextStartTime || d.nextStartTime === cursor) break;
     cursor = d.nextStartTime;
   }
+  // burned every attempt without one ok response (persistent 429s): that's a
+  // failed fetch, not a quiet service — it must withhold the liveness beat
+  if (!sawOk) fetchErrors++;
   return out;
 }
 
@@ -137,13 +142,21 @@ async function pushToVector(lines: string[]): Promise<void> {
 }
 
 /**
- * Liveness beat → Vector (routed to setoku.ingest_heartbeats) — sent only after
- * a tick whose log queries all succeeded, so a revoked key never reads as alive.
- * Best-effort: a lost beat just reads as quiet until the next tick.
+ * Liveness beat → Vector (routed to setoku.ingest_heartbeats). Beats fire at
+ * the END of a tick whose fetches AND forwarding all succeeded, plus on a fast
+ * re-beat timer gated on the last completed tick having succeeded — a revoked
+ * key or a rejected batch stops the beats and goes dark. Best-effort: a lost
+ * beat just reads as quiet until the next one.
  */
+const BEAT_MS = 4 * 60_000; // < the gateway's 10-minute liveness window
+let lastTickOk = false;
+let lastBeatDetail = "";
+
 async function beat(detail: string): Promise<void> {
   try {
-    const r = await fetch(VECTOR_URL.replace(/\/ingest\/.*$/, "/ingest/heartbeat"), {
+    // new URL(path, base) handles both shapes of RENDER_VECTOR_URL (full
+    // /ingest/render path — the documented default — or a bare base URL)
+    const r = await fetch(new URL("/ingest/heartbeat", VECTOR_URL), {
       method: "POST",
       headers: { "content-type": "application/x-ndjson" },
       body: JSON.stringify({ connector: "render-poller", detail }) + "\n",
@@ -163,31 +176,39 @@ async function tick(): Promise<void> {
   fetchErrors = 0;
   const all: RenderLog[] = [];
   for (const svc of SERVICE_IDS) all.push(...(await fetchLogs(svc, st.lastTs, end)));
-  if (!fetchErrors) await beat(`${SERVICE_IDS.length} service(s)`);
-  if (!all.length) return;
 
-  // forward only entries we haven't already sent (boundary dedup by id)
-  const fresh = all.filter((l) => !seen.has(l.id));
-  const lines = fresh.map((l) => {
-    const lm = labelMap(l.labels);
-    return JSON.stringify({
-      timestamp: l.timestamp,
-      service: names.get(lm.resource ?? "") ?? lm.resource ?? "render",
-      instance: lm.instance ?? "",
-      level: lm.level ?? "info",
-      type: lm.type ?? "",
-      message: l.message ?? "",
-      render_id: l.id,
+  if (all.length) {
+    // forward only entries we haven't already sent (boundary dedup by id)
+    const fresh = all.filter((l) => !seen.has(l.id));
+    const lines = fresh.map((l) => {
+      const lm = labelMap(l.labels);
+      return JSON.stringify({
+        timestamp: l.timestamp,
+        service: names.get(lm.resource ?? "") ?? lm.resource ?? "render",
+        instance: lm.instance ?? "",
+        level: lm.level ?? "info",
+        type: lm.type ?? "",
+        message: l.message ?? "",
+        render_id: l.id,
+      });
     });
-  });
-  await pushToVector(lines);
+    await pushToVector(lines);
 
-  // advance the watermark; remember ids at the new boundary timestamp so the
-  // next poll (which re-includes startTime) doesn't resend them
-  const maxTs = all.reduce((m, l) => (l.timestamp > m ? l.timestamp : m), st.lastTs);
-  const boundaryIds = all.filter((l) => l.timestamp === maxTs).map((l) => l.id);
-  saveState({ lastTs: maxTs, boundaryIds });
-  if (fresh.length) console.error(`render-poller: forwarded ${fresh.length} log(s); watermark ${maxTs}`);
+    // advance the watermark; remember ids at the new boundary timestamp so the
+    // next poll (which re-includes startTime) doesn't resend them
+    const maxTs = all.reduce((m, l) => (l.timestamp > m ? l.timestamp : m), st.lastTs);
+    const boundaryIds = all.filter((l) => l.timestamp === maxTs).map((l) => l.id);
+    saveState({ lastTs: maxTs, boundaryIds });
+    if (fresh.length) console.error(`render-poller: forwarded ${fresh.length} log(s); watermark ${maxTs}`);
+  }
+
+  // beat LAST — after the data actually landed. A pushToVector failure throws
+  // past this (main marks the tick failed); a fetch error withholds it here.
+  lastTickOk = fetchErrors === 0;
+  if (lastTickOk) {
+    lastBeatDetail = `${SERVICE_IDS.length} service(s)`;
+    await beat(lastBeatDetail);
+  }
 }
 
 async function main(): Promise<void> {
@@ -195,10 +216,14 @@ async function main(): Promise<void> {
   console.error(
     `render-poller: polling ${SERVICE_IDS.length} service(s) every ${INTERVAL}ms → ${VECTOR_URL}`,
   );
+  setInterval(() => {
+    if (lastTickOk) void beat(lastBeatDetail);
+  }, BEAT_MS);
   for (;;) {
     try {
       await tick();
     } catch (e) {
+      lastTickOk = false;
       console.error(`render-poller: tick failed: ${e}`);
     }
     await Bun.sleep(INTERVAL);
