@@ -269,3 +269,17 @@ export interface SourceSeries {
 export interface SourceSeriesData {
   series: SourceSeries[];
 }
+
+// The mirror's source-egress ledger (what pg-mirror pulled out of the business
+// DB, the thing hosted-Postgres vendors bill) + the daily Slack-alert threshold.
+export interface EgressDay {
+  day: string; // YYYY-MM-DD (UTC)
+  bytes: number;
+}
+export interface EgressData {
+  days: EgressDay[];
+  todayBytes: number;
+  thresholdBytes: number | null; // null = alerts disabled
+  configured: boolean; // false: lake unreachable or the mirror never ran
+  appId: string | null; // the built-in "Mirror egress" app, when seeded and live
+}

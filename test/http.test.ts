@@ -530,6 +530,38 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(r.status).toBe(401);
   });
 
+  it("egress ledger: default threshold, admin-set, 0 disables, member refused on role", async () => {
+    expect((await apiGet("egress")).status).toBe(401); // session required
+    const admin = await session("boss", "s3cret-pass");
+    // untouched box → the 10 GB/day default (no lake here, so just the knob + no ledger)
+    const before = (await (await apiGet("egress", admin.cookie)).json()) as {
+      thresholdBytes: number | null;
+      configured: boolean;
+      days: unknown[];
+    };
+    expect(before.thresholdBytes).toBe(10e9);
+    expect(before.configured).toBe(false);
+    expect(before.days).toEqual([]);
+    // set 5 GB/day
+    const set = await apiPost("egress_threshold", { cookie: admin.cookie, csrf: admin.csrf, body: { gb: 5 } });
+    expect(set.status).toBe(200);
+    const after = (await (await apiGet("egress", admin.cookie)).json()) as { thresholdBytes: number | null };
+    expect(after.thresholdBytes).toBe(5e9);
+    // 0 disables alerts entirely
+    await apiPost("egress_threshold", { cookie: admin.cookie, csrf: admin.csrf, body: { gb: 0 } });
+    const off = (await (await apiGet("egress", admin.cookie)).json()) as { thresholdBytes: number | null };
+    expect(off.thresholdBytes).toBeNull();
+    // nonsense is rejected, and a member is refused on ROLE even with valid csrf
+    const bad = await apiPost("egress_threshold", { cookie: admin.cookie, csrf: admin.csrf, body: { gb: -3 } });
+    expect(bad.status).toBe(400);
+    // a body that never expressed a threshold must NOT silently disable alerts
+    const missing = await apiPost("egress_threshold", { cookie: admin.cookie, csrf: admin.csrf, body: {} });
+    expect(missing.status).toBe(400);
+    const member = await session("viewer", "viewer-pass");
+    const denied = await apiPost("egress_threshold", { cookie: member.cookie, csrf: member.csrf, body: { gb: 1 } });
+    expect(denied.status).toBe(403);
+  });
+
   it("the audit endpoint lists actions for a signed-in admin (5.6)", async () => {
     const { cookie } = await session("boss", "s3cret-pass");
     const rows = (await (await apiGet("audit", cookie)).json()) as { tool: string }[];

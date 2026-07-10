@@ -1,19 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
+import { useAuth } from "../auth";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { Status } from "../components/Status";
 import { Sparkline } from "../components/Sparkline";
+import { Button } from "../components/Button";
+import { toast } from "../components/Toast";
 import { relTime, freshness, type StatusColor } from "../format";
-import type { SourcesData, SourceSeriesData } from "../types";
+import { formatBytes } from "../../../lib/format";
+import type { SourcesData, SourceSeriesData, EgressData, EgressDay } from "../types";
 
 export function Sources() {
   const { data, loading, error } = useApi<SourcesData>(() => api.sources(), []);
   // Sparkline data is a second, non-blocking fetch — the page renders with
   // scalar totals immediately and the 30-day trends fill in when they land.
   const { data: seriesData } = useApi<SourceSeriesData>(() => api.sourceSeries(), []);
+  // Egress ledger too — absent (non-mirror box, lake down) simply renders no card.
+  const { data: egress, reload: reloadEgress } = useApi<EgressData>(() => api.egress(), []);
   const series = new Map((seriesData?.series ?? []).map((s) => [s.source, s.points]));
   return (
     <>
@@ -27,9 +33,119 @@ export function Sources() {
       ) : error ? (
         <ErrorMsg>{error}</ErrorMsg>
       ) : data ? (
-        <SourceList data={data} series={series} />
+        <SourceList data={data} series={series} egress={egress} reloadEgress={reloadEgress} />
       ) : null}
     </>
+  );
+}
+
+/** Ledger days as sparkline points, extended through TODAY: a mirror that died
+ *  days ago must show trailing zero bars with today as the (empty) latest bar,
+ *  not dark-highlight a stale day as if the chart were current. */
+function egressPoints(days: EgressDay[]): { day: string; rows: number }[] {
+  const points = days.map((d) => ({ day: d.day, rows: d.bytes }));
+  const today = new Date().toISOString().slice(0, 10);
+  if (points.length && points[points.length - 1].day < today) points.push({ day: today, rows: 0 });
+  return points;
+}
+
+/** The mirror's source-egress card: what pg-mirror pulled out of the business
+ *  DB per day (the thing hosted-Postgres vendors bill), plus the daily
+ *  Slack-alert threshold — editable here by admins, stored on the box. */
+function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void }) {
+  const { me } = useAuth();
+  const mayEdit = me?.role === "admin";
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [saving, setSaving] = useState(false);
+  const overThreshold = egress.thresholdBytes !== null && egress.todayBytes >= egress.thresholdBytes;
+  const status = overThreshold
+    ? { color: "yellow" as const, label: "over threshold" }
+    : { color: "green" as const, label: "ok" };
+  const save = async (): Promise<void> => {
+    const n = Number(draft);
+    if (!Number.isFinite(n) || n < 0) {
+      toast("Enter a GB/day number (0 disables alerts).");
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await api.setEgressThreshold(n || null);
+      if (r.flash) toast(r.flash);
+      setEditing(false);
+      reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed.");
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Row name="Business-DB mirror · egress" status={status}>
+      {kv("pulled today", formatBytes(egress.todayBytes))}
+      {egress.days.length
+        ? kv("last 30 days", <Sparkline points={egressPoints(egress.days)} format={formatBytes} label="Daily mirror egress" />)
+        : null}
+      {kv(
+        "alert threshold",
+        editing ? (
+          <span className="inline-flex items-center gap-2">
+            <input
+              type="number"
+              min={0}
+              step="any"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && void save()}
+              className="w-20 rounded border border-stone-300 bg-white px-2 py-0.5 text-right text-sm text-stone-900"
+              autoFocus
+            />
+            <span className="text-stone-500">GB/day</span>
+            <Button variant="ghost" className="px-2 py-0.5 text-xs" disabled={saving} onClick={() => void save()}>
+              Save
+            </Button>
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-2">
+            <span>
+              {egress.thresholdBytes === null
+                ? "alerts off"
+                : `${formatBytes(egress.thresholdBytes)}/day → Slack`}
+            </span>
+            {mayEdit ? (
+              <button
+                className="text-xs text-stone-500 underline underline-offset-2 hover:text-stone-800"
+                onClick={() => {
+                  // Exact GB, never rounded: a 0.4 GB threshold must round-trip
+                  // through open-and-save unchanged, not collapse to 0 (= off).
+                  setDraft(egress.thresholdBytes === null ? "0" : String(egress.thresholdBytes / 1e9));
+                  setEditing(true);
+                }}
+              >
+                edit
+              </button>
+            ) : null}
+          </span>
+        ),
+      )}
+      {kv(
+        "what this is",
+        <span className="text-stone-500">
+          data the mirror streamed out of the source DB — what hosted vendors bill as egress
+        </span>,
+      )}
+      {egress.appId
+        ? kv(
+            "app",
+            <Link
+              to={`/p/${egress.appId}`}
+              className="text-stone-600 underline underline-offset-2 hover:text-stone-900"
+            >
+              Mirror egress →
+            </Link>,
+          )
+        : null}
+    </Row>
   );
 }
 
@@ -70,9 +186,13 @@ function Row({
 function SourceList({
   data,
   series,
+  egress,
+  reloadEgress,
 }: {
   data: SourcesData;
   series: Map<string, SourceSeriesData["series"][number]["points"]>;
+  egress: EgressData | null;
+  reloadEgress: () => void;
 }) {
   const rows: ReactNode[] = [];
 
@@ -125,6 +245,12 @@ function SourceList({
         </Row>,
       );
     }
+  }
+
+  // Egress ledger card — only when the box actually mirrors (a non-mirror box
+  // has no ledger, and a zero card would read as "no egress" rather than "n/a").
+  if (egress?.configured) {
+    rows.push(<EgressCard key="egress" egress={egress} reload={reloadEgress} />);
   }
 
   const k = data.knowledge;
