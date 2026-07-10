@@ -48,8 +48,9 @@ formatted `token=identity` — use the part before the `=`). Then continue.
 
 **Name the connector.** Don't use the bare name `setoku` — a person doing this a
 second time (a demo box, another deployment) already has a `setoku` connector, and
-Claude Code's `mcp add` would collide or the wrong box wins. Pick a **short box
-name** (ask the human, e.g. their company/handle — `campsh`), slugify it, and use
+Claude Code's `mcp add` would collide or the wrong box wins. Ask the human for a
+**short name for this setoku** — whatever identifies the box to them (a handle,
+a team, a project — `campsh`) — slugify it, and use
 `<name>-setoku` as the connector name everywhere (`campsh-setoku`). Persist the
 name so the box's own installer links match: add `"name": "<name>"` to the repo's
 `.setoku/config.json` (create/extend, never clobber). Then **verify it actually
