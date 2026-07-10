@@ -1270,6 +1270,15 @@ const httpServer = http.createServer(async (req, res) => {
           res.end("not signed in\n");
           return;
         }
+        // The forced-change gate applies here too (#73): frames render real
+        // business data (and ?force=1 re-runs queries), so a flagged
+        // temp-password session gets the same 403 as the JSON API — before the
+        // app lookup, so not even existence leaks.
+        if (store.getAccount(session.identity)?.mustChangePassword) {
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("password change required\n");
+          return;
+        }
         const id = decodeURIComponent(reqPath.slice("/admin/frame/".length));
         const rep = store.getPublished(id);
         if (!rep || rep.archivedAt) {

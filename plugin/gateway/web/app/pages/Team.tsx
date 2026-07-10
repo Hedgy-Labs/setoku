@@ -137,7 +137,7 @@ export function Team() {
         }}
         onClose={() => setConfirm(null)}
       />
-      <CredentialsDialog creds={creds} onClose={() => setCreds(null)} />
+      <CredentialsDialog creds={creds} self={creds?.identity === me?.identity} onClose={() => setCreds(null)} />
     </>
   );
 }
@@ -301,8 +301,11 @@ function Monogram({ p, complete }: { p: Person; complete: boolean }) {
 }
 
 /** The one thing to send: a ready-to-paste message with whatever this mutation
- *  minted (connector, login, or both). The recipient picks their own path. */
-function handoffMessage(creds: Creds): string {
+ *  minted (connector, login, or both). The recipient picks their own path.
+ *  `self` = the credentials are the viewer's own (e.g. a self-reset): the
+ *  password is then PERMANENT — a self-reset never arms the forced-change
+ *  gate — so it must not be labeled temporary. */
+function handoffMessage(creds: Creds, self: boolean): string {
   const origin = creds.invite?.mcpUrl.replace(/\/mcp$/, "");
   const parts: string[] = [];
   if (creds.invite)
@@ -316,18 +319,30 @@ function handoffMessage(creds: Creds): string {
     parts.push(
       `Web login${origin ? ` (${origin}/admin)` : " (/admin)"}:\n` +
         `  Username: ${creds.newLogin.username}\n` +
-        `  Temp password: ${creds.newLogin.tempPassword}`,
+        `  ${self ? "Password" : "Temp password"}: ${creds.newLogin.tempPassword}`,
     );
   if (creds.invite)
     parts.push('Once connected, just ask in plain language ("show me signups by week").');
-  parts.push("This message carries your access — don't forward it.");
+  parts.push(
+    self
+      ? "This is your standing password — save it now; it can't be shown again."
+      : "This message carries your access — don't forward it.",
+  );
   return parts.join("\n\n");
 }
 
 /** The shown-once hand-off: ONE ready-to-send message, one copy button.
  *  Closing discards it (reset the connector/password to issue new ones). */
-function CredentialsDialog({ creds, onClose }: { creds: Creds | null; onClose: () => void }) {
-  const message = creds ? handoffMessage(creds) : "";
+function CredentialsDialog({
+  creds,
+  self,
+  onClose,
+}: {
+  creds: Creds | null;
+  self: boolean;
+  onClose: () => void;
+}) {
+  const message = creds ? handoffMessage(creds, self) : "";
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(message);
@@ -344,11 +359,12 @@ function CredentialsDialog({ creds, onClose }: { creds: Creds | null; onClose: (
           {creds ? (
             <>
               <AlertDialog.Title className="text-base font-semibold text-stone-900">
-                {creds.identity} — send them this
+                {creds.identity} — {self ? "your new credentials" : "send them this"}
               </AlertDialog.Title>
               <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
-                One message with everything they need. Shown once — it can’t be retrieved after you
-                close this; reset the agent connector or the password to issue new ones.
+                {self ? "" : "One message with everything they need. "}Shown once — it can’t be
+                retrieved after you close this; reset the agent connector or the password to issue
+                new ones.
               </AlertDialog.Description>
               <pre className="mt-3 max-h-72 select-text overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 font-mono text-xs leading-relaxed text-stone-700">
                 {message}

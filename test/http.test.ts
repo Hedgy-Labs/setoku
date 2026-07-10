@@ -774,6 +774,9 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     // living on the shared temp password.
     expect((await apiGet("pending", cookie)).status).toBe(403);
     expect((await apiGet("knowledge", cookie)).status).toBe(403);
+    // ... including the frame endpoint OUTSIDE /admin/api, which renders real
+    // business data (403 before the app lookup — not even existence leaks)
+    expect((await fetch(`${BASE}/admin/frame/anything`, { headers: { cookie } })).status).toBe(403);
 
     // CSRF is required, the current password is verified, and the new one has a floor
     expect((await apiPost("password", { cookie, csrf: "wrong", body: { current: tempPw, next: "my-own-password" } })).status).toBe(403);
@@ -873,6 +876,12 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     });
     expect(del.status).toBe(200);
     expect((await apiGet("session", target.cookie)).status).toBe(401);
+  });
+
+  it("the SPA's hand-mirrored MIN_PASSWORD_LENGTH matches the server's", async () => {
+    const accounts = await import(path.join(ROOT, "plugin", "gateway", "lib", "accounts.ts"));
+    const types = await import(path.join(ROOT, "plugin", "gateway", "web", "app", "types.ts"));
+    expect(types.MIN_PASSWORD_LENGTH).toBe(accounts.MIN_PASSWORD_LENGTH);
   });
 
   it("a web invite's minted login is flagged; a self-set password (boss) is not", async () => {
