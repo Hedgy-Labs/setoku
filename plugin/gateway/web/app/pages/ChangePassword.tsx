@@ -9,7 +9,7 @@ import { ChangePasswordForm } from "../components/ChangePasswordForm";
  * password. Mirrors the Login card so the handoff feels like one flow.
  */
 export function ForcePasswordChange() {
-  const { me, logout, passwordChanged } = useAuth();
+  const { me, logout, loginPassword, passwordChanged } = useAuth();
   return (
     <main className="flex min-h-screen items-center justify-center p-6">
       <div className="card w-full max-w-sm p-7">
@@ -20,7 +20,9 @@ export function ForcePasswordChange() {
           The password you signed in with was set by an admin. Choose your own to
           continue — the shared one stops working, everywhere.
         </p>
-        <ChangePasswordForm onDone={passwordChanged} />
+        {/* the just-verified login password rides along silently — the user
+            shouldn't retype the temp password they entered seconds ago */}
+        <ChangePasswordForm current={loginPassword ?? undefined} onDone={passwordChanged} />
         <button
           className="mt-4 w-full text-center text-xs text-stone-500 hover:text-stone-700"
           type="button"

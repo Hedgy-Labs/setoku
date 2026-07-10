@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState, type FormEvent } from "react";
-import { api } from "../api";
+import { ApiError, api } from "../api";
 import { MIN_PASSWORD_LENGTH } from "../types";
 import { FormError } from "./FormError";
 
 /**
  * Self-service password change (#73). Used in two places: the forced gate a
- * temp-password login lands on, and the account menu's dialog. Always requires
- * the current password — the server verifies it before committing (I9).
+ * temp-password login lands on, and the account menu's dialog. The server
+ * always verifies the current password before committing (I9); `current`
+ * supplies it silently when the caller already holds it (the forced gate has
+ * the just-verified login password — no retyping the temp password). If that
+ * stashed value is rejected anyway (admin reset raced us), the field appears.
  */
-export function ChangePasswordForm({ onDone }: { onDone: () => void }) {
+export function ChangePasswordForm({ current, onDone }: { current?: string; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [askCurrent, setAskCurrent] = useState(!current);
 
   const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -24,10 +28,11 @@ export function ChangePasswordForm({ onDone }: { onDone: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await api.changePassword(String(form.get("current") ?? ""), next);
+      await api.changePassword(askCurrent ? String(form.get("current") ?? "") : (current ?? ""), next);
       onDone();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Password change failed.");
+      if (err instanceof ApiError && err.status === 403) setAskCurrent(true);
     } finally {
       setBusy(false);
     }
@@ -36,15 +41,17 @@ export function ChangePasswordForm({ onDone }: { onDone: () => void }) {
   return (
     <form onSubmit={onSubmit} className="space-y-3">
       {error ? <FormError>{error}</FormError> : null}
-      <input
-        className="input"
-        type="password"
-        name="current"
-        placeholder="current password"
-        autoComplete="current-password"
-        autoFocus
-        required
-      />
+      {askCurrent ? (
+        <input
+          className="input"
+          type="password"
+          name="current"
+          placeholder="current password"
+          autoComplete="current-password"
+          autoFocus
+          required
+        />
+      ) : null}
       <input
         className="input"
         type="password"
@@ -52,6 +59,7 @@ export function ChangePasswordForm({ onDone }: { onDone: () => void }) {
         placeholder={`new password (${MIN_PASSWORD_LENGTH}+ characters)`}
         autoComplete="new-password"
         minLength={MIN_PASSWORD_LENGTH}
+        autoFocus={!askCurrent}
         required
       />
       <input
