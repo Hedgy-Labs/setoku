@@ -806,10 +806,56 @@ server.registerTool(
           const extra = [...present].filter(
             (t) => t !== "ingest_heartbeats" && !LAKE_SOURCES.some((s) => s.table === t),
           );
-          if (known.length || extra.length) {
+          // Bootstrap creates every lake table up front, so existence alone
+          // doesn't mean a source is hooked up. Split connected (has rows, or a
+          // live connector beat) from never-connected, so the agent neither
+          // queries an empty feed nor promises data that isn't flowing — the
+          // same split the /admin Sources page draws.
+          const beats = new Map<string, number>();
+          try {
+            const hb = await runLakeQuery(
+              lake.url,
+              "SELECT connector, toUnixTimestamp(max(beat_at)) AS beat FROM setoku.ingest_heartbeats GROUP BY connector",
+              { rowCap: 50, statementTimeoutMs: 8000 },
+            );
+            for (const r of hb.rows as Array<Record<string, unknown>>) {
+              beats.set(String(r.connector), Number(r.beat) * 1000);
+            }
+          } catch {
+            /* heartbeat table absent (older box) — data recency decides alone */
+          }
+          const hasData = await Promise.all(
+            known.map(async (s) => {
+              try {
+                const c = await runLakeQuery(lake.url, `SELECT count() AS n FROM setoku.${s.table}`, {
+                  rowCap: 5,
+                  statementTimeoutMs: 8000,
+                });
+                return Number((c.rows[0] as Record<string, unknown> | undefined)?.n ?? 0) > 0;
+              } catch {
+                return true; // probe failed — don't hide a table we couldn't assess
+              }
+            }),
+          );
+          const isConnected = (i: number): boolean => {
+            if (hasData[i]) return true;
+            const beatMs = known[i].connector ? beats.get(known[i].connector!) : undefined;
+            return beatMs != null && Date.now() - beatMs < 10 * 60_000;
+          };
+          const connected = known.filter((_, i) => isConnected(i));
+          const notConnected = known.filter((_, i) => !isConnected(i));
+          // family names ("Mercury", not three mercury_* tables) keep the line short
+          const families = (list: typeof known): string =>
+            [...new Set(list.map((s) => s.source.split(" · ")[0]))].join(", ");
+          if (connected.length || extra.length) {
             lines.push("", 'DATA LAKE (ClickHouse) — run_query with dialect:"clickhouse" — tables:');
-            for (const s of known) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
+            for (const s of connected) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
             for (const t of extra) lines.push(`  - setoku.${t}`);
+            if (notConnected.length) {
+              lines.push(`  Not connected (tables exist but hold no data — don't query or promise these): ${families(notConnected)}.`);
+            }
+          } else if (notConnected.length) {
+            lines.push("", `DATA LAKE: configured, but no source is flowing yet. Ready to ingest: ${families(notConnected)}.`);
           } else {
             lines.push("", "DATA LAKE: configured but empty.");
           }
