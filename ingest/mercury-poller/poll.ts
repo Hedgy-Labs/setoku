@@ -143,6 +143,25 @@ async function pushToVector(suffix: string, lines: string[]): Promise<void> {
   if (!r.ok) throw new Error(`vector ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
 }
 
+/**
+ * Liveness beat → Vector (routed to setoku.ingest_heartbeats) — sent only after
+ * a clean tick, so a revoked token never reads as alive. Best-effort: a lost
+ * beat just reads as quiet until the next tick.
+ */
+async function beat(detail: string): Promise<void> {
+  try {
+    const r = await fetch(`${VECTOR_BASE}/ingest/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/x-ndjson" },
+      body: JSON.stringify({ connector: "mercury-poller", detail }) + "\n",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    console.error(`mercury-poller: heartbeat failed: ${e}`);
+  }
+}
+
 const last4 = (n?: string): string => (n ? n.replace(/\D/g, "").slice(-4) : "");
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
 
@@ -297,6 +316,7 @@ async function tick(): Promise<void> {
   const ids = [...deposit.map((a) => a.id), ...credit.map((a) => a.id)];
   if (!ids.length) return;
   await pollTransactions(ids, now);
+  await beat(`${ids.length} account(s)`);
 }
 
 async function main(): Promise<void> {

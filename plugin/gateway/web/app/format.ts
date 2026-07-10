@@ -26,6 +26,12 @@ export function relTime(s: string | null | undefined): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
+/** True when a connector liveness beat is recent enough to mean "pipeline up". */
+export function beatIsLive(beat?: string | null): boolean {
+  const ms = lakeTsToMs(beat);
+  return ms != null && Date.now() - ms < 10 * 60 * 1000;
+}
+
 /**
  * Freshness → status. A live connector heartbeat (beat within 10m) means the
  * pipeline is up even if the source is quiet — "flowing", not a false "stale".
@@ -36,8 +42,7 @@ export function freshness(
   last: string | null,
   beat?: string | null,
 ): { color: StatusColor; label: string } {
-  const beatMs = lakeTsToMs(beat);
-  if (beatMs != null && Date.now() - beatMs < 10 * 60 * 1000) return { color: "green", label: "flowing" };
+  if (beatIsLive(beat)) return { color: "green", label: "flowing" };
   if (!rows || !last) return { color: "yellow", label: "no data" };
   const ms = lakeTsToMs(last);
   if (ms != null && Date.now() - ms < 24 * 60 * 60 * 1000) return { color: "green", label: "flowing" };

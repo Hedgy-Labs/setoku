@@ -146,6 +146,26 @@ async function* pages<T>(base: string, stop?: (item: T) => boolean): AsyncGenera
   }
 }
 
+/**
+ * Liveness beat → Vector (routed to setoku.ingest_heartbeats) — the Sources
+ * page reads "flowing" from this, so a quiet repo isn't a false "stale". Sent
+ * only after a tick that actually worked (a dead token must NOT read as alive).
+ * Best-effort: a lost beat just reads as quiet until the next tick.
+ */
+async function beat(detail: string): Promise<void> {
+  try {
+    const r = await fetch(`${VECTOR_BASE}/ingest/heartbeat`, {
+      method: "POST",
+      headers: { "content-type": "application/x-ndjson" },
+      body: JSON.stringify({ connector: "github-poller", detail }) + "\n",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    console.error(`github-poller: heartbeat failed: ${e}`);
+  }
+}
+
 async function pushToVector(suffix: string, lines: string[]): Promise<void> {
   if (!lines.length) return;
   const r = await fetch(`${VECTOR_BASE}/ingest/github/${suffix}`, {
@@ -327,6 +347,8 @@ async function tick(): Promise<void> {
   // next cursor: this tick's start minus overlap — anything updated mid-fetch
   // is re-observed next tick; the ReplacingMergeTree absorbs the re-emits
   const next = isoSeconds(now - OVERLAP_MS);
+  let okRepos = 0;
+  let items = 0;
 
   for (const repo of REPOS) {
     const cur = st[repo] ?? {};
@@ -343,6 +365,8 @@ async function tick(): Promise<void> {
         commentsSince: comments.cursor,
       };
       saveState(st); // per-repo: one repo failing doesn't reset the others
+      okRepos++;
+      items += issues.n + pulls.n + commits.n + comments.n;
       console.error(
         `github-poller: ${repo} → ${issues.n} issue(s), ${pulls.n} pull(s), ${commits.n} commit(s), ${comments.n} comment(s)${cur.issuesSince ? "" : " (backfill)"}`,
       );
@@ -352,6 +376,7 @@ async function tick(): Promise<void> {
       console.error(`github-poller: ${repo} tick failed (cursor kept): ${e}`);
     }
   }
+  if (okRepos > 0) await beat(`${okRepos}/${REPOS.length} repo(s) ok · ${items} item(s)`);
 }
 
 async function main(): Promise<void> {

@@ -607,6 +607,7 @@ async function gatherSources(): Promise<SourcesData> {
               const row = (res.rows[0] ?? {}) as Record<string, unknown>;
               const rows = Number(row.rows ?? 0);
               return {
+                table: s.table,
                 source: s.source,
                 rows,
                 last: rows > 0 ? String(row.last) : null,

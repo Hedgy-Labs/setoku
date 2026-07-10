@@ -9,9 +9,10 @@ import { Status } from "../components/Status";
 import { Sparkline } from "../components/Sparkline";
 import { Button } from "../components/Button";
 import { toast } from "../components/Toast";
-import { relTime, freshness, type StatusColor } from "../format";
+import { relTime, freshness, beatIsLive, type StatusColor } from "../format";
 import { formatBytes } from "../../../lib/format";
-import type { SourcesData, SourceSeriesData, EgressData, EgressDay } from "../types";
+import { LAKE_SOURCES, type LakeSource } from "../../../lib/sources";
+import type { SourcesData, SourceTable, SourceSeriesData, EgressData, EgressDay } from "../types";
 
 export function Sources() {
   const { data, loading, error } = useApi<SourcesData>(() => api.sources(), []);
@@ -24,9 +25,9 @@ export function Sources() {
   return (
     <>
       <Heading title="Sources">
-        The databases and feeds your agents can query — what's connected and whether data is actually
-        flowing (a live heartbeat, not just recent rows). Click a source to expand. Read-only, refreshed
-        live on each load.
+        The databases and feeds your agents can query — what’s connected and whether data is actually
+        flowing (a live heartbeat, not just recent rows). Click a source to expand. Sources you haven’t
+        connected yet sit under Available. Read-only, refreshed live on each load.
       </Heading>
       {loading ? (
         <Loading />
@@ -39,6 +40,22 @@ export function Sources() {
   );
 }
 
+// The lake tables of one source family collapse into a single card: "GitHub"
+// rather than four sibling rows for issues / pulls / commits / comments. The
+// family is the label prefix before " · "; single-table sources are their own.
+const familyOf = (label: string): string => label.split(" · ")[0];
+const memberName = (label: string): string => (label.includes(" · ") ? label.split(" · ")[1] : label);
+
+// Never shown as their own source card: the mirror's run log renders inside the
+// Postgres card, and the raw catch-all only matters once something lands in it.
+const MIRROR_TABLE = "pg_mirror_runs";
+const RAW_TABLE = "ingest_raw";
+
+/** A source counts as connected when it has data or a live connector beat. */
+const isConnected = (t: SourceTable): boolean => (t.rows ?? 0) > 0 || beatIsLive(t.beat);
+
+type SeriesMap = Map<string, SourceSeriesData["series"][number]["points"]>;
+
 /** Ledger days as sparkline points, extended through TODAY: a mirror that died
  *  days ago must show trailing zero bars with today as the (empty) latest bar,
  *  not dark-highlight a stale day as if the chart were current. */
@@ -49,19 +66,16 @@ function egressPoints(days: EgressDay[]): { day: string; rows: number }[] {
   return points;
 }
 
-/** The mirror's source-egress card: what pg-mirror pulled out of the business
+/** The mirror's source-egress rows: what pg-mirror pulled out of the business
  *  DB per day (the thing hosted-Postgres vendors bill), plus the daily
- *  Slack-alert threshold — editable here by admins, stored on the box. */
-function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void }) {
+ *  Slack-alert threshold — editable here by admins, stored on the box. Rendered
+ *  inside the Postgres card (the mirror is that source's read replica). */
+function EgressKvs({ egress, reload }: { egress: EgressData; reload: () => void }) {
   const { me } = useAuth();
   const mayEdit = me?.role === "admin";
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
-  const overThreshold = egress.thresholdBytes !== null && egress.todayBytes >= egress.thresholdBytes;
-  const status = overThreshold
-    ? { color: "yellow" as const, label: "over threshold" }
-    : { color: "green" as const, label: "ok" };
   const save = async (): Promise<void> => {
     const n = Number(draft);
     if (!Number.isFinite(n) || n < 0) {
@@ -81,8 +95,8 @@ function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void
     }
   };
   return (
-    <Row name="Business-DB mirror · egress" status={status}>
-      {kv("pulled today", formatBytes(egress.todayBytes))}
+    <>
+      {kv("egress today", formatBytes(egress.todayBytes))}
       {egress.days.length
         ? kv("last 30 days", <Sparkline points={egressPoints(egress.days)} format={formatBytes} label="Daily mirror egress" />)
         : null}
@@ -129,9 +143,9 @@ function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void
         ),
       )}
       {kv(
-        "what this is",
+        "what egress is",
         <span className="text-stone-500">
-          data the mirror streamed out of the source DB — what hosted vendors bill as egress
+          data the mirror streamed out of the source DB — what hosted vendors bill
         </span>,
       )}
       {egress.appId
@@ -145,7 +159,7 @@ function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void
             </Link>,
           )
         : null}
-    </Row>
+    </>
   );
 }
 
@@ -154,6 +168,16 @@ function kv(k: string, v: ReactNode): ReactNode {
     <div className="flex items-start justify-between gap-4 py-1.5" key={k}>
       <span className="text-stone-500">{k}</span>
       <span className="text-right text-stone-800">{v}</span>
+    </div>
+  );
+}
+
+/** Labeled subsection inside a card — a member table of a family, or the
+ *  Postgres card's mirror block. */
+function SubHead({ children }: { children: ReactNode }) {
+  return (
+    <div className="mt-3 mb-0.5 border-b border-stone-100 pb-1 text-[11px] font-medium uppercase tracking-wider text-stone-400">
+      {children}
     </div>
   );
 }
@@ -183,6 +207,79 @@ function Row({
   );
 }
 
+/** One member table's detail rows (rows / last ingest / 30-day trend). */
+function MemberKvs({ t, series }: { t: SourceTable; series: SeriesMap }) {
+  const points = series.get(t.source);
+  return (
+    <>
+      {kv("rows", t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US"))}
+      {kv("last ingest", t.last ? `${String(t.last).slice(0, 19)} UTC` : "—")}
+      {points && points.length ? kv("last 30 days", <Sparkline points={points} />) : null}
+    </>
+  );
+}
+
+/** One connected source family: a single card, expanding to per-table detail. */
+function GroupRow({ name, members, series }: { name: string; members: SourceTable[]; series: SeriesMap }) {
+  const rows = members.reduce((n, m) => n + (m.rows ?? 0), 0);
+  const last = members.reduce<string | null>((a, m) => (m.last && (!a || m.last > a) ? m.last : a), null);
+  const beat = members.reduce<string | null>((a, m) => (m.beat && (!a || m.beat > a) ? m.beat : a), null);
+  return (
+    <Row name={name} status={freshness(rows, last, beat)} last={last}>
+      {beat
+        ? kv("connector", beatIsLive(beat) ? `live · last beat ${relTime(beat)}` : `last beat ${relTime(beat)}`)
+        : null}
+      {members.length === 1 ? (
+        <MemberKvs t={members[0]} series={series} />
+      ) : (
+        members.map((m) => (
+          <div key={m.table}>
+            <SubHead>{memberName(m.source)}</SubHead>
+            <MemberKvs t={m} series={series} />
+          </div>
+        ))
+      )}
+    </Row>
+  );
+}
+
+/** The sources this box could ingest but isn't yet — kept out of the connected
+ *  list (an unconfigured feed isn't a problem to fix), but listed so it's easy
+ *  to see what a box can take. */
+function AvailableSection({ entries }: { entries: { name: string; desc: string }[] }) {
+  if (!entries.length) return null;
+  return (
+    <details className="card group mt-6">
+      <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 text-stone-500 [&::-webkit-details-marker]:hidden">
+        <span className="shrink-0 transition group-open:rotate-90">›</span>
+        <span className="min-w-0 flex-1 truncate font-medium">Available</span>
+        <span className="shrink-0 text-xs">
+          {entries.length} source{entries.length === 1 ? "" : "s"} this box could ingest
+        </span>
+      </summary>
+      <div className="border-t border-stone-200 px-4 py-2.5 text-sm">
+        {entries.map((e) => (
+          <div key={e.name} className="flex items-baseline justify-between gap-4 py-1.5">
+            <span className="shrink-0 font-medium text-stone-700">{e.name}</span>
+            <span className="text-right text-stone-500">{e.desc}</span>
+          </div>
+        ))}
+        <div className="pt-2 text-xs text-stone-400">
+          Connect one from Claude Code with the <code className="kbd">/setoku:connect</code> skill.
+        </div>
+      </div>
+    </details>
+  );
+}
+
+/** One line for the Available list: a multi-table family lists what it holds
+ *  ("accounts, transactions, …"); a single table uses its blurb's head clause. */
+function availDesc(members: LakeSource[]): string {
+  return members.length > 1
+    ? members.map((m) => memberName(m.source)).join(", ")
+    : members[0].blurb.split(" (")[0];
+}
+
 function SourceList({
   data,
   series,
@@ -190,25 +287,32 @@ function SourceList({
   reloadEgress,
 }: {
   data: SourcesData;
-  series: Map<string, SourceSeriesData["series"][number]["points"]>;
+  series: SeriesMap;
   egress: EgressData | null;
   reloadEgress: () => void;
 }) {
   const rows: ReactNode[] = [];
-
   const pg = data.postgres;
-  if (!pg.configured) {
-    rows.push(
-      <Row key="pg" name="Business database (Postgres)" status={{ color: "yellow", label: "not configured" }}>
-        {kv("note", "no SETOKU_DATABASE_URL")}
-      </Row>,
-    );
-  } else {
+  const lake = data.lake;
+
+  // The mirror is the business DB's read replica in the lake — its run log and
+  // egress ledger render inside the Postgres card, not as sibling sources.
+  const mirror = lake.tables.find((t) => t.table === MIRROR_TABLE && (t.rows ?? 0) > 0) ?? null;
+  const mirrorKvs =
+    mirror || egress?.configured ? (
+      <>
+        <SubHead>mirror (biz.*)</SubHead>
+        {mirror ? kv("last reload", mirror.last ? relTime(mirror.last) : "—") : null}
+        {egress?.configured ? <EgressKvs egress={egress} reload={reloadEgress} /> : null}
+      </>
+    ) : null;
+
+  if (pg.configured) {
     const status = pg.ok
       ? { color: "green" as const, label: "healthy" }
       : { color: "red" as const, label: "unreachable" };
     rows.push(
-      <Row key="pg" name="Business database (Postgres)" status={status}>
+      <Row key="pg" name="Postgres" status={status}>
         {pg.error ? kv("error", <span className="text-red-600">{pg.error}</span>) : kv("status", "reachable")}
         {kv("env var", <code className="kbd">{pg.envVar ?? "—"}</code>)}
         {pg.tableCount != null ? kv("tables in scope", String(pg.tableCount)) : null}
@@ -222,35 +326,42 @@ function SourceList({
               )),
             )
           : null}
+        {mirrorKvs}
+      </Row>,
+    );
+  } else if (mirrorKvs) {
+    // A box that mirrors without the gateway's own Postgres binding (unusual,
+    // but the ledger shouldn't vanish just because the direct path is off).
+    rows.push(
+      <Row key="pg-mirror" name="Postgres · mirror" status={{ color: "green", label: "healthy" }}>
+        {mirrorKvs}
       </Row>,
     );
   }
 
-  const lake = data.lake;
   if (lake.configured && !lake.ok) {
     rows.push(
       <Row key="lake" name="Data lake (ClickHouse)" status={{ color: "red", label: "unreachable" }}>
         {kv("error", <span className="text-red-600">{lake.error ?? "unreachable"}</span>)}
       </Row>,
     );
-  } else if (lake.configured) {
-    for (const t of lake.tables) {
-      const points = series.get(t.source);
-      rows.push(
-        <Row key={t.source} name={t.source} status={freshness(t.rows, t.last, t.beat)} last={t.last}>
-          {kv("rows", t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US"))}
-          {kv("last ingest", t.last ? `${String(t.last).slice(0, 19)} UTC` : "—")}
-          {t.beat ? kv("connector", `live · last beat ${relTime(t.beat)}`) : null}
-          {points && points.length ? kv("last 30 days", <Sparkline points={points} />) : null}
-        </Row>,
-      );
-    }
   }
 
-  // Egress ledger card — only when the box actually mirrors (a non-mirror box
-  // has no ledger, and a zero card would read as "no egress" rather than "n/a").
-  if (egress?.configured) {
-    rows.push(<EgressCard key="egress" egress={egress} reload={reloadEgress} />);
+  // Connected lake sources, one card per family, in catalog order.
+  const connectedFamilies = new Set<string>();
+  if (lake.configured && lake.ok) {
+    const groups = new Map<string, SourceTable[]>();
+    for (const t of lake.tables) {
+      if (t.table === MIRROR_TABLE) continue;
+      const fam = familyOf(t.source);
+      if (!groups.has(fam)) groups.set(fam, []);
+      groups.get(fam)!.push(t);
+    }
+    for (const [fam, members] of groups) {
+      if (!members.some(isConnected)) continue;
+      connectedFamilies.add(fam);
+      rows.push(<GroupRow key={fam} name={fam} members={members} series={series} />);
+    }
   }
 
   const k = data.knowledge;
@@ -265,9 +376,27 @@ function SourceList({
     </Row>,
   );
 
+  // Everything the catalog knows that isn't connected here — including the
+  // business DB itself when no SETOKU_DATABASE_URL is bound.
+  const avail: { name: string; desc: string }[] = [];
+  if (!pg.configured) {
+    avail.push({ name: "Postgres", desc: "your business database — the primary source Setoku answers from" });
+  }
+  const catalogFamilies = new Map<string, LakeSource[]>();
+  for (const s of LAKE_SOURCES) {
+    if (s.table === MIRROR_TABLE || s.table === RAW_TABLE) continue;
+    const fam = familyOf(s.source);
+    if (!catalogFamilies.has(fam)) catalogFamilies.set(fam, []);
+    catalogFamilies.get(fam)!.push(s);
+  }
+  for (const [fam, members] of catalogFamilies) {
+    if (!connectedFamilies.has(fam)) avail.push({ name: fam, desc: availDesc(members) });
+  }
+
   return (
     <>
       <div className="space-y-2">{rows}</div>
+      <AvailableSection entries={avail} />
       <div className="mt-5 flex items-center gap-4 text-xs text-stone-500">
         <Status color="green">flowing</Status>
         <Status color="yellow">stale / empty</Status>

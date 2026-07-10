@@ -91,6 +91,10 @@ function labelMap(labels?: { name: string; value: string }[]): Record<string, st
   return m;
 }
 
+// Fetch failures this tick — the liveness beat is withheld when any service's
+// log query failed, so a revoked key never reads as alive. Reset each tick.
+let fetchErrors = 0;
+
 /** Page forward through /v1/logs for one service over [start, end]. */
 async function fetchLogs(service: string, start: string, end: string): Promise<RenderLog[]> {
   const out: RenderLog[] = [];
@@ -110,6 +114,7 @@ async function fetchLogs(service: string, start: string, end: string): Promise<R
     }
     if (!r.ok) {
       console.error(`render-poller: logs ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+      fetchErrors++;
       break;
     }
     const d = (await r.json()) as { logs?: RenderLog[]; hasMore?: boolean; nextStartTime?: string };
@@ -131,13 +136,34 @@ async function pushToVector(lines: string[]): Promise<void> {
   if (!r.ok) throw new Error(`vector ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
 }
 
+/**
+ * Liveness beat → Vector (routed to setoku.ingest_heartbeats) — sent only after
+ * a tick whose log queries all succeeded, so a revoked key never reads as alive.
+ * Best-effort: a lost beat just reads as quiet until the next tick.
+ */
+async function beat(detail: string): Promise<void> {
+  try {
+    const r = await fetch(VECTOR_URL.replace(/\/ingest\/.*$/, "/ingest/heartbeat"), {
+      method: "POST",
+      headers: { "content-type": "application/x-ndjson" },
+      body: JSON.stringify({ connector: "render-poller", detail }) + "\n",
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  } catch (e) {
+    console.error(`render-poller: heartbeat failed: ${e}`);
+  }
+}
+
 async function tick(): Promise<void> {
   const st = loadState();
   const seen = new Set(st.boundaryIds);
   const end = new Date().toISOString();
 
+  fetchErrors = 0;
   const all: RenderLog[] = [];
   for (const svc of SERVICE_IDS) all.push(...(await fetchLogs(svc, st.lastTs, end)));
+  if (!fetchErrors) await beat(`${SERVICE_IDS.length} service(s)`);
   if (!all.length) return;
 
   // forward only entries we haven't already sent (boundary dedup by id)
