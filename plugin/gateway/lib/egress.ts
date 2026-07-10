@@ -35,6 +35,8 @@ export interface EgressData {
   /** False when the lake is unreachable or the mirror never ran — the UI
    *  shows "no ledger" instead of a zero that reads as "no egress". */
   configured: boolean;
+  /** The built-in "Mirror egress" app, when seeded and still live. */
+  appId: string | null;
 }
 
 /** Default alert threshold. Generous on purpose: loud only when a box is on
@@ -45,6 +47,8 @@ export const DEFAULT_EGRESS_ALERT_BYTES = 10e9;
 
 const KV_THRESHOLD = "egress_alert_bytes";
 const KV_NOTIFIED = "egress_alert_notified_day";
+const KV_APP_SEEDED = "egress_app_seeded";
+const KV_APP_ID = "egress_app_id";
 
 /** Current threshold in bytes, or null when alerts are disabled ("0"). An
  *  absent key means the operator never touched it → the default applies. */
@@ -62,10 +66,26 @@ export function setEgressThreshold(store: KnowledgeStore, bytes: number | null):
 
 const todayUTC = (): string => new Date().toISOString().slice(0, 10);
 
+/** The built-in app's id, if it was seeded and hasn't been archived. Archiving
+ *  is respected (returns null, and the seed guard never re-creates it) — the
+ *  operator's delete is a decision, not a bug to heal. */
+function liveEgressAppId(store: KnowledgeStore): string | null {
+  const id = store.getKv(KV_APP_ID);
+  if (!id) return null;
+  const meta = store.getPublishedMeta(id);
+  return meta && !meta.archivedAt ? id : null;
+}
+
 /** Daily egress totals from the ledger. Lake trouble or an absent/pre-bytes
  *  runs table degrades to configured:false — never throws. */
 export async function gatherEgress(projectDir: string, store: KnowledgeStore): Promise<EgressData> {
-  const out: EgressData = { days: [], todayBytes: 0, thresholdBytes: egressThreshold(store), configured: false };
+  const out: EgressData = {
+    days: [],
+    todayBytes: 0,
+    thresholdBytes: egressThreshold(store),
+    configured: false,
+    appId: liveEgressAppId(store),
+  };
   const cfg = loadConfig(projectDir);
   if (!cfg.ok) return out;
   const lakeUrl = resolveLakeUrl(projectDir, cfg.config);
@@ -93,31 +113,144 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
 
 /**
  * Compare today's ledger total to the threshold and send at most one
- * egress_alert per UTC day. Wired to a coarse interval in http.ts — the whole
- * check is one small lake aggregate, and every failure path degrades to "no
- * alert" (the ledger stays visible on /admin/sources regardless).
+ * egress_alert per UTC day. Every failure path degrades to "no alert" (the
+ * ledger stays visible on /admin/sources regardless).
  */
-export async function checkEgressAlert(projectDir: string, store: KnowledgeStore): Promise<void> {
+async function maybeAlert(projectDir: string, store: KnowledgeStore, data: EgressData): Promise<void> {
+  const threshold = egressThreshold(store);
+  if (threshold === null || !data.configured || data.todayBytes < threshold) return;
+  const today = todayUTC();
+  if (store.getKv(KV_NOTIFIED) === today) return;
+  // Mark BEFORE sending (at-most-once): a repeating alert for the same day is
+  // noise that trains the operator to ignore the channel; a lost one is
+  // re-raised tomorrow if the egress persists. Same trade as the deploy notice.
+  store.setKv(KV_NOTIFIED, today);
+  const cfg = loadConfig(projectDir);
+  await notifyActivity(projectDir, {
+    kind: "egress_alert",
+    day: today,
+    bytes: data.todayBytes,
+    thresholdBytes: threshold,
+    box: cfg.ok ? (cfg.config.name ?? null) : null,
+  });
+}
+
+/* ------------------------ the built-in app ------------------------ */
+
+/** Panels of the built-in "Mirror egress" app. All clickhouse dialect against
+ *  setoku.pg_mirror_runs — Setoku's OWN metadata, so the same app works on
+ *  every mirrored box with zero tenant coupling. SQL returns decimal GB (the
+ *  vendors' billing unit) so the template never does unit math. */
+export const EGRESS_APP_PANELS = [
+  {
+    key: "today",
+    title: "Pulled today",
+    description: "Bytes the mirror streamed out of the business DB today (UTC)",
+    sql: "SELECT round(sum(bytes)/1e9, 2) AS gb FROM setoku.pg_mirror_runs WHERE toDate(finished_at) = today()",
+    dialect: "clickhouse" as const,
+    metricId: null,
+  },
+  {
+    key: "week",
+    title: "Past 7 days",
+    description: "Total mirror egress over the last 7 days",
+    sql: "SELECT round(sum(bytes)/1e9, 2) AS gb FROM setoku.pg_mirror_runs WHERE finished_at >= now() - INTERVAL 7 DAY",
+    dialect: "clickhouse" as const,
+    metricId: null,
+  },
+  {
+    key: "skip_rate",
+    title: "Reloads skipped",
+    description: "Share of mirror passes that verified a table unchanged and streamed nothing (7 days)",
+    sql: "SELECT round(100 * countIf(status = 'unchanged') / greatest(countIf(status IN ('ok','unchanged')), 1), 1) AS pct FROM setoku.pg_mirror_runs WHERE finished_at >= now() - INTERVAL 7 DAY",
+    dialect: "clickhouse" as const,
+    metricId: null,
+  },
+  {
+    key: "daily",
+    title: "Daily egress",
+    description: "GB pulled per day, last 30 days",
+    sql: "SELECT toString(toDate(finished_at)) AS day, round(sum(bytes)/1e9, 3) AS gb FROM setoku.pg_mirror_runs WHERE finished_at >= now() - INTERVAL 30 DAY GROUP BY day ORDER BY day",
+    dialect: "clickhouse" as const,
+    metricId: null,
+  },
+  {
+    key: "by_table",
+    title: "By table",
+    description: "Which tables cost the most egress over the last 7 days",
+    sql: "SELECT source_table AS source, round(sum(bytes)/1e9, 2) AS gb, countIf(status = 'ok') AS reloads, countIf(status = 'unchanged') AS skips FROM setoku.pg_mirror_runs WHERE finished_at >= now() - INTERVAL 7 DAY GROUP BY source ORDER BY sum(bytes) DESC LIMIT 15",
+    dialect: "clickhouse" as const,
+    metricId: null,
+  },
+];
+
+/** The app template — an HTML fragment (the frame supplies the skeleton) built
+ *  entirely on the tested Setoku.* runtime. Single-series charts, neutral ink,
+ *  the runtime's own default mark color: this ships with the product, so it
+ *  stays out of arguments with whatever the user's real apps look like. */
+export const EGRESS_APP_TEMPLATE = `<div style="font:13px system-ui;color:#5b6b7a;max-width:60em;margin-bottom:16px">What the business-DB mirror pulled out of the source database — the traffic hosted-Postgres vendors meter and bill as egress. Unchanged tables are verified and skipped, so a quiet day costs almost nothing.</div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-bottom:22px">
+  <div id="today"></div>
+  <div id="week"></div>
+  <div id="skip_rate"></div>
+</div>
+<h3 style="font:600 13px system-ui;color:#5b6b7a;margin:0 0 6px">Daily egress · last 30 days</h3>
+<div id="daily" style="margin-bottom:22px"></div>
+<h3 style="font:600 13px system-ui;color:#5b6b7a;margin:0 0 6px">By table · last 7 days</h3>
+<div id="by_table"></div>
+<script>
+var gbf = function (v) { v = Setoku.num(v); return (v >= 10 ? v.toFixed(0) : v.toFixed(1)) + " GB"; };
+Setoku.stat('today', 'today', { label: 'pulled today', value: 'gb', format: gbf });
+Setoku.stat('week', 'week', { label: 'past 7 days', value: 'gb', format: gbf });
+Setoku.stat('skip_rate', 'skip_rate', { label: 'reloads skipped · 7d', value: 'pct', format: 'pct' });
+Setoku.line('daily', 'daily', { x: 'day', value: 'gb', format: gbf });
+Setoku.table('by_table', 'by_table', {
+  columns: ['source', 'gb', 'reloads', 'skips'],
+  labels: { source: 'table', gb: 'egress', reloads: 'reloads', skips: 'skipped (unchanged)' },
+  format: { gb: gbf, reloads: 'int', skips: 'int' }
+});
+</script>`;
+
+/**
+ * Seed the built-in "Mirror egress" app once, the first time the box actually
+ * has a ledger (mirror running, at least one day recorded) — a non-mirror box
+ * never grows the app. Ordinary team-visibility app from there on: it shows on
+ * /admin like any other, and archiving it is respected (the kv guard never
+ * re-seeds). Direct store write, not the MCP tool — this is the PRODUCT
+ * shipping a default, not an agent publishing (I9 untouched: team-only, and
+ * promotion to public stays a human admin action).
+ */
+export function ensureEgressApp(store: KnowledgeStore, data: EgressData): string | null {
+  if (store.getKv(KV_APP_SEEDED) !== null) return liveEgressAppId(store);
+  if (!data.configured || !data.days.length) return null;
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(12)))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  store.setKv(KV_APP_SEEDED, new Date().toISOString());
+  store.setKv(KV_APP_ID, id);
+  store.createPublished({
+    id,
+    title: "Mirror egress",
+    body: EGRESS_APP_TEMPLATE,
+    panels: EGRESS_APP_PANELS,
+    refreshSeconds: 3600,
+    createdBy: "setoku",
+  });
+  store.audit("setoku", "publish_app", { id, builtin: "egress" });
+  return id;
+}
+
+/**
+ * One watchdog beat: read the ledger once, seed the built-in app if it's time,
+ * alert if today crossed the threshold. Wired to a coarse interval in http.ts;
+ * a failure must never take anything else down with it.
+ */
+export async function egressTick(projectDir: string, store: KnowledgeStore): Promise<void> {
   try {
-    const threshold = egressThreshold(store);
-    if (threshold === null) return;
     const data = await gatherEgress(projectDir, store);
-    if (!data.configured || data.todayBytes < threshold) return;
-    const today = todayUTC();
-    if (store.getKv(KV_NOTIFIED) === today) return;
-    // Mark BEFORE sending (at-most-once): a repeating alert for the same day is
-    // noise that trains the operator to ignore the channel; a lost one is
-    // re-raised tomorrow if the egress persists. Same trade as the deploy notice.
-    store.setKv(KV_NOTIFIED, today);
-    const cfg = loadConfig(projectDir);
-    await notifyActivity(projectDir, {
-      kind: "egress_alert",
-      day: today,
-      bytes: data.todayBytes,
-      thresholdBytes: threshold,
-      box: cfg.ok ? (cfg.config.name ?? null) : null,
-    });
+    ensureEgressApp(store, data);
+    await maybeAlert(projectDir, store, data);
   } catch {
-    /* an alert must never take anything else down with it */
+    /* best-effort watchdog */
   }
 }

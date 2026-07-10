@@ -32,7 +32,7 @@ import { EmbedIndex } from "./lib/embed-index";
 import { DerivedSynonyms } from "./lib/derived-synonyms";
 import { loadConfig, resolveProjectDir, connectorName } from "./lib/config";
 import { notifyActivity } from "./lib/notify";
-import { gatherEgress, setEgressThreshold, checkEgressAlert } from "./lib/egress";
+import { gatherEgress, setEgressThreshold, egressTick } from "./lib/egress";
 import {
   KnowledgeStore,
   defaultDbPath,
@@ -1845,11 +1845,13 @@ httpServer.listen(PORT, () => {
     });
   }
 
-  // Egress watchdog: the gateway's one background loop. Coarse on purpose —
-  // the ledger only advances when a mirror pass finishes, and the alert dedups
-  // to once per UTC day, so minute-level polling buys nothing. Both timers are
-  // unref'd: a watchdog must never hold the process open.
+  // Egress watchdog: the gateway's one background loop — reads the ledger,
+  // seeds the built-in "Mirror egress" app the first time a ledger exists, and
+  // fires the daily threshold alert. Coarse on purpose — the ledger only
+  // advances when a mirror pass finishes, and the alert dedups to once per UTC
+  // day, so minute-level polling buys nothing. Both timers are unref'd: a
+  // watchdog must never hold the process open.
   const EGRESS_CHECK_MS = 15 * 60_000;
-  setTimeout(() => void checkEgressAlert(projectDir, store), 60_000).unref();
-  setInterval(() => void checkEgressAlert(projectDir, store), EGRESS_CHECK_MS).unref();
+  setTimeout(() => void egressTick(projectDir, store), 60_000).unref();
+  setInterval(() => void egressTick(projectDir, store), EGRESS_CHECK_MS).unref();
 });

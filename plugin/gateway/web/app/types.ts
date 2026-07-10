@@ -281,4 +281,5 @@ export interface EgressData {
   todayBytes: number;
   thresholdBytes: number | null; // null = alerts disabled
   configured: boolean; // false: lake unreachable or the mirror never ran
+  appId: string | null; // the built-in "Mirror egress" app, when seeded and live
 }

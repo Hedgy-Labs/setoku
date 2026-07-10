@@ -159,6 +159,17 @@ function EgressCard({ egress, reload }: { egress: EgressData; reload: () => void
           data the mirror streamed out of the source DB — what hosted vendors bill as egress
         </span>,
       )}
+      {egress.appId
+        ? kv(
+            "app",
+            <Link
+              to={`/p/${egress.appId}`}
+              className="text-stone-600 underline underline-offset-2 hover:text-stone-900"
+            >
+              Mirror egress →
+            </Link>,
+          )
+        : null}
     </Row>
   );
 }
