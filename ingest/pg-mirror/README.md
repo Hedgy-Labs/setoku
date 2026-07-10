@@ -13,6 +13,36 @@ dropped from prod or from the allowlist is **pruned** from the mirror on the
 next pass, so revoking a grant removes the lake copy too. Incremental cursors
 are a later optimization for append-only tables only if size demands.
 
+## Skip-unchanged: egress scales with change, not size × cadence
+
+Hosted Postgres meters egress, and a naive full reload bills the whole DB every
+interval (the 2026-07 Supabase overage: ~15 tables' worth of quiet data
+restreamed 96×/day). So each pass first reads the table's cumulative write
+counters from `pg_stat_user_tables` (`n_tup_ins/upd/del`, plus `n_live_tup` to
+catch TRUNCATE, which moves no counter) and combines them with a hash of the
+mirrored shape (columns/types/PK — so DDL-only drift and `denyColumns` edits
+still reload). If that signature equals the one the current mirror was built
+from (`setoku.pg_mirror_state`), the table is **verifiably unchanged**: the
+pass records a status `unchanged` run and streams nothing. Freshness surfaces
+treat `unchanged` like `ok` — the mirror provably equals the source at check
+time (`_mirrored_at` inside the rows still marks the last actual restream).
+Counters are read *before* a reload streams, so a change racing the copy can
+only cause one extra reload next pass, never a skipped stale mirror; a missing
+stats row disables the skip for that table (reload rather than guess).
+
+## denyColumns: leave the fat columns out
+
+`.setoku/config.json` `"denyColumns": ["public.scrapes.raw_html", …]` excludes
+columns from the mirror with the same glob semantics as the table lists (`*`
+within a dot-segment). This is an egress/size control, **not** a security
+boundary — grants still govern access (I9), and an excluded column stays
+readable at the source via `run_query force_postgres: true`. Because every
+reload is full, un-excluding is one config edit: the next pass repopulates the
+column completely. Excluding a column with an unmappable type also rescues its
+table. Real column names are tenant data (I3), so on a template-baked box they
+go in `SETOKU_MIRROR_DENY_COLUMNS` (comma-separated, in the box's `.env`,
+which deploys don't overwrite) — the env list merges into the config's.
+
 ## How a run works (per table, staged swap)
 
 1. DDL is derived from the pg catalog through an **explicit type map**
@@ -71,8 +101,9 @@ docker compose up -d --build pg-mirror
 ```
 
 Env: `SETOKU_DATABASE_URL` (required, the read-only role),
-`SETOKU_MIRROR_INTERVAL_MS` (default 900000 = 15 min), `CLICKHOUSE_*` (like
-every connector).
+`SETOKU_MIRROR_INTERVAL_MS` (default 900000 = 15 min),
+`SETOKU_MIRROR_DENY_COLUMNS` (extra per-box `denyColumns`, comma-separated),
+`CLICKHOUSE_*` (like every connector).
 
 The allow/deny list comes from the baked `.setoku/config.json` (same
 `deploy/project-template` bake as the gateway image) and **fails closed**: a
