@@ -7,7 +7,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveNotifyWebhook } from "../plugin/gateway/lib/config";
-import { formatEvent, notifyActivity, type ActivityEvent } from "../plugin/gateway/lib/notify";
+import { formatEvent, formatGB, notifyActivity, type ActivityEvent } from "../plugin/gateway/lib/notify";
 
 const dirs: string[] = [];
 function projectWith(config: Record<string, unknown>, env?: string): string {
@@ -57,6 +57,22 @@ describe("formatEvent", () => {
     expect(t).toContain("0.21.0");
     expect(t).toContain("was v0.20.0");
     expect(t).toContain("campsh");
+  });
+
+  it("renders an egress alert in the vendor's billing unit (decimal GB)", () => {
+    const t = formatEvent({
+      kind: "egress_alert",
+      day: "2026-07-09",
+      bytes: 12_400_000_000,
+      thresholdBytes: 10e9,
+      box: "campsh",
+    });
+    expect(t).toContain("mirror egress");
+    expect(t).toContain("12 GB"); // ≥10 GB rounds to whole GB
+    expect(t).toContain("10 GB/day alert threshold");
+    expect(t).toContain("2026-07-09");
+    expect(t).toContain("campsh");
+    expect(formatGB(1_230_000_000)).toBe("1.2 GB"); // <10 GB keeps a decimal
   });
 });
 

@@ -32,6 +32,7 @@ import { EmbedIndex } from "./lib/embed-index";
 import { DerivedSynonyms } from "./lib/derived-synonyms";
 import { loadConfig, resolveProjectDir, connectorName } from "./lib/config";
 import { notifyActivity } from "./lib/notify";
+import { gatherEgress, setEgressThreshold, checkEgressAlert } from "./lib/egress";
 import {
   KnowledgeStore,
   defaultDbPath,
@@ -1332,6 +1333,8 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "audit" && req.method === "GET") return json(200, store.listAudit(200));
         if (api === "sources" && req.method === "GET") return json(200, await gatherSources());
         if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries());
+        // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert threshold
+        if (api === "egress" && req.method === "GET") return json(200, await gatherEgress(projectDir, store));
         if (api === "team" && req.method === "GET")
           return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
 
@@ -1602,6 +1605,23 @@ const httpServer = http.createServer(async (req, res) => {
             store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
             return json(403, { ok: false, error: "not authorized" });
           }
+
+          // daily egress-alert threshold (GB/day; 0 or null disables). A nudge
+          // knob, not authority — changes what gets ANNOUNCED, never what any
+          // role can access, so it doesn't cross I9.
+          if (api === "egress_threshold") {
+            const body = (await readBody(req)) as { gb?: number | null } | undefined;
+            const gb = body?.gb;
+            if (gb !== null && gb !== undefined && (!Number.isFinite(gb) || gb < 0 || gb > 100_000))
+              return json(400, { ok: false, error: "Threshold must be a GB/day number (0 disables)." });
+            setEgressThreshold(store, gb ? gb * 1e9 : null);
+            store.audit(session.identity, "egress_threshold_set", { gb: gb ?? 0 });
+            return json(200, {
+              ok: true,
+              flash: gb ? `Egress alert set to ${gb} GB/day.` : "Egress alerts disabled.",
+            });
+          }
+
           const baseUrl = process.env.SETOKU_PUBLIC_URL ?? `https://${req.headers.host}`;
           const tempPw = (): string =>
             Array.from(crypto.getRandomValues(new Uint8Array(9)))
@@ -1824,4 +1844,12 @@ httpServer.listen(PORT, () => {
       box: cfg.ok ? cfg.config.name ?? null : null,
     });
   }
+
+  // Egress watchdog: the gateway's one background loop. Coarse on purpose —
+  // the ledger only advances when a mirror pass finishes, and the alert dedups
+  // to once per UTC day, so minute-level polling buys nothing. Both timers are
+  // unref'd: a watchdog must never hold the process open.
+  const EGRESS_CHECK_MS = 15 * 60_000;
+  setTimeout(() => void checkEgressAlert(projectDir, store), 60_000).unref();
+  setInterval(() => void checkEgressAlert(projectDir, store), EGRESS_CHECK_MS).unref();
 });

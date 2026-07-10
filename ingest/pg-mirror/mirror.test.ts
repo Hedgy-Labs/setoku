@@ -290,6 +290,7 @@ class FakeClickHouse {
     }
     if ((m = q.match(/^CREATE DATABASE IF NOT EXISTS/i))) return ok();
     if ((m = q.match(/^CREATE TABLE IF NOT EXISTS/i))) return ok();
+    if ((m = q.match(/^ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS/i))) return ok();
     if ((m = q.match(/^CREATE TABLE (\S+)/i))) {
       this.tables.set(this.key(m[1]), []);
       return ok();
@@ -470,6 +471,9 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     const okRun = fake.runs.find((r2) => r2.target_table === "ticketing_seat_txn")!;
     expect(okRun.rows).toBe(25000);
     expect(okRun.source_table).toBe("ticketing.seat_txn");
+    // the egress ledger: streamed NDJSON bytes land on the run record
+    expect(Number(okRun.bytes)).toBeGreaterThan(25000 * 30); // 25k rows of several fields each
+    expect(r.bytes).toBeGreaterThan(0);
   });
 
   it("second run reloads only what changed (EXCHANGE swap), skips the rest as unchanged", async () => {
@@ -505,7 +509,7 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
   it("zero-discovery guard: an empty discovery never prunes the mirror", async () => {
     const before = [...fake.tables.keys()].sort();
     const r = await runOnce(pg as never, ch, { allowTables: ["nosuch.*"], denyTables: [], denyColumns: [] });
-    expect(r).toEqual({ ok: 0, failed: 0, rows: 0, unchanged: 0 });
+    expect(r).toEqual({ ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0 });
     expect([...fake.tables.keys()].sort()).toEqual(before); // nothing dropped
   });
 

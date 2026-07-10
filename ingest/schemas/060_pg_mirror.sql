@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS setoku.pg_mirror_runs
     target_table LowCardinality(String)  COMMENT 'mirror table name in biz (e.g. ticketing_seat_txn)',
     source_table String                  COMMENT 'source pg table (e.g. ticketing.seat_txn)',
     rows         UInt64                  COMMENT 'rows loaded (0 on error/unchanged)',
+    bytes        UInt64                  COMMENT 'NDJSON bytes streamed — the box''s own source-egress ledger (0 on error/unchanged)',
     status       LowCardinality(String)  COMMENT 'ok | unchanged | error',
     error        String                  COMMENT 'failure detail (empty on ok/unchanged)'
 )
