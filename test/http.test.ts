@@ -632,7 +632,9 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     expect(((await relogin.json()) as { mustChangePassword: boolean }).mustChangePassword).toBe(false);
   });
 
-  it("an admin password reset re-arms the forced-change gate", async () => {
+  it("an admin password reset re-arms the forced-change gate and ends the target's live sessions", async () => {
+    // the target is signed in when the reset lands (the leaked-credential case)
+    const live = await session("temp@co.test", "my-own-password");
     const admin = await session("boss", "s3cret-pass");
     const reset = await apiPost("users", {
       cookie: admin.cookie,
@@ -640,6 +642,9 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
       body: { op: "reset", username: "temp@co.test" },
     });
     expect(reset.status).toBe(200);
+    // the target's old session is dead, the admin's own survives
+    expect((await apiGet("session", live.cookie)).status).toBe(401);
+    expect((await apiGet("session", admin.cookie)).status).toBe(200);
     const pw = ((await reset.json()) as { newLogin: { tempPassword: string } }).newLogin.tempPassword;
     const r = await login("temp@co.test", pw);
     expect(r.status).toBe(200);

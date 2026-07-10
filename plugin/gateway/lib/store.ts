@@ -399,10 +399,11 @@ export class KnowledgeStore {
       created_at TEXT NOT NULL,
       created_by TEXT
     )`);
-    // Temp passwords must actually be temporary (#73): every path that mints a
-    // password FOR someone else (invite, create, reset) arms this flag, and the
-    // SPA forces a self-service change before anything else. Cleared only by
-    // setting a password yourself (web change / admin-cli set-password).
+    // Temp passwords must actually be temporary (#73): every WEB path that
+    // mints a password for someone else (invite, users create/reset) arms this
+    // flag, and the SPA forces a self-service change before anything else.
+    // Cleared by the web change and by admin-cli set-password — the CLI paths
+    // are deliberate operator actions on the box and stay unflagged by design.
     this.ensureColumn("accounts", "must_change_password", "INTEGER NOT NULL DEFAULT 0");
     // Web admin sessions (Phase 5.1). Persisted here — NOT in process memory — so
     // a server restart/redeploy doesn't sign everyone out. Lives on the same
@@ -922,11 +923,12 @@ export class KnowledgeStore {
   }
 
   listAccounts(): Omit<Account, "pwhash">[] {
-    return this.db
+    const rows = this.db
       .query(
-        "SELECT username, role, created_at AS createdAt, created_by AS createdBy FROM accounts ORDER BY username",
+        "SELECT username, role, created_at AS createdAt, created_by AS createdBy, must_change_password AS mustChangePassword FROM accounts ORDER BY username",
       )
-      .all() as unknown as Omit<Account, "pwhash">[];
+      .all() as unknown as (Omit<Account, "pwhash" | "mustChangePassword"> & { mustChangePassword: number })[];
+    return rows.map((r) => ({ ...r, mustChangePassword: !!r.mustChangePassword }));
   }
 
   get accountCount(): number {

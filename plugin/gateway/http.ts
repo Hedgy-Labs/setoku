@@ -1751,6 +1751,12 @@ const httpServer = http.createServer(async (req, res) => {
               if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
               const pw = tempPw();
               store.setPassword(uname, await hashPassword(pw), true);
+              // A reset is the recovery move for a suspected-leaked credential:
+              // end the target's live sessions too, so the next thing they do
+              // is sign in with the new temp password and hit the change gate.
+              // (Keeping `sid` only matters on a self-reset — don't cut off the
+              // admin mid-dialog before they've copied the new password.)
+              store.destroySessionsFor(uname, sid);
               store.audit(session.identity, "account_password_reset", { username: uname });
               return json(200, {
                 ok: true,
