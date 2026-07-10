@@ -39,11 +39,10 @@ states, not two — figure out which:
    this Claude is connected. Continue to Phase 1.
 2. **No Setoku tools available here, but the human already has a box** (ask: "do
    you already have a Setoku box? what's its domain?"). Don't provision a new one
-   — just connect this Claude (see **Name the connector** below): `claude mcp add --transport http <name>-setoku https://<domain>/mcp --header "Authorization: Bearer <analyst-token>"`. The token is the analyst `SETOKU_TOKENS` value from the box's `.env` (which is
-formatted `token=identity` — use the part before the `=`). Then continue.
+   — just connect this Claude (see **Name the connector** below): `claude mcp add --transport http <name>-setoku https://<domain>/mcp --header "Authorization: Bearer <analyst-token>"`. Mint the token on the box: `docker compose exec server bun gateway/admin-cli.ts add-person <email>` (or the human clicks **Invite** on `/admin/team`). On an older box the token may instead live as `SETOKU_TOKENS=token=identity` in `.env` — use the part before the `=`. Then continue.
 3. **No box at all** → stand one up:
    - Provision a cheap Ubuntu VPS (~$12/mo). Buying it is the human's step.
-   - `git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku && SETOKU_ADMIN_USER=<you> ./deploy/bootstrap.sh` — installs Docker, generates secrets, gets real HTTPS (sslip.io if no domain), brings the stack up, prints the connect command + tokens. Setting `SETOKU_ADMIN_USER` keeps it fully non-interactive (otherwise it pauses once to ask for an admin username — the `/admin` login used later to approve knowledge). Safe to run over SSH; if the human pastes SSH access, run it for them, otherwise hand them the command.
+   - `git clone https://github.com/Hedgy-Labs/setoku /opt/setoku && cd /opt/setoku && SETOKU_ADMIN_USER=<email> ./deploy/bootstrap.sh` — installs Docker, generates secrets, gets real HTTPS (sslip.io if no domain), brings the stack up, and creates the operator: ONE identity that is both the `/admin` login (used later to approve knowledge) and the agent connector, with the connect command + generated password printed at the end. Setting `SETOKU_ADMIN_USER` keeps it fully non-interactive (otherwise it pauses once to ask for the operator's email). Safe to run over SSH; if the human pastes SSH access, run it for them, otherwise hand them the command.
    - Connect this Claude (see **Name the connector** below). That's enough to start — no second connector needed yet.
 
 **Name the connector.** Don't use the bare name `setoku` — a person doing this a
@@ -196,7 +195,7 @@ Then go for the two bigger wins — this is where Setoku beats Claude-on-Postgre
 - **Share it with the team.** The knowledge you just captured is now everyone's.
   Easiest: the human clicks **Invite** on `https://<domain>/admin/team` — it mints
   a read-only connector and shows the dev one-liner + claude.ai steps right there.
-  From the CLI it's `docker compose exec server bun gateway/admin-cli.ts add-teammate <identity>` (the identity is conventionally their email). Offer to add a couple of teammates either way.
+  From the CLI it's `docker compose exec server bun gateway/admin-cli.ts add-teammate <identity>` (the identity is conventionally their email; it creates their web login too — one person, one connector). Offer to add a couple of teammates either way.
 - **The non-technical magic moment.** For a founder/PM/ops teammate this may be the
   *first time they can query and visualize their own data in plain language* — and
   get the right number, because your annotations ride along. Tee it up: have them
@@ -342,12 +341,14 @@ cd /opt/setoku && git pull && docker compose up -d --build server
 #   then verify:  curl -s https://<domain>/health   → check the "version" field
 #   (rsync-based box, or a deeper deploy / rollback: see docs/deploy.md)
 
-# share with a teammate — prints dev one-liner + claude.ai connector steps (Phase 4)
-docker compose exec server bun gateway/admin-cli.ts add-teammate <identity>
+# add a person — web login + analyst connector under ONE identity (their email);
+# prints the temp password + dev one-liner + claude.ai connector steps
+docker compose exec server bun gateway/admin-cli.ts add-person <email>
+#   (add-teammate is the member alias; --role admin for another approver)
 
 # mint a curator connector token (Phase 3 — only when committing knowledge directly)
 docker compose exec server bun gateway/admin-cli.ts create-curator-token <identity>
 
-# create an /admin login
+# create an /admin login WITHOUT a connector (repair/escape hatch — prefer add-person)
 docker compose exec server bun gateway/admin-cli.ts create-user <username> --role admin
 ```

@@ -76,9 +76,12 @@ services:
     restart: unless-stopped
     logging: *default-logging
     environment:
-      SETOKU_TOKENS: "${SETOKU_TOKENS:?per-user MCP tokens, e.g. tok1=alice@co.com}"
-      # Hot-pluggable analyst tokens on the data volume: `admin-cli add-teammate`
-      # appends here so inviting a teammate is one command + restart, no .env edit.
+      # Legacy env-pinned analyst tokens ("tok1=alice@co.com,..."). Still honored,
+      # but new boxes provision connectors in the gateway's DB instead (bootstrap /
+      # admin-cli add-person / the /admin Team page) so they're revocable at runtime.
+      SETOKU_TOKENS: ${SETOKU_TOKENS:-}
+      # Hot-pluggable analyst tokens on the data volume (legacy file mechanism;
+      # add-person / the Team page write to the DB now).
       SETOKU_TOKENS_FILE: ${SETOKU_TOKENS_FILE:-/data/teammates.json}
       # curator tokens (commit curated knowledge, blocked from the lake) for
       # /setoku:generate + /setoku:curate — optional; mint with admin-cli.

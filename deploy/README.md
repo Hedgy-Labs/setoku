@@ -35,19 +35,23 @@ curl localhost:8787/health
 
 On Fly.io: `fly launch --no-deploy` (port 8787, add a volume mounted at `/data`), `fly secrets set SETOKU_DATABASE_URL=... SETOKU_TOKENS=...`, `fly deploy`.
 
-## 3b. Create an admin account (for the approval surface)
+## 3b. Create the operator (login + connector, one identity)
 
 The web approval surface (`/admin`) authenticates with **local accounts**, not
 the MCP tokens — a human signs in with a username + password an agent never
-holds, so it can't self-approve (I9). Bootstrap the first admin on the box:
+holds, so it can't self-approve (I9). On a compose box, create the operator as
+ONE person: a web login plus a read-only analyst connector under the same
+identity (users ↔ connectors are 1:1):
 
 ```bash
-docker compose exec server bun gateway/admin-cli.ts create-user <name> --role admin
+docker compose exec server bun gateway/admin-cli.ts add-person <email> --role admin
 # prompts for a password (or pass SETOKU_NEW_PASSWORD=… for unattended setup)
+# and prints the connector token once (`token=…`)
 ```
 
-Then visit `https://<your-host>/admin` and sign in. (`--role member` makes a
-view-only account that can read the queue but not approve.)
+Then visit `https://<your-host>/admin` and sign in. (`--role member` adds a
+person who can use the agent and view but not approve; `create-user` still
+exists as a login-only escape hatch.)
 
 ## 4. Connect users
 
@@ -148,4 +152,4 @@ Set `SETOKU_NOTIFY_WEBHOOK` in `/opt/setoku/.env` to a Slack incoming-webhook UR
   cron (§5); it can never commit or accept.
 - Every call is audited with the token's identity (SQLite `audit` table on the volume).
 - One gateway (this box); `.setoku/` in the repo remains the seed/interchange format.
-- Rotate a user: change `SETOKU_TOKENS`, restart (fast). Token loss = read access to allowed tables — scope the DB role accordingly.
+- Rotate a user: `/admin/team` → **Reset agent connector** (immediate, no restart). Legacy env-pinned tokens instead need a `SETOKU_TOKENS` edit + restart. Token loss = read access to allowed tables — scope the DB role accordingly.

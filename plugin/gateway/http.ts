@@ -130,6 +130,13 @@ interface TokenInfo {
    * Each source env maps to a single role.
    */
   role: TokenRole;
+  /**
+   * Where this token came from. "env" tokens can't be revoked at runtime (the
+   * process env is fixed; they reappear on restart); "file" tokens can (the
+   * file is rewritten); "db" is the normal teammate path (analyst_tokens table,
+   * read per-request — never in the boot-time map).
+   */
+  source: "env" | "file" | "db";
 }
 
 function loadTokens(): Map<string, TokenInfo> {
@@ -141,6 +148,7 @@ function loadTokens(): Map<string, TokenInfo> {
         tokens.set(pair.slice(0, i).trim(), {
           identity: pair.slice(i + 1).trim(),
           role,
+          source: "env",
         });
     }
   };
@@ -152,19 +160,18 @@ function loadTokens(): Map<string, TokenInfo> {
     for (const [token, identity] of Object.entries(
       JSON.parse(fs.readFileSync(file, "utf8")),
     )) {
-      tokens.set(token, { identity: String(identity), role: "analyst" });
+      tokens.set(token, { identity: String(identity), role: "analyst", source: "file" });
     }
   }
   return tokens;
 }
 
+// NOTE: an empty token set is fail-closed, not unauthenticated — identityFor()
+// 401s every /mcp request until a token exists. A fresh box deliberately boots
+// with ZERO env tokens (bootstrap creates the operator's DB-backed connector
+// AFTER `up --wait`), so the zero-token warning lives below, once the store is
+// open and DB-backed teammate tokens can be counted too.
 const tokens = loadTokens();
-if (tokens.size === 0) {
-  console.error(
-    "setoku http: no tokens configured (SETOKU_TOKENS / SETOKU_TOKENS_FILE) — refusing to start unauthenticated",
-  );
-  process.exit(1);
-}
 
 /** Mint a 24-byte hex token (same shape as admin-cli). */
 function mintToken(): string {
@@ -210,8 +217,8 @@ function removeAnalystTokens(identity: string): { removed: number; envBacked: bo
     if (info.role !== "analyst" || info.identity !== identity) continue;
     tokens.delete(tok);
     removed++;
-    if (tok in fileMap) delete fileMap[tok];
-    else envBacked = true; // came from SETOKU_TOKENS env, not the file
+    if (info.source === "file") delete fileMap[tok];
+    else envBacked = true; // came from SETOKU_TOKENS env — reappears on restart
   }
   if (file) fs.writeFileSync(file, JSON.stringify(fileMap, null, 2) + "\n");
   return { removed, envBacked };
@@ -223,6 +230,23 @@ function removeAnalystTokens(identity: string): { removed: number; envBacked: bo
 function analystIdentities(): string[] {
   const fromEnv = [...tokens.values()].filter((t) => t.role === "analyst").map((t) => t.identity);
   return [...new Set([...fromEnv, ...store.analystIdentities()])].sort();
+}
+
+/** Identities whose analyst connector is pinned in SETOKU_TOKENS env — the one
+ *  kind Remove can only revoke until the next restart. */
+function envBackedIdentities(): Set<string> {
+  return new Set(
+    [...tokens.values()]
+      .filter((t) => t.role === "analyst" && t.source === "env")
+      .map((t) => t.identity),
+  );
+}
+
+/** Does this identity ALSO hold an operator (curator/janitor) env token?
+ *  Removing the person never touches those (membrane I2/I9) — used only to
+ *  say so in the Remove flash. */
+function holdsOperatorToken(identity: string): boolean {
+  return [...tokens.values()].some((t) => t.role !== "analyst" && t.identity === identity);
 }
 
 const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
@@ -256,20 +280,35 @@ embedIndex.start(() => store.listDocs(), store);
 const derivedSynonyms = DerivedSynonyms.create();
 derivedSynonyms.start(() => store.listDocs());
 
+if (tokens.size === 0 && store.analystIdentities().length === 0) {
+  console.error(
+    "setoku http: no MCP tokens yet (env SETOKU_TOKENS / SETOKU_TOKENS_FILE / DB) — every /mcp request will 401 until one is provisioned.\n" +
+      "  Provision the operator:  bun gateway/admin-cli.ts add-person <email> --role admin",
+  );
+}
+
 if (store.accountCount === 0) {
   console.error(
     "setoku gateway: no admin accounts yet — the approval surface (/admin) has no one who can sign in.\n" +
-      "  Bootstrap one:  bun gateway/admin-cli.ts create-user <name> --role admin",
+      "  Bootstrap one:  bun gateway/admin-cli.ts add-person <email> --role admin",
   );
 }
 
 /**
  * One row per person for the Team page: union of agent-token identities and web
  * logins, joined by identity string. hasToken = they have an analyst connector;
- * role = their web-login role if any.
+ * role = their web-login role if any; envBacked = the connector is pinned in
+ * SETOKU_TOKENS env (legacy — Remove only revokes it until the next restart).
  */
-function teamPeople(): { identity: string; hasToken: boolean; used: boolean; role?: string }[] {
+function teamPeople(): {
+  identity: string;
+  hasToken: boolean;
+  used: boolean;
+  envBacked: boolean;
+  role?: string;
+}[] {
   const tokenIds = new Set(analystIdentities());
+  const envIds = envBackedIdentities();
   const active = store.activeIdentities();
   const accounts = store.listAccounts();
   const ids = new Set<string>([...tokenIds, ...accounts.map((a) => a.username)]);
@@ -279,6 +318,7 @@ function teamPeople(): { identity: string; hasToken: boolean; used: boolean; rol
       identity,
       hasToken: tokenIds.has(identity),
       used: active.has(identity),
+      envBacked: envIds.has(identity),
       role: accounts.find((a) => a.username === identity)?.role,
     }));
 }
@@ -300,7 +340,7 @@ function identityFor(req: http.IncomingMessage): TokenInfo | null {
   const seeded = tokens.get(raw);
   if (seeded) return seeded;
   const identity = store.analystTokenIdentity(raw);
-  return identity ? { identity, role: "analyst" } : null;
+  return identity ? { identity, role: "analyst", source: "db" } : null;
 }
 
 const DOC_TYPES = ["entity", "metric", "query", "overview", "gotcha"] as const;
@@ -1029,7 +1069,12 @@ const httpServer = http.createServer(async (req, res) => {
     }
     if (req.url?.startsWith("/i/")) {
       const token = decodeURIComponent(req.url.slice(3).split("?")[0]);
-      const info = tokens.get(token);
+      // seeded (env/file) tokens, then DB-backed teammate tokens — the default
+      // since invites/add-person write to the store.
+      const dbIdentity = store.analystTokenIdentity(token);
+      const info =
+        tokens.get(token) ??
+        (dbIdentity ? ({ identity: dbIdentity, role: "analyst", source: "db" } as TokenInfo) : null);
       if (!info) {
         store.audit("anonymous", "installer_rejected", {});
         res.writeHead(404, { "content-type": "text/plain" });
@@ -1713,8 +1758,12 @@ const httpServer = http.createServer(async (req, res) => {
               if (!isRole(role)) return json(400, { ok: false, error: `Invalid role "${role}".` });
               if (role === "member" && isLastAdmin(acct)) return json(409, { ok: false, error: "Can't demote the last admin." });
               store.setRole(uname, role);
+              // Sessions snapshot the role at sign-in — kill them so the change
+              // takes effect NOW (a demoted admin must not keep approve power
+              // for the 14-day session lifetime; a promote re-logs-in too).
+              store.destroySessionsFor(uname);
               store.audit(session.identity, "account_role_changed", { username: uname, role });
-              return json(200, { ok: true, flash: `${uname} is now ${role}.` });
+              return json(200, { ok: true, flash: `${uname} is now ${role} — they'll need to sign in again.` });
             }
             if (op === "reset") {
               if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
@@ -1728,15 +1777,29 @@ const httpServer = http.createServer(async (req, res) => {
               });
             }
             if (op === "delete") {
-              if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
+              // Person-level remove: works for EVERY row — login-only, token-only,
+              // or both. 404 only when there is literally nothing to remove.
+              const hadToken = analystIdentities().includes(uname);
+              if (!acct && !hadToken)
+                return json(404, { ok: false, error: `No person "${uname}" (no login, no connector).` });
               if (isLastAdmin(acct)) return json(409, { ok: false, error: "Can't remove the last admin." });
-              store.deleteAccount(uname);
+              if (acct) store.deleteAccount(uname);
               const { removed, envBacked } = removeAnalystTokens(uname);
-              store.audit(session.identity, "account_deleted", { username: uname, tokensRevoked: removed });
-              return json(200, {
-                ok: true,
-                flash: `Removed ${uname} (account + ${removed} connector${removed === 1 ? "" : "s"} revoked).${envBacked ? " One token is in SETOKU_TOKENS env — remove it from .env to fully revoke." : ""}`,
+              const sessionsKilled = store.destroySessionsFor(uname);
+              store.audit(session.identity, "person_removed", {
+                username: uname,
+                accountDeleted: !!acct,
+                tokensRevoked: removed,
+                sessionsKilled,
+                envBacked,
               });
+              let flash = `Removed ${uname} (${acct ? "login deleted, " : ""}${removed} connector${removed === 1 ? "" : "s"} revoked).`;
+              if (envBacked)
+                flash +=
+                  " One token is pinned in SETOKU_TOKENS in the box's .env — it's revoked now but returns on restart; delete it from .env and `docker compose up -d server` to make it permanent.";
+              if (holdsOperatorToken(uname))
+                flash += " Note: this identity also holds an operator (curator/janitor) token in the box's env — unaffected.";
+              return json(200, { ok: true, flash });
             }
             return json(400, { ok: false, error: "Unknown operation." });
           }
