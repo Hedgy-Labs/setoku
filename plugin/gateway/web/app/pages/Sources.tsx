@@ -185,21 +185,20 @@ function SubHead({ children }: { children: ReactNode }) {
 function Row({
   name,
   status,
-  last,
+  time,
   children,
 }: {
   name: string;
   status: { color: StatusColor; label: string };
-  last?: string | null;
+  time?: string | null;
   children: ReactNode;
 }) {
-  const rel = last ? relTime(last) : "";
   return (
     <details className="card group">
       <summary className="flex cursor-pointer list-none items-center gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
         <span className="shrink-0 text-stone-500 transition group-open:rotate-90">›</span>
         <span className="min-w-0 flex-1 truncate font-medium text-stone-900">{name}</span>
-        {rel ? <span className="shrink-0 text-xs text-stone-500">{rel}</span> : null}
+        {time ? <span className="shrink-0 text-xs text-stone-500">{time}</span> : null}
         <Status color={status.color}>{status.label}</Status>
       </summary>
       <div className="border-t border-stone-200 px-4 py-2.5 text-sm">{children}</div>
@@ -213,7 +212,7 @@ function MemberKvs({ t, series }: { t: SourceTable; series: SeriesMap }) {
   return (
     <>
       {kv("rows", t.rows == null ? "—" : Number(t.rows).toLocaleString("en-US"))}
-      {kv("last ingest", t.last ? `${String(t.last).slice(0, 19)} UTC` : "—")}
+      {kv("last new data", t.last ? `${String(t.last).slice(0, 19)} UTC` : "—")}
       {points && points.length ? kv("last 30 days", <Sparkline points={points} />) : null}
     </>
   );
@@ -224,8 +223,13 @@ function GroupRow({ name, members, series }: { name: string; members: SourceTabl
   const rows = members.reduce((n, m) => n + (m.rows ?? 0), 0);
   const last = members.reduce<string | null>((a, m) => (m.last && (!a || m.last > a) ? m.last : a), null);
   const beat = members.reduce<string | null>((a, m) => (m.beat && (!a || m.beat > a) ? m.beat : a), null);
+  // Headline time matches what the status chip measures: the connector beat
+  // ("checked Xm ago") when one exists — a quiet-but-healthy poller must not
+  // read as broken. Beat-less sources fall back to when data last landed,
+  // labeled so the two can't be confused; per-table times stay in the detail.
+  const time = beat ? `checked ${relTime(beat)}` : last ? `last new data ${relTime(last)}` : null;
   return (
-    <Row name={name} status={freshness(rows, last, beat)} last={last}>
+    <Row name={name} status={freshness(rows, last, beat)} time={time}>
       {beat
         ? kv("connector", beatIsLive(beat) ? `live · last beat ${relTime(beat)}` : `last beat ${relTime(beat)}`)
         : null}
