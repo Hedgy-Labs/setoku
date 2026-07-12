@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState, type ReactNode } from "react";
+import { AlertDialog } from "@base-ui-components/react/alert-dialog";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
@@ -22,13 +23,19 @@ export function Sources() {
   // Egress ledger too — absent (non-mirror box, lake down) simply renders no card.
   const { data: egress, reload: reloadEgress } = useApi<EgressData>(() => api.egress(), []);
   const series = new Map((seriesData?.series ?? []).map((s) => [s.source, s.points]));
+  const [connectOpen, setConnectOpen] = useState(false);
   return (
     <>
-      <Heading title="Sources">
-        The databases and feeds your agents can query — what’s connected and whether data is actually
-        flowing (a live heartbeat, not just recent rows). Click a source to expand. Sources you haven’t
-        connected yet sit under Available. Read-only, refreshed live on each load.
-      </Heading>
+      <div className="flex items-start justify-between gap-4">
+        <Heading title="Sources">
+          The databases and feeds your agents can query — what’s connected and whether data is actually
+          flowing (a live heartbeat, not just recent rows). Click a source to expand. Sources you haven’t
+          connected yet sit under Available. Read-only, refreshed live on each load.
+        </Heading>
+        <Button className="mt-1 shrink-0" onClick={() => setConnectOpen(true)}>
+          Connect source
+        </Button>
+      </div>
       {loading ? (
         <Loading />
       ) : error ? (
@@ -36,7 +43,50 @@ export function Sources() {
       ) : data ? (
         <SourceList data={data} series={series} egress={egress} reloadEgress={reloadEgress} />
       ) : null}
+      <ConnectDialog
+        open={connectOpen}
+        onClose={() => setConnectOpen(false)}
+        onCopied={() => toast("Prompt copied — paste it into Claude Code and say which source.")}
+      />
     </>
+  );
+}
+
+/** Like Apps' New-app dialog: sources are connected by your agent, not a form.
+ *  Hands the user a ready prompt to paste into Claude Code on the box. */
+function ConnectDialog({ open, onClose, onCopied }: { open: boolean; onClose: () => void; onCopied: () => void }) {
+  const prompt =
+    `Connect a new data source to my Setoku (${location.origin}).\n` +
+    `Use the /setoku:connect skill — it wires the source up read-only, verifies data is actually flowing, and saves what it learns as knowledge.\n\n` +
+    `What I want to connect:\n`;
+  return (
+    <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
+      <AlertDialog.Portal>
+        <AlertDialog.Backdrop className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
+        <AlertDialog.Popup className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
+          <AlertDialog.Title className="text-base font-semibold text-stone-900">Connect a source</AlertDialog.Title>
+          <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
+            Sources are connected by your agent, not a form. Paste this into Claude Code with the Setoku
+            plugin, say which source, and it’ll wire it up end-to-end.
+          </AlertDialog.Description>
+          <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
+            {prompt}
+          </pre>
+          <div className="mt-4 flex justify-end gap-2">
+            <AlertDialog.Close className="btn btn-ghost">Close</AlertDialog.Close>
+            <AlertDialog.Close
+              className="btn btn-primary"
+              onClick={() => {
+                void navigator.clipboard?.writeText(prompt).catch(() => {});
+                onCopied();
+              }}
+            >
+              Copy prompt
+            </AlertDialog.Close>
+          </div>
+        </AlertDialog.Popup>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
   );
 }
 
