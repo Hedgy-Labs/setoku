@@ -13,9 +13,11 @@ import { toast } from "../components/Toast";
 import { relTime, freshness, beatIsLive, type StatusColor } from "../format";
 import { formatBytes } from "../../../lib/format";
 import { LAKE_SOURCES, type LakeSource } from "../../../lib/sources";
-import type { SourcesData, SourceTable, SourceSeriesData, EgressData, EgressDay } from "../types";
+import type { SourcesData, SourceTable, SourceSeriesData, EgressData, EgressDay, TeamData } from "../types";
 
 export function Sources() {
+  const { me } = useAuth();
+  const isAdmin = me?.role === "admin";
   const { data, loading, error } = useApi<SourcesData>(() => api.sources(), []);
   // Sparkline data is a second, non-blocking fetch — the page renders with
   // scalar totals immediately and the 30-day trends fill in when they land.
@@ -23,29 +25,37 @@ export function Sources() {
   // Egress ledger too — absent (non-mirror box, lake down) simply renders no card.
   const { data: egress, reload: reloadEgress } = useApi<EgressData>(() => api.egress(), []);
   const series = new Map((seriesData?.series ?? []).map((s) => [s.source, s.points]));
-  const [connectOpen, setConnectOpen] = useState(false);
+  // Connect dialog state: null = closed, { source? } = open, optionally
+  // pre-filled with the Available row that launched it.
+  const [connect, setConnect] = useState<{ source?: string } | null>(null);
   return (
     <>
-      <div className="flex items-start justify-between gap-4">
-        <Heading title="Sources">
-          The databases and feeds your agents can query — what’s connected and whether data is actually
-          flowing (a live heartbeat, not just recent rows). Click a source to expand. Sources you haven’t
-          connected yet sit under Available. Read-only, refreshed live on each load.
-        </Heading>
-        <Button className="mt-1 shrink-0" onClick={() => setConnectOpen(true)}>
-          Connect source
-        </Button>
-      </div>
+      <Heading
+        title="Sources"
+        action={<Button onClick={() => setConnect({})}>Connect source</Button>}
+      >
+        The databases and feeds your agents can query — what’s connected and whether data is actually
+        flowing (a live heartbeat, not just recent rows). Click a source to expand. Sources you haven’t
+        connected yet sit under Available. Read-only, refreshed live on each load.
+      </Heading>
       {loading ? (
         <Loading />
       ) : error ? (
         <ErrorMsg>{error}</ErrorMsg>
       ) : data ? (
-        <SourceList data={data} series={series} egress={egress} reloadEgress={reloadEgress} />
+        <SourceList
+          data={data}
+          series={series}
+          egress={egress}
+          reloadEgress={reloadEgress}
+          onConnect={(source) => setConnect({ source })}
+        />
       ) : null}
       <ConnectDialog
-        open={connectOpen}
-        onClose={() => setConnectOpen(false)}
+        open={connect !== null}
+        source={connect?.source}
+        isAdmin={isAdmin}
+        onClose={() => setConnect(null)}
         onCopied={() => toast("Prompt copied — paste it into Claude Code and say which source.")}
       />
     </>
@@ -53,37 +63,84 @@ export function Sources() {
 }
 
 /** Like Apps' New-app dialog: sources are connected by your agent, not a form.
- *  Hands the user a ready prompt to paste into Claude Code on the box. */
-function ConnectDialog({ open, onClose, onCopied }: { open: boolean; onClose: () => void; onCopied: () => void }) {
+ *  Admins get a ready prompt to paste into Claude Code on the box; members
+ *  can't wire the box themselves, so they get the admins to ask instead. */
+function ConnectDialog({
+  open,
+  source,
+  isAdmin,
+  onClose,
+  onCopied,
+}: {
+  open: boolean;
+  /** Pre-fills the prompt when launched from an Available row. */
+  source?: string;
+  isAdmin: boolean;
+  onClose: () => void;
+  onCopied: () => void;
+}) {
+  // Who to contact, members only — the team list is readable by any signed-in
+  // user, so a member's dialog can name real people rather than "an admin".
+  const { data: team } = useApi<TeamData | null>(
+    () => (isAdmin ? Promise.resolve(null) : api.team()),
+    [isAdmin],
+  );
+  const admins = (team?.people ?? []).filter((p) => p.role === "admin").map((p) => p.identity);
   const prompt =
     `Connect a new data source to my Setoku (${location.origin}).\n` +
     `Use the /setoku:connect skill — it wires the source up read-only, verifies data is actually flowing, and saves what it learns as knowledge.\n\n` +
-    `What I want to connect:\n`;
+    `What I want to connect: ${source ?? ""}\n`;
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
       <AlertDialog.Portal>
         <AlertDialog.Backdrop className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
         <AlertDialog.Popup className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
           <AlertDialog.Title className="text-base font-semibold text-stone-900">Connect a source</AlertDialog.Title>
-          <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
-            Sources are connected by your agent, not a form. Paste this into Claude Code with the Setoku
-            plugin, say which source, and it’ll wire it up end-to-end.
-          </AlertDialog.Description>
-          <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
-            {prompt}
-          </pre>
-          <div className="mt-4 flex justify-end gap-2">
-            <AlertDialog.Close className="btn btn-ghost">Close</AlertDialog.Close>
-            <AlertDialog.Close
-              className="btn btn-primary"
-              onClick={() => {
-                void navigator.clipboard?.writeText(prompt).catch(() => {});
-                onCopied();
-              }}
-            >
-              Copy prompt
-            </AlertDialog.Close>
-          </div>
+          {isAdmin ? (
+            <>
+              <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
+                Sources are connected by your agent, not a form. Paste this into Claude Code with the Setoku
+                plugin, say which source, and it’ll wire it up end-to-end.
+              </AlertDialog.Description>
+              <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
+                {prompt}
+              </pre>
+              <div className="mt-4 flex justify-end gap-2">
+                <AlertDialog.Close className="btn btn-ghost">Close</AlertDialog.Close>
+                <AlertDialog.Close
+                  className="btn btn-primary"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(prompt).catch(() => {});
+                    onCopied();
+                  }}
+                >
+                  Copy prompt
+                </AlertDialog.Close>
+              </div>
+            </>
+          ) : (
+            <>
+              <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
+                Connecting a source happens on the box this Setoku runs on — read-only credentials, wired
+                up by whoever operates it — so it takes an admin. Tell{" "}
+                {admins.length ? (
+                  <b className="font-medium text-stone-800">{admins.join(", ")}</b>
+                ) : (
+                  "your admin"
+                )}{" "}
+                {source ? (
+                  <>
+                    you’d like <b className="font-medium text-stone-800">{source}</b> connected.
+                  </>
+                ) : (
+                  <>what you’d like connected; the Available list below shows what this box can take.</>
+                )}
+              </AlertDialog.Description>
+              <div className="mt-4 flex justify-end">
+                <AlertDialog.Close className="btn btn-primary">Close</AlertDialog.Close>
+              </div>
+            </>
+          )}
         </AlertDialog.Popup>
       </AlertDialog.Portal>
     </AlertDialog.Root>
@@ -300,7 +357,13 @@ function GroupRow({ name, members, series }: { name: string; members: SourceTabl
 /** The sources this box could ingest but isn't yet — kept out of the connected
  *  list (an unconfigured feed isn't a problem to fix), but listed so it's easy
  *  to see what a box can take. */
-function AvailableSection({ entries }: { entries: { name: string; desc: string }[] }) {
+function AvailableSection({
+  entries,
+  onConnect,
+}: {
+  entries: { name: string; desc: string }[];
+  onConnect: (source: string) => void;
+}) {
   if (!entries.length) return null;
   return (
     <details className="card group mt-6">
@@ -313,14 +376,14 @@ function AvailableSection({ entries }: { entries: { name: string; desc: string }
       </summary>
       <div className="border-t border-stone-200 px-4 py-2.5 text-sm">
         {entries.map((e) => (
-          <div key={e.name} className="flex items-baseline justify-between gap-4 py-1.5">
-            <span className="shrink-0 font-medium text-stone-700">{e.name}</span>
-            <span className="text-right text-stone-500">{e.desc}</span>
+          <div key={e.name} className="flex items-center gap-4 py-1.5">
+            <span className="w-36 shrink-0 font-medium text-stone-700">{e.name}</span>
+            <span className="min-w-0 flex-1 truncate text-stone-500">{e.desc}</span>
+            <Button variant="ghost" className="shrink-0 px-2 py-0.5 text-xs" onClick={() => onConnect(e.name)}>
+              Connect
+            </Button>
           </div>
         ))}
-        <div className="pt-2 text-xs text-stone-400">
-          Connect one from Claude Code with the <code className="kbd">/setoku:connect</code> skill.
-        </div>
       </div>
     </details>
   );
@@ -339,11 +402,13 @@ function SourceList({
   series,
   egress,
   reloadEgress,
+  onConnect,
 }: {
   data: SourcesData;
   series: SeriesMap;
   egress: EgressData | null;
   reloadEgress: () => void;
+  onConnect: (source: string) => void;
 }) {
   const rows: ReactNode[] = [];
   const pg = data.postgres;
@@ -465,7 +530,7 @@ function SourceList({
   return (
     <>
       <div className="space-y-2">{rows}</div>
-      <AvailableSection entries={avail} />
+      <AvailableSection entries={avail} onConnect={onConnect} />
       <div className="mt-5 flex items-center gap-4 text-xs text-stone-500">
         <Status color="green">flowing</Status>
         <Status color="yellow">stale / empty</Status>

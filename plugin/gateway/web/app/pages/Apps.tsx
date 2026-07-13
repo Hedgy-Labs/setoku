@@ -53,17 +53,12 @@ export function Apps() {
 
   return (
     <>
-      <div className="flex items-start justify-between gap-4">
-        <Heading title="Apps">
-          Dashboards, trackers, and internal tools your agent builds on your data. They run on{" "}
-          <b className="text-stone-800">live data</b> and never write to your sources.{" "}
-          <b className="text-stone-800">Team</b> links work for anyone signed in here; the author or an
-          admin can make one <b className="text-stone-800">public</b> for a link that needs no login.
-        </Heading>
-        <Button className="mt-1 shrink-0" onClick={() => setNewOpen(true)}>
-          New app
-        </Button>
-      </div>
+      <Heading title="Apps" action={<Button onClick={() => setNewOpen(true)}>New app</Button>}>
+        Dashboards, trackers, and internal tools your agent builds on your data. They run on{" "}
+        <b className="text-stone-800">live data</b> and never write to your sources.{" "}
+        <b className="text-stone-800">Team</b> links work for anyone signed in here; the author or an
+        admin can make one <b className="text-stone-800">public</b> for a link that needs no login.
+      </Heading>
       {loading ? (
         <Loading />
       ) : error ? (
