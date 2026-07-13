@@ -107,8 +107,9 @@ coverage caveats) — so `find_context` has something real to return.
 
 ## Boot / re-seed on the box
 
-The box already runs production Setoku and has the `setoku-server` image built, so the demo
-reuses it. From `/opt/setoku/demo`:
+The box already runs production Setoku and has the gateway image
+(`ghcr.io/hedgy-labs/setoku-gateway:latest`) built or pulled, so the demo reuses it.
+From `/opt/setoku/demo`:
 
 ```bash
 ./boot.sh            # first run generates .env.bulldogs (tokens + PG password), seeds, starts the gateway
