@@ -3,7 +3,7 @@
 #
 # Deploy the Setoku DEMO (demo.setoku.com — the Bonita Bulldogs instance) to a box.
 # The demo runs ALONGSIDE production as its own compose project and reuses the
-# `setoku-server` image. This script: rsyncs the code, rebuilds that image WITHOUT
+# gateway image. This script: rsyncs the code, rebuilds that image WITHOUT
 # touching the running production gateway, then restarts the demo gateway on the
 # fresh image via boot.sh (reseed OFF by default — a code deploy keeps the data).
 #
@@ -44,7 +44,7 @@ rsync -az \
   plugin deploy demo ingest docker-compose.yml \
   "${SSH}:${DIR}/"
 
-echo "→ rebuild the setoku-server image (does NOT restart production)"
+echo "→ rebuild the gateway image (does NOT restart production)"
 ssh "$SSH" "cd ${DIR} && docker compose build server"
 
 echo "→ restart the demo gateway on the fresh image (${DEMO_ENV})"
