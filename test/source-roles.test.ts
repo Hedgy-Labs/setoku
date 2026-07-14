@@ -19,6 +19,7 @@ import {
   lakeRolesFor,
   familySlug,
   roleFor,
+  grantTargetsFor,
   CORE_LAKE_TABLES,
   LAKE_SOURCES,
   NO_SOURCES_ROLE,
@@ -33,8 +34,8 @@ describe("lake-users.xml ↔ lakeFamilies() drift lock", () => {
   it("defines every family role with a SELECT grant per member table", () => {
     for (const f of lakeFamilies()) {
       expect(XML).toContain(`<${f.role}>`);
-      for (const t of f.tables) {
-        expect(XML).toContain(`<query>GRANT SELECT ON setoku.${t}</query>`);
+      for (const target of grantTargetsFor(f)) {
+        expect(XML).toContain(`<query>GRANT SELECT ON ${target}</query>`);
       }
     }
   });
@@ -50,11 +51,19 @@ describe("lake-users.xml ↔ lakeFamilies() drift lock", () => {
     expect(XML).toContain(`<query>GRANT ${NO_SOURCES_ROLE}</query>`);
   });
 
-  it("keeps the always-on core as DIRECT grants (survive any explicit role list)", () => {
-    expect(XML).toContain("<query>GRANT SELECT ON biz.*</query>");
+  it("keeps the always-on core (heartbeats + mirror-run log) as DIRECT grants", () => {
     for (const t of CORE_LAKE_TABLES) {
       expect(XML).toContain(`<query>GRANT SELECT ON setoku.${t}</query>`);
     }
+  });
+
+  it("biz.* is a family role (setoku_src_business), NOT a direct grant on setoku_ro", () => {
+    // the whole point: business data must be subsettable per user, so biz.* can't
+    // ride on setoku_ro as a direct grant (which would survive any role subset)
+    const roGrants = XML.slice(XML.indexOf("<setoku_ro>"));
+    expect(roGrants).not.toContain("<query>GRANT SELECT ON biz.*</query>");
+    expect(roGrants).toContain("<query>GRANT setoku_src_business</query>");
+    expect(XML).toContain("<query>GRANT SELECT ON biz.*</query>"); // present, but on the role
   });
 
   it("has NO setoku.* direct wildcard — it would defeat the role subsetting", () => {
@@ -84,6 +93,20 @@ describe("family helpers", () => {
     expect(github?.tables.sort()).toEqual(
       ["github_comments", "github_commits", "github_issues", "github_pulls"].sort(),
     );
+  });
+
+  it("includes the business-DB mirror as the 'business' (Postgres) family, granting biz.*", () => {
+    const biz = lakeFamilies().find((f) => f.slug === "business");
+    expect(biz).toBeDefined();
+    expect(biz!.family).toBe("Postgres");
+    expect(biz!.role).toBe("setoku_src_business");
+    expect(grantTargetsFor(biz!)).toEqual(["biz.*"]);
+  });
+
+  it("denying 'business' drops setoku_src_business from the active role list", () => {
+    const roles = lakeRolesFor(["business"]);
+    expect(roles).not.toContain("setoku_src_business");
+    expect(roles).toContain("setoku_src_slack"); // other sources unaffected
   });
 
   it("excludes the core plumbing from deniable families", () => {

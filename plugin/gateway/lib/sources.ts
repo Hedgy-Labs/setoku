@@ -78,21 +78,39 @@ export function roleFor(slug: string): string {
  *  parameter's empty-list case is a trap: appending zero `role` params is the
  *  same as omitting the parameter, which activates the DEFAULT roles — i.e.
  *  full access. Activating this empty role instead keeps the engine holding
- *  the line (direct core grants — biz.*, heartbeats — still apply). */
+ *  the line (the direct core grants — heartbeats + the mirror-run log — still
+ *  apply; biz.* is a family role now, so it too is denied here). */
 export const NO_SOURCES_ROLE = "setoku_src_none";
 
 export interface LakeFamily {
   family: string;
   slug: string;
   role: string;
+  /** ClickHouse database the family's tables live in (default "setoku"). The
+   *  business-DB mirror family lives in "biz". */
+  db: string;
   tables: string[];
 }
 
-/** The deniable source families: LAKE_SOURCES grouped by family, minus the
- *  core plumbing (CORE_LAKE_TABLES — the biz.* mirror's run log and the
- *  heartbeats, which every session may read). ingest_raw IS deniable on
- *  purpose: unrouted rows can carry any source's payloads, so leaving it
- *  always-open would bypass a deny. */
+/** The business-DB mirror as a deniable family. `biz.*` (one Postgres source
+ *  per box, mirrored by pg-mirror) is the whole database, so it's a single
+ *  all-or-nothing toggle labelled "Postgres". Its role carries `biz.*`; unlike
+ *  the always-on core (heartbeats, mirror-run log) it is subsettable, so an
+ *  admin can fence off the business data from a person the same way as a lake
+ *  source. `db: "biz"` + `tables: ["*"]` → the grant target is `biz.*`. */
+export const BUSINESS_FAMILY: LakeFamily = {
+  family: "Postgres",
+  slug: "business",
+  role: roleFor("business"),
+  db: "biz",
+  tables: ["*"],
+};
+
+/** The deniable source families: LAKE_SOURCES grouped by family (minus the core
+ *  plumbing in CORE_LAKE_TABLES — the mirror's run log and the heartbeats, which
+ *  every session may read), plus the business-DB mirror as one "Postgres"
+ *  family. ingest_raw IS deniable on purpose: unrouted rows can carry any
+ *  source's payloads, so leaving it always-open would bypass a deny. */
 export function lakeFamilies(): LakeFamily[] {
   const out = new Map<string, LakeFamily>();
   for (const s of LAKE_SOURCES) {
@@ -101,12 +119,18 @@ export function lakeFamilies(): LakeFamily[] {
     const slug = familySlug(family);
     let f = out.get(slug);
     if (!f) {
-      f = { family, slug, role: roleFor(slug), tables: [] };
+      f = { family, slug, role: roleFor(slug), db: "setoku", tables: [] };
       out.set(slug, f);
     }
     f.tables.push(s.table);
   }
-  return [...out.values()];
+  return [...out.values(), BUSINESS_FAMILY];
+}
+
+/** The GRANT targets a family's role carries, e.g. `["setoku.slack_messages"]`
+ *  or `["biz.*"]` — the drift-lock test pins lake-users.xml to these. */
+export function grantTargetsFor(f: LakeFamily): string[] {
+  return f.tables.map((t) => `${f.db}.${t}`);
 }
 
 /**

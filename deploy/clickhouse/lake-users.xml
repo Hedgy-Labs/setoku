@@ -89,6 +89,14 @@
                 <query>GRANT SELECT ON setoku.ingest_raw</query>
             </grants>
         </setoku_src_unrouted_raw>
+        <!-- the business-DB mirror (biz.*, one Postgres source per box). A
+             family role like the rest, so an admin can fence off the business
+             data per person — NOT a direct grant on setoku_ro. -->
+        <setoku_src_business>
+            <grants>
+                <query>GRANT SELECT ON biz.*</query>
+            </grants>
+        </setoku_src_business>
         <!-- grants NOTHING: activated when every family is denied, because
              zero `role` params would mean default roles = full access -->
         <setoku_src_none>
@@ -101,8 +109,9 @@
             <profile>setoku_readonly</profile>
             <networks><ip>::/0</ip></networks>
             <grants>
-                <!-- the always-on core: direct grants survive any explicit role list -->
-                <query>GRANT SELECT ON biz.*</query>
+                <!-- the always-on core: direct grants survive any explicit role
+                     list (plumbing every session needs). biz.* is NOT here — it
+                     rides on setoku_src_business so it can be subset per user. -->
                 <query>GRANT SELECT ON setoku.ingest_heartbeats</query>
                 <query>GRANT SELECT ON setoku.pg_mirror_runs</query>
                 <!-- source access rides ONLY on roles, so the HTTP role
@@ -115,6 +124,7 @@
                 <query>GRANT setoku_src_github</query>
                 <query>GRANT setoku_src_monarch</query>
                 <query>GRANT setoku_src_unrouted_raw</query>
+                <query>GRANT setoku_src_business</query>
                 <query>GRANT setoku_src_none</query>
             </grants>
         </setoku_ro>

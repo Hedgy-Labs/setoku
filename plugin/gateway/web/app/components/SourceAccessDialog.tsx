@@ -5,7 +5,7 @@ import { api } from "../api";
 import { useApi } from "../hooks";
 import { beatIsLive } from "../format";
 import { cn } from "../cn";
-import { lakeFamilies, familyOf } from "../../../lib/sources";
+import { lakeFamilies, familyOf, BUSINESS_FAMILY } from "../../../lib/sources";
 import type { SourcesData } from "../types";
 
 /** The Team page "Data access…" dialog (I9 — a human act, no MCP tool can do
@@ -52,6 +52,8 @@ export function SourceAccessDialog({
   for (const t of sources?.lake.tables ?? []) {
     if ((t.rows ?? 0) > 0 || beatIsLive(t.beat)) connected.add(familyOf(t.source));
   }
+  // The business-DB mirror (Postgres) is "connected" when it carries any table.
+  if ((sources?.mirror.tables.length ?? 0) > 0) connected.add(BUSINESS_FAMILY.family);
 
   // Connected first, then a denied-but-quiet family; catalog order within each
   // partition (sort() is stable).

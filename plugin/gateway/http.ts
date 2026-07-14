@@ -620,16 +620,19 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
         );
         lake.tables = probes.filter((p): p is SourceTable => p !== null);
         // The biz.* mirror — which business tables are queryable and how fresh
-        // each copy is. Best-effort like every other probe on this page.
-        try {
-          mirror.tables = (await mirroredTables(lakeUrl.url)).map((m) => ({
-            target: m.target,
-            source: m.source,
-            asOf: m.asOf,
-          }));
-        } catch {
-          /* no mirror on this box — the card simply doesn't render */
-        }
+        // each copy is. Best-effort like every other probe on this page. Hidden
+        // when the caller is denied the "business" (Postgres) family, same as a
+        // denied lake source.
+        if (!denied.has("business"))
+          try {
+            mirror.tables = (await mirroredTables(lakeUrl.url)).map((m) => ({
+              target: m.target,
+              source: m.source,
+              asOf: m.asOf,
+            }));
+          } catch {
+            /* no mirror on this box — the card simply doesn't render */
+          }
       }
     }
   }

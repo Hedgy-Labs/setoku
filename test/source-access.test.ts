@@ -69,6 +69,9 @@ describe("source access over HTTP + MCP", () => {
       // name — get_schema's system.columns query also mentions ingest_heartbeats
       // (in its exclusion clause) and must not be captured here.
       if (sql.includes("GROUP BY connector")) return { columns: ["connector", "beat"], rows: [] };
+      // the biz.* mirror registry (lib/mirror.ts) — one mirrored business table
+      if (sql.includes("pg_mirror_runs") && sql.includes("target_table AS target"))
+        return { columns: ["target", "source", "as_of"], rows: [{ target: "orders", source: "public.orders", as_of: "2026-07-14 00:00:00.000" }] };
       if (sql.includes("count()")) return { rows: [{ n: 5 }] };
       if (sql.includes("system.columns"))
         return {
@@ -198,6 +201,30 @@ describe("source access over HTTP + MCP", () => {
     expect(cls.text).toContain("mercury_accounts");
     await curator.close();
     await mcp.close();
+  });
+
+  it("denying the Postgres (business) family drops biz.* from run_query and list_sources", async () => {
+    const admin = await session("boss@co.test", "s3cret-pass");
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: ["business"] } });
+
+    const mcp = await connect(BASE, "tok-alice");
+    // the role subset excludes setoku_src_business (the engine then denies biz.*)
+    lake.calls.length = 0;
+    await gwCall(mcp, "run_query", { sql: "SELECT count() FROM biz.orders" });
+    expect(lake.calls.at(-1)!.roles).not.toContain(roleFor("business"));
+    expect(lake.calls.at(-1)!.roles).toContain(roleFor("slack")); // other sources intact
+    // list_sources hides the BUSINESS DATA (biz.*) section for this session
+    const ls = await gwCall(mcp, "list_sources");
+    expect(ls.text).not.toContain("BUSINESS DATA");
+    await mcp.close();
+
+    // an unrestricted teammate still sees biz.* in list_sources
+    const bob = await connect(BASE, "tok-bob");
+    const lsBob = await gwCall(bob, "list_sources");
+    expect(lsBob.text).toContain("biz.orders");
+    await bob.close();
+
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: [] } });
   });
 
   it("an unrestricted identity sends NO role param (default roles = everything, incl. future sources)", async () => {

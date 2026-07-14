@@ -26,7 +26,7 @@ import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
 import { mirroredTables, type MirroredTable } from "./lib/mirror";
-import { LAKE_SOURCES, BEAT_LIVE_MS, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
+import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
 import { notifyActivity } from "./lib/notify";
 import { VERSION } from "./lib/version";
 
@@ -775,8 +775,11 @@ server.registerTool(
 
     // Business data = the biz.* mirror. The gateway holds no business-Postgres
     // credential (retired); pg-mirror is the only container that reads the
-    // source DB, and biz.* is THE read path for business tables.
-    const mirrored = await mirrorRefs();
+    // source DB, and biz.* is THE read path for business tables. Hidden when
+    // this session is denied the "business" (Postgres) family — the engine
+    // refuses the queries anyway, so listing the tables would only tease.
+    const denied = deniedFamilies();
+    const mirrored = denied.has(BUSINESS_FAMILY.slug) ? [] : await mirrorRefs();
     if (mirrored.length) {
       lines.push(
         "",
@@ -785,7 +788,7 @@ server.registerTool(
         'source database. Each shows its "data as of" (get_schema for columns):',
         ...mirrored.map((m) => `  - biz.${m.target} ← ${m.source} (as of ${m.asOf})`),
       );
-    } else if (!denyLakeRead) {
+    } else if (!denyLakeRead && !denied.has(BUSINESS_FAMILY.slug)) {
       lines.push(
         "",
         "BUSINESS DATA: no biz.* mirror is flowing yet — business tables become queryable once the",
@@ -798,8 +801,7 @@ server.registerTool(
     // Either branch respects the identity's source denies: the engine hides a
     // denied family's tables from the analyst probes (the roles below), and the
     // curator's static list filters the catalog the same way, so a denied
-    // source never advertises itself in this tool at all.
-    const denied = deniedFamilies();
+    // source never advertises itself in this tool at all. (`denied` computed above.)
     if (denyLakeRead) {
       lines.push(
         "",
@@ -985,15 +987,15 @@ server.registerTool(
       }
       // Belt-and-suspenders (parity with list_sources): the engine already
       // hides denied families, but during a partial rollout — new code, old
-      // lake-users.xml still holding a `setoku.*` wildcard, or a ClickHouse that
-      // ignores the role param — drop a denied family's lake tables in code too,
-      // so a denied source's shape never leaks even if the engine filter isn't
-      // in effect. biz.* is core (team-wide), so it's never dropped here.
+      // lake-users.xml still holding a `setoku.*`/`biz.*` wildcard, or a
+      // ClickHouse that ignores the role param — drop a denied family's tables
+      // in code too, so a denied source's shape never leaks. biz.* follows the
+      // "business" (Postgres) family; lake tables follow their own family.
       const denied = deniedFamilies();
-      let schema = [...byTable.values()].filter(
-        (t) =>
-          t.database === "biz" ||
-          !denied.has(familySlug(familyOf(LAKE_SOURCES.find((s) => s.table === t.table)?.source ?? t.table))),
+      let schema = [...byTable.values()].filter((t) =>
+        t.database === "biz"
+          ? !denied.has(BUSINESS_FAMILY.slug)
+          : !denied.has(familySlug(familyOf(LAKE_SOURCES.find((s) => s.table === t.table)?.source ?? t.table))),
       );
       if (tables?.length) {
         // Match on the qualified biz/setoku name OR a bare table name. A pg-style
