@@ -218,6 +218,25 @@ describe("source access over HTTP + MCP", () => {
     expect(ls.text).not.toContain("BUSINESS DATA");
     await mcp.close();
 
+    // get_schema never lists the pg_mirror_runs run-log (it enumerates the
+    // mirrored business catalog) — its SQL excludes it outright
+    const mcp2 = await connect(BASE, "tok-alice");
+    lake.calls.length = 0;
+    await gwCall(mcp2, "get_schema");
+    const schemaSql = lake.calls.find((c) => c.sql.includes("system.columns"))!.sql;
+    expect(schemaSql).toContain("'pg_mirror_runs'");
+    expect(schemaSql).toContain("NOT IN");
+    await mcp2.close();
+
+    // the web egress ledger is empty for a business-denied MEMBER (was a leak:
+    // pg_mirror_runs byte volumes + a mirror's existence)
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: ["business"] } });
+    const member = await session("viewer@co.test", "viewer-pass");
+    const eg = (await (await fetch(`${BASE}/admin/api/egress`, { headers: { cookie: member.cookie } })).json()) as { configured: boolean; days: unknown[] };
+    expect(eg.configured).toBe(false);
+    expect(eg.days).toEqual([]);
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: [] } });
+
     // an unrestricted teammate still sees biz.* in list_sources
     const bob = await connect(BASE, "tok-bob");
     const lsBob = await gwCall(bob, "list_sources");

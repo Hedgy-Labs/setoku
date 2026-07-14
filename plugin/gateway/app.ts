@@ -26,7 +26,14 @@ import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
 import { mirroredTables, type MirroredTable } from "./lib/mirror";
-import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, effectiveDenies, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
+import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
+import {
+  deniedFamiliesFor,
+  docHidden,
+  hiddenDocNames as accessHiddenDocNames,
+  visibleCorrections,
+  visibleDocs as accessVisibleDocs,
+} from "./lib/access";
 import { notifyActivity } from "./lib/notify";
 import { VERSION } from "./lib/version";
 
@@ -114,27 +121,18 @@ const server = new McpServer({ name: "setoku", version: VERSION });
 // Enforcement is the ENGINE's: a denied family's tables are ACCESS_DENIED and
 // hidden from SHOW TABLES / system.columns, so discovery filters itself.
 const lakeRoles = (): string[] | null => lakeRolesFor(store.sourceDenies(user));
-// effectiveDenies applies the SETOKU_SOURCE_ACCESS=0 kill-switch, so knowledge
-// hiding and source-list filtering go inert exactly when the ENGINE can't
-// enforce the deny — never asserting a restriction the agent's lake access
-// doesn't actually hold (lakeRoles uses the same gate inside lakeRolesFor).
-const deniedFamilies = (): Set<string> => new Set(effectiveDenies(store.sourceDenies(user)));
+// The denied family set for THIS session — the kill-switch (SETOKU_SOURCE_ACCESS=0)
+// is applied inside deniedFamiliesFor, so knowledge hiding goes inert exactly
+// when the ENGINE can't enforce (lakeRoles uses the same gate). MCP sessions are
+// never admin, so no bypass. All knowledge-plane filtering flows through the
+// shared lib/access helpers so the MCP and web planes can't drift.
+const deniedFamilies = (): Set<string> => deniedFamiliesFor(store.sourceDenies(user));
 
-/** Whether a doc's OPTIONAL source tag (meta.source, a family slug set by the
- *  curator — never inferred) falls inside a denied set. Untagged docs are
- *  team-wide: hiding is a deliberate curatorial act, like the deny itself. */
-const sourceHidden = (meta: Record<string, unknown>, denied: Set<string>): boolean =>
-  typeof meta.source === "string" && denied.has(familySlug(meta.source));
-
-/** The curated docs THIS session may see — the knowledge-plane counterpart of
- *  the lake role subset: a doc tagged to a denied source family doesn't exist
- *  for this identity (not "exists but hidden" — tools answer exactly as if it
- *  were never written, so its name doesn't leak either). */
-const visibleDocs = (): ReturnType<KnowledgeStore["listDocs"]> => {
-  const denied = deniedFamilies();
-  if (!denied.size) return store.listDocs();
-  return store.listDocs().filter((d) => !sourceHidden(d.meta, denied));
-};
+/** The curated docs THIS session may see — a doc tagged to a denied source
+ *  family doesn't exist for this identity (answers exactly as if never written,
+ *  so its name doesn't leak either). */
+const visibleDocs = (): ReturnType<KnowledgeStore["listDocs"]> =>
+  accessVisibleDocs(store.listDocs(), deniedFamilies());
 
 // Query expansion seam: the domain-general base table, fused with this tenant's
 // offline-derived table when it's live (issue #33). Pure lookup either way (I8).
@@ -165,14 +163,9 @@ function curatedSqls(): string[] {
     .flatMap((d) => extractSql(d.body));
 }
 
-/** Names of docs hidden from THIS session (source-tagged to a denied family) —
- *  so a pending correction ABOUT one of them doesn't leak the hidden fact
- *  through the unverified-knowledge channel. Empty set = nothing hidden. */
-const hiddenDocNames = (): Set<string> => {
-  const denied = deniedFamilies();
-  if (!denied.size) return new Set();
-  return new Set(store.listDocs().filter((d) => sourceHidden(d.meta, denied)).map((d) => d.name));
-};
+/** Names of docs hidden from THIS session — so a pending correction ABOUT one
+ *  doesn't leak the hidden fact through the unverified-knowledge channel. */
+const hiddenDocNames = (): Set<string> => accessHiddenDocNames(store.listDocs(), deniedFamilies());
 
 /** Tables currently mirrored into biz.* (issue #47) — feeds the list_sources
  *  mirror section and get_schema's business-table view. Cached in lib/mirror.
@@ -231,9 +224,8 @@ server.registerTool(
     // Pending proposals follow the same source membrane as curated docs: a
     // proposal ABOUT a hidden doc (relates_to a source-tagged denied family)
     // must not leak that fact through the unverified-knowledge channel.
-    const hidden = hiddenDocNames();
     const pending = matchByTokens(
-      store.listCorrections("pending").filter((c) => !(c.relatesTo && hidden.has(c.relatesTo))),
+      visibleCorrections(store.listCorrections("pending"), hiddenDocNames()),
       (c) => `${c.fact ?? c.content} ${c.relatesTo ?? ""}`,
       question,
     ).slice(0, 5);
@@ -421,7 +413,7 @@ server.registerTool(
     let doc = store.getDoc(null, name);
     // A doc tagged to a denied source answers exactly like a nonexistent one —
     // "hidden" must not be distinguishable from "never written".
-    if (doc && sourceHidden(doc.meta, deniedFamilies())) doc = null;
+    if (doc && docHidden(doc.meta, deniedFamilies())) doc = null;
     store.audit(user, "describe_entity", { name, ok: !!doc });
     if (!doc)
       return errorText(
@@ -451,7 +443,7 @@ server.registerTool(
   async ({ name }) => {
     let doc = store.getDoc("metric", name);
     // Same non-existence contract as describe_entity for source-tagged docs.
-    if (doc && sourceHidden(doc.meta, deniedFamilies())) doc = null;
+    if (doc && docHidden(doc.meta, deniedFamilies())) doc = null;
     store.audit(user, "get_metric", { name, ok: !!doc });
     if (!doc) {
       const known =
@@ -541,12 +533,9 @@ server.registerTool(
     },
   },
   async ({ status }) => {
-    // Same source membrane as find_context: a proposal ABOUT a hidden
-    // (source-tagged, denied) doc must not leak the hidden fact/doc-name here.
-    const hidden = hiddenDocNames();
-    const rows = store
-      .listCorrections(status ?? "pending")
-      .filter((c) => !(c.relatesTo && hidden.has(c.relatesTo)));
+    // Same source membrane as find_context (shared lib/access filter): a
+    // proposal ABOUT a hidden doc must not leak the fact/doc-name here.
+    const rows = visibleCorrections(store.listCorrections(status ?? "pending"), hiddenDocNames());
     store.audit(user, "list_corrections", {
       status: status ?? "pending",
       count: rows.length,
@@ -978,8 +967,13 @@ server.registerTool(
       const roles = lakeRoles();
       const res = await runLakeQuery(
         lakeUrl,
+        // Exclude the plumbing tables — heartbeats (core, no data) and the
+        // pg_mirror_runs run-log (its rows enumerate the mirrored business
+        // catalog, so it follows the business deny; the belt-filter below can't
+        // map its label to the 'business' slug, and it's not a queryable source).
         "SELECT database, table, name, type FROM system.columns " +
-          "WHERE database IN ('biz','setoku') AND (database, table) != ('setoku','ingest_heartbeats') " +
+          "WHERE database IN ('biz','setoku') " +
+          "AND (database, table) NOT IN (('setoku','ingest_heartbeats'), ('setoku','pg_mirror_runs')) " +
           "ORDER BY database, table, position",
         qopts,
         {},

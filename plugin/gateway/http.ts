@@ -32,7 +32,7 @@ import { EmbedIndex } from "./lib/embed-index";
 import { DerivedSynonyms } from "./lib/derived-synonyms";
 import { loadConfig, resolveProjectDir, connectorName } from "./lib/config";
 import { notifyActivity } from "./lib/notify";
-import { gatherEgress, setEgressThreshold, egressTick } from "./lib/egress";
+import { gatherEgress, setEgressThreshold, egressTick, egressAppId } from "./lib/egress";
 import {
   KnowledgeStore,
   defaultDbPath,
@@ -544,7 +544,13 @@ echo "    how many companies are paying us right now?"
 
 // Lake source tables we know how to surface (shared with the list_sources MCP
 // tool) — query only the ones that actually exist; see gatherSources().
-import { LAKE_SOURCES, BUSINESS_FAMILY, effectiveDenies, familyOf, familySlug, lakeFamilies } from "./lib/sources";
+import { LAKE_SOURCES, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, sourceAccessDisabled } from "./lib/sources";
+import {
+  deniedFamiliesFor,
+  hiddenDocNames as accessHiddenDocNames,
+  visibleCorrections as accessVisibleCorrections,
+  visibleDocs as accessVisibleDocs,
+} from "./lib/access";
 
 /**
  * Gather the /admin Sources view live: which biz.* tables the mirror carries,
@@ -642,10 +648,14 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
     }
   }
 
+  // Knowledge summary follows the SAME source denies as the knowledge view, so
+  // a restricted member can't infer how many source-tagged docs exist for a
+  // denied family from the counts. `denied` is empty for admins / no-deny users.
+  const visibleKnowledge = accessVisibleDocs(store.listDocs(), denied);
   const byType: Record<string, number> = {};
-  for (const d of store.listDocs()) byType[d.type] = (byType[d.type] ?? 0) + 1;
+  for (const d of visibleKnowledge) byType[d.type] = (byType[d.type] ?? 0) + 1;
 
-  return { mirror, lake, knowledge: { docs: store.docCount, byType } };
+  return { mirror, lake, knowledge: { docs: visibleKnowledge.length, byType } };
 }
 
 /**
@@ -1323,7 +1333,19 @@ const httpServer = http.createServer(async (req, res) => {
         const force =
           new URL(req.url ?? "", "http://x").searchParams.get("force") === "1" &&
           (rep.createdBy === session.identity || canApprove(session.role));
-        const panels = (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw, force }) : [];
+        // The built-in "Mirror egress" app enumerates the mirrored business
+        // catalog (setoku.pg_mirror_runs), so a viewer denied the "business"
+        // family gets its shell with NO panel data — parity with the mirror
+        // card / egress endpoint they can't see either. (Team apps otherwise
+        // render under the creator's access — see lib/apps renderApp.)
+        const businessDeniedViewer =
+          id === egressAppId(store) &&
+          !canApprove(session.role) &&
+          deniedFamiliesFor(store.sourceDenies(session.identity)).has(BUSINESS_FAMILY.slug);
+        const panels =
+          !businessDeniedViewer && (rep.panels?.length ?? 0) > 0
+            ? await renderApp(store, projectDir, rep, { rawParams: raw, force })
+            : [];
         store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
         // The app template needs no network (data is injected) → strict CSP.
         res.writeHead(200, {
@@ -1408,34 +1430,23 @@ const httpServer = http.createServer(async (req, res) => {
             mustChangePassword: !!store.getAccount(session.identity)?.mustChangePassword,
           });
 
-        // Knowledge + correction views follow per-user source access: a MEMBER's
-        // view drops docs tagged (meta.source) to a family denied for them, and
-        // pending/rejected proposals ABOUT such a hidden doc — the same predicate
-        // the MCP tools apply, so the web and the agent agree (and the same
-        // SETOKU_SOURCE_ACCESS=0 kill-switch, so nothing is hidden that the engine
-        // isn't enforcing). Admins always see everything: they manage the store.
+        // Knowledge + correction views follow per-user source access through the
+        // SAME shared lib/access helpers the MCP tools use, so the web and the
+        // agent can't drift (and the same SETOKU_SOURCE_ACCESS=0 kill-switch, so
+        // nothing is hidden the engine isn't enforcing). Admins see everything:
+        // they manage the store and the denies. `store.listDocs()` is read once
+        // per request and reused across both views.
         const sessionDenied = (): Set<string> =>
-          canApprove(session.role) ? new Set() : new Set(effectiveDenies(store.sourceDenies(session.identity)));
-        const docsForSession = (): ReturnType<typeof store.listDocs> => {
-          const denied = sessionDenied();
-          const docs = store.listDocs();
-          if (!denied.size) return docs;
-          return docs.filter((d) => !(typeof d.meta.source === "string" && denied.has(familySlug(d.meta.source))));
-        };
-        // Corrections whose relatesTo names a hidden doc are dropped for the
-        // session (parity with app.ts find_context / list_corrections).
-        const correctionsForSession = (status: "pending" | "rejected") => {
-          const denied = sessionDenied();
-          const rows = store.listCorrections(status);
-          if (!denied.size) return rows;
-          const hidden = new Set(
-            store
-              .listDocs()
-              .filter((d) => typeof d.meta.source === "string" && denied.has(familySlug(d.meta.source)))
-              .map((d) => d.name),
+          deniedFamiliesFor(store.sourceDenies(session.identity), canApprove(session.role));
+        let _sessionDocs: ReturnType<typeof store.listDocs> | null = null;
+        const sessionDocs = (): ReturnType<typeof store.listDocs> => (_sessionDocs ??= store.listDocs());
+        const docsForSession = (): ReturnType<typeof store.listDocs> =>
+          accessVisibleDocs(sessionDocs(), sessionDenied());
+        const correctionsForSession = (status: "pending" | "rejected") =>
+          accessVisibleCorrections(
+            store.listCorrections(status),
+            accessHiddenDocNames(sessionDocs(), sessionDenied()),
           );
-          return rows.filter((c) => !(c.relatesTo && hidden.has(c.relatesTo)));
-        };
         // read endpoints — any signed-in user (members included) may view the
         // pending list for the cockpit: each item carries the best-available
         // DRAFT (persisted auto-draft, else the synthesized gotcha default) so a
@@ -1469,8 +1480,16 @@ const httpServer = http.createServer(async (req, res) => {
         const sourceDeniesFor = (): Set<string> => sessionDenied();
         if (api === "sources" && req.method === "GET") return json(200, await gatherSources(sourceDeniesFor()));
         if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries(sourceDeniesFor()));
-        // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert threshold
-        if (api === "egress" && req.method === "GET") return json(200, await gatherEgress(projectDir, store));
+        // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert
+        // threshold. Derived from pg_mirror_runs, which follows the business
+        // ("Postgres") deny — so a business-denied member gets the empty ledger,
+        // parity with the hidden mirror card (else the byte volumes + a mirror's
+        // existence leak on this endpoint).
+        if (api === "egress" && req.method === "GET") {
+          if (sessionDenied().has(BUSINESS_FAMILY.slug))
+            return json(200, { days: [], todayBytes: 0, thresholdBytes: null, configured: false, appId: null });
+          return json(200, await gatherEgress(projectDir, store));
+        }
         if (api === "team" && req.method === "GET") {
           // Everyone signed in may see the roster (to know who to ask), but a
           // person's source restrictions are admin-only — don't broadcast the
@@ -1975,7 +1994,7 @@ const httpServer = http.createServer(async (req, res) => {
             // makes lakeRolesFor a no-op): storing a deny the engine won't
             // enforce would make this surface assert a restriction that isn't
             // real. Fail loudly so the operator turns the kill-switch off first.
-            if (process.env.SETOKU_SOURCE_ACCESS === "0")
+            if (sourceAccessDisabled())
               return json(409, {
                 ok: false,
                 error:
