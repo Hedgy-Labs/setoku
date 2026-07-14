@@ -50,7 +50,26 @@ function readerUrl(): string {
   return `${u.origin.replace("://", `://${USER}:${PW}@`)}/${DB}`;
 }
 
-describe.skipIf(!CH_URL)("ClickHouse role-subset access control (engine truth)", () => {
+/** This suite needs RBAC DDL (CREATE ROLE/USER + GRANT), which requires the
+ *  connecting user to hold access_management. A stock ClickHouse (or a CI
+ *  service without CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT) doesn't — probe once
+ *  and SKIP rather than red the suite, so the engine check runs where RBAC is
+ *  available and is inert (not failing) where it isn't. */
+const CAN_MANAGE = CH_URL
+  ? await (async () => {
+      try {
+        const probe = `srcrole_probe_${Math.abs(Date.now() % 100000)}`;
+        const r = await chAdmin(`CREATE ROLE IF NOT EXISTS ${probe}`);
+        if (!r.ok) return false;
+        await chAdmin(`DROP ROLE IF EXISTS ${probe}`);
+        return true;
+      } catch {
+        return false;
+      }
+    })()
+  : false;
+
+describe.skipIf(!CH_URL || !CAN_MANAGE)("ClickHouse role-subset access control (engine truth)", () => {
   beforeAll(async () => {
     const stmts = [
       `CREATE DATABASE IF NOT EXISTS ${DB}`,
