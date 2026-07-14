@@ -544,7 +544,7 @@ echo "    how many companies are paying us right now?"
 
 // Lake source tables we know how to surface (shared with the list_sources MCP
 // tool) — query only the ones that actually exist; see gatherSources().
-import { LAKE_SOURCES, familySlug, lakeFamilies } from "./lib/sources";
+import { LAKE_SOURCES, BUSINESS_FAMILY, familySlug, lakeFamilies } from "./lib/sources";
 
 /**
  * Gather the /admin Sources view live: which biz.* tables the mirror carries,
@@ -558,7 +558,8 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
   const config = cfg.ok ? cfg.config : null;
   // A denied source is invisible on this page too (not just to the agent) —
   // otherwise a restricted member reads row counts / freshness for a source
-  // they can't query. biz.* (the mirror) is core and never filtered.
+  // they can't query. The biz.* mirror follows the "business" (Postgres) family
+  // and is gated separately below (mirror.tables).
   const sources = LAKE_SOURCES.filter((s) => !denied.has(familySlug(s.source.split(" · ")[0])));
 
   const mirror: SourcesData["mirror"] = { tables: [] };
@@ -623,7 +624,7 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
         // each copy is. Best-effort like every other probe on this page. Hidden
         // when the caller is denied the "business" (Postgres) family, same as a
         // denied lake source.
-        if (!denied.has("business"))
+        if (!denied.has(BUSINESS_FAMILY.slug))
           try {
             mirror.tables = (await mirroredTables(lakeUrl.url)).map((m) => ({
               target: m.target,

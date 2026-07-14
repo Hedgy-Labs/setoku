@@ -14,8 +14,8 @@
  *      connectors" true);
  *   2. an explicit `role` list activates ONLY those roles — tables of an
  *      unlisted role are ACCESS_DENIED and hidden from SHOW TABLES;
- *   3. DIRECT grants survive any explicit role list (the always-on core:
- *      biz.*, heartbeats, mirror runs).
+ *   3. DIRECT grants survive any explicit role list (the always-on core
+ *      plumbing: heartbeats + mirror-run log; biz.* is a family role, not core).
  * The role plumbing itself (which subset each identity sends) is covered
  * pg-free in test/source-access.test.ts.
  */

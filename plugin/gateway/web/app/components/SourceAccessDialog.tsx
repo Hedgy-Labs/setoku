@@ -55,14 +55,22 @@ export function SourceAccessDialog({
   // The business-DB mirror (Postgres) is "connected" when it carries any table.
   if ((sources?.mirror.tables.length ?? 0) > 0) connected.add(BUSINESS_FAMILY.family);
 
+  // When the lake probe FAILED (unreachable), we can't tell what's connected —
+  // fall back to the full catalog so an admin can still apply a restriction
+  // during a transient lake outage (never blocking an I9 human act on a blip).
+  const probeOk = sources != null && sources.lake.ok;
   // Connected first, then a denied-but-quiet family; catalog order within each
-  // partition (sort() is stable).
-  const families = lakeFamilies()
-    .filter((f) => connected.has(f.family) || denies.includes(f.slug))
-    .sort((a, b) => Number(connected.has(b.family)) - Number(connected.has(a.family)));
+  // partition (sort() is stable). Filter on `denies` (the persisted set), not
+  // the in-session `denied` state, so a row an admin just toggled doesn't vanish.
+  const families = (
+    probeOk
+      ? lakeFamilies().filter((f) => connected.has(f.family) || denies.includes(f.slug))
+      : lakeFamilies()
+  ).sort((a, b) => Number(connected.has(b.family)) - Number(connected.has(a.family)));
   // A deny can outlive its connector entirely (family dropped from the catalog)
-  // — surface those unknown slugs too so they can still be un-checked.
-  const stale = [...denied].filter((d) => !lakeFamilies().some((f) => f.slug === d));
+  // — surface those unknown slugs too (from the persisted set) so they can still
+  // be un-checked without vanishing mid-session on toggle.
+  const stale = denies.filter((d) => !lakeFamilies().some((f) => f.slug === d));
 
   const same = (): boolean => {
     const live = new Set(denies);

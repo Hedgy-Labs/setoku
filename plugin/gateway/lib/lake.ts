@@ -52,8 +52,9 @@ export async function runLakeQuery(
    *  to ACTIVATE for this request via ClickHouse's repeatable `role` URL
    *  parameter (`SET ROLE r1, r2`, ≥24.5). null/undefined = unrestricted —
    *  omit the parameter so the reader's default roles (all of them) apply.
-   *  Direct grants (biz.*, heartbeats, mirror runs) apply regardless; the
-   *  ENGINE denies tables outside the active roles — no SQL parsing here. */
+   *  Core direct grants (heartbeats, mirror-run log) apply regardless; biz.*
+   *  and every source ride on roles, so the ENGINE denies tables outside the
+   *  active roles — no SQL parsing here. */
   roles: string[] | null = null,
 ): Promise<QueryOutcome> {
   const v = validateSql(sql);

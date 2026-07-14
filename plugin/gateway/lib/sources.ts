@@ -23,9 +23,11 @@ export interface LakeSource {
 }
 
 /** Lake plumbing tables that are NOT a deniable source: heartbeats power the
- *  liveness UI, and pg_mirror_runs is the mirror's run log (the biz.* business
- *  tables it describes are core, readable by every session). Direct grants on
- *  the ClickHouse reader cover these; family roles cover everything else. */
+ *  liveness UI, and pg_mirror_runs is the mirror's run log. Direct grants on
+ *  the ClickHouse reader cover these two; every source — including the biz.*
+ *  business tables (the "Postgres" family) — rides on a family role instead,
+ *  so it can be subset per user. (pg_mirror_runs is only the run LOG; the biz.*
+ *  data tables it describes are the setoku_src_business family.) */
 export const CORE_LAKE_TABLES = ["ingest_heartbeats", "pg_mirror_runs"] as const;
 
 export const LAKE_SOURCES: LakeSource[] = [

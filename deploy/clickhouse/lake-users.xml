@@ -12,14 +12,16 @@
      Per-source access control rides on ROLES, one per source family
      (lib/sources.ts lakeFamilies() — a lint test pins this file to that
      catalog, so adding a connector forces adding its role here):
-       - DIRECT grants (biz.*, ingest_heartbeats, pg_mirror_runs) are the
-         always-on core: ClickHouse applies a user's direct grants regardless
-         of which roles are active, so these stay readable under ANY explicit
-         `role` list. Deliberately NO `setoku.*` wildcard — a direct wildcard
-         would defeat the role subsetting (an ad-hoc hand-made setoku.* table
-         is unreadable until it joins a family; connectors ship with code, so
-         that is the right default).
-       - FAMILY roles carry each source's tables. All of them are granted (and
+       - DIRECT grants (ingest_heartbeats, pg_mirror_runs ONLY) are the
+         always-on core plumbing: ClickHouse applies a user's direct grants
+         regardless of which roles are active, so these stay readable under ANY
+         explicit `role` list. Deliberately NO `setoku.*` OR `biz.*` wildcard
+         here — a direct wildcard would defeat the role subsetting (a business
+         "Postgres" deny would become a silent no-op). biz.* rides on the
+         setoku_src_business role like every other source; an ad-hoc hand-made
+         setoku.* table is unreadable until it joins a family.
+       - FAMILY roles carry each source's tables — INCLUDING biz.* (the business
+         "Postgres" family, setoku_src_business). All of them are granted (and
          therefore default-active: an unrestricted request sends no `role`
          parameter and sees everything, including families added later). A
          restricted user's request activates only the allowed subset via the
