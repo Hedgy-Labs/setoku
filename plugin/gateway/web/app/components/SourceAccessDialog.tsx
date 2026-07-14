@@ -39,12 +39,11 @@ export function SourceAccessDialog({
   }, [open]);
   const saveRef = useRef<HTMLButtonElement>(null);
 
-  // Which families are actually flowing — fetched lazily so the Team page
-  // doesn't probe the lake until someone opens this. The list shows CONNECTED
-  // families only (a box never hooks up Monarch etc., so offering it is noise),
-  // plus any family this person is already denied so a lingering restriction
-  // stays visible and removable.
-  const { data: sources, loading } = useApi<SourcesData | null>(
+  // What this person's agent may query — fetched lazily so the Team page doesn't
+  // probe the lake until someone opens this. The list is state-dependent (see
+  // the `outage` three-way below): connected families when the probe worked,
+  // the full catalog when we can't tell, the empty state when there's no lake.
+  const { data: sources, loading, error } = useApi<SourcesData | null>(
     () => (open ? api.sources() : Promise.resolve(null)),
     [open],
   );
@@ -58,11 +57,12 @@ export function SourceAccessDialog({
 
   // Three states, distinguished so we neither block a restriction on a blip nor
   // invent phantom sources on a box that has no lake:
-  //   - probe OK          → show CONNECTED families only (the honest list).
-  //   - configured but !ok → a transient OUTAGE: we can't tell what's live, so
-  //     show the full catalog (never block an I9 human act on a blip) and say so.
+  //   - probe OK           → show CONNECTED families only (the honest list).
+  //   - can't probe        → OUTAGE: the /sources fetch failed, OR the lake is
+  //     configured but unreachable. We can't tell what's live, so show the full
+  //     catalog (never block an I9 human act on a blip) and say status is stale.
   //   - not configured     → there's no lake at all → "nothing to restrict".
-  const outage = sources != null && sources.lake.configured && !sources.lake.ok;
+  const outage = error != null || (sources != null && sources.lake.configured && !sources.lake.ok);
   // Connected first, then a denied-but-quiet family; catalog order within each
   // partition (sort() is stable). Filter on `denies` (the persisted set), not
   // the in-session `denied` state, so a row an admin just toggled doesn't vanish.
