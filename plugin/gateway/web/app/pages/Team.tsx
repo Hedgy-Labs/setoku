@@ -11,6 +11,7 @@ import { cn } from "../cn";
 import { Button } from "../components/Button";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
+import { SourceAccessDialog } from "../components/SourceAccessDialog";
 import type { Invite, NewLogin, Person, TeamData } from "../types";
 
 const ROLES = ["admin", "member"];
@@ -37,6 +38,7 @@ export function Team() {
   const { data, loading, error, reload } = useApi<TeamData>(() => api.team(), []);
   const [creds, setCreds] = useState<Creds | null>(null);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
+  const [accessFor, setAccessFor] = useState<Person | null>(null);
   const [inviteEmail, setInviteEmail] = useState("");
 
   const apply = async (p: Promise<MutationResult>) => {
@@ -118,6 +120,7 @@ export function Team() {
               adminCount={data?.adminCount ?? 0}
               onApply={apply}
               onConfirm={setConfirm}
+              onDataAccess={setAccessFor}
             />
           ))}
         </ul>
@@ -138,6 +141,16 @@ export function Team() {
         onClose={() => setConfirm(null)}
       />
       <CredentialsDialog creds={creds} self={creds?.identity === me?.identity} onClose={() => setCreds(null)} />
+      <SourceAccessDialog
+        open={!!accessFor}
+        identity={accessFor?.identity ?? ""}
+        denies={accessFor?.denies ?? []}
+        onSubmit={(denies) => {
+          if (accessFor) void apply(api.setSourceAccess(accessFor.identity, denies));
+          setAccessFor(null);
+        }}
+        onClose={() => setAccessFor(null)}
+      />
     </>
   );
 }
@@ -149,6 +162,7 @@ function PersonRow({
   adminCount,
   onApply,
   onConfirm,
+  onDataAccess,
 }: {
   p: Person;
   me: string;
@@ -156,6 +170,7 @@ function PersonRow({
   adminCount: number;
   onApply: (pr: Promise<MutationResult>) => void;
   onConfirm: (c: ConfirmSpec) => void;
+  onDataAccess: (p: Person) => void;
 }) {
   const isSelf = p.identity === me;
   const isLastAdmin = p.role === "admin" && adminCount <= 1;
@@ -169,6 +184,7 @@ function PersonRow({
   else if (!p.hasToken) subline = "no agent connector";
   else subline = p.used ? "agent connected · no web login" : "no web login";
   if (p.envBacked) subline += " · pinned in .env";
+  if (p.denies.length) subline += " · limited data access";
 
   let access: ReactNode;
   if (p.role) {
@@ -239,6 +255,11 @@ function PersonRow({
           Grant login
         </MenuItem>,
       );
+    items.push(
+      <MenuItem key="data-access" onSelect={() => onDataAccess(p)}>
+        Data access…
+      </MenuItem>,
+    );
     items.push(
       <MenuItem
         key="remove"

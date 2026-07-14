@@ -14,7 +14,7 @@ afterAll(() => {
   for (const f of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) if (fs.existsSync(f)) fs.rmSync(f);
 });
 
-const PANELS = [{ key: "p1", sql: "SELECT 1", dialect: "postgres" as const }];
+const PANELS = [{ key: "p1", sql: "SELECT 1", dialect: "clickhouse" as const }];
 
 describe("app version history", () => {
   it("records v1 on publish and a new version per content edit", () => {
@@ -83,7 +83,7 @@ describe("history diff + last-editor", () => {
     const store = new KnowledgeStore(dbPath);
     store.createPublished({ id: "diffapp", title: "T1", body: "b1", refreshSeconds: 60, createdBy: "alice" });
     store.updatePublished("diffapp", { title: "T2" }, { editor: "bob" }); // title-only
-    store.updatePublished("diffapp", { body: "b3", panels: [{ key: "p", sql: "SELECT 1", dialect: "postgres" }] }, { editor: "carol" });
+    store.updatePublished("diffapp", { body: "b3", panels: [{ key: "p", sql: "SELECT 1", dialect: "clickhouse" }] }, { editor: "carol" });
 
     const hist = store.listAppHistory("diffapp"); // newest first: seq 3,2,1
     expect(hist.map((r) => r.seq)).toEqual([3, 2, 1]);

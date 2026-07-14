@@ -23,6 +23,8 @@ export interface Person {
    *  until the next restart). */
   envBacked: boolean;
   role?: Role;
+  /** Denied source-family slugs (the Data access dialog). [] = full access. */
+  denies: string[];
 }
 
 export interface TeamData {
@@ -252,15 +254,17 @@ export interface SourceTable {
   beat?: string | null; // last connector liveness beat, when the source has a connector
 }
 
+/** One biz.* mirrored table — the business DB's read path in the lake. */
+export interface MirroredTableInfo {
+  target: string; // query as biz.<target>
+  source: string; // source pg table, schema-qualified
+  asOf: string; // last successful reload (ISO) — the copy's "data as of"
+}
+
 export interface SourcesData {
-  postgres: {
-    configured: boolean;
-    envVar?: string;
-    ok: boolean;
-    tableCount?: number;
-    error?: string;
-    allow?: string[];
-  };
+  /** The business-DB mirror (biz.*). The gateway holds no direct Postgres
+   *  credential — pg-mirror fills these tables, and they ARE the read path. */
+  mirror: { tables: MirroredTableInfo[] };
   lake: { configured: boolean; ok: boolean; error?: string; tables: SourceTable[] };
   knowledge: { docs: number; byType: Record<string, number> };
 }

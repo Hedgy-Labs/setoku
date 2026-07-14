@@ -1,12 +1,30 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- The gateway's lake user (run_query, clickhouse dialect) — engine-enforced
-     read-only, per I9. Unlike the full-privilege ingest user, setoku_ro:
-       - holds ONLY `GRANT SELECT ON setoku.*` — no INSERT/DDL, and no
-         URL/REMOTE/FILE source grants, so table functions like url() cannot
-         be used for SSRF from a prompt-injected agent;
+     read-only AND engine-enforced per-source access, per I9. Unlike the
+     full-privilege ingest user, setoku_ro:
+       - holds SELECT only — no INSERT/DDL, and no URL/REMOTE/FILE source
+         grants, so table functions like url() cannot be used for SSRF from a
+         prompt-injected agent;
        - runs under a profile with readonly=2 baked in and max_execution_time
          CONSTRAINED to [1, 300] s — a query-level `SETTINGS
          max_execution_time=0` is rejected by the engine, not by our code.
+
+     Per-source access control rides on ROLES, one per source family
+     (lib/sources.ts lakeFamilies() — a lint test pins this file to that
+     catalog, so adding a connector forces adding its role here):
+       - DIRECT grants (biz.*, ingest_heartbeats, pg_mirror_runs) are the
+         always-on core: ClickHouse applies a user's direct grants regardless
+         of which roles are active, so these stay readable under ANY explicit
+         `role` list. Deliberately NO `setoku.*` wildcard — a direct wildcard
+         would defeat the role subsetting (an ad-hoc hand-made setoku.* table
+         is unreadable until it joins a family; connectors ship with code, so
+         that is the right default).
+       - FAMILY roles carry each source's tables. All of them are granted (and
+         therefore default-active: an unrestricted request sends no `role`
+         parameter and sees everything, including families added later). A
+         restricted user's request activates only the allowed subset via the
+         HTTP `role` parameter (ClickHouse ≥ 24.5), and the engine itself
+         denies the rest — no SQL parsing in our code, ever.
      Password comes from CLICKHOUSE_RO_PASSWORD (compose env). -->
 <clickhouse>
     <profiles>
@@ -21,17 +39,83 @@
             </constraints>
         </setoku_readonly>
     </profiles>
+    <roles>
+        <setoku_src_vercel_logs>
+            <grants>
+                <query>GRANT SELECT ON setoku.logs_vercel</query>
+            </grants>
+        </setoku_src_vercel_logs>
+        <setoku_src_render_logs>
+            <grants>
+                <query>GRANT SELECT ON setoku.logs_render</query>
+            </grants>
+        </setoku_src_render_logs>
+        <setoku_src_slack>
+            <grants>
+                <query>GRANT SELECT ON setoku.slack_messages</query>
+            </grants>
+        </setoku_src_slack>
+        <setoku_src_first_party_events>
+            <grants>
+                <query>GRANT SELECT ON setoku.app_events</query>
+            </grants>
+        </setoku_src_first_party_events>
+        <setoku_src_mercury>
+            <grants>
+                <query>GRANT SELECT ON setoku.mercury_accounts</query>
+                <query>GRANT SELECT ON setoku.mercury_transactions</query>
+                <query>GRANT SELECT ON setoku.mercury_events</query>
+            </grants>
+        </setoku_src_mercury>
+        <setoku_src_github>
+            <grants>
+                <query>GRANT SELECT ON setoku.github_issues</query>
+                <query>GRANT SELECT ON setoku.github_pulls</query>
+                <query>GRANT SELECT ON setoku.github_commits</query>
+                <query>GRANT SELECT ON setoku.github_comments</query>
+            </grants>
+        </setoku_src_github>
+        <setoku_src_monarch>
+            <grants>
+                <query>GRANT SELECT ON setoku.monarch_accounts</query>
+                <query>GRANT SELECT ON setoku.monarch_transactions</query>
+                <query>GRANT SELECT ON setoku.monarch_net_worth</query>
+                <query>GRANT SELECT ON setoku.monarch_budgets</query>
+                <query>GRANT SELECT ON setoku.monarch_holdings</query>
+            </grants>
+        </setoku_src_monarch>
+        <setoku_src_unrouted_raw>
+            <grants>
+                <query>GRANT SELECT ON setoku.ingest_raw</query>
+            </grants>
+        </setoku_src_unrouted_raw>
+        <!-- grants NOTHING: activated when every family is denied, because
+             zero `role` params would mean default roles = full access -->
+        <setoku_src_none>
+            <grants></grants>
+        </setoku_src_none>
+    </roles>
     <users>
         <setoku_ro>
             <password from_env="CLICKHOUSE_RO_PASSWORD"/>
             <profile>setoku_readonly</profile>
             <networks><ip>::/0</ip></networks>
             <grants>
-                <query>GRANT SELECT ON setoku.*</query>
-                <!-- the pg-mirror of the business DB (issue #47) — analysts can
-                     already read these tables via prod pg, so this grants no
-                     new data, just the fast engine for it -->
+                <!-- the always-on core: direct grants survive any explicit role list -->
                 <query>GRANT SELECT ON biz.*</query>
+                <query>GRANT SELECT ON setoku.ingest_heartbeats</query>
+                <query>GRANT SELECT ON setoku.pg_mirror_runs</query>
+                <!-- source access rides ONLY on roles, so the HTTP role
+                     parameter can subset it per user -->
+                <query>GRANT setoku_src_vercel_logs</query>
+                <query>GRANT setoku_src_render_logs</query>
+                <query>GRANT setoku_src_slack</query>
+                <query>GRANT setoku_src_first_party_events</query>
+                <query>GRANT setoku_src_mercury</query>
+                <query>GRANT setoku_src_github</query>
+                <query>GRANT setoku_src_monarch</query>
+                <query>GRANT setoku_src_unrouted_raw</query>
+                <query>GRANT setoku_src_none</query>
             </grants>
         </setoku_ro>
     </users>

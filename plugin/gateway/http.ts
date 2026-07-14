@@ -62,8 +62,7 @@ import {
 import { authenticate, canApprove, hashPassword, isRole, MIN_PASSWORD_LENGTH } from "./lib/accounts";
 import { buildKnowledgeView } from "./lib/facts";
 import { VERSION } from "./lib/version";
-import { resolveDatabaseUrl, resolveLakeUrl } from "./lib/config";
-import { introspectSchema } from "./lib/db";
+import { resolveLakeUrl } from "./lib/config";
 import { runLakeQuery } from "./lib/lake";
 
 const projectDir = resolveProjectDir();
@@ -307,11 +306,13 @@ function teamPeople(): {
   used: boolean;
   envBacked: boolean;
   role?: string;
+  denies: string[];
 }[] {
   const tokenIds = new Set(analystIdentities());
   const envIds = envBackedIdentities();
   const active = store.activeIdentities();
   const accounts = store.listAccounts();
+  const denies = store.allSourceDenies();
   const ids = new Set<string>([...tokenIds, ...accounts.map((a) => a.username)]);
   return [...ids]
     .sort()
@@ -321,6 +322,8 @@ function teamPeople(): {
       used: active.has(identity),
       envBacked: envIds.has(identity),
       role: accounts.find((a) => a.username === identity)?.role,
+      // Denied source-family slugs (the Data access dialog). [] = full access.
+      denies: denies[identity] ?? [],
     }));
 }
 
@@ -535,36 +538,23 @@ echo "    how many companies are paying us right now?"
 
 // Lake source tables we know how to surface (shared with the list_sources MCP
 // tool) — query only the ones that actually exist; see gatherSources().
-import { LAKE_SOURCES } from "./lib/sources";
+import { LAKE_SOURCES, familySlug, lakeFamilies } from "./lib/sources";
 
 /**
- * Gather the /admin Sources view live: is Postgres configured + reachable (+
- * table count), is the lake reachable, and per-connector row counts/freshness.
- * All read-only; every probe is independently try/caught so one failure
- * degrades to "—" rather than blanking the page.
+ * Gather the /admin Sources view live: which biz.* tables the mirror carries,
+ * is the lake reachable, and per-connector row counts/freshness. All
+ * read-only; every probe is independently try/caught so one failure degrades
+ * to "—" rather than blanking the page. (The gateway holds no business-DB
+ * credential — the mirror IS the business-data story here.)
  */
 async function gatherSources(): Promise<SourcesData> {
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
 
-  const postgres: SourcesData["postgres"] = { configured: false, ok: false };
+  const mirror: SourcesData["mirror"] = { tables: [] };
   const lake: SourcesData["lake"] = { configured: false, ok: false, tables: [] };
 
   if (config) {
-    const pgUrl = resolveDatabaseUrl(projectDir, config);
-    if (pgUrl.ok) {
-      postgres.configured = true;
-      postgres.envVar = config.dataSource?.urlEnv;
-      postgres.allow = config.allowTables;
-      try {
-        const tables = await introspectSchema(pgUrl.url, config);
-        postgres.ok = true;
-        postgres.tableCount = tables.length;
-      } catch (e) {
-        postgres.error = String(e).slice(0, 200);
-      }
-    }
-
     const lakeUrl = resolveLakeUrl(projectDir, config);
     if (lakeUrl.ok) {
       lake.configured = true;
@@ -619,6 +609,17 @@ async function gatherSources(): Promise<SourcesData> {
           }),
         );
         lake.tables = probes.filter((p): p is SourceTable => p !== null);
+        // The biz.* mirror — which business tables are queryable and how fresh
+        // each copy is. Best-effort like every other probe on this page.
+        try {
+          mirror.tables = (await mirroredTables(lakeUrl.url)).map((m) => ({
+            target: m.target,
+            source: m.source,
+            asOf: m.asOf,
+          }));
+        } catch {
+          /* no mirror on this box — the card simply doesn't render */
+        }
       }
     }
   }
@@ -626,7 +627,7 @@ async function gatherSources(): Promise<SourcesData> {
   const byType: Record<string, number> = {};
   for (const d of store.listDocs()) byType[d.type] = (byType[d.type] ?? 0) + 1;
 
-  return { postgres, lake, knowledge: { docs: store.docCount, byType } };
+  return { mirror, lake, knowledge: { docs: store.docCount, byType } };
 }
 
 /**
@@ -1871,12 +1872,16 @@ const httpServer = http.createServer(async (req, res) => {
               if (acct) store.deleteAccount(uname);
               const { removed, envBacked } = removeAnalystTokens(uname);
               const sessionsKilled = store.destroySessionsFor(uname);
+              // A removed person's source denies go too — a later re-invite
+              // starts at the default (full access), not a stale restriction.
+              const deniesCleared = store.clearSourceDenies(uname);
               store.audit(session.identity, "person_removed", {
                 username: uname,
                 accountDeleted: !!acct,
                 tokensRevoked: removed,
                 sessionsKilled,
                 envBacked,
+                deniesCleared,
               });
               let flash = `Removed ${uname} (${acct ? "login deleted, " : ""}${removed} connector${removed === 1 ? "" : "s"} revoked).`;
               if (envBacked)
@@ -1887,6 +1892,36 @@ const httpServer = http.createServer(async (req, res) => {
               return json(200, { ok: true, flash });
             }
             return json(400, { ok: false, error: "Unknown operation." });
+          }
+
+          // Limit which lake source families a person's agent can query (the
+          // Team page "Data access…" dialog). Full replacement of the deny
+          // set — the dialog Saves a snapshot of its checkboxes. I9: this is a
+          // HUMAN action on the approval surface behind the admin gate above;
+          // no MCP tool can reach it, so an agent can never widen (or narrow)
+          // anyone's data access. Enforcement is the ClickHouse role subset
+          // (lib/sources.ts lakeRolesFor) — the engine denies, we just store.
+          if (api === "source_access") {
+            const body = (await readBody(req)) as { username?: string; denies?: unknown } | undefined;
+            const uname = (body?.username ?? "").trim();
+            if (!uname) return json(400, { ok: false, error: "Username required." });
+            const isPerson = analystIdentities().includes(uname) || !!store.getAccount(uname);
+            if (!isPerson) return json(404, { ok: false, error: `No person "${uname}" (no login, no connector).` });
+            if (!Array.isArray(body?.denies) || body.denies.some((d) => typeof d !== "string"))
+              return json(400, { ok: false, error: "Pass denies — an array of source-family slugs." });
+            // Normalize whatever arrives to catalog-shaped slugs; unknown slugs
+            // are kept (a deny must outlive its connector), just normalized.
+            const denies = [...new Set((body.denies as string[]).map((d) => familySlug(d)).filter(Boolean))];
+            store.setSourceDenies(uname, denies, session.identity);
+            store.audit(session.identity, "source_access_set", { username: uname, denies });
+            const catalog = new Map(lakeFamilies().map((f) => [f.slug, f.family]));
+            const labels = denies.map((d) => catalog.get(d) ?? d);
+            return json(200, {
+              ok: true,
+              flash: denies.length
+                ? `${uname} can no longer query: ${labels.join(", ")}.`
+                : `${uname} has full data access.`,
+            });
           }
 
           return json(404, { ok: false, error: "unknown endpoint" });

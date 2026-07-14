@@ -48,6 +48,13 @@ export async function runLakeQuery(
    *  ClickHouse substitutes them server-side via `param_<name>`; viewer input
    *  reaches the engine only this way, never spliced into `sql`. */
   chParams: Record<string, string> = {},
+  /** Per-user source access (lib/sources.ts lakeRolesFor): the granted roles
+   *  to ACTIVATE for this request via ClickHouse's repeatable `role` URL
+   *  parameter (`SET ROLE r1, r2`, ≥24.5). null/undefined = unrestricted —
+   *  omit the parameter so the reader's default roles (all of them) apply.
+   *  Direct grants (biz.*, heartbeats, mirror runs) apply regardless; the
+   *  ENGINE denies tables outside the active roles — no SQL parsing here. */
+  roles: string[] | null = null,
 ): Promise<QueryOutcome> {
   const v = validateSql(sql);
   if (!v.ok) throw new Error(v.error);
@@ -69,6 +76,7 @@ export async function runLakeQuery(
       default_format: "JSON",
     });
     for (const [k, val] of Object.entries(chParams)) params.set(`param_${k}`, val);
+    for (const r of roles ?? []) params.append("role", r); // repeatable = SET ROLE r1, r2
     if (target.database) params.set("database", target.database);
     const res = await fetch(`${target.endpoint}/?${params}`, {
       method: "POST",

@@ -22,6 +22,12 @@ export interface LakeSource {
   connector?: string;
 }
 
+/** Lake plumbing tables that are NOT a deniable source: heartbeats power the
+ *  liveness UI, and pg_mirror_runs is the mirror's run log (the biz.* business
+ *  tables it describes are core, readable by every session). Direct grants on
+ *  the ClickHouse reader cover these; family roles cover everything else. */
+export const CORE_LAKE_TABLES = ["ingest_heartbeats", "pg_mirror_runs"] as const;
+
 export const LAKE_SOURCES: LakeSource[] = [
   { table: "logs_vercel", source: "Vercel logs", ts: "ts", blurb: "Vercel platform logs — HTTP requests, build & runtime errors, status codes, latency (level=error/fatal are problems)" },
   { table: "logs_render", source: "Render logs", ts: "ts", blurb: "Render service logs — app stdout/stderr, deploy & runtime errors", connector: "render-poller" },
@@ -42,3 +48,86 @@ export const LAKE_SOURCES: LakeSource[] = [
   { table: "pg_mirror_runs", source: "Business-DB mirror", ts: "finished_at", blurb: "Reload history of the biz.* business-DB mirror — the mirrored tables themselves live in the biz database (query biz.<table>, clickhouse dialect)", connector: "pg-mirror" },
   { table: "ingest_raw", source: "Unrouted (raw)", ts: "ingested_at", blurb: "Raw ingest that didn't match a known schema (rarely queried directly)" },
 ];
+
+/* ---------------- source families + per-user access control ---------------- */
+
+/** The family a source belongs to — the label prefix before " · " ("Mercury ·
+ *  transactions" → "Mercury"); single-table sources are their own family. The
+ *  same grouping the Sources page and list_sources draw. */
+export function familyOf(label: string): string {
+  return label.split(" · ")[0];
+}
+
+/** Stable slug for a family — the unit source_denies stores and the admin API
+ *  speaks ("Vercel logs" → "vercel_logs"). */
+export function familySlug(family: string): string {
+  return family
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+/** The ClickHouse role that grants SELECT on one family's tables. Role names
+ *  are pinned to deploy/clickhouse/lake-users.xml by a lint test — adding a
+ *  connector means adding its family role there too. */
+export function roleFor(slug: string): string {
+  return `setoku_src_${slug}`;
+}
+
+/** A role that grants NOTHING, for the every-family-denied identity. The role
+ *  parameter's empty-list case is a trap: appending zero `role` params is the
+ *  same as omitting the parameter, which activates the DEFAULT roles — i.e.
+ *  full access. Activating this empty role instead keeps the engine holding
+ *  the line (direct core grants — biz.*, heartbeats — still apply). */
+export const NO_SOURCES_ROLE = "setoku_src_none";
+
+export interface LakeFamily {
+  family: string;
+  slug: string;
+  role: string;
+  tables: string[];
+}
+
+/** The deniable source families: LAKE_SOURCES grouped by family, minus the
+ *  core plumbing (CORE_LAKE_TABLES — the biz.* mirror's run log and the
+ *  heartbeats, which every session may read). ingest_raw IS deniable on
+ *  purpose: unrouted rows can carry any source's payloads, so leaving it
+ *  always-open would bypass a deny. */
+export function lakeFamilies(): LakeFamily[] {
+  const out = new Map<string, LakeFamily>();
+  for (const s of LAKE_SOURCES) {
+    if ((CORE_LAKE_TABLES as readonly string[]).includes(s.table)) continue;
+    const family = familyOf(s.source);
+    const slug = familySlug(family);
+    let f = out.get(slug);
+    if (!f) {
+      f = { family, slug, role: roleFor(slug), tables: [] };
+      out.set(slug, f);
+    }
+    f.tables.push(s.table);
+  }
+  return [...out.values()];
+}
+
+/**
+ * The ClickHouse roles to activate for a session, from its identity's denied
+ * family slugs. `null` = unrestricted → the caller omits the `role` parameter
+ * entirely, so the reader's DEFAULT roles apply — which include every family
+ * role, also ones added after this code shipped. That is what makes "opted
+ * into everything, including new connectors" the durable default: a
+ * restriction is an explicit role subset; absence of one is not a snapshot.
+ *
+ * SETOKU_SOURCE_ACCESS=0 is the rollout kill-switch (a box whose ClickHouse
+ * predates the HTTP `role` parameter, 24.5): every session runs unrestricted.
+ */
+export function lakeRolesFor(denies: string[]): string[] | null {
+  if (process.env.SETOKU_SOURCE_ACCESS === "0") return null;
+  if (!denies.length) return null;
+  const denied = new Set(denies);
+  const roles = lakeFamilies()
+    .filter((f) => !denied.has(f.slug))
+    .map((f) => f.role);
+  // Every family denied → NEVER return [] (zero role params = the default
+  // roles = full access, the exact inversion of the intent).
+  return roles.length ? roles : [NO_SOURCES_ROLE];
+}

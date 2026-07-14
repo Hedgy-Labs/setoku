@@ -20,7 +20,7 @@ You are deriving the business's **verified context** from its codebase and savin
 1. **Schema source:** Prisma (`*.prisma`), ActiveRecord (`db/schema.rb`), Django models, SQLAlchemy, dbt (`models/*.yml`), raw migrations — whatever defines tables. No codebase? Use `get_schema` + the platform's standard semantics (e.g. Shopify/HubSpot schemas) + an interview with the user.
 2. **Business logic:** where eligibility/status/billing/lifecycle rules live (search for the table names; follow billing, "active", "paying", "eligible", soft-delete patterns).
 3. **Existing knowledge:** README/docs, code comments, pending corrections (`list_corrections`), any team memory/notes the user points at.
-4. **Live schema:** call `get_schema` to cross-check that what the code says matches the database; note mismatches for the user rather than guessing which is right.
+4. **Live schema:** call `get_schema` to cross-check that what the code says matches what's queryable (it describes the ClickHouse `biz.*` business-DB mirror + lake tables); note mismatches for the user rather than guessing which is right.
 
 ## Doc types and content
 
@@ -49,7 +49,7 @@ customer_id → public.customers.id (the buyer). One order : many order_items.
 - prisma/schema.prisma:120 (model definition)
 ```
 
-**metric** — canonical business numbers. `meta`: `summary`, `keywords`, `links` (the entities its SQL reads), `dialect` (`postgres` | `clickhouse` — machine-read by run_query routing and knowledge-lint; omit = postgres). Body: `## Definition` (prose), `## Canonical SQL` (fenced sql block — the exact production logic), `## Caveats`, `## Sources` (file:line). A metric is canonical in exactly **one** dialect (I5). When the box mirrors the business DB (`list_sources` shows a BUSINESS-DB MIRROR section), the mirror is THE read path: define metrics over mirrored tables in **`clickhouse` dialect against `biz.<table>`** (`meta.dialect: clickhouse`) — the gateway rejects postgres queries against mirrored tables, so a postgres-dialect metric doc there is a metric agents cannot run.
+**metric** — canonical business numbers. `meta`: `summary`, `keywords`, `links` (the entities its SQL reads), `dialect` (always `clickhouse` — machine-read by run_query routing and knowledge-lint; it is the only runnable dialect). Body: `## Definition` (prose), `## Canonical SQL` (fenced sql block — the exact production logic), `## Caveats`, `## Sources` (file:line). A metric is canonical in exactly **one** dialect (I5), and that dialect is `clickhouse`: business tables are read only via the mirror, so define metrics against **`biz.<table>`** (lake tables by their lake names) and always set `meta.dialect: clickhouse`. The gateway rejects postgres SQL outright, so a legacy postgres-dialect metric doc is a metric agents cannot run (knowledge-lint flags it for migration).
 
 **query** — known-good SQL for a recurring question. `meta`: `question`, `keywords`, `links` (the entities/metrics it touches). Body: fenced sql.
 
@@ -77,11 +77,11 @@ Diff-driven: identify which entities/metrics are affected by recent code changes
 
 ## Migrating knowledge to the mirror
 
-When a box gains the business-DB mirror (or `run_query` starts rejecting a metric's postgres SQL with the biz.* rewrite), existing metric/query docs need re-dialecting once:
+The mirror is the only read path (`run_query` rejects postgres SQL with the biz.* rewrite), so legacy postgres-dialect metric/query docs need re-dialecting once:
 
 1. List metric/query docs and pull each one's canonical SQL (`get_metric` / `find_context`). The ones to migrate reference mirrored tables (compare against the BUSINESS-DB MIRROR section of `list_sources`) and declare no `dialect: clickhouse`.
 2. Translate the SQL to ClickHouse against the `biz.*` names. The usual delta is small: `x FILTER (WHERE c)` → `xIf(..., c)`, drop `::casts`, `CURRENT_DATE` → `today()` (`dateDiff('day', d, today())` for day math), and qualified-name joins may need explicit `AS` aliases when both sides share a column name.
-3. VALIDATE on the analyst connector: run the translated SQL with `run_query` dialect `clickhouse` and compare against the old number (`force_postgres: true` runs the postgres original for the comparison — that's what it's for).
+3. VALIDATE on the analyst connector: run the translated SQL with `run_query` (clickhouse is the default and only dialect) and sanity-check the result against the doc's last known number. The live source is no longer reachable from the gateway, so verify against the mirror and note its "data as of" (`list_sources`) alongside the number.
 4. Re-save with the translated SQL and `meta.dialect: clickhouse` (curator `upsert_context`, or `report_correction` on analyst). Never silently rewrite a curator-shaped doc — say what changed; revisions are recorded.
 
 knowledge-lint routes each doc's SQL by `meta.dialect`, so migrated docs keep linting against the engine they actually run on.

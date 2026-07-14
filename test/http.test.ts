@@ -3,47 +3,48 @@
  * e2e for the deployed (HTTP) profile: spawn the actual http.ts entry, connect
  * with the SDK's Streamable-HTTP client using bearer tokens, verify auth →
  * identity → audit attribution, and that knowledge + data tools work over HTTP.
- * Reuses the Postgres database created by e2e.test.ts's fixtures.
+ * The gateway's only query engine is ClickHouse (the direct business-Postgres
+ * path is retired), so the data surface is a fake lake (test/lib/fakelake) —
+ * this suite needs NO local database at all.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import pgPkg from "pg";
 import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { spawnGateway, waitHealthy, connect as gwConnect, call, FIXTURES, ROOT } from "./lib/gateway";
+import { startFakeLake, innerSql, type FakeLake } from "./lib/fakelake";
 
-const { Client: PgClient } = pgPkg;
-
-const PG_HOST = process.env.SETOKU_E2E_PG_HOST ?? "/tmp";
-const DB_NAME = "setoku_e2e_http";
-const DB_URL =
-  process.env.SETOKU_E2E_HTTP_DB_URL ??
-  `postgresql:///${DB_NAME}?host=${encodeURIComponent(PG_HOST)}`;
 const PORT = 38719;
 const BASE = `http://127.0.0.1:${PORT}`;
 
 let tmpRepo: string;
 let proc: Subprocess;
+let lake: FakeLake;
+// The biz.orders "table" the fake lake serves: publish dry-runs and frame
+// renders read this, and tests mutate it to prove renders are live, not frozen.
+let paidOrders = 3;
 
 const connect = (token: string | null) => gwConnect(BASE, token, "http-e2e");
 
 beforeAll(async () => {
-  // database
-  const admin = new PgClient({
-    host: PG_HOST,
-    database: process.env.SETOKU_E2E_PG_MAINTENANCE_DB ?? "template1",
+  // The lake — the gateway's ONLY query engine. One handler serves everything
+  // the suite touches; anything unmatched returns zero rows (so best-effort
+  // probes like the egress ledger stay in their "not configured" state).
+  lake = startFakeLake((sql) => {
+    const q = innerSql(sql);
+    // lib/mirror.ts refresh(): the pg_mirror_runs registry (one SQL that also
+    // subselects system.tables) — declares public.orders mirrored as biz.orders.
+    if (q.includes("pg_mirror_runs") && q.includes("target_table AS target"))
+      return { rows: [{ target: "orders", source: "public.orders", as_of: "2026-07-14 00:00:00.000" }] };
+    // the revenue question run_query asks below
+    if (q.includes("total_cents")) return { rows: [{ rev: 225 }] };
+    // the app panels: paid-order counts over the biz.* mirror
+    if (q.includes("count(*)") && q.includes("biz.orders")) return { rows: [{ n: paidOrders }] };
+    return { rows: [] };
   });
-  await admin.connect();
-  await admin.query(`DROP DATABASE IF EXISTS ${DB_NAME} WITH (FORCE)`);
-  await admin.query(`CREATE DATABASE ${DB_NAME}`);
-  await admin.end();
-  const db = new PgClient({ host: PG_HOST, database: DB_NAME });
-  await db.connect();
-  await db.query(fs.readFileSync(path.join(FIXTURES, "schema.sql"), "utf8"));
-  await db.end();
 
   // project dir with config + seed context
   tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), "setoku-http-"));
@@ -76,7 +77,7 @@ beforeAll(async () => {
   proc = spawnGateway({
     SETOKU_PROJECT_DIR: tmpRepo,
     SETOKU_DB_PATH: path.join(tmpRepo, "knowledge.db"),
-    SETOKU_E2E_DB_URL: DB_URL,
+    SETOKU_LAKE_URL: lake.url,
     SETOKU_HTTP_PORT: String(PORT),
     // envdel is sacrificial: an env-pinned identity deleted by a person-remove test
     SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test,tok-envdel=envdel@co.test",
@@ -91,6 +92,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   proc?.kill();
+  lake?.stop();
   if (tmpRepo) fs.rmSync(tmpRepo, { recursive: true, force: true });
 });
 
@@ -137,12 +139,16 @@ describe("tools over HTTP", () => {
       question: "how much revenue last month?",
     });
     expect(fc.text).toContain("Refunded orders must be excluded");
+    // business tables are read via the biz.* mirror — the default (and only)
+    // dialect is clickhouse, no dialect argument needed
     const rq = await call(alice, "run_query", {
-      sql: "SELECT SUM(total_cents)/100.0 AS rev FROM orders WHERE status='paid'",
+      sql: "SELECT SUM(total_cents)/100.0 AS rev FROM biz.orders WHERE status='paid'",
       purpose: "http e2e",
     });
     expect(rq.isError).toBe(false);
     expect(rq.text).toContain("225");
+    // and the query actually reached the lake engine
+    expect(lake.calls.some((c) => c.sql.includes("total_cents"))).toBe(true);
     await alice.close();
   });
 
@@ -151,9 +157,11 @@ describe("tools over HTTP", () => {
     expect((await alice.listTools()).tools.map((t) => t.name)).toContain("list_sources");
     const r = await call(alice, "list_sources");
     expect(r.isError).toBe(false);
-    expect(r.text).toContain("BUSINESS DATABASE");
-    expect(r.text).toContain("public.orders"); // a fixture table
-    expect(r.text).toMatch(/lake/i); // names the lake even when absent
+    // business data = the biz.* ClickHouse mirror, never a direct pg section
+    expect(r.text).toContain("BUSINESS DATA (ClickHouse, biz.*)");
+    expect(r.text).toContain("biz.orders ← public.orders"); // the mirrored fixture table
+    expect(r.text).not.toContain("BUSINESS DATABASE"); // the retired pg section
+    expect(r.text).toMatch(/lake/i); // names the lake even when empty
     await alice.close();
   });
 
@@ -649,8 +657,19 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     const { cookie } = await session("boss", "s3cret-pass");
     const r = await apiGet("sources", cookie);
     expect(r.status).toBe(200);
-    const s = (await r.json()) as { postgres: { configured: boolean }; knowledge: { docs: number } };
-    expect(s.postgres).toBeDefined();
+    const s = (await r.json()) as {
+      mirror: { tables: { target: string; source: string; asOf: string }[] };
+      lake: { configured: boolean; ok: boolean };
+      knowledge: { docs: number };
+    };
+    // the business-data card is the biz.* MIRROR (fed by setoku.pg_mirror_runs);
+    // there is no direct-Postgres section anymore — the gateway holds no pg credential
+    expect("postgres" in s).toBe(false);
+    expect(s.mirror.tables).toEqual([
+      { target: "orders", source: "public.orders", asOf: "2026-07-14T00:00:00.000Z" },
+    ]);
+    expect(s.lake.configured).toBe(true);
+    expect(s.lake.ok).toBe(true);
     expect(s.knowledge).toBeDefined();
   });
 
@@ -662,7 +681,8 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
   it("egress ledger: default threshold, admin-set, 0 disables, member refused on role", async () => {
     expect((await apiGet("egress")).status).toBe(401); // session required
     const admin = await session("boss", "s3cret-pass");
-    // untouched box → the 10 GB/day default (no lake here, so just the knob + no ledger)
+    // untouched box → the 10 GB/day default (the ledger table holds no runs
+    // here, so just the knob + an empty ledger)
     const before = (await (await apiGet("egress", admin.cookie)).json()) as {
       thresholdBytes: number | null;
       configured: boolean;
@@ -1103,13 +1123,15 @@ describe("live apps (end-to-end render path)", () => {
     return { cookie: setCookie.split(";")[0], csrf: body.csrf };
   }
   const countIn = (html: string): number | null => {
-    // count(*) comes back as a bigint → pg serializes it as a quoted string.
+    // count(*) can come back as a quoted string (ClickHouse serializes UInt64
+    // as a JSON string) — accept either.
     const m = html.match(/"n":"?(\d+)"?/);
     return m ? Number(m[1]) : null;
   };
 
   it("publishes (analyst), renders fresh data, reflects DB changes, promotes to public, then archives", async () => {
     // 1. An analyst publishes a live app; the panel is dry-run at publish.
+    //    Business tables are read via the biz.* mirror (clickhouse dialect).
     const alice = await connect("tok-alice");
     const pub = await call(alice, "publish_app", {
       title: "Paid orders",
@@ -1118,8 +1140,8 @@ describe("live apps (end-to-end render path)", () => {
         {
           key: "paid",
           title: "Paid order count",
-          sql: "SELECT count(*) AS n FROM orders WHERE status = 'paid'",
-          dialect: "postgres",
+          sql: "SELECT count(*) AS n FROM biz.orders WHERE status = 'paid'",
+          dialect: "clickhouse",
           metricId: "revenue",
         },
       ],
@@ -1151,14 +1173,12 @@ describe("live apps (end-to-end render path)", () => {
     const n0 = countIn(frame);
     expect(n0).toBeGreaterThan(0);
 
-    // 4. Mutate the DB, force a refresh → the rendered data reflects the change
-    //    (this is the whole point: the data is live, not frozen at publish). The
-    //    force lives on the frame now (?force=1), author/admin-gated, so the iframe
-    //    itself bypasses the cache and re-runs the query.
-    const pg = new PgClient({ host: PG_HOST, database: DB_NAME });
-    await pg.connect();
-    await pg.query("INSERT INTO orders (customer_id, status, total_cents) VALUES (1, 'paid', 100)");
-    await pg.end();
+    // 4. Mutate the (fake) lake, force a refresh → the rendered data reflects
+    //    the change (this is the whole point: the data is live, not frozen at
+    //    publish — a plain re-render would serve the still-fresh cache). The
+    //    force lives on the frame now (?force=1), author/admin-gated, so the
+    //    iframe itself bypasses the cache and re-runs the query.
+    paidOrders += 1;
     const frame2 = await (await fetch(`${BASE}/admin/frame/${id}?force=1`, { headers: { cookie: boss.cookie } })).text();
     expect(countIn(frame2)).toBe((n0 ?? 0) + 1);
 
@@ -1223,7 +1243,8 @@ describe("live apps (end-to-end render path)", () => {
     const pub = await call(alice, "publish_app", {
       title: "Member test",
       html: "<div></div>",
-      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+      // no dialect: clickhouse is the default (the only engine there is)
+      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM biz.orders" }],
     });
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     await alice.close();
@@ -1254,7 +1275,7 @@ describe("live apps (end-to-end render path)", () => {
       title: "clamp test",
       html: "<div id=x></div>",
       refreshSeconds: 10_000_000,
-      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM biz.orders", dialect: "clickhouse" }],
     });
     const bigId = (big.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     // a zero-panel fragment app (state-only / presentational — no live data)
@@ -1295,7 +1316,7 @@ describe("live apps (end-to-end render path)", () => {
     const pub = await call(alice, "publish_app", {
       title: "Alice board",
       html: "<div id=x></div>",
-      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM biz.orders", dialect: "clickhouse" }],
     });
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     await alice.close();
@@ -1320,7 +1341,7 @@ describe("live apps (end-to-end render path)", () => {
     const alice2 = await connect("tok-alice");
     const upd = await call(alice2, "update_app", {
       id,
-      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders WHERE status='paid'", dialect: "postgres" }],
+      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM biz.orders WHERE status='paid'", dialect: "clickhouse" }],
     });
     expect(upd.isError).toBe(false);
     expect(upd.text.toLowerCase()).toContain("reverted to team");

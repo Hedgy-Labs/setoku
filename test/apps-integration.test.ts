@@ -4,26 +4,49 @@
  * reach: publish-time param validation, param BINDING through the real render
  * path (a value changes the result), panel-less (state-only) app rendering, and
  * the per-app state datastore endpoints (scopes, isolation, auth, quota). Boots
- * the real http.ts against a throwaway Postgres + SQLite store.
+ * the real http.ts against a fake ClickHouse lake + throwaway SQLite store —
+ * the gateway's ONLY query engine is ClickHouse (the direct business-Postgres
+ * path is retired), so no local Postgres is needed.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import pgPkg from "pg";
 import { Database } from "bun:sqlite";
 import { KnowledgeStore } from "../plugin/gateway/lib/store";
 import { renderApp, flushBackgroundPanelRefreshes, MAX_RENDER_ROW_BYTES } from "../plugin/gateway/lib/apps";
+import type { AppParam } from "../plugin/gateway/lib/params";
 import { hashPassword } from "../plugin/gateway/lib/accounts";
 import { spawnGateway, waitHealthy, connect as gwConnect, call, ROOT } from "./lib/gateway";
+import { startFakeLake, innerSql } from "./lib/fakelake";
 
-const { Client: PgClient } = pgPkg;
-const PG_HOST = process.env.SETOKU_E2E_PG_HOST ?? "/tmp";
-const DB_NAME = "setoku_apps_int";
-const DB_URL = `postgresql:///${DB_NAME}?host=${encodeURIComponent(PG_HOST)}`;
 const PORT = 38731;
 const BASE = `http://127.0.0.1:${PORT}`;
+
+// What the old suite seeded into a real `metrics` table, as canned lake rows:
+// NA = 100+200, EMEA = 40+60, APAC = 10+20. The fake is a WIRE fake — it hands
+// back these rows and RECORDS each request, so the tests keep asserting the
+// downstream behavior (binding, trimming, caching) without a SQL engine.
+const TOTALS: Record<string, number> = { NA: 300, EMEA: 100, APAC: 30 };
+const wideRows = (n: number): Record<string, unknown>[] =>
+  Array.from({ length: n }, (_, i) => ({ g: i + 1, pad: "x".repeat(400) }));
+
+const lake = startFakeLake((sql, call) => {
+  const q = innerSql(sql);
+  if (q.includes("missing_table")) return { exception: "Unknown table missing_table" };
+  if (q.includes("{region:String}"))
+    return { rows: [{ total: TOTALS[call.params.get("param_region") ?? ""] ?? 0 }] };
+  if (q.includes("{n:Int64}")) return { rows: [{ n: call.params.get("param_n") ?? "0" }] };
+  if (q.includes("numbers(500)")) return { rows: Array.from({ length: 500 }, (_, i) => ({ g: i + 1 })) };
+  if (q.includes("numbers(12000)")) return { rows: wideRows(12000) };
+  if (q.includes("numbers(8000)")) return { rows: wideRows(8000) };
+  if (q.includes("count() n")) return { rows: [{ n: "6" }] }; // CH JSON renders UInt64 as a string
+  return null;
+});
+// Both the spawned gateway AND the in-process renderApp calls resolve the lake
+// from this env var (config.lake is unset in the template).
+process.env.SETOKU_LAKE_URL = lake.url;
 
 let proc: Subprocess;
 let tmp = "";
@@ -51,29 +74,29 @@ async function login(): Promise<{ cookie: string; csrf: string }> {
 }
 
 beforeAll(async () => {
-  const admin = new PgClient({ host: PG_HOST, database: process.env.SETOKU_E2E_PG_MAINTENANCE_DB ?? "template1" });
-  await admin.connect();
-  await admin.query(`DROP DATABASE IF EXISTS ${DB_NAME} WITH (FORCE)`);
-  await admin.query(`CREATE DATABASE ${DB_NAME}`);
-  await admin.end();
-  const db = new PgClient({ host: PG_HOST, database: DB_NAME });
-  await db.connect();
-  await db.query("CREATE TABLE metrics (region text, revenue numeric)");
-  for (const [region, vals] of [["NA", [100, 200]], ["EMEA", [40, 60]], ["APAC", [10, 20]]] as const)
-    for (const v of vals) await db.query("INSERT INTO metrics VALUES ($1,$2)", [region, v]);
-  await db.end();
-
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "setoku-apps-int-"));
   fs.cpSync(path.join(ROOT, "deploy", "project-template", ".setoku"), path.join(tmp, ".setoku"), { recursive: true });
   const dbPath = path.join(tmp, "knowledge.db");
   const store = new KnowledgeStore(dbPath);
   store.createAccount({ username: "boss", pwhash: await hashPassword("s3cret-pass"), role: "admin" });
+  // An app stored BEFORE the postgres path was retired — written straight into
+  // the store (publish_app would reject it today) so the params-only-update
+  // grandfathering below has something real to exercise.
+  store.createPublished({
+    id: "legacy-pg",
+    title: "Legacy",
+    body: "<div id=kpi></div>",
+    panels: [{ key: "kpi", title: "Total", sql: "select coalesce(sum(revenue),0) total from metrics where region = :region", dialect: "postgres" as const }],
+    params: [REGION_PARAM as AppParam],
+    refreshSeconds: 60,
+    createdBy: "boss",
+  });
   store.db.close();
 
   proc = spawnGateway({
     SETOKU_PROJECT_DIR: tmp,
     SETOKU_DB_PATH: dbPath,
-    SETOKU_DATABASE_URL: DB_URL,
+    SETOKU_LAKE_URL: lake.url,
     SETOKU_TOKENS: "tok_boss=boss",
     SETOKU_HTTP_PORT: String(PORT),
     SETOKU_PUBLIC_URL: BASE,
@@ -84,11 +107,13 @@ beforeAll(async () => {
 
 afterAll(() => {
   proc?.kill();
+  lake.stop();
   if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 const REGION_PARAM = { name: "region", type: "enum", default: "NA", options: [{ value: "NA" }, { value: "EMEA" }, { value: "APAC" }] };
-const REGION_PANEL = { key: "kpi", title: "Total", sql: "select coalesce(sum(revenue),0) total from metrics where region = :region", dialect: "postgres" };
+// No `dialect` — publish_app defaults it to "clickhouse", the only one that runs.
+const REGION_PANEL = { key: "kpi", title: "Total", sql: "select sum(revenue) total from biz.metrics where region = :region" };
 
 describe("publish_app — param validation", () => {
   it("publishes an app whose panel binds a declared :param", async () => {
@@ -96,6 +121,11 @@ describe("publish_app — param validation", () => {
     const r = await call(c, "publish_app", { title: "By region", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] });
     expect(r.isError).toBeFalsy();
     expect(idOf(r.text)).toBeTruthy();
+    // The publish dry-run compiled :region to a ClickHouse placeholder and bound
+    // the DEFAULT via param_region — the value never appears in the SQL text.
+    const seed = lake.calls.filter((x) => x.sql.includes("{region:String}")).at(-1)!;
+    expect(seed).toBeDefined();
+    expect(seed.params.get("param_region")).toBe("NA");
   });
   it("rejects a panel that references an UNDECLARED :param", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");
@@ -108,10 +138,52 @@ describe("publish_app — param validation", () => {
     const r = await call(c, "publish_app", {
       title: "bad default",
       html: "<div id=kpi></div>",
-      panels: [{ key: "kpi", title: "n", sql: "select :n n", dialect: "postgres" }],
+      panels: [{ key: "kpi", title: "n", sql: "select :n n" }],
       params: [{ name: "n", type: "int", default: "not-a-number", min: 1, max: 10 }],
     });
     expect(r.isError).toBeTruthy();
+  });
+  it("rejects a broken query at the publish dry-run (engine error → no app)", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const r = await call(c, "publish_app", {
+      title: "broken",
+      html: "<div id=kpi></div>",
+      panels: [{ key: "kpi", title: "n", sql: "select nope from missing_table" }],
+    });
+    expect(r.isError).toBeTruthy();
+    expect(r.text).toContain("Unknown table missing_table"); // the engine's reason, surfaced
+  });
+});
+
+describe("postgres dialect is retired (business reads go through biz.*)", () => {
+  it("rejects publishing a postgres-dialect panel with the retirement pointer", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "retired");
+    const r = await call(c, "publish_app", {
+      title: "old world",
+      html: "<div id=kpi></div>",
+      panels: [{ ...REGION_PANEL, dialect: "postgres" }],
+      params: [REGION_PARAM],
+    });
+    expect(r.isError).toBeTruthy();
+    expect(r.text).toContain('Panel "kpi"');
+    expect(r.text).toContain("direct business-Postgres path is retired");
+    expect(r.text).toContain("biz."); // points at the mirror, not a dead end
+  });
+  it("still allows a params-only update of a stored legacy postgres app (metadata isn't frozen)", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "retired");
+    // seed=false path: validates/compiles the stored postgres panel WITHOUT executing.
+    const r = await call(c, "update_app", {
+      id: "legacy-pg",
+      params: [{ ...REGION_PARAM, options: [...REGION_PARAM.options, { value: "LATAM" }] }],
+    });
+    expect(r.isError).toBeFalsy();
+    // …but re-authoring its SQL re-enters the seeded path, where postgres is rejected.
+    const r2 = await call(c, "update_app", {
+      id: "legacy-pg",
+      panels: [{ key: "kpi", title: "Total", sql: "select 1 total", dialect: "postgres" }],
+    });
+    expect(r2.isError).toBeTruthy();
+    expect(r2.text).toContain("direct business-Postgres path is retired");
   });
 });
 
@@ -199,7 +271,7 @@ describe("public /frame — fresh-execution budget bounds prod load", () => {
   it("serves cache-only (soft error) once an app's budget is spent on distinct params", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");
     const N_PARAM = { name: "n", type: "int", default: 0, min: 0, max: 1_000_000 };
-    const N_PANEL = { key: "kpi", title: "n", sql: "select :n n", dialect: "postgres" };
+    const N_PANEL = { key: "kpi", title: "n", sql: "select :n n" };
     const id = idOf((await call(c, "publish_app", { title: "amp", html: "<div id=kpi></div>", panels: [N_PANEL], params: [N_PARAM] })).text);
     const { cookie, csrf } = await login();
     await fetch(`${BASE}/admin/api/set_visibility`, {
@@ -211,7 +283,7 @@ describe("public /frame — fresh-execution budget bounds prod load", () => {
       const html = await (await fetch(`${BASE}/p/${id}/frame?p.n=${n}`)).text();
       return setokuOf(html).panels.kpi;
     };
-    // First distinct value runs fresh against the DB (budget intact).
+    // First distinct value runs fresh against the lake (budget intact).
     expect(String((await panelOf(1)).rows[0].n)).toBe("1");
     // Burn the rest of the burst budget on distinct (uncached) variants, then one
     // more must be rate-limited: cache-only, so the panel reports an error instead
@@ -243,13 +315,21 @@ describe("param binding — a viewer value changes the result", () => {
     expect(await total("NA")).toBe("300"); // 100 + 200
     expect(await total("EMEA")).toBe("100"); // 40 + 60
     expect(await total("APAC")).toBe("30"); // 10 + 20
+    // BOUND, never spliced: every region query reached the engine with the SQL
+    // still carrying the placeholder and the value riding in param_region.
+    const bound = lake.calls.filter((c2) => c2.params.has("param_region"));
+    expect(bound.map((c2) => c2.params.get("param_region"))).toEqual(expect.arrayContaining(["NA", "EMEA", "APAC"]));
+    for (const c2 of bound) expect(innerSql(c2.sql)).toContain("{region:String}");
   });
   it("falls back to the default for a value outside the enum (injection-safe)", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");
     const id = idOf((await call(c, "publish_app", { title: "safe", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
     const { cookie } = await login();
     const html = await (await fetch(`${BASE}/admin/frame/${id}?p.region=${encodeURIComponent("NA'; DROP TABLE metrics;--")}`, { headers: { cookie } })).text();
-    expect(String(setokuOf(html).panels.kpi.rows[0].total)).toBe("300"); // rejected → default NA, table intact
+    expect(String(setokuOf(html).panels.kpi.rows[0].total)).toBe("300"); // rejected → default NA
+    // The hostile text never reached the engine — not in any SQL, not even as a bind value.
+    expect(lake.calls.some((c2) => c2.sql.includes("DROP TABLE"))).toBe(false);
+    expect(lake.calls.some((c2) => (c2.params.get("param_region") ?? "").includes("DROP"))).toBe(false);
   });
   it("echoes the RESOLVED value into the frame (rejected input → default, for the control bar)", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");
@@ -366,7 +446,7 @@ describe("cache migration — pre-rename dashboard_cache carries forward", () =>
 describe("publish seeds the FULL result set (no silent 200-row prefix)", () => {
   it("serves all rows on the first render after publish, not a 200-row seed", async () => {
     const c = await gwConnect(BASE, "tok_boss", "seed");
-    const panel = { key: "kpi", title: "rows", sql: "select g from generate_series(1, 500) g", dialect: "postgres" };
+    const panel = { key: "kpi", title: "rows", sql: "select number + 1 g from numbers(500)" };
     const id = idOf((await call(c, "publish_app", { title: "Big seed", html: "<div id=kpi></div>", panels: [panel] })).text);
     // The FIRST view (well within the TTL) is served straight from the publish seed —
     // it must already carry all 500 rows, not a 200-row prefix, and not flag truncated.
@@ -378,9 +458,8 @@ describe("publish seeds the FULL result set (no silent 200-row prefix)", () => {
 });
 
 describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", () => {
-  // renderApp resolves the business DB in-process (same config path the gateway
-  // uses) — point it at this suite's throwaway Postgres.
-  process.env.SETOKU_DATABASE_URL = DB_URL;
+  // renderApp resolves the lake in-process (same config path the gateway uses) —
+  // SETOKU_LAKE_URL points it at this suite's fake lake (set at module scope).
 
   /** A minimal published app for direct renderApp calls (no HTTP round-trip). */
   const mkDash = (id: string, sql: string) => ({
@@ -393,13 +472,13 @@ describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", (
     createdBy: "test",
     createdAt: new Date().toISOString(),
     archivedAt: null,
-    panels: [{ key: "kpi", title: "n", sql, dialect: "postgres" as const }],
+    panels: [{ key: "kpi", title: "n", sql, dialect: "clickhouse" as const }],
     params: [],
   });
 
   it("records durationMs on a fresh run and serves it from cache", async () => {
     const store = new KnowledgeStore(":memory:");
-    const dash = mkDash("swr-dur", "select count(*) n from metrics");
+    const dash = mkDash("swr-dur", "select count() n from biz.metrics");
     const cold = await renderApp(store, tmp, dash);
     expect(cold[0].error).toBeNull();
     expect(typeof cold[0].durationMs).toBe("number");
@@ -412,7 +491,7 @@ describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", (
 
   it("serves stale rows immediately past the TTL and refreshes in the background", async () => {
     const store = new KnowledgeStore(":memory:");
-    const dash = mkDash("swr-basic", "select count(*) n from metrics");
+    const dash = mkDash("swr-basic", "select count() n from biz.metrics");
     const cold = await renderApp(store, tmp, dash);
     expect(cold[0].error).toBeNull();
     const staleAt = cold[0].computedAt;
@@ -435,7 +514,7 @@ describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", (
 
   it("budget-denied SWR says rate-limited (not refreshing) and runs nothing", async () => {
     const store = new KnowledgeStore(":memory:");
-    const dash = mkDash("swr-budget", "select count(*) n from metrics");
+    const dash = mkDash("swr-budget", "select count() n from biz.metrics");
     await renderApp(store, tmp, dash, { tryFreshRun: () => true });
     const before = store.getPanelCache("swr-budget", "kpi")!;
     const stale = await renderApp(store, tmp, dash, { now: Date.now() + 60_000, tryFreshRun: () => false });
@@ -449,7 +528,7 @@ describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", (
 
   it("a failing background refresh keeps the last-good rows (stale ceiling still governs)", async () => {
     const store = new KnowledgeStore(":memory:");
-    await renderApp(store, tmp, mkDash("swr-fail", "select count(*) n from metrics"));
+    await renderApp(store, tmp, mkDash("swr-fail", "select count() n from biz.metrics"));
     const before = store.getPanelCache("swr-fail", "kpi")!;
     // The app's query breaks (e.g. a dropped column) — SWR still serves last-good…
     const broken = mkDash("swr-fail", "select nope from missing_table");
@@ -466,7 +545,7 @@ describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", (
 
   it("force bypasses SWR and blocks for fresh rows", async () => {
     const store = new KnowledgeStore(":memory:");
-    const dash = mkDash("swr-force", "select count(*) n from metrics");
+    const dash = mkDash("swr-force", "select count() n from biz.metrics");
     const cold = await renderApp(store, tmp, dash);
     await Bun.sleep(5); // ensure the forced run's stamp lands in a later millisecond
     const forced = await renderApp(store, tmp, dash, { force: true, now: Date.now() + 60_000 });
@@ -481,20 +560,19 @@ describe("panel row cap decoupled from run_query (byte-bounded render)", () => {
   // Panels render to a human in the iframe, not into the model's context, so the
   // render path passes RENDER_FETCH_CEILING to runPanel — NOT config.rowCap (200,
   // which still governs run_query). The only bound on a panel is MAX_RENDER_ROW_BYTES.
-  process.env.SETOKU_DATABASE_URL = DB_URL;
 
   const mkRowsDash = (id: string, sql: string) => ({
     id, title: "t", format: "app" as const, body: "<div id=kpi></div>",
     refreshSeconds: 30, visibility: "team" as const, createdBy: "test",
     createdAt: new Date().toISOString(), archivedAt: null,
-    panels: [{ key: "kpi", title: "n", sql, dialect: "postgres" as const }],
+    panels: [{ key: "kpi", title: "n", sql, dialect: "clickhouse" as const }],
     params: [],
   });
 
   it("renders the full result set — no 200-row model-context cap on panels", async () => {
     const store = new KnowledgeStore(":memory:");
     // 500 rows > the 200 run_query rowCap; a panel must return them ALL.
-    const r = await renderApp(store, tmp, mkRowsDash("cap-full", "select g from generate_series(1, 500) g"));
+    const r = await renderApp(store, tmp, mkRowsDash("cap-full", "select number + 1 g from numbers(500)"));
     expect(r[0].error).toBeNull();
     expect(r[0].rows.length).toBe(500);
     expect(r[0].truncated).toBe(false);
@@ -504,7 +582,7 @@ describe("panel row cap decoupled from run_query (byte-bounded render)", () => {
   it("trims to the byte budget and marks truncated (a partial table, never dropped)", async () => {
     const store = new KnowledgeStore(":memory:");
     // Wide rows whose full set (~12k × ~400B) blows past MAX_RENDER_ROW_BYTES (3.5MB).
-    const r = await renderApp(store, tmp, mkRowsDash("cap-bytes", "select g, repeat('x', 400) pad from generate_series(1, 12000) g"));
+    const r = await renderApp(store, tmp, mkRowsDash("cap-bytes", "select number g, repeat('x', 400) pad from numbers(12000)"));
     expect(r[0].error).toBeNull(); // trimmed to fit — NOT dropped with an error
     expect(r[0].truncated).toBe(true);
     expect(r[0].rows.length).toBeGreaterThan(0); // still a usable prefix
@@ -517,11 +595,11 @@ describe("panel row cap decoupled from run_query (byte-bounded render)", () => {
     const store = new KnowledgeStore(":memory:");
     // Two panels each ~3.3MB (under the 3.5MB per-panel budget on their own) but
     // ~6.6MB together — capRenderBytes must trim BOTH to a fair share, not vanish one.
-    const wide = "select g, repeat('x', 400) pad from generate_series(1, 8000) g";
+    const wide = "select number g, repeat('x', 400) pad from numbers(8000)";
     const dash = {
       id: "cap-fair", title: "t", format: "app" as const, body: "<div></div>",
       refreshSeconds: 30, visibility: "team" as const, createdBy: "test", createdAt: new Date().toISOString(), archivedAt: null,
-      panels: [{ key: "a", title: "a", sql: wide, dialect: "postgres" as const }, { key: "b", title: "b", sql: wide, dialect: "postgres" as const }],
+      panels: [{ key: "a", title: "a", sql: wide, dialect: "clickhouse" as const }, { key: "b", title: "b", sql: wide, dialect: "clickhouse" as const }],
       params: [],
     };
     const r = await renderApp(store, tmp, dash);

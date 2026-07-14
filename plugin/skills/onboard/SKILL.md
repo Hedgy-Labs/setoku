@@ -15,10 +15,12 @@ engine — follow it; this adds the repo-specific bits.
    (Prisma/Vercel use `POSTGRES_PRISMA_URL`/`POSTGRES_URL_NON_POOLING`), **prefer a
    `localhost` URL, never prod unless the user explicitly chooses it**, use the
    direct/non-pooling URL, and grab only that one line — never echo the rest of
-   `.env`). `deploy/connect-postgres.sh` then mints the read-only role + URL; the
-   repo's `.setoku/config.json` holds only the env-var *name*. If `get_schema`
-   already returns tables, the DB is wired — skip ahead. Then verify the agent
-   understands the schema (connect phase 3).
+   `.env`). `deploy/connect-postgres.sh` then mints the read-only role + URL for
+   the **mirror** (pg-mirror reads the source with it and fills ClickHouse
+   `biz.*`; the gateway gets no DB URL); the repo's `.setoku/config.json` holds
+   only the env-var *name*. If `get_schema` already shows `biz.*` tables, the DB
+   is wired — skip ahead. Then verify the agent understands the schema (connect
+   phase 3).
 2. **Allowlist the tools.** Merge `"mcp__<connector>"` into `permissions.allow` in
    the repo's `.claude/settings.json` (create if missing; read-modify-write, never
    clobber) so the team never hits permission prompts. `<connector>` is the box's

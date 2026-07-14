@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Setoku is a self-hosted MCP server between Claude and a company's data — curated context plus a governed read-only query path; no LLM runs on the server (I8). See the README for the product picture.
+Setoku is a self-hosted MCP server between Claude and a company's data — curated context plus a governed read-only query path into ClickHouse (the lake plus the `biz.*` business-DB mirror; the gateway holds no direct business-Postgres credential); no LLM runs on the server (I8). See the README for the product picture.
 
 This repo is the **dev/test harness**. The installable plugin lives in `./plugin` (its own `package.json`, deps installed on the box by a `SessionStart` hook). Root `package.json` (`setoku-dev`) drives development, build, and deploy.
 
@@ -15,7 +15,7 @@ Runtime is **Bun** throughout (`bun:sqlite`, `Bun.hash`, etc.) — not Node. Typ
 ```bash
 bun install                  # deps (root); plugin deps are separate (plugin/package.json)
 bun run typecheck            # tsc --noEmit — the only "build" for the gateway
-bun test                     # fast suite: test/ + ingest/ (~4s) — needs a local Postgres
+bun test                     # fast suite: test/ + ingest/ (~4s) — ingest/ needs a local Postgres
 bun test test/http.test.ts   # a single test file
 bun run test:e2e             # browser e2e (e2e/) — slower, needs Chrome; run before deploys
 bun run setup:hooks          # install the pre-push hook (gates pushes on the fast suite)
@@ -27,7 +27,7 @@ bun run build:admin          # rebuild app.css (Tailwind) + dist/app.js (committ
 bun run deploy               # rsync this checkout to a box + rebuild the server container
 ```
 
-The fast `bun test` suite needs a reachable Postgres (defaults to a unix socket in `/tmp`; override with `SETOKU_E2E_PG_HOST`, `SETOKU_E2E_DB_URL`, `SETOKU_E2E_PG_MAINTENANCE_DB`). The browser e2e is deliberately **not** in the pre-push gate.
+The fast suite's gateway tests run against a fake in-process lake (`test/lib/fakelake.ts`); only the `ingest/` tests (pg-mirror) need a reachable Postgres (defaults to a unix socket in `/tmp`; override with `SETOKU_E2E_PG_HOST`, `SETOKU_E2E_DB_URL`, `SETOKU_E2E_PG_MAINTENANCE_DB`). Real-ClickHouse suites gate on `SETOKU_E2E_CH_URL`. The browser e2e is deliberately **not** in the pre-push gate.
 
 The admin CSS/JS bundles in `plugin/gateway/web/{app.css,dist/app.js}` are **committed build artifacts** served at startup — re-run `bun run build:admin` and commit them after changing `web/app/` or `web/input.css`.
 
@@ -40,7 +40,7 @@ Everything runs as one `docker compose` on one VPS (single-tenant, I6). Only Cad
 - `http.ts` — the deployed entry point. Streamable-HTTP MCP transport with bearer-token auth; **a fresh stateless `McpServer` per request**, identity bound from the token. Also serves the `/admin` React SPA + its session-cookie JSON API (`/admin/api/*`), the `/healthz` aggregate, and the `/i/<token>` one-line installer. Shared state lives in the SQLite store, not the server instance.
 - `lib/store.ts` — `KnowledgeStore`, the owned SQLite DB (docs, corrections, append-only revisions + audit log, accounts/sessions). Lives **outside the repo** by default (`~/.setoku/projects/<slug>/knowledge.db`); `.setoku/context/` files seed it once.
 - `lib/config.ts` — loads `.setoku/config.json` from the *business* repo, resolves DB/lake URLs from env-var **names** (the credential never reaches the model), enforces the table allow/deny list.
-- `lib/db.ts` / `lib/lake.ts` — read-only Postgres and ClickHouse query execution.
+- `lib/db.ts` / `lib/lake.ts` — the shared read-statement gate and the ClickHouse query execution (the gateway's only query engine; the direct Postgres read path is retired — business tables are read via the `biz.*` mirror).
 - `admin-cli.ts` — bootstraps the first admin account on the box (no authenticated channel exists yet).
 
 **Two identities, one membrane (I2/I9) — the load-bearing security design.**

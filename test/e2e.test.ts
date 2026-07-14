@@ -1,33 +1,31 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
  * End-to-end test of the Setoku gateway:
- *   real Postgres (synthetic shop schema) ⇄ real MCP client over HTTP ⇄ the
+ *   fake ClickHouse lake (wire-level) ⇄ real MCP client over HTTP ⇄ the
  *   exact http.ts the box runs. Exercises both token classes: a **curator**
  *   token (may commit curated knowledge, blocked from the lake) drives the
- *   generate/curate surface; an **analyst** token is propose-only (I2/I9).
+ *   generate/curate surface; an **analyst** token is propose-only (I2/I9) but
+ *   owns every data read — the gateway's only query engine is ClickHouse (the
+ *   direct business-Postgres path is retired; business tables are the biz.*
+ *   mirror), so run_query / panels / get_schema run here against canned rows
+ *   from test/lib/fakelake plus assertions on what actually reached the
+ *   engine (SQL text + the readonly/cap params). Real-engine semantics live
+ *   in the CH-gated suite (test/lake.test.ts).
  *
  * No LLM is involved — this proves the deterministic layer (tools, governance,
  * retrieval). The inference layer (skills) is exercised live in Claude Code.
  *
- * Requires a local Postgres. Default connection is via unix socket as the
- * current OS user; override with SETOKU_E2E_PG_HOST / SETOKU_E2E_DB_URL.
+ * Needs NO local services: the lake is faked in-process.
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import pgPkg from "pg";
 import type { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
 import { spawnGateway, waitHealthy, connect, call as gwCall, FIXTURES } from "./lib/gateway";
+import { startFakeLake, innerSql, type FakeLake } from "./lib/fakelake";
 
-const { Client: PgClient } = pgPkg;
-
-const PG_HOST = process.env.SETOKU_E2E_PG_HOST ?? "/tmp"; // unix socket dir or hostname
-const DB_NAME = "setoku_e2e";
-const DB_URL =
-  process.env.SETOKU_E2E_DB_URL ??
-  `postgresql:///${DB_NAME}?host=${encodeURIComponent(PG_HOST)}`;
 const PORT = 38731;
 const BASE = `http://127.0.0.1:${PORT}`;
 const CURATOR = "tok-curator";
@@ -36,16 +34,42 @@ const ANALYST = "tok-analyst";
 let tmpRepo: string;
 let dbPath: string;
 let proc: Subprocess;
+let lake: FakeLake;
 let mcp: McpClient; // connected with the curator token
+let analyst: McpClient; // analyst token — the only session that may read data
 
 const call = (name: string, args: Record<string, unknown> = {}) =>
   gwCall(mcp, name, args);
+const acall = (name: string, args: Record<string, unknown> = {}) =>
+  gwCall(analyst, name, args);
+
+// What ClickHouse system.columns would grant this box: the biz.* business-DB
+// mirror (the synthetic shop) plus one lake table. get_schema renders straight
+// from this — permission scoping is the ENGINE's, so what the fake returns IS
+// the queryable surface.
+const SCHEMA_ROWS = [
+  { database: "biz", table: "customers", name: "id", type: "Int64" },
+  { database: "biz", table: "customers", name: "email", type: "String" },
+  { database: "biz", table: "customers", name: "deleted_at", type: "Nullable(DateTime64(3))" },
+  { database: "biz", table: "orders", name: "id", type: "Int64" },
+  { database: "biz", table: "orders", name: "customer_id", type: "Int64" },
+  { database: "biz", table: "orders", name: "status", type: "String" },
+  { database: "biz", table: "orders", name: "total_cents", type: "Int64" },
+  { database: "biz", table: "order_items", name: "id", type: "Int64" },
+  { database: "biz", table: "order_items", name: "order_id", type: "Int64" },
+  { database: "setoku", table: "slack_messages", name: "event_ts", type: "DateTime64(3)" },
+  { database: "setoku", table: "slack_messages", name: "text", type: "String" },
+];
 
 function boot(): void {
   proc = spawnGateway({
     SETOKU_PROJECT_DIR: tmpRepo,
     SETOKU_DB_PATH: dbPath,
-    SETOKU_E2E_DB_URL: DB_URL,
+    SETOKU_LAKE_URL: lake.url,
+    // The retired path must never even be dialed: this URL is unroutable, so
+    // any attempted business-Postgres connection would surface as a network
+    // error instead of the curated retirement message the tests assert on.
+    SETOKU_DATABASE_URL: "postgresql://x:y@127.0.0.1:1/nope",
     SETOKU_HTTP_PORT: String(PORT),
     SETOKU_TOKENS: `${ANALYST}=e2e@test`,
     SETOKU_CURATOR_TOKENS: `${CURATOR}=e2e@test`,
@@ -53,19 +77,32 @@ function boot(): void {
 }
 
 beforeAll(async () => {
-  // 1. (re)create the test database and load the synthetic schema
-  const admin = new PgClient({
-    host: PG_HOST,
-    database: process.env.SETOKU_E2E_PG_MAINTENANCE_DB ?? "template1",
+  // 1. a fake lake with canned answers for everything this suite queries —
+  // matched on inner SQL substrings (see test/lib/fakelake.ts)
+  lake = startFakeLake((sql) => {
+    const q = innerSql(sql);
+    if (q.includes("system.columns")) return { rows: SCHEMA_ROWS };
+    if (q.includes("sorting_key"))
+      return {
+        rows: [
+          { database: "biz", name: "customers", sorting_key: "id" },
+          { database: "biz", name: "orders", sorting_key: "id" },
+        ],
+      };
+    if (q.includes("pg_mirror_runs")) return { rows: [] }; // no mirror metadata on this box
+    if (q.includes("SUM(total_cents)")) return { rows: [{ revenue_dollars: 225 }] };
+    // the engine wall behind the statement gate: a write that slips past the
+    // first-keyword gate (a modifying CTE) dies on readonly, like real CH
+    if (q.includes("UPDATE orders"))
+      return { exception: "Code: 164. DB::Exception: Cannot execute query in readonly mode" };
+    if (q.includes("no_such_table_here"))
+      return { exception: "Code: 60. DB::Exception: Unknown table expression identifier 'no_such_table_here'" };
+    // rowCap is 50 (fixture config) — 51 rows trips the truncation sentinel
+    if (q.includes("system.numbers"))
+      return { rows: Array.from({ length: 51 }, (_, i) => ({ number: i })) };
+    if (q.includes("count(*)") && q.includes("biz.orders")) return { rows: [{ n: 3 }] };
+    return null; // default single-row { ok: 1 }
   });
-  await admin.connect();
-  await admin.query(`DROP DATABASE IF EXISTS ${DB_NAME} WITH (FORCE)`);
-  await admin.query(`CREATE DATABASE ${DB_NAME}`);
-  await admin.end();
-  const db = new PgClient({ host: PG_HOST, database: DB_NAME });
-  await db.connect();
-  await db.query(fs.readFileSync(path.join(FIXTURES, "schema.sql"), "utf8"));
-  await db.end();
 
   // 2. fake "business repo" with a .setoku dir (copied from fixtures).
   // The markdown fixtures double as a test of the file → store seed importer.
@@ -76,15 +113,18 @@ beforeAll(async () => {
   dbPath = path.join(tmpRepo, "knowledge.db");
 
   // 3. spawn the HTTP gateway exactly as the box runs it, then connect a real
-  // MCP client with the CURATOR token (this suite drives generate/curate).
+  // MCP client per token class (curator drives generate/curate; analyst reads).
   boot();
   await waitHealthy(BASE);
   mcp = await connect(BASE, CURATOR);
+  analyst = await connect(BASE, ANALYST, "analyst");
 }, 30_000);
 
 afterAll(async () => {
   await mcp?.close();
+  await analyst?.close();
   proc?.kill();
+  lake?.stop();
   if (tmpRepo) fs.rmSync(tmpRepo, { recursive: true, force: true });
 });
 
@@ -145,84 +185,109 @@ describe("tool surface", () => {
   });
 });
 
-describe("get_schema (permission-scoped)", () => {
-  it("lists allowed tables and hides denied ones", async () => {
+describe("get_schema (engine-scoped ClickHouse metadata)", () => {
+  it("lists every queryable table from system.columns, biz.* first", async () => {
     const { text, isError } = await call("get_schema");
     expect(isError).toBe(false);
-    expect(text).toContain("public.customers");
-    expect(text).toContain("public.orders");
-    expect(text).toContain("public.order_items");
-    expect(text).not.toContain("internal_notes");
+    expect(text).toContain('queryable tables (run_query dialect:"clickhouse")');
+    expect(text).toContain("biz.customers");
+    expect(text).toContain("biz.orders");
+    expect(text).toContain("biz.order_items");
+    expect(text).toContain("setoku.slack_messages");
+    expect(text.indexOf("biz.customers")).toBeLessThan(text.indexOf("setoku.slack_messages"));
+    // order_items has no entity doc — the drift note flags the gap
+    expect(text).toContain("no context doc yet");
+    // scoping is the ENGINE's, not ours: the metadata fetch is pinned to the
+    // queryable databases and excludes the heartbeat plumbing up front
+    const meta = lake.calls.find((c) => c.sql.includes("system.columns"));
+    expect(meta).toBeTruthy();
+    expect(meta!.sql).toContain("database IN ('biz','setoku')");
+    expect(meta!.sql).toContain("ingest_heartbeats");
   });
 
-  it("returns full detail (types, PK, FK) for requested tables", async () => {
+  it("returns full detail (types + ORDER BY key) for requested tables", async () => {
     const { text } = await call("get_schema", { tables: ["orders"] });
-    expect(text).toContain("public.orders");
-    expect(text).toContain("total_cents: integer");
-    expect(text).toContain("PK");
-    expect(text).toContain("→ public.customers.id");
+    expect(text).toContain("# biz.orders (ORDER BY id)");
+    expect(text).toContain("- total_cents: Int64");
+    expect(text).toContain("- status: String");
+    expect(text).not.toContain("biz.customers"); // detail is scoped to the ask
   });
 });
 
-describe("run_query governance", () => {
-  it("answers the canonical revenue query correctly", async () => {
-    const { text, isError } = await call("run_query", {
-      sql: "SELECT SUM(total_cents)/100.0 AS revenue_dollars FROM orders WHERE status = 'paid'",
+describe("run_query governance (analyst session)", () => {
+  it("answers the canonical revenue query from the biz.* mirror", async () => {
+    const { text, isError } = await acall("run_query", {
+      sql: "SELECT SUM(total_cents)/100.0 AS revenue_dollars FROM biz.orders WHERE status = 'paid'",
       purpose: "e2e revenue check",
     });
     expect(isError).toBe(false);
-    expect(text).toContain("225"); // 100 + 50 + 75 dollars; refunded 200 excluded
+    expect(text).toContain("225"); // canned: 100 + 50 + 75 dollars, refunds excluded
+    // …and it reached the engine through the governed wrapper, with the
+    // engine-enforced caps pinned on the request itself (I9: the engine is
+    // the wall — every query carries readonly + row cap + timeout)
+    const req = lake.calls.find((c) => c.sql.includes("SUM(total_cents)"));
+    expect(req).toBeTruthy();
+    expect(req!.sql).toContain("_setoku_q LIMIT 51"); // fixture rowCap 50 + sentinel
+    expect(req!.params.get("readonly")).toBe("2");
+    expect(req!.params.get("max_result_rows")).toBe("51");
+    expect(req!.params.get("max_execution_time")).toBe("2"); // ceil(1500ms fixture timeout)
   });
 
-  it("rejects INSERT", async () => {
-    const { text, isError } = await call("run_query", {
-      sql: "INSERT INTO customers (email, name) VALUES ('x@x.com','X')",
+  it("rejects INSERT at the statement gate — nothing reaches the engine", async () => {
+    const { text, isError } = await acall("run_query", {
+      sql: "INSERT INTO biz.customers (email, name) VALUES ('x@x.com','X')",
     });
     expect(isError).toBe(true);
     expect(text).toContain("Only read statements");
+    expect(lake.calls.some((c) => c.sql.includes("x@x.com"))).toBe(false);
   });
 
-  it("rejects multiple statements", async () => {
-    const { text, isError } = await call("run_query", {
-      sql: "SELECT 1; SELECT 2",
+  it("rejects multiple statements — nothing reaches the engine", async () => {
+    const { text, isError } = await acall("run_query", {
+      sql: "SELECT 1; SELECT 'smuggle-two'",
     });
     expect(isError).toBe(true);
     expect(text).toContain("Multiple statements");
+    expect(lake.calls.some((c) => c.sql.includes("smuggle-two"))).toBe(false);
   });
 
-  it("rejects a write smuggled through a CTE (READ ONLY transaction)", async () => {
-    const { text, isError } = await call("run_query", {
+  it("a write smuggled through a CTE dies on the engine's readonly wall", async () => {
+    // WITH passes the first-keyword gate, so the request DOES go out — but the
+    // gateway pins readonly=2 on it, and the engine (faked with real CH's
+    // answer) rejects the write. Defense in depth: gate in front, wall behind.
+    const { text, isError } = await acall("run_query", {
       sql: "WITH x AS (UPDATE orders SET status = 'paid' RETURNING id) SELECT * FROM x",
     });
     expect(isError).toBe(true);
-    // blocked either by the row-cap subquery wrap (modifying CTEs must be top-level)
-    // or by the READ ONLY transaction — both layers reject the write
-    expect(text.toLowerCase()).toMatch(/read-only|must be at the top level/);
-  });
-
-  it("verifies the smuggled write did not happen", async () => {
-    const { text } = await call("run_query", {
-      sql: "SELECT count(*) AS n FROM orders WHERE status = 'refunded'",
-    });
-    expect(text).toContain("1"); // still exactly one refunded order
+    expect(text.toLowerCase()).toContain("readonly");
+    const req = lake.calls.find((c) => c.sql.includes("UPDATE orders"));
+    expect(req).toBeTruthy();
+    expect(req!.params.get("readonly")).toBe("2");
   });
 
   it("truncates at the row cap", async () => {
-    const { text, isError } = await call("run_query", {
-      sql: "SELECT generate_series(1, 1000) AS n",
+    const { text, isError } = await acall("run_query", {
+      sql: "SELECT number FROM system.numbers LIMIT 250",
     });
     expect(isError).toBe(false);
     expect(text).toContain("TRUNCATED");
-    expect(text).toContain("50"); // fixture rowCap
+    expect(text).toContain("(50)"); // fixture rowCap
   });
 
-  it("enforces the statement timeout", async () => {
-    const { text, isError } = await call("run_query", {
-      sql: "SELECT pg_sleep(5)",
+  it('the postgres dialect is retired — rejected before any connection attempt', async () => {
+    // SETOKU_DATABASE_URL points at an unroutable address (see boot()): if the
+    // gateway still tried to dial Postgres, this would be a network error, not
+    // the curated retirement message with the biz.* rewrite pointer.
+    const { text, isError } = await acall("run_query", {
+      sql: "SELECT 1 AS legacy_probe",
+      dialect: "postgres",
     });
     expect(isError).toBe(true);
-    expect(text.toLowerCase()).toContain("timeout");
-  }, 10_000);
+    expect(text).toContain("retired");
+    expect(text).toContain("biz.");
+    // the lake wasn't consulted either — the dialect fails fast, pre-engine
+    expect(lake.calls.some((c) => c.sql.includes("legacy_probe"))).toBe(false);
+  });
 });
 
 describe("context retrieval", () => {
@@ -327,11 +392,13 @@ describe("curation + knowledge store + audit", () => {
 
   it("knowledge survives a gateway restart (it lives in the service DB, not the process)", async () => {
     await mcp.close();
+    await analyst.close();
     proc.kill();
     await proc.exited;
     boot();
     await waitHealthy(BASE);
     mcp = await connect(BASE, CURATOR, "setoku-e2e-2");
+    analyst = await connect(BASE, ANALYST, "analyst-2");
     const got = await call("get_metric", { name: "aov" });
     expect(got.isError).toBe(false);
     expect(got.text).toContain("AVG(total_cents)");
@@ -374,20 +441,25 @@ describe("curation + knowledge store + audit", () => {
         /INSERT/i.test(r.payload.sql ?? ""),
     );
     expect(rejected).toBeTruthy();
+    // the retired dialect is audited as such, not as an engine failure
+    const retired = records.find(
+      (r) => r.tool === "run_query" && r.payload.error === "pg-retired",
+    );
+    expect(retired).toBeTruthy();
   });
 });
 
 describe("app surface", () => {
   it("publishes a live app (dry-runs the panel), inspects it, lists it, then revokes it", async () => {
-    const pub = await call("publish_app", {
+    const pub = await acall("publish_app", {
       title: "Paid orders",
       html: '<div id="n"></div><script>document.getElementById("n").textContent=window.__SETOKU__.panels.paid.rows[0].n</script>',
       panels: [
         {
           key: "paid",
           title: "Paid order count",
-          sql: "SELECT count(*) AS n FROM orders WHERE status = 'paid'",
-          dialect: "postgres",
+          sql: "SELECT count(*) AS n FROM biz.orders WHERE status = 'paid'",
+          dialect: "clickhouse",
           metricId: "revenue",
         },
       ],
@@ -400,8 +472,15 @@ describe("app surface", () => {
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
     expect(id).toBeTruthy();
 
+    // the dry-run went through the governed lake path with the canned answer
+    const dry = lake.calls.find(
+      (c) => c.sql.includes("count(*)") && c.sql.includes("biz.orders"),
+    );
+    expect(dry).toBeTruthy();
+    expect(dry!.params.get("readonly")).toBe("2");
+
     // get_app surfaces how it's calculated: the SQL + the last run
-    const got = await call("get_app", { id });
+    const got = await acall("get_app", { id });
     expect(got.isError).toBeFalsy();
     expect(got.text).toContain("count(*)");
     expect(got.text).toContain("metric:revenue");
@@ -410,26 +489,38 @@ describe("app surface", () => {
     expect(got.text).toContain("## template");
     expect(got.text).toContain("window.__SETOKU__.panels.paid.rows[0].n");
 
-    const listed = await call("list_apps");
+    const listed = await acall("list_apps");
     expect(listed.text).toContain("Paid orders");
     expect(listed.text).toContain("1 panel");
     expect(listed.text).toContain(id!);
 
-    const off = await call("unpublish_app", { id });
+    const off = await acall("unpublish_app", { id });
     expect(off.isError).toBeFalsy();
     // a second revoke is a no-op error (already archived)
-    const again = await call("unpublish_app", { id });
+    const again = await acall("unpublish_app", { id });
     expect(again.isError).toBe(true);
   });
 
   it("rejects an app whose panel query is broken (dry-run gate)", async () => {
-    const r = await call("publish_app", {
+    const r = await acall("publish_app", {
       title: "broken",
       html: "<div></div>",
-      panels: [{ key: "x", sql: "SELECT * FROM no_such_table_here", dialect: "postgres" }],
+      panels: [{ key: "x", sql: "SELECT * FROM no_such_table_here", dialect: "clickhouse" }],
     });
     expect(r.isError).toBe(true);
     expect(r.text).toContain('Panel "x" failed to run');
+  });
+
+  it("rejects a postgres-dialect panel — the direct business-Postgres path is retired", async () => {
+    const r = await acall("publish_app", {
+      title: "legacy",
+      html: "<div></div>",
+      panels: [{ key: "legacy", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+    });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('Panel "legacy"');
+    expect(r.text).toContain("retired");
+    expect(r.text).toContain("biz.");
   });
 
   it("blocks a curator session from authoring a lake-backed panel (I2/I9 membrane)", async () => {
@@ -473,25 +564,25 @@ describe("app surface", () => {
   });
 
   it("edits an app in place — same id, new title + panels", async () => {
-    const pub = await call("publish_app", {
+    const pub = await acall("publish_app", {
       title: "Editable",
       html: "<div id=x></div>",
-      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders WHERE status='paid'", dialect: "postgres" }],
+      panels: [{ key: "a", sql: "SELECT count(*) AS n FROM biz.orders WHERE status='paid'", dialect: "clickhouse" }],
     });
     const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
 
-    const upd = await call("update_app", {
+    const upd = await acall("update_app", {
       id,
       title: "Edited title",
-      panels: [{ key: "b", sql: "SELECT count(*) AS n FROM orders", dialect: "postgres" }],
+      panels: [{ key: "b", sql: "SELECT count(*) AS n FROM biz.orders", dialect: "clickhouse" }],
     });
     expect(upd.isError).toBeFalsy();
     expect(upd.text).toContain(id); // same link
 
-    const got = await call("get_app", { id });
+    const got = await acall("get_app", { id });
     expect(got.text).toContain("Edited title");
     expect(got.text).toContain("panel b"); // new panel present
     expect(got.text).not.toContain("panel a"); // old panel replaced
-    await call("unpublish_app", { id });
+    await acall("unpublish_app", { id });
   });
 });

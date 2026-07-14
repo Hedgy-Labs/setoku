@@ -436,6 +436,20 @@ export class KnowledgeStore {
       created_at TEXT NOT NULL,
       created_by TEXT
     )`);
+    // Per-identity source DENIES (the Team page "Data access…" dialog, I9).
+    // Deny-list semantics on purpose: NO rows = full access, forever, including
+    // families that don't exist yet — a new connector is opted-in by default
+    // and a restriction is an explicit act. `family` is the slug from
+    // lib/sources.ts familySlug(); slugs for removed connectors are kept (a
+    // denied family must not silently re-open because its poller was retired).
+    // Written only by the admin web surface — no MCP tool touches this table.
+    this.db.run(`CREATE TABLE IF NOT EXISTS source_denies (
+      identity TEXT NOT NULL,
+      family TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      created_by TEXT,
+      PRIMARY KEY (identity, family)
+    )`);
     // Published reports (the "Reports" surface). An agent calls publish_report
     // with self-contained HTML; we store it under an opaque id. A "team" report
     // serves session-gated at /admin/p/<id>; a "public" one (an admin promotes
@@ -1022,6 +1036,50 @@ export class KnowledgeStore {
         .query("SELECT DISTINCT identity FROM analyst_tokens ORDER BY identity")
         .all() as { identity: string }[]
     ).map((r) => r.identity);
+  }
+
+  /* --------------------------- source access (I9) ----------------------- */
+
+  /** The source families this identity is denied (slugs). [] = full access. */
+  sourceDenies(identity: string): string[] {
+    return (
+      this.db
+        .query("SELECT family FROM source_denies WHERE identity = ? ORDER BY family")
+        .all(identity) as { family: string }[]
+    ).map((r) => r.family);
+  }
+
+  /** Replace an identity's denied families wholesale (the dialog's Save is a
+   *  full snapshot of the checkboxes). Slugs not in the current catalog are
+   *  stored as-is — a deny outlives its connector. Empty = restore full access. */
+  setSourceDenies(identity: string, families: string[], by: string): void {
+    const now = new Date().toISOString();
+    const tx = this.db.transaction((fams: string[]) => {
+      this.db.run("DELETE FROM source_denies WHERE identity = ?", [identity]);
+      for (const family of fams) {
+        this.db.run(
+          "INSERT OR REPLACE INTO source_denies (identity, family, created_at, created_by) VALUES (?, ?, ?, ?)",
+          [identity, family, now, by],
+        );
+      }
+    });
+    tx([...new Set(families)]);
+  }
+
+  /** Every identity's denies in one query (the Team page join). */
+  allSourceDenies(): Record<string, string[]> {
+    const rows = this.db
+      .query("SELECT identity, family FROM source_denies ORDER BY identity, family")
+      .all() as { identity: string; family: string }[];
+    const out: Record<string, string[]> = {};
+    for (const r of rows) (out[r.identity] ??= []).push(r.family);
+    return out;
+  }
+
+  /** Drop an identity's denies (person removed — a fresh re-invite starts at
+   *  the default: full access). Returns how many rows were cleared. */
+  clearSourceDenies(identity: string): number {
+    return this.db.run("DELETE FROM source_denies WHERE identity = ?", [identity]).changes;
   }
 
   /* -------------------------------- sessions ---------------------------- */

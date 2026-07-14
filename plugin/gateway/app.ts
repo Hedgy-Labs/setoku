@@ -11,24 +11,22 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 
 import {
   loadConfig,
-  resolveDatabaseUrl,
   resolveLakeUrl,
   type SetokuConfig,
 } from "./lib/config";
-import { diagnoseNoTables, introspectSchema } from "./lib/db";
 import { runLakeQuery } from "./lib/lake";
 import { buildLinkGraph, docRef, matchByTokens, retrieve, selectGotchas } from "./lib/search";
 import { combineSynonyms, synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
 import type { DerivedSynonyms } from "./lib/derived-synonyms";
 import { KnowledgeStore, mintShareId, type AppPanel, type DocType } from "./lib/store";
-import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, MAX_RENDER_ROW_BYTES, RENDER_FETCH_CEILING, runPanel, trimRowsToBytes, compilePanel, isFullDoc } from "./lib/apps";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, MAX_RENDER_ROW_BYTES, RENDER_FETCH_CEILING, PG_RETIRED_ERROR, runPanel, trimRowsToBytes, compilePanel, isFullDoc } from "./lib/apps";
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
-import { queryCaptureNudge, panelCaptureNote, mirrorSteerNote, panelMirrorNote, mirrorHits, type MirrorRef } from "./lib/nudge";
+import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
 import { mirroredTables, type MirroredTable } from "./lib/mirror";
-import { LAKE_SOURCES, BEAT_LIVE_MS } from "./lib/sources";
+import { LAKE_SOURCES, BEAT_LIVE_MS, familyOf, familySlug, lakeRolesFor } from "./lib/sources";
 import { notifyActivity } from "./lib/notify";
 import { VERSION } from "./lib/version";
 
@@ -108,6 +106,16 @@ export function buildServer({
 const { canWrite, denyLakeRead, canDraft, canReject } = capabilitiesFor(role);
 const server = new McpServer({ name: "setoku", version: VERSION });
 
+// Per-user source access (I9): the ClickHouse roles to activate for THIS
+// session's lake reads, from the identity's denied families. Computed per
+// call, not per session — an admin's deny takes effect on the next tool call,
+// no reconnect. null = unrestricted (no denies) → the role param is omitted
+// and the reader's default roles (everything, incl. future sources) apply.
+// Enforcement is the ENGINE's: a denied family's tables are ACCESS_DENIED and
+// hidden from SHOW TABLES / system.columns, so discovery filters itself.
+const lakeRoles = (): string[] | null => lakeRolesFor(store.sourceDenies(user));
+const deniedFamilies = (): Set<string> => new Set(store.sourceDenies(user));
+
 // Query expansion seam: the domain-general base table, fused with this tenant's
 // offline-derived table when it's live (issue #33). Pure lookup either way (I8).
 const synonyms = derivedSynonyms
@@ -126,12 +134,6 @@ function requireConfig(): SetokuConfig {
   return res.config;
 }
 
-function requireDb(config: SetokuConfig): string {
-  const res = resolveDatabaseUrl(projectDir, config);
-  if (!res.ok) throw new Error(res.error);
-  return res.url;
-}
-
 /** The ```sql fences of METRIC/QUERY docs — what "already covered" means for
  *  the success-path capture nudges (lib/nudge). Scoped to the doc types that
  *  define numbers: an illustrative fence in an entity/gotcha doc is context,
@@ -144,48 +146,20 @@ function curatedSqls(): string[] {
     .flatMap((d) => extractSql(d.body));
 }
 
-/** Tables currently mirrored into biz.* (issue #47) — feeds the run_query
- *  steering/gate and the list_sources mirror section. Cached in lib/mirror.
- *
- *  `forGate` matters on CURATOR sessions: steering surfaces return [] there
- *  (the membrane keeps lake reads off write-capable sessions, and a curator
- *  can't run clickhouse anyway, so a nudge is noise) — but the publish GATE
- *  must see the mirror regardless of role, or curators become the one session
- *  type that can plant durable postgres panels over mirrored tables. The gate
- *  read is a server-side metadata fetch (pg-catalog identifiers the curator
- *  can already see via get_schema), not lake content reaching the session.
- *  `forGate` also awaits a real refresh instead of trusting a cold/negative
- *  cache — a lake blip must not silently disable a durable-artifact gate. */
-async function mirrorRefs(opts: { forGate?: boolean } = {}): Promise<MirroredTable[]> {
-  if (denyLakeRead && !opts.forGate) return [];
+/** Tables currently mirrored into biz.* (issue #47) — feeds the list_sources
+ *  mirror section and get_schema's business-table view. Cached in lib/mirror.
+ *  Curator sessions get [] (the membrane keeps lake reads off write-capable
+ *  sessions; a curator can't query the mirror anyway, so listing it is noise). */
+async function mirrorRefs(): Promise<MirroredTable[]> {
+  if (denyLakeRead) return [];
   try {
     const config = requireConfig();
     const lake = resolveLakeUrl(projectDir, config);
     if (!lake.ok) return [];
-    return await mirroredTables(lake.url, { fresh: opts.forGate });
+    return await mirroredTables(lake.url);
   } catch {
     return [];
   }
-}
-
-/** The mirror-required rejection (issue #47, hardened): with a mirror present,
- *  the mirror IS the read path for mirrored tables — postgres against them is
- *  refused with the rewrite, not nudged. Returns null when allowed. NB the
- *  gate can't see mirror metadata on a curator session (the membrane keeps all
- *  lake reads off write-capable sessions), but a curator can't run clickhouse
- *  panels either — analysts are who author and query. */
-function mirrorRequiredError(hits: MirrorRef[], what: "query" | "panel"): string | null {
-  if (!hits.length) return null;
-  const map = hits.map((m) => `${m.source} → biz.${m.target}`).join(", ");
-  return (
-    `This box mirrors the business DB — mirrored tables are read via ClickHouse, not prod postgres ` +
-    `(${map}). Re-write the ${what} with dialect:"clickhouse" against the biz.* names (same rows, ` +
-    `reloaded on a cron; list_sources shows each table's "data as of").` +
-    (what === "query"
-      ? ` If you specifically need the LIVE source rows — verifying the mirror against prod, or a ` +
-        `row that changed in the last few minutes — re-run with force_postgres:true (audited).`
-      : "")
-  );
 }
 
 const NO_KNOWLEDGE_HINT =
@@ -451,8 +425,18 @@ server.registerTool(
           .join(", ") || "(none documented yet)";
       return errorText(`No metric "${name}". Known metrics: ${known}`);
     }
+    // Dialect routing (I5): postgres is no longer runnable at the gateway —
+    // the doc is still served (the definition is the knowledge), but the agent
+    // must adapt the SQL rather than run it verbatim.
+    const dialect = String((doc.meta as Record<string, unknown>).dialect ?? "postgres");
+    const retired =
+      dialect !== "clickhouse"
+        ? `\n\n⚠ This doc declares dialect "${dialect}" — the direct business-Postgres path is retired. ` +
+          `Adapt the SQL to the biz.* mirror (run_query dialect:"clickhouse"; public.<table> → biz.<table>) ` +
+          `and propose the migrated doc via report_correction.`
+        : "";
     return text(
-      `# [metric] ${doc.name}\n${doc.meta.summary ?? ""}\n\n${doc.body}`,
+      `# [metric] ${doc.name}\n${doc.meta.summary ?? ""}\n\n${doc.body}${retired}`,
     );
   },
 );
@@ -724,10 +708,11 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
     title: "List connected data sources (capabilities)",
     description:
-      "Lists what Setoku can query RIGHT NOW: business database tables, data-lake tables (logs, product " +
-      "events, finance, chat) with what each holds, and the knowledge store. Capabilities are DYNAMIC, so " +
-      "call this whenever unsure whether Setoku has data for a question, BEFORE telling the user it isn't " +
-      'available. Logs/errors/events/finance/chat live in the LAKE (run_query dialect:"clickhouse"), not Postgres.',
+      "Lists what Setoku can query RIGHT NOW: the biz.* business-DB mirror, data-lake tables (logs, " +
+      "product events, finance, chat) with what each holds, and the knowledge store. Capabilities are " +
+      "DYNAMIC, so call this whenever unsure whether Setoku has data for a question, BEFORE telling the " +
+      'user it isn\'t available. Everything is queried via run_query dialect:"clickhouse" — business ' +
+      "tables as biz.<table>, lake tables as setoku.<table>.",
     inputSchema: {},
   },
   async () => {
@@ -739,69 +724,59 @@ server.registerTool(
       /* no config — sections below report "not configured" */
     }
 
-    // business database (Postgres)
-    // With a mirror present, postgres is just the mirror's SOURCE — the section
-    // must not present it as the query path (those queries get rejected).
+    // Business data = the biz.* mirror. The gateway holds no business-Postgres
+    // credential (retired); pg-mirror is the only container that reads the
+    // source DB, and biz.* is THE read path for business tables.
     const mirrored = await mirrorRefs();
-    try {
-      const db = config ? resolveDatabaseUrl(projectDir, config) : { ok: false as const, error: "" };
-      if (config && db.ok) {
-        const tables = await introspectSchema(db.url, config);
-        const names = tables.map((t) => `${t.schema}.${t.name}`);
-        if (names.length === 0) {
-          const denied = await diagnoseNoTables(db.url);
-          lines.push(
-            "",
-            denied
-              ? `BUSINESS DATABASE (Postgres): configured but the read-only role can see no tables — ${denied}`
-              : "BUSINESS DATABASE (Postgres): configured, but no tables match the allow-list (or the database is empty).",
-          );
-        } else if (mirrored.length) {
-          const require = (config?.mirrorPolicy ?? "require") === "require";
-          lines.push(
-            "",
-            `BUSINESS DATABASE (Postgres) — the mirror's source, ${names.length} tables. Query these via the`,
-            require
-              ? "BUSINESS-DB MIRROR below (clickhouse dialect); direct postgres queries on mirrored tables are"
-              : "BUSINESS-DB MIRROR below (clickhouse dialect) — strongly preferred for scans/aggregations;",
-            require
-              ? "rejected (run_query force_postgres:true only to verify the mirror or read the last few minutes):"
-              : "postgres still runs them (this box sets mirrorPolicy \"prefer\"):",
-            "  " + names.slice(0, 40).join(", ") + (names.length > 40 ? ", …" : "") + "  (get_schema for columns)",
-          );
-        } else {
-          lines.push(
-            "",
-            `BUSINESS DATABASE (Postgres) — run_query, default dialect — ${names.length} tables:`,
-            "  " + names.slice(0, 40).join(", ") + (names.length > 40 ? ", …" : "") + "  (get_schema for columns)",
-          );
-        }
-      } else {
-        lines.push("", "BUSINESS DATABASE: not configured.");
-      }
-    } catch (e) {
-      lines.push("", `BUSINESS DATABASE: configured but unreachable (${String(e).slice(0, 120)}).`);
+    if (mirrored.length) {
+      lines.push(
+        "",
+        'BUSINESS DATA (ClickHouse, biz.*) — run_query with dialect:"clickhouse". Full copies of',
+        "allowlisted business tables, reloaded on a cron — the gateway has no direct line to the",
+        'source database. Each shows its "data as of" (get_schema for columns):',
+        ...mirrored.map((m) => `  - biz.${m.target} ← ${m.source} (as of ${m.asOf})`),
+      );
+    } else if (!denyLakeRead) {
+      lines.push(
+        "",
+        "BUSINESS DATA: no biz.* mirror is flowing yet — business tables become queryable once the",
+        "pg-mirror connector runs (there is no direct-Postgres fallback).",
+      );
     }
 
     // data lake (ClickHouse). Curator sessions can't read the lake (membrane), so
     // we don't probe it there — list the known sources statically with a pointer.
+    // Either branch respects the identity's source denies: the engine hides a
+    // denied family's tables from the analyst probes (the roles below), and the
+    // curator's static list filters the catalog the same way, so a denied
+    // source never advertises itself in this tool at all.
+    const denied = deniedFamilies();
     if (denyLakeRead) {
       lines.push(
         "",
         'DATA LAKE: a curator session can\'t read the lake. Switch to an analyst connector to query it (run_query dialect:"clickhouse"). Known lake sources:',
-        ...LAKE_SOURCES.filter((s) => s.table !== "ingest_raw").map((s) => `  - ${s.table} — ${s.blurb}`),
+        ...LAKE_SOURCES.filter((s) => s.table !== "ingest_raw")
+          .filter((s) => !denied.has(familySlug(familyOf(s.source))))
+          .map((s) => `  - ${s.table} — ${s.blurb}`),
       );
     } else {
       try {
         const lake = config ? resolveLakeUrl(projectDir, config) : { ok: false as const, error: "" };
         if (config && lake.ok) {
+          const roles = lakeRoles();
           // SHOW TABLES is metadata only (no row content); setoku_ro can run it.
+          // Under an explicit role list the engine returns only tables the
+          // active roles (+ direct grants) can read — discovery self-filters.
           const res = await runLakeQuery(lake.url, "SHOW TABLES FROM setoku", {
             rowCap: 500,
             statementTimeoutMs: 8000,
-          });
+          }, {}, roles);
           const present = new Set(res.rows.map((r) => String(Object.values(r)[0] ?? "")));
-          const known = LAKE_SOURCES.filter((s) => present.has(s.table));
+          // Belt-and-suspenders under the engine filter: a denied family must
+          // not list even on a box whose role XML hasn't landed yet.
+          const known = LAKE_SOURCES.filter((s) => present.has(s.table)).filter(
+            (s) => !denied.has(familySlug(s.source.split(" · ")[0])),
+          );
           // plumbing tables (connector liveness beats) aren't a queryable source
           const extra = [...present].filter(
             (t) => t !== "ingest_heartbeats" && !LAKE_SOURCES.some((s) => s.table === t),
@@ -819,6 +794,8 @@ server.registerTool(
               lake.url,
               "SELECT connector, toUnixTimestamp(max(beat_at)) AS beat FROM setoku.ingest_heartbeats GROUP BY connector",
               { rowCap: 50, statementTimeoutMs: 8000 },
+              {},
+              roles, // heartbeats are a direct grant — readable under any role list
             );
             for (const r of hb.rows as Array<Record<string, unknown>>) {
               beats.set(String(r.connector), Number(r.beat) * 1000);
@@ -832,7 +809,7 @@ server.registerTool(
                 const c = await runLakeQuery(lake.url, `SELECT count() AS n FROM setoku.${s.table}`, {
                   rowCap: 5,
                   statementTimeoutMs: 8000,
-                });
+                }, {}, roles);
                 return Number((c.rows[0] as Record<string, unknown> | undefined)?.n ?? 0) > 0;
               } catch {
                 return true; // probe failed — don't hide a table we couldn't assess
@@ -870,23 +847,6 @@ server.registerTool(
           } else {
             lines.push("", "DATA LAKE: configured but empty.");
           }
-          // Business-DB mirror (issue #47) — the DEFAULT read path for heavy
-          // scans/aggregations over business tables.
-          const mirror = mirrored;
-          if (mirror.length) {
-            const require = (config?.mirrorPolicy ?? "require") === "require";
-            lines.push(
-              "",
-              'BUSINESS-DB MIRROR (ClickHouse, biz.*) — run_query with dialect:"clickhouse". Full copies of',
-              require
-                ? "allowlisted business tables, reloaded on a cron. These are THE read path: postgres queries"
-                : "allowlisted business tables, reloaded on a cron — PREFER these over postgres for scans, GROUP BY,",
-              require
-                ? 'against mirrored tables are rejected (force_postgres:true for source verification only). Each shows its "data as of":'
-                : "and app panels; keep postgres for point lookups. Each shows its \"data as of\":",
-              ...mirror.map((m) => `  - biz.${m.target} ← ${m.source} (as of ${m.asOf})`),
-            );
-          }
         } else {
           lines.push("", "DATA LAKE: not configured (no logs/events/finance lake on this box).");
         }
@@ -899,30 +859,40 @@ server.registerTool(
       "",
       `KNOWLEDGE STORE: ${store.docCount} curated docs — call find_context to retrieve what your data MEANS (definitions, gotchas, canonical SQL).`,
       "",
-      'Reminder: logs, errors, product events, finance, chat — and mirrored business tables (biz.*) — all live in the LAKE. Query with dialect:"clickhouse"; Postgres is for tables the mirror doesn\'t carry.',
+      'Reminder: everything queryable lives in ClickHouse — business tables as biz.*, logs/errors/events/finance/chat as setoku.*. Always run_query with dialect:"clickhouse".',
     );
     store.audit(user, "list_sources", {});
     return text(lines.join("\n"));
   },
 );
 
+/** Map a documented pg-style entity table name to its biz.* mirror name —
+ *  public.orders → orders, ticketing.seat_txn → ticketing_seat_txn, bare names
+ *  pass through. The same convention pg-mirror uses to name its targets. */
+function mirrorNameOf(pgName: string): string {
+  const parts = pgName.toLowerCase().split(".");
+  if (parts.length < 2) return parts[0];
+  const [schema, ...rest] = parts;
+  return schema === "public" ? rest.join("_") : [schema, ...rest].join("_");
+}
+
 server.registerTool(
   "get_schema",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "Live database schema (permission-scoped)",
+    title: "Queryable schema (biz.* mirror + lake, permission-scoped)",
     description:
-      "Introspects the live Postgres schema, filtered to the tables this project's Setoku config allows. " +
-      "The structure applies to the biz.* mirror too (query <schema>.<table> as biz.<schema>_<table>, " +
-      "public.<table> as biz.<table>, clickhouse dialect). " +
-      "With no arguments: compact list of all tables + column names. With `tables`: full detail " +
-      "(types, primary keys, foreign keys) for those tables. Tables not listed here are off-limits — do not query them.",
+      "Describes every table you can query, straight from ClickHouse metadata: the biz.* business-DB " +
+      "mirror and the setoku.* lake tables (the gateway has no direct business-Postgres path). " +
+      "With no arguments: compact list of all tables + column names, biz.* first. With `tables`: full " +
+      "detail (column types + the table's ORDER BY key) for those tables. Tables not listed here are " +
+      "off-limits — do not query them.",
     inputSchema: {
       tables: z
         .array(z.string())
         .optional()
         .describe(
-          'Qualified or bare table names for full detail, e.g. ["public.orders"] or ["orders"]',
+          'Qualified or bare table names for full detail, e.g. ["biz.orders"] or ["orders"]',
         ),
     },
   },
@@ -930,67 +900,119 @@ server.registerTool(
     const started = Date.now();
     try {
       const config = requireConfig();
-      const url = requireDb(config);
-      const schema = await introspectSchema(url, config, tables);
+      const lakeRes = resolveLakeUrl(projectDir, config);
+      if (!lakeRes.ok) throw new Error(lakeRes.error);
+      const lakeUrl = lakeRes.url;
+      const qopts = { rowCap: 5_000, statementTimeoutMs: config.statementTimeoutMs };
+      // Schema METADATA only — identifiers and types, never row content — so it
+      // runs on every role: a curator needs the business-table shape to write
+      // context docs (the I2/I9 membrane gates lake content, not table shape).
+      // ClickHouse filters system.columns to tables the caller may read, and
+      // the session's role subset (per-user source access) rides on the same
+      // request — so a denied family's tables vanish from this listing by the
+      // engine's hand, not by our code.
+      const roles = lakeRoles();
+      const res = await runLakeQuery(
+        lakeUrl,
+        "SELECT database, table, name, type FROM system.columns " +
+          "WHERE database IN ('biz','setoku') AND (database, table) != ('setoku','ingest_heartbeats') " +
+          "ORDER BY database, table, position",
+        qopts,
+        {},
+        roles,
+      );
+      type Tbl = { database: string; table: string; columns: { name: string; type: string }[] };
+      const byTable = new Map<string, Tbl>();
+      for (const r of res.rows as Array<Record<string, unknown>>) {
+        const key = `${r.database}.${r.table}`;
+        let t = byTable.get(key);
+        if (!t) {
+          t = { database: String(r.database), table: String(r.table), columns: [] };
+          byTable.set(key, t);
+        }
+        t.columns.push({ name: String(r.name), type: String(r.type) });
+      }
+      let schema = [...byTable.values()];
+      if (tables?.length) {
+        // A bare name prefers the biz.* (business) table over a lake homonym.
+        const wanted = tables.map((t) => t.toLowerCase());
+        schema = schema.filter((t) => {
+          const qualified = `${t.database}.${t.table}`.toLowerCase();
+          return wanted.some((w) =>
+            w.includes(".") ? w === qualified : w === t.table.toLowerCase(),
+          );
+        });
+      }
       const lines: string[] = [];
       if (tables?.length) {
-        for (const t of schema) {
-          lines.push(
-            `# ${t.schema}.${t.name} (${t.type === "VIEW" ? "view" : "table"})`,
+        // ORDER BY key (the ClickHouse analogue of "how is this table keyed") —
+        // one metadata fetch, joined in for the detail view.
+        const sortKeys = new Map<string, string>();
+        try {
+          const sk = await runLakeQuery(
+            lakeUrl,
+            "SELECT database, name, sorting_key FROM system.tables WHERE database IN ('biz','setoku')",
+            qopts,
+            {},
+            roles,
           );
-          for (const c of t.columns) {
-            const pk = t.pk.includes(c.name) ? " PK" : "";
-            const fk = t.fks.find((f) => f.column === c.name);
-            lines.push(
-              `- ${c.name}: ${c.type}${c.nullable ? "" : " not null"}${pk}${fk ? ` → ${fk.references}` : ""}`,
-            );
+          for (const r of sk.rows as Array<Record<string, unknown>>) {
+            sortKeys.set(`${r.database}.${r.name}`, String(r.sorting_key ?? ""));
           }
+        } catch {
+          /* detail degrades to columns-only */
+        }
+        for (const t of schema) {
+          const key = sortKeys.get(`${t.database}.${t.table}`);
+          lines.push(`# ${t.database}.${t.table}${key ? ` (ORDER BY ${key})` : ""}`);
+          for (const c of t.columns) lines.push(`- ${c.name}: ${c.type}`);
           lines.push("");
         }
         if (!schema.length)
           lines.push(
-            "No allowed tables matched. Call get_schema with no arguments to list allowed tables.",
+            "No queryable tables matched. Call get_schema with no arguments to list what you can query.",
           );
       } else if (schema.length === 0) {
-        // 0 tables is ambiguous: empty allow-list vs revoked grants. Probe the
-        // catalog so a permission wall reads as one, not as an empty database.
-        const denied = await diagnoseNoTables(url);
-        lines.push(denied ?? "0 allowed tables (the allow-list matched nothing, or the database is empty).");
+        lines.push(
+          "0 queryable tables — no biz.* mirror is flowing and no lake source is connected yet (list_sources shows what can be hooked up).",
+        );
       } else {
-        lines.push(`${schema.length} allowed tables:`);
-        for (const t of schema) {
-          lines.push(
-            `- ${t.schema}.${t.name}: ${t.columns.map((c) => c.name).join(", ")}`,
-          );
+        const biz = schema.filter((t) => t.database === "biz");
+        const lake = schema.filter((t) => t.database !== "biz");
+        lines.push(`${schema.length} queryable tables (run_query dialect:"clickhouse"):`);
+        for (const t of [...biz, ...lake]) {
+          lines.push(`- ${t.database}.${t.table}: ${t.columns.map((c) => c.name).join(", ")}`);
         }
       }
-      // drift note: knowledge entities vs live tables. Only meaningful against
-      // the FULL schema — when `tables` filters the result, the unlisted tables
-      // are absent by request, not drift, so skip it (avoids false "no live
-      // table" warnings on filtered get_schema calls).
-      const documented = new Set(
+      // drift note: knowledge entities vs live mirror tables. Entity docs carry
+      // pg-style names (meta.table "public.orders"); compare via the mirror
+      // naming convention. Only meaningful against the FULL listing — when
+      // `tables` filters the result, absence is by request, not drift.
+      const documented = new Map(
         store
           .listDocs()
           .filter((d) => d.type === "entity" && d.meta.table)
-          .map((d) => String(d.meta.table).toLowerCase()),
+          .map((d) => [mirrorNameOf(String(d.meta.table)), String(d.meta.table).toLowerCase()]),
       );
       if (documented.size && !tables?.length) {
         const live = new Set(
-          schema.map((t) => `${t.schema}.${t.name}`.toLowerCase()),
+          schema.filter((t) => t.database === "biz").map((t) => t.table.toLowerCase()),
         );
-        const undocumented = [...live].filter((t) => !documented.has(t));
-        const stale = [...documented].filter((t) => !live.has(t));
-        if (stale.length) {
-          lines.push(
-            "",
-            `⚠ context drift: documented entities with no live table: ${stale.join(", ")} — consider /setoku:generate.`,
-          );
-        }
-        if (undocumented.length) {
-          lines.push(
-            "",
-            `note: ${undocumented.length} live tables have no context doc yet (${undocumented.slice(0, 8).join(", ")}${undocumented.length > 8 ? ", …" : ""}).`,
-          );
+        if (live.size) {
+          const undocumented = [...live].filter((t) => !documented.has(t));
+          const stale = [...documented.entries()].filter(([m]) => !live.has(m)).map(([, orig]) => orig);
+          if (stale.length) {
+            lines.push(
+              "",
+              `⚠ context drift: documented entities with no mirrored table: ${stale.join(", ")} — consider /setoku:generate.`,
+            );
+          }
+          if (undocumented.length) {
+            lines.push(
+              "",
+              `note: ${undocumented.length} mirrored tables have no context doc yet (${undocumented.slice(0, 8).map((t) => `biz.${t}`).join(", ")}${undocumented.length > 8 ? ", …" : ""}).`,
+            );
+          }
         }
       }
       store.audit(user, "get_schema", {
@@ -1018,24 +1040,21 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
     title: "Run a read-only SQL query (capped + audited)",
     description:
-      "Executes ONE read-only SQL statement (statement timeout + row cap; audited with your identity). " +
-      "Routes by dialect (metric docs declare theirs): `postgres` (default) = the business DB in a READ ONLY " +
-      "transaction; `clickhouse` = the bundled lake (logs/events/Slack archive) plus the biz.* business-DB " +
-      "mirror when enabled. Mirrored tables are read through the MIRROR — postgres queries against them are " +
-      "rejected (force_postgres:true reads the live source, for verification/freshness only). list_sources " +
-      "shows what's mirrored. Engine-enforced readonly either way. " +
+      "Executes ONE read-only ClickHouse SQL statement (statement timeout + row cap; audited with your " +
+      "identity): the biz.* business-DB mirror plus the lake (logs/events/Slack archive). The direct " +
+      "business-Postgres path is retired — business tables are read as biz.<table>. Engine-enforced " +
+      "readonly and engine-enforced table access. " +
       "Workflow: find_context first, prefer canonical metric SQL via get_metric, always include an explicit " +
-      "LIMIT, never SELECT * on wide tables. Writes/DDL are rejected. Discover lake tables with " +
-      "SHOW TABLES / DESCRIBE <table> on the clickhouse dialect.",
+      "LIMIT, never SELECT * on wide tables. Writes/DDL are rejected. Discover tables with get_schema or " +
+      "SHOW TABLES / DESCRIBE <table>.",
     inputSchema: {
-      sql: z.string().describe("A single SELECT/WITH/EXPLAIN statement"),
+      sql: z.string().describe("A single SELECT/WITH/EXPLAIN statement (ClickHouse SQL)"),
       dialect: z
         .enum(["postgres", "clickhouse"])
         .optional()
         .describe(
-          "Where to run it. clickhouse = the lake + the biz.* business-DB mirror (the read path for mirrored " +
-            "tables); postgres (default) = the live business DB, rejected for mirrored tables. Use the dialect " +
-            "the metric doc declares (meta.dialect).",
+          'Only "clickhouse" (the default) runs — the lake + the biz.* business-DB mirror. "postgres" is ' +
+            "retired and always rejected; adapt legacy metric SQL to biz.* instead.",
         ),
       purpose: z
         .string()
@@ -1043,52 +1062,40 @@ server.registerTool(
         .describe(
           "One line on what business question this answers (goes in the audit log)",
         ),
-      force_postgres: z
-        .boolean()
-        .optional()
-        .describe(
-          "Boxes with a business-DB mirror refuse postgres queries on mirrored tables (run them on " +
-            'clickhouse against biz.* instead). Pass true ONLY to read the live source — verifying the ' +
-            "mirror, or row-level freshness the reload interval can't give. Audited.",
-        ),
     },
   },
-  async ({ sql, dialect, purpose, force_postgres }) => {
+  async ({ sql, dialect, purpose }) => {
     const started = Date.now();
     const sqlForAudit =
       sql && sql.length > 2000 ? sql.slice(0, 2000) + "…" : sql;
     try {
       const config = requireConfig();
-      // Mirror-required gate (issue #47): mirrored tables read via the mirror,
-      // full stop — unless the caller explicitly asked for the live source.
-      if ((dialect ?? "postgres") === "postgres" && (config.mirrorPolicy ?? "require") === "require" && !force_postgres) {
-        const blocked = mirrorRequiredError(mirrorHits(sql, await mirrorRefs()), "query");
-        if (blocked) {
-          store.audit(user, "run_query", {
-            purpose: purpose ?? null,
-            dialect: "postgres",
-            sql: sqlForAudit,
-            ok: false,
-            error: "mirror-required",
-            ms: Date.now() - started,
-            totalMs: Date.now() - started,
-          });
-          return errorText(blocked);
-        }
+      // The retired dialect fails fast with the rewrite pointer (audited) —
+      // runPanel would reject it too, but this keeps the audit legible.
+      if ((dialect ?? "clickhouse") !== "clickhouse") {
+        store.audit(user, "run_query", {
+          purpose: purpose ?? null,
+          dialect,
+          sql: sqlForAudit,
+          ok: false,
+          error: "pg-retired",
+          ms: Date.now() - started,
+          totalMs: Date.now() - started,
+        });
+        return errorText(PG_RETIRED_ERROR);
       }
       // Route + enforce the lake membrane (I2/I9) through the SAME helper the
       // app panels use, so there is one gate, not two divergent copies.
       const result = await runPanel(
         projectDir,
         config,
-        { key: "run_query", sql, dialect: dialect ?? "postgres" },
+        { key: "run_query", sql, dialect: "clickhouse" },
         { text: sql, referenced: [] }, // a direct query — no bound params
-        { denyLakeRead },
+        { denyLakeRead, lakeRoles: lakeRoles() },
       );
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
-        dialect: dialect ?? "postgres",
-        ...(force_postgres ? { force_postgres: true } : {}),
+        dialect: "clickhouse",
         sql: sqlForAudit,
         ok: true,
         rows: result.rowCount,
@@ -1127,13 +1134,6 @@ server.registerTool(
         const nudge = queryCaptureNudge(sql, curatedSqls);
         if (nudge) lines.push("", nudge);
       }
-      // Mirror steering nudge — reaches this point only under mirrorPolicy
-      // "prefer" (the default "require" already rejected above) or when the
-      // caller forced the live source (no nudge then; they chose deliberately).
-      if ((dialect ?? "postgres") === "postgres" && !force_postgres) {
-        const steer = mirrorSteerNote(sql, await mirrorRefs());
-        if (steer) lines.push("", steer);
-      }
       // No curated context yet → the agent is querying from raw schema, which is
       // exactly when it confidently returns a wrong number (test accounts not
       // excluded, refunds not netted, status-vs-event-log confusion). Make that
@@ -1155,8 +1155,7 @@ server.registerTool(
       const msg = (e as Error).message;
       store.audit(user, "run_query", {
         purpose: purpose ?? null,
-        dialect: dialect ?? "postgres",
-        ...(force_postgres ? { force_postgres: true } : {}),
+        dialect: "clickhouse",
         sql: sqlForAudit,
         ok: false,
         error: msg,
@@ -1235,7 +1234,7 @@ async function prepPanels(
     title: p.title,
     description: p.description,
     sql: p.sql,
-    dialect: p.dialect ?? "postgres",
+    dialect: p.dialect ?? "clickhouse",
     metricId: p.metricId ?? null,
   }));
   let config;
@@ -1244,18 +1243,15 @@ async function prepPanels(
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
-  // Mirror-required gate (issue #47): a postgres panel over a mirrored table is
-  // a repeating prod scan — with a mirror present it must be authored in
-  // clickhouse against biz.* (no force escape here; panels are durable). Only
-  // when the SQL itself is changing (seed): a params-only edit re-validates
-  // EXISTING panels, and blocking it would freeze every pre-mirror app's
-  // metadata until its whole panel set is re-authored.
-  if (seed && (config.mirrorPolicy ?? "require") === "require") {
-    const mirrored = await mirrorRefs({ forGate: true });
+  // The postgres dialect is retired — a new/changed panel must be authored in
+  // clickhouse (business tables via biz.*). Only when the SQL itself is
+  // changing (seed): a params-only edit re-validates EXISTING panels, and
+  // blocking it would freeze every legacy app's metadata until its whole panel
+  // set is re-authored (those panels surface PG_RETIRED_ERROR at render).
+  if (seed) {
     for (const p of normalized) {
-      if (p.dialect !== "postgres") continue;
-      const blocked = mirrorRequiredError(mirrorHits(p.sql, mirrored), "panel");
-      if (blocked) return { ok: false, error: `Panel "${p.key}": ${blocked}` };
+      if (p.dialect !== "clickhouse")
+        return { ok: false, error: `Panel "${p.key}": ${PG_RETIRED_ERROR}` };
     }
   }
   // Resolve the declared inputs to their DEFAULTS to dry-run the panels (no viewer
@@ -1284,7 +1280,10 @@ async function prepPanels(
       // silent 200-row prefix (truncated=false) for the whole refresh TTL, breaking
       // the "panels render the full result set" contract precisely when the author
       // is validating the app.
-      const r = await runPanel(projectDir, config, p, compiled, { denyLakeRead, rowCap: RENDER_FETCH_CEILING });
+      // The dry-run executes as the PUBLISHER — same identity whose restriction
+      // governs later renders (renderApp resolves the latest editor), so a
+      // source-denied author can't publish a panel they couldn't query.
+      const r = await runPanel(projectDir, config, p, compiled, { denyLakeRead, lakeRoles: lakeRoles(), rowCap: RENDER_FETCH_CEILING });
       const fit = trimRowsToBytes(r.rows, MAX_RENDER_ROW_BYTES);
       seeds.push({ key: cacheKey, columns: r.columns, rows: fit.rows, rowCount: fit.rows.length, truncated: r.truncated || fit.truncated });
     } catch (e) {
@@ -1300,8 +1299,7 @@ const clampRefresh = (refreshSeconds: number | undefined, hasPanels: boolean): n
     : null;
 
 // Non-blocking warnings the agent can't see for itself (it publishes blind):
-// missing curated metric links + mirror steering + static render-lint of the
-// template. Async only for the (cached, best-effort) mirror lookup.
+// missing curated metric links + static render-lint of the template.
 async function publishNotes(html: string, panels: AppPanel[]): Promise<string> {
   const notes: string[] = [];
   const missing = panels.filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId))).map((p) => p.metricId);
@@ -1317,10 +1315,6 @@ async function publishNotes(html: string, panels: AppPanel[]): Promise<string> {
     notes.push(`panel(s) ${noDesc.map((k) => `"${k}"`).join(", ")} have no \`description\` — the drawer can't explain what they compute. Add a one-line description.`);
   const capture = panelCaptureNote(panels, curatedSqls);
   if (capture) notes.push(capture);
-  // Heavy postgres panels over mirrored tables belong on the biz.* mirror
-  // (issue #47) — flag them so the agent re-authors before the app calcifies.
-  const mirror = panelMirrorNote(panels, await mirrorRefs());
-  if (mirror) notes.push(mirror);
   notes.push(...lintAppTemplate(html, panels.map((p) => p.key)));
   return notes.length ? `\n\n⚠ Heads up (publishes anyway):\n- ${notes.join("\n- ")}` : "";
 }
@@ -1330,7 +1324,7 @@ const PANEL_SCHEMA = z.object({
   title: z.string().optional().describe("Recommended — label shown in the calc drawer (see app_guide)"),
   description: z.string().optional().describe("Recommended — one-line calc explanation; the only one public viewers get"),
   sql: z.string().describe("A single read-only SELECT/WITH (validate with run_query first)"),
-  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("postgres (default) = business DB; clickhouse = lake + biz.* mirror. Mirrored tables REQUIRE clickhouse (see app_guide)"),
+  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("clickhouse (the default and the only one that runs) = lake + biz.* business-DB mirror. postgres is retired and rejected"),
   metricId: z.string().optional().describe("Curated metric name this panel computes — links provenance"),
 });
 
@@ -1394,21 +1388,19 @@ const APP_GUIDE = [
   "## Panels (the `panels` arg)",
   "Each panel: `{ key, sql, dialect?, title?, description?, metricId? }`.",
   "- `key` — stable slug the template reads (window.__SETOKU__.panels[key]).",
-  "- `sql` — ONE read-only SELECT/WITH; validate with run_query first.",
-  "- `dialect` — `postgres` (default, business DB) or `clickhouse` (the lake + the biz.* business-DB mirror).",
+  "- `sql` — ONE read-only SELECT/WITH in ClickHouse SQL; validate with run_query first.",
+  "- `dialect` — `clickhouse` (the default and the only one that runs: the lake + the biz.* business-DB",
+  "  mirror). `postgres` is retired — publish/update reject it; write business panels against biz.<table>.",
   "- `title` / `description` — STRONGLY RECOMMENDED: shown in the 'how is this calculated' drawer; the",
   "  description is the ONLY calc explanation public viewers get. Without them viewers see the raw slug.",
   "- `metricId` — name of a curated metric this panel computes; links provenance to the verified def.",
   "Omit `panels` entirely for a static report.",
   "",
-  "## Choosing a dialect — mirrored tables are clickhouse-ONLY",
-  "When the box mirrors the business DB (list_sources shows a BUSINESS-DB MIRROR section), panels that",
-  "touch a mirrored table MUST use `clickhouse` dialect against `biz.<table>` — publish/update REJECT",
-  "postgres panels over mirrored tables (the mirror is the read path; full copies, reloaded on a cron).",
-  "Param-driven panels especially benefit: every input combo is a cold run, and the mirror makes cold",
-  "runs interactive. `postgres` remains only for tables the mirror doesn't carry. Metric SQL is",
-  "canonical in exactly ONE dialect (I5) — define metrics over mirrored tables in clickhouse. The app",
-  'chrome shows the mirror\'s "data as of" beside the cache stamp, so freshness stays legible to viewers.',
+  "## Business tables — always via the biz.* mirror",
+  "The box has no direct business-Postgres path. Business tables are full copies in ClickHouse under",
+  "biz.<table>, reloaded on a cron — list_sources shows each table's \"data as of\", and the app chrome",
+  "shows it beside the cache stamp so freshness stays legible to viewers. Metric SQL is canonical in",
+  "exactly ONE dialect (I5) — today that means clickhouse.",
   "",
   "## Interactive inputs (the `params` arg)",
   "Declared inputs the viewer can change. A panel's SQL references one as `:name` (e.g.",

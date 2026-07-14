@@ -114,6 +114,10 @@ export const api = {
     req<MutationResult>("invite", { method: "POST", body: { identity, rotate } }),
   users: (op: string, username: string, role?: string) =>
     req<MutationResult>("users", { method: "POST", body: { op, username, role } }),
+  // Replace a person's denied source families wholesale (admin only, I9 —
+  // a human act on this surface; no MCP tool can change data access).
+  setSourceAccess: (username: string, denies: string[]) =>
+    req<MutationResult>("source_access", { method: "POST", body: { username, denies } }),
   apps: () => req<PublishedMeta[]>("published"),
   // App metadata + per-panel SQL/description (param-independent). The LIVE per-variant
   // numbers come from the frame's own provenance echo (postMessage), not this
