@@ -302,15 +302,18 @@ async function renderUncoalesced(
   const config = cfg.ok ? cfg.config : null;
   const now = opts.now ?? Date.now();
   const limit = ttlMs(dash);
-  // Published panels run under the AUTHOR's source access, never the viewer's:
+  // Published panels run under the CREATOR's source access, never the viewer's:
   // the panel cache is shared per (app, panel, variant), so viewer-scoped
   // enforcement would either poison the cache or fork it per person — and,
-  // decisive, author-scoping is what closes the bypass where a source-denied
-  // user publishes `SELECT * FROM setoku.slack_messages` and reads the render.
-  // The acting identity is whoever last edited the queries (else the creator);
-  // a newly-denied author's panels fail refresh and serve stale-then-error,
+  // decisive, creator-scoping is what closes the bypass where a source-denied
+  // user publishes `SELECT * FROM setoku.slack_messages` and reads the render
+  // (their publish/update dry-run runs under their own roles, so a denied panel
+  // never reaches the store in the first place). The anchor is the CREATOR, not
+  // "last editor": a later cosmetic edit (a title fix) by an unrestricted admin
+  // must not silently re-scope a restricted creator's app to full access. A
+  // newly-denied creator's panels fail refresh and serve stale-then-error,
   // which is honest and visible (refreshError in the frame chrome).
-  const actor = store.latestAppEdit(dash.id)?.editor ?? (dash as { createdBy?: string }).createdBy ?? "";
+  const actor = (dash as { createdBy?: string }).createdBy ?? "";
   const lakeRoles = lakeRolesFor(store.sourceDenies(actor));
   // How long we'll keep serving last-good rows while refreshes fail before we
   // stop masking it and surface a hard error — a permanently-broken query (a

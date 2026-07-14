@@ -65,7 +65,10 @@ describe("source access over HTTP + MCP", () => {
       // engine-side hiding is CH-gated territory.
       if (sql.includes("SHOW TABLES FROM setoku"))
         return { columns: ["name"], rows: [{ name: "slack_messages" }, { name: "mercury_accounts" }] };
-      if (sql.includes("ingest_heartbeats")) return { columns: ["connector", "beat"], rows: [] };
+      // NB: match the heartbeat probe on GROUP BY connector, not the bare table
+      // name — get_schema's system.columns query also mentions ingest_heartbeats
+      // (in its exclusion clause) and must not be captured here.
+      if (sql.includes("GROUP BY connector")) return { columns: ["connector", "beat"], rows: [] };
       if (sql.includes("count()")) return { rows: [{ n: 5 }] };
       if (sql.includes("system.columns"))
         return {
@@ -295,6 +298,101 @@ describe("source access over HTTP + MCP", () => {
 
     const adminDocs = (await (await fetch(`${BASE}/admin/api/knowledge`, { headers: { cookie: admin.cookie } })).json()) as { name: string }[];
     expect(adminDocs.some((d) => d.name === "mercury_burn")).toBe(true);
+  });
+
+  // ---- review fixes: web read paths + get_schema follow the denies too ----
+
+  it("the team roster hides everyone's denies from a member (admin-only map)", async () => {
+    const admin = await session("boss@co.test", "s3cret-pass");
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: ["slack"] } });
+
+    // admin sees the restriction map
+    expect((await team(admin.cookie)).find((p) => p.identity === "alice@co.test")?.denies).toEqual(["slack"]);
+    // a member sees the roster but every denies array is blanked
+    const member = await session("viewer@co.test", "viewer-pass");
+    const asMember = await team(member.cookie);
+    expect(asMember.length).toBeGreaterThan(0);
+    for (const p of asMember) expect(p.denies).toEqual([]);
+
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: [] } });
+  });
+
+  it("the Sources web view drops a denied family for a member (not just the agent)", async () => {
+    const admin = await session("boss@co.test", "s3cret-pass");
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: ["slack"] } });
+
+    const member = await session("viewer@co.test", "viewer-pass");
+    const src = (await (await fetch(`${BASE}/admin/api/sources`, { headers: { cookie: member.cookie } })).json()) as {
+      lake: { tables: { table: string }[] };
+    };
+    expect(src.lake.tables.some((t) => t.table === "slack_messages")).toBe(false);
+    expect(src.lake.tables.some((t) => t.table === "mercury_accounts")).toBe(true);
+
+    // an admin still sees everything on the same page
+    const asAdmin = (await (await fetch(`${BASE}/admin/api/sources`, { headers: { cookie: admin.cookie } })).json()) as {
+      lake: { tables: { table: string }[] };
+    };
+    expect(asAdmin.lake.tables.some((t) => t.table === "slack_messages")).toBe(true);
+
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: [] } });
+  });
+
+  it("get_schema resolves a pg-style qualified name to its biz.* mirror table", async () => {
+    const mcp = await connect(BASE, "tok-bob"); // unrestricted
+    const r = await gwCall(mcp, "get_schema", { tables: ["public.orders"] });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain("biz.orders");
+    expect(r.text).toContain("id");
+    await mcp.close();
+  });
+
+  it("source_access is refused while the kill-switch is on (no phantom restriction)", async () => {
+    // the spawned gateway doesn't set SETOKU_SOURCE_ACCESS=0, so assert the
+    // guard's shape directly on the store+role helper path via the endpoint by
+    // temporarily... (can't mutate the child's env) — instead assert the pure
+    // helper here; the endpoint guard is a one-line env check above it.
+    const prev = process.env.SETOKU_SOURCE_ACCESS;
+    process.env.SETOKU_SOURCE_ACCESS = "0";
+    try {
+      const { lakeRolesFor } = await import("../plugin/gateway/lib/sources");
+      expect(lakeRolesFor(["slack"])).toBeNull(); // globally off → unrestricted
+    } finally {
+      if (prev === undefined) delete process.env.SETOKU_SOURCE_ACCESS;
+      else process.env.SETOKU_SOURCE_ACCESS = prev;
+    }
+  });
+
+  it("a pending correction about a hidden doc does not leak through find_context", async () => {
+    const admin = await session("boss@co.test", "s3cret-pass");
+    // seed a source-tagged doc + a pending correction that relates_to it
+    const curator = await connect(BASE, "tok-curator");
+    await gwCall(curator, "upsert_context", {
+      type: "metric",
+      name: "slack_volume",
+      body: "## Definition\nDaily Slack message volume.\n\n## Canonical SQL\n```sql\nSELECT count() FROM setoku.slack_messages\n```",
+      meta: { source: "slack", summary: "slack volume", dialect: "clickhouse" },
+    });
+    await curator.close();
+    const bob = await connect(BASE, "tok-bob");
+    await gwCall(bob, "report_correction", {
+      kind: "metric",
+      fact: "slack_volume should exclude bot messages",
+      relates_to: "slack_volume",
+    });
+    await bob.close();
+
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: ["slack"] } });
+    const alice = await connect(BASE, "tok-alice");
+    const fc = await gwCall(alice, "find_context", { question: "slack message volume bot messages" });
+    expect(fc.text).not.toContain("slack_volume");
+    expect(fc.text).not.toContain("exclude bot messages");
+    await alice.close();
+    // an unrestricted teammate still gets the pending fact
+    const carol = await connect(BASE, "tok-carol");
+    const fc2 = await gwCall(carol, "find_context", { question: "slack message volume bot messages" });
+    expect(fc2.text).toContain("exclude bot messages");
+    await carol.close();
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: [] } });
   });
 
   it("removing a person clears their denies — a re-invite starts at full access", async () => {

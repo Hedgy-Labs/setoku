@@ -1082,6 +1082,18 @@ export class KnowledgeStore {
     return this.db.run("DELETE FROM source_denies WHERE identity = ?", [identity]).changes;
   }
 
+  /** Drop cached panel rows of every app THIS identity created. Published
+   *  panels render under the creator's source access (lib/apps renderApp), so
+   *  when an admin changes that identity's denies the shared cache would keep
+   *  serving the old access level for up to the stale ceiling; purging forces
+   *  the next view to recompute under the new roles. Returns apps affected. */
+  purgePanelCacheForCreator(identity: string): number {
+    return this.db.run(
+      "DELETE FROM app_cache WHERE app_id IN (SELECT id FROM published WHERE created_by = ?)",
+      [identity],
+    ).changes;
+  }
+
   /* -------------------------------- sessions ---------------------------- */
 
   /** Persist a web-admin session (Phase 5.1). Persisted so a restart/redeploy

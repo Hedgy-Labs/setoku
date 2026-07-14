@@ -156,11 +156,19 @@ function requireConfig(): SetokuConfig {
  *  not a metric, and must not suppress the capture hint. Passed as a thunk so
  *  the nudge helpers only scan the store once their cheap gates pass. */
 function curatedSqls(): string[] {
-  return store
-    .listDocs()
+  return visibleDocs()
     .filter((d) => d.type === "metric" || d.type === "query")
     .flatMap((d) => extractSql(d.body));
 }
+
+/** Names of docs hidden from THIS session (source-tagged to a denied family) —
+ *  so a pending correction ABOUT one of them doesn't leak the hidden fact
+ *  through the unverified-knowledge channel. Empty set = nothing hidden. */
+const hiddenDocNames = (): Set<string> => {
+  const denied = deniedFamilies();
+  if (!denied.size) return new Set();
+  return new Set(store.listDocs().filter((d) => sourceHidden(d.meta, denied)).map((d) => d.name));
+};
 
 /** Tables currently mirrored into biz.* (issue #47) — feeds the list_sources
  *  mirror section and get_schema's business-table view. Cached in lib/mirror.
@@ -216,8 +224,12 @@ server.registerTool(
     const allDocs = visibleDocs();
     const docs = allDocs.filter((d) => d.type !== "gotcha");
     const gotchaDocs = allDocs.filter((d) => d.type === "gotcha");
+    // Pending proposals follow the same source membrane as curated docs: a
+    // proposal ABOUT a hidden doc (relates_to a source-tagged denied family)
+    // must not leak that fact through the unverified-knowledge channel.
+    const hidden = hiddenDocNames();
     const pending = matchByTokens(
-      store.listCorrections("pending"),
+      store.listCorrections("pending").filter((c) => !(c.relatesTo && hidden.has(c.relatesTo))),
       (c) => `${c.fact ?? c.content} ${c.relatesTo ?? ""}`,
       question,
     ).slice(0, 5);
@@ -940,14 +952,16 @@ server.registerTool(
       const lakeRes = resolveLakeUrl(projectDir, config);
       if (!lakeRes.ok) throw new Error(lakeRes.error);
       const lakeUrl = lakeRes.url;
-      const qopts = { rowCap: 5_000, statementTimeoutMs: config.statementTimeoutMs };
-      // Schema METADATA only — identifiers and types, never row content — so it
-      // runs on every role: a curator needs the business-table shape to write
-      // context docs (the I2/I9 membrane gates lake content, not table shape).
-      // ClickHouse filters system.columns to tables the caller may read, and
-      // the session's role subset (per-user source access) rides on the same
-      // request — so a denied family's tables vanish from this listing by the
-      // engine's hand, not by our code.
+      // Metadata is identifiers + types, never row content, but a big schema
+      // (dozens of biz.* tables) can exceed a small row cap and silently drop
+      // trailing tables' columns — cap high so the listing is never truncated.
+      const qopts = { rowCap: 200_000, statementTimeoutMs: config.statementTimeoutMs };
+      // Schema METADATA only — so it runs on every role: a curator needs the
+      // business-table shape to write context docs (the I2/I9 membrane gates
+      // lake content, not table shape). ClickHouse filters system.columns to
+      // tables the caller may read, and the session's role subset (per-user
+      // source access) rides on the same request — so a denied family's tables
+      // vanish from this listing by the engine's hand.
       const roles = lakeRoles();
       const res = await runLakeQuery(
         lakeUrl,
@@ -969,14 +983,31 @@ server.registerTool(
         }
         t.columns.push({ name: String(r.name), type: String(r.type) });
       }
-      let schema = [...byTable.values()];
+      // Belt-and-suspenders (parity with list_sources): the engine already
+      // hides denied families, but during a partial rollout — new code, old
+      // lake-users.xml still holding a `setoku.*` wildcard, or a ClickHouse that
+      // ignores the role param — drop a denied family's lake tables in code too,
+      // so a denied source's shape never leaks even if the engine filter isn't
+      // in effect. biz.* is core (team-wide), so it's never dropped here.
+      const denied = deniedFamilies();
+      let schema = [...byTable.values()].filter(
+        (t) =>
+          t.database === "biz" ||
+          !denied.has(familySlug(familyOf(LAKE_SOURCES.find((s) => s.table === t.table)?.source ?? t.table))),
+      );
       if (tables?.length) {
-        // A bare name prefers the biz.* (business) table over a lake homonym.
+        // Match on the qualified biz/setoku name OR a bare table name. A pg-style
+        // qualified name copied from an entity doc's meta.table ("public.orders")
+        // is mapped to its biz.* mirror name so the lookup still resolves.
         const wanted = tables.map((t) => t.toLowerCase());
+        const mirrorWanted = new Set(
+          tables.filter((t) => t.includes(".")).map((t) => `biz.${mirrorNameOf(t)}`),
+        );
         schema = schema.filter((t) => {
           const qualified = `${t.database}.${t.table}`.toLowerCase();
-          return wanted.some((w) =>
-            w.includes(".") ? w === qualified : w === t.table.toLowerCase(),
+          return (
+            mirrorWanted.has(qualified) ||
+            wanted.some((w) => (w.includes(".") ? w === qualified : w === t.table.toLowerCase()))
           );
         });
       }
@@ -1010,8 +1041,12 @@ server.registerTool(
             "No queryable tables matched. Call get_schema with no arguments to list what you can query.",
           );
       } else if (schema.length === 0) {
+        // 0 tables is ambiguous — don't assert "nothing connected" as if it were
+        // the only cause (that misdiagnoses a grant/role wall as an empty box).
         lines.push(
-          "0 queryable tables — no biz.* mirror is flowing and no lake source is connected yet (list_sources shows what can be hooked up).",
+          roles && roles.length
+            ? "0 queryable tables — your data access may be fully restricted (an admin can widen it), or the biz.* mirror isn't flowing yet. Ask an admin, or see list_sources."
+            : "0 queryable tables. Either nothing is connected yet (no biz.* mirror, no lake source — list_sources shows what can be hooked up), OR the ClickHouse reader's grants/roles didn't land (deploy/clickhouse/lake-users.xml). If a connector IS running, it's the grants — check `SHOW GRANTS` for setoku_ro on the box.",
         );
       } else {
         const biz = schema.filter((t) => t.database === "biz");

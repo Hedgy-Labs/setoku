@@ -553,9 +553,13 @@ import { LAKE_SOURCES, familySlug, lakeFamilies } from "./lib/sources";
  * to "—" rather than blanking the page. (The gateway holds no business-DB
  * credential — the mirror IS the business-data story here.)
  */
-async function gatherSources(): Promise<SourcesData> {
+async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesData> {
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
+  // A denied source is invisible on this page too (not just to the agent) —
+  // otherwise a restricted member reads row counts / freshness for a source
+  // they can't query. biz.* (the mirror) is core and never filtered.
+  const sources = LAKE_SOURCES.filter((s) => !denied.has(familySlug(s.source.split(" · ")[0])));
 
   const mirror: SourcesData["mirror"] = { tables: [] };
   const lake: SourcesData["lake"] = { configured: false, ok: false, tables: [] };
@@ -593,7 +597,7 @@ async function gatherSources(): Promise<SourcesData> {
           /* ingest_heartbeats absent — sources fall back to data-recency freshness */
         }
         const probes = await Promise.all(
-          LAKE_SOURCES.map(async (s): Promise<SourceTable | null> => {
+          sources.map(async (s): Promise<SourceTable | null> => {
             try {
               const res = await runLakeQuery(
                 lakeUrl.url,
@@ -643,7 +647,7 @@ async function gatherSources(): Promise<SourcesData> {
  * and column come from the trusted LAKE_SOURCES constant (never user input), so
  * the interpolation is safe — same pattern as gatherSources().
  */
-async function gatherSourceSeries(): Promise<SourceSeriesData> {
+async function gatherSourceSeries(denied: Set<string> = new Set()): Promise<SourceSeriesData> {
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
   const series: SourceSeries[] = [];
@@ -651,8 +655,9 @@ async function gatherSourceSeries(): Promise<SourceSeriesData> {
     const lakeUrl = resolveLakeUrl(projectDir, config);
     if (lakeUrl.ok) {
       const qopts = { rowCap: 100, statementTimeoutMs: 8_000 };
+      const sources = LAKE_SOURCES.filter((s) => !denied.has(familySlug(s.source.split(" · ")[0])));
       const results = await Promise.all(
-        LAKE_SOURCES.map(async (s): Promise<SourceSeries | null> => {
+        sources.map(async (s): Promise<SourceSeries | null> => {
           try {
             const res = await runLakeQuery(
               lakeUrl.url,
@@ -1428,12 +1433,25 @@ const httpServer = http.createServer(async (req, res) => {
             ),
           );
         if (api === "audit" && req.method === "GET") return json(200, store.listAudit(200));
-        if (api === "sources" && req.method === "GET") return json(200, await gatherSources());
-        if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries());
+        // The Sources views run the lake probes as the shared server credential
+        // (no per-request role param), so a MEMBER'S denies must be applied in
+        // CODE here — otherwise a member denied Slack still sees Slack row counts
+        // and 30-day series. Admins manage sources, so they see everything; the
+        // biz.* mirror stays team-wide regardless (it's core).
+        const sourceDeniesFor = (): Set<string> =>
+          canApprove(session.role) ? new Set() : new Set(store.sourceDenies(session.identity));
+        if (api === "sources" && req.method === "GET") return json(200, await gatherSources(sourceDeniesFor()));
+        if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries(sourceDeniesFor()));
         // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert threshold
         if (api === "egress" && req.method === "GET") return json(200, await gatherEgress(projectDir, store));
-        if (api === "team" && req.method === "GET")
-          return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
+        if (api === "team" && req.method === "GET") {
+          // Everyone signed in may see the roster (to know who to ask), but a
+          // person's source restrictions are admin-only — don't broadcast the
+          // org's access-restriction map to every member.
+          const admin = canApprove(session.role);
+          const people = teamPeople().map((p) => (admin ? p : { ...p, denies: [] }));
+          return json(200, { people, adminCount: store.countRole("admin") });
+        }
 
         // published apps/reports — TEAM-ONLY: gated behind this session
         // check, so a shared /apps/<id> link only renders for a box login.
@@ -1926,6 +1944,16 @@ const httpServer = http.createServer(async (req, res) => {
           // anyone's data access. Enforcement is the ClickHouse role subset
           // (lib/sources.ts lakeRolesFor) — the engine denies, we just store.
           if (api === "source_access") {
+            // Refuse when the feature is globally off (SETOKU_SOURCE_ACCESS=0
+            // makes lakeRolesFor a no-op): storing a deny the engine won't
+            // enforce would make this surface assert a restriction that isn't
+            // real. Fail loudly so the operator turns the kill-switch off first.
+            if (process.env.SETOKU_SOURCE_ACCESS === "0")
+              return json(409, {
+                ok: false,
+                error:
+                  "Per-source access is disabled on this box (SETOKU_SOURCE_ACCESS=0). Remove that env var and restart the server before setting data-access limits — otherwise a deny here wouldn't actually be enforced.",
+              });
             const body = (await readBody(req)) as { username?: string; denies?: unknown } | undefined;
             const uname = (body?.username ?? "").trim();
             if (!uname) return json(400, { ok: false, error: "Username required." });
@@ -1937,7 +1965,11 @@ const httpServer = http.createServer(async (req, res) => {
             // are kept (a deny must outlive its connector), just normalized.
             const denies = [...new Set((body.denies as string[]).map((d) => familySlug(d)).filter(Boolean))];
             store.setSourceDenies(uname, denies, session.identity);
-            store.audit(session.identity, "source_access_set", { username: uname, denies });
+            // Published apps render under the CREATOR's access and cache shared
+            // rows; drop this person's apps' caches so the new limit takes hold
+            // on the next view instead of after the stale ceiling (~30 min).
+            const purged = store.purgePanelCacheForCreator(uname);
+            store.audit(session.identity, "source_access_set", { username: uname, denies, cachePurged: purged });
             const catalog = new Map(lakeFamilies().map((f) => [f.slug, f.family]));
             const labels = denies.map((d) => catalog.get(d) ?? d);
             return json(200, {
