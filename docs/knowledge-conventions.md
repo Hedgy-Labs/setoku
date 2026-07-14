@@ -38,7 +38,8 @@ existing subject or a section in an existing doc.
 - **gotcha** — a short kebab slug naming the rule (`refunds-excluded`,
   `money-is-cents`, `soft-delete`), not a sentence.
 - **`meta.source` (optional, any doc type)** — a single source-family slug
-  (`mercury`, `slack`, `github`, …) tying the doc to one data source. A tagged
+  (`mercury`, `slack`, `github`, `business` for the Postgres/biz.* mirror, …)
+  tying the doc to one data source. A tagged
   doc follows per-user data access: teammates whose Data-access settings exclude
   that source don't see it (in find_context, get_metric, list_entities,
   describe_entity, or the web Knowledge view), exactly as if it were never
