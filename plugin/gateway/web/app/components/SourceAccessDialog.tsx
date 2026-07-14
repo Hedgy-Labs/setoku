@@ -120,8 +120,9 @@ export function SourceAccessDialog({
         >
           <AlertDialog.Title className="text-base font-semibold text-stone-900">Data access</AlertDialog.Title>
           <AlertDialog.Description className="mt-1 text-xs leading-relaxed text-stone-500">
-            Checked sources are queryable by {identity}’s agent; new sources are on by default. This
-            hides the data, not curated knowledge about it, and the database engine enforces it.
+            Checked sources are queryable by {identity}’s agent; new sources are on by default. The
+            database engine enforces it. Unchecking also hides knowledge docs a curator tagged to
+            that source; untagged knowledge stays team-wide.
           </AlertDialog.Description>
           <div
             role="group"

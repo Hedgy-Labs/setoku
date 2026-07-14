@@ -1404,12 +1404,25 @@ const httpServer = http.createServer(async (req, res) => {
         // reversible, audited — a janitor suppressing good proposals is undoable).
         if (api === "rejected" && req.method === "GET")
           return json(200, store.listCorrections("rejected"));
-        if (api === "knowledge" && req.method === "GET") return json(200, store.listDocs());
+        // Knowledge views follow per-user source access: a MEMBER's view drops
+        // docs tagged (meta.source) to a family denied for them — the same
+        // predicate the MCP tools apply, so the web and the agent agree.
+        // Admins always see everything: they manage the store and the denies.
+        const docsForSession = (): ReturnType<typeof store.listDocs> => {
+          const docs = store.listDocs();
+          if (canApprove(session.role)) return docs;
+          const denied = new Set(store.sourceDenies(session.identity));
+          if (!denied.size) return docs;
+          return docs.filter(
+            (d) => !(typeof d.meta.source === "string" && denied.has(familySlug(d.meta.source))),
+          );
+        };
+        if (api === "knowledge" && req.method === "GET") return json(200, docsForSession());
         if (api === "knowledge_view" && req.method === "GET")
           return json(
             200,
             buildKnowledgeView(
-              store.listDocs(),
+              docsForSession(),
               store.listCorrections("pending"),
               store.knowledgeUsage(),
             ),

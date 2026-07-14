@@ -37,6 +37,16 @@ existing subject or a section in an existing doc.
   migration to biz.* — their SQL is never executed.
 - **gotcha** — a short kebab slug naming the rule (`refunds-excluded`,
   `money-is-cents`, `soft-delete`), not a sentence.
+- **`meta.source` (optional, any doc type)** — a single source-family slug
+  (`mercury`, `slack`, `github`, …) tying the doc to one data source. A tagged
+  doc follows per-user data access: teammates whose Data-access settings exclude
+  that source don't see it (in find_context, get_metric, list_entities,
+  describe_entity, or the web Knowledge view), exactly as if it were never
+  written. Untagged docs are team-wide — that's the default and the norm; tag
+  only docs that carry source-specific facts (example values, account names).
+  The slug is validated at save (`upsert_context` rejects unknown families), so
+  a typo can't produce a doc that looks restricted but filters nothing. Hiding
+  is a curatorial act, never inferred from the doc's SQL.
 - Names are the retrieval key and the link target — keep them stable. Renaming a
   doc orphans its inbound links until they're repointed.
 - **Name + `keywords` are the heaviest-weighted retrieval fields** (+6 / +4 vs +2

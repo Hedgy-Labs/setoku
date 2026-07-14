@@ -91,7 +91,7 @@ describe("source access over HTTP + MCP", () => {
       SETOKU_DB_PATH: path.join(tmpRepo, "knowledge.db"),
       SETOKU_LAKE_URL: lake.url,
       SETOKU_HTTP_PORT: String(PORT),
-      SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test",
+      SETOKU_TOKENS: "tok-alice=alice@co.test,tok-bob=bob@co.test,tok-carol=carol@co.test",
       SETOKU_CURATOR_TOKENS: "tok-curator=alice@co.test",
     });
     await waitHealthy(BASE);
@@ -215,6 +215,86 @@ describe("source access over HTTP + MCP", () => {
     await gwCall(mcp, "run_query", { sql: "SELECT count() AS n FROM setoku.slack_messages" });
     expect(lake.calls.at(-1)!.roles).toEqual([]);
     await mcp.close();
+  });
+
+  // ---- knowledge follows the same denies via the OPTIONAL meta.source tag ----
+
+  it("meta.source is validated at save (a typo'd tag must not look restricted)", async () => {
+    const curator = await connect(BASE, "tok-curator");
+    const bad = await gwCall(curator, "upsert_context", {
+      type: "metric",
+      name: "bad_tag",
+      body: "SELECT 1",
+      meta: { source: "nope_family" },
+    });
+    expect(bad.isError).toBe(true);
+    expect(bad.text).toContain('Unknown meta.source "nope_family"');
+    // the label form normalizes to the slug the deny list speaks
+    const ok = await gwCall(curator, "upsert_context", {
+      type: "metric",
+      name: "mercury_burn",
+      body: "## Definition\nMonthly burn from the Mercury feed.\n\n## Canonical SQL\n```sql\nSELECT sum(amount_cents) FROM setoku.mercury_transactions\n```",
+      meta: { source: "Mercury", summary: "monthly burn", dialect: "clickhouse" },
+    });
+    expect(ok.isError).toBe(false);
+    const untagged = await gwCall(curator, "upsert_context", {
+      type: "metric",
+      name: "orders_total",
+      body: "## Definition\nAll-time paid orders.\n\n## Canonical SQL\n```sql\nSELECT count() FROM biz.orders\n```",
+      meta: { summary: "paid orders", dialect: "clickhouse" },
+    });
+    expect(untagged.isError).toBe(false);
+    await curator.close();
+  });
+
+  it("a tagged doc vanishes for a denied identity — indistinguishable from never written", async () => {
+    const admin = await session("boss@co.test", "s3cret-pass");
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: ["mercury"] } });
+
+    const alice = await connect(BASE, "tok-alice");
+    // get_metric: not-found shaped, and the known-metrics list omits it too
+    const gm = await gwCall(alice, "get_metric", { name: "mercury_burn" });
+    expect(gm.isError).toBe(true);
+    expect(gm.text).toContain('No metric "mercury_burn"');
+    // the "Known metrics" list carries the visible docs only — never the hidden name
+    const known = gm.text.slice(gm.text.indexOf("Known metrics:"));
+    expect(known).toContain("orders_total");
+    expect(known).not.toContain("mercury_burn");
+    const le = await gwCall(alice, "list_entities");
+    expect(le.text).toContain("orders_total");
+    expect(le.text).not.toContain("mercury_burn");
+    const de = await gwCall(alice, "describe_entity", { name: "mercury_burn" });
+    expect(de.isError).toBe(true);
+    const fc = await gwCall(alice, "find_context", { question: "what is our monthly burn from mercury" });
+    expect(fc.text).not.toContain("mercury_burn");
+    await alice.close();
+
+    // an unrestricted teammate still sees it everywhere
+    const carol = await connect(BASE, "tok-carol");
+    expect((await gwCall(carol, "get_metric", { name: "mercury_burn" })).isError).toBe(false);
+    expect((await gwCall(carol, "list_entities")).text).toContain("mercury_burn");
+    await carol.close();
+
+    // untagged knowledge stays team-wide for the denied identity
+    const alice2 = await connect(BASE, "tok-alice");
+    expect((await gwCall(alice2, "get_metric", { name: "orders_total" })).isError).toBe(false);
+    await alice2.close();
+
+    // restore alice for later tests
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: [] } });
+  });
+
+  it("the web Knowledge view follows the same denies for members; admins see everything", async () => {
+    const admin = await session("boss@co.test", "s3cret-pass");
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: ["mercury"] } });
+
+    const member = await session("viewer@co.test", "viewer-pass");
+    const memberDocs = (await (await fetch(`${BASE}/admin/api/knowledge`, { headers: { cookie: member.cookie } })).json()) as { name: string }[];
+    expect(memberDocs.some((d) => d.name === "orders_total")).toBe(true);
+    expect(memberDocs.some((d) => d.name === "mercury_burn")).toBe(false);
+
+    const adminDocs = (await (await fetch(`${BASE}/admin/api/knowledge`, { headers: { cookie: admin.cookie } })).json()) as { name: string }[];
+    expect(adminDocs.some((d) => d.name === "mercury_burn")).toBe(true);
   });
 
   it("removing a person clears their denies — a re-invite starts at full access", async () => {

@@ -26,7 +26,7 @@ import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
 import { mirroredTables, type MirroredTable } from "./lib/mirror";
-import { LAKE_SOURCES, BEAT_LIVE_MS, familyOf, familySlug, lakeRolesFor } from "./lib/sources";
+import { LAKE_SOURCES, BEAT_LIVE_MS, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
 import { notifyActivity } from "./lib/notify";
 import { VERSION } from "./lib/version";
 
@@ -116,6 +116,22 @@ const server = new McpServer({ name: "setoku", version: VERSION });
 const lakeRoles = (): string[] | null => lakeRolesFor(store.sourceDenies(user));
 const deniedFamilies = (): Set<string> => new Set(store.sourceDenies(user));
 
+/** Whether a doc's OPTIONAL source tag (meta.source, a family slug set by the
+ *  curator — never inferred) falls inside a denied set. Untagged docs are
+ *  team-wide: hiding is a deliberate curatorial act, like the deny itself. */
+const sourceHidden = (meta: Record<string, unknown>, denied: Set<string>): boolean =>
+  typeof meta.source === "string" && denied.has(familySlug(meta.source));
+
+/** The curated docs THIS session may see — the knowledge-plane counterpart of
+ *  the lake role subset: a doc tagged to a denied source family doesn't exist
+ *  for this identity (not "exists but hidden" — tools answer exactly as if it
+ *  were never written, so its name doesn't leak either). */
+const visibleDocs = (): ReturnType<KnowledgeStore["listDocs"]> => {
+  const denied = deniedFamilies();
+  if (!denied.size) return store.listDocs();
+  return store.listDocs().filter((d) => !sourceHidden(d.meta, denied));
+};
+
 // Query expansion seam: the domain-general base table, fused with this tenant's
 // offline-derived table when it's live (issue #33). Pure lookup either way (I8).
 const synonyms = derivedSynonyms
@@ -197,7 +213,7 @@ server.registerTool(
   },
   async ({ question, max_results }) => {
     const started = Date.now();
-    const allDocs = store.listDocs();
+    const allDocs = visibleDocs();
     const docs = allDocs.filter((d) => d.type !== "gotcha");
     const gotchaDocs = allDocs.filter((d) => d.type === "gotcha");
     const pending = matchByTokens(
@@ -330,7 +346,7 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const docs = store.listDocs();
+    const docs = visibleDocs();
     const pendingCount = store.pendingCount;
     // Only truly empty (no committed docs AND no pending proposals) shows the
     // "nothing here yet" hint. With pending proposals present we fall through so
@@ -386,7 +402,10 @@ server.registerTool(
     inputSchema: { name: z.string() },
   },
   async ({ name }) => {
-    const doc = store.getDoc(null, name);
+    let doc = store.getDoc(null, name);
+    // A doc tagged to a denied source answers exactly like a nonexistent one —
+    // "hidden" must not be distinguishable from "never written".
+    if (doc && sourceHidden(doc.meta, deniedFamilies())) doc = null;
     store.audit(user, "describe_entity", { name, ok: !!doc });
     if (!doc)
       return errorText(
@@ -414,12 +433,13 @@ server.registerTool(
     inputSchema: { name: z.string() },
   },
   async ({ name }) => {
-    const doc = store.getDoc("metric", name);
+    let doc = store.getDoc("metric", name);
+    // Same non-existence contract as describe_entity for source-tagged docs.
+    if (doc && sourceHidden(doc.meta, deniedFamilies())) doc = null;
     store.audit(user, "get_metric", { name, ok: !!doc });
     if (!doc) {
       const known =
-        store
-          .listDocs()
+        visibleDocs()
           .filter((d) => d.type === "metric")
           .map((m) => m.name)
           .join(", ") || "(none documented yet)";
@@ -564,7 +584,10 @@ server.registerTool(
       "For entities pass meta.table (e.g. public.orders), meta.summary, meta.keywords. For metrics include the " +
       "canonical SQL in the body. For gotchas put the one-liner in body (name can be a short slug). " +
       "Set meta.links (array of exact doc names) to interlink related docs — join targets, the metrics an " +
-      "entity feeds, the entities a metric reads. Links must resolve to existing docs or the save is rejected.",
+      "entity feeds, the entities a metric reads. Links must resolve to existing docs or the save is rejected. " +
+      "OPTIONAL meta.source (a source-family slug, e.g. \"mercury\") ties the doc to one data source: it is " +
+      "then hidden from teammates whose data access excludes that source. Omit it for team-wide knowledge " +
+      "(the default) — tag only docs that carry source-specific facts.",
     inputSchema: {
       type: z.enum(["entity", "metric", "query", "overview", "gotcha"]),
       name: z
@@ -575,11 +598,25 @@ server.registerTool(
         .record(z.union([z.string(), z.array(z.string())]))
         .optional()
         .describe(
-          "Frontmatter-style fields: table, summary, keywords, question, sources, links (array of doc names this doc references)",
+          "Frontmatter-style fields: table, summary, keywords, question, sources, links (array of doc names " +
+            "this doc references), source (OPTIONAL single family slug — follows per-user data access)",
         ),
     },
   },
   async ({ type, name, body, meta }) => {
+    // meta.source is access-control input, so it's validated strictly at write
+    // time — a typo'd tag would LOOK restricted while filtering nothing.
+    if (meta?.source !== undefined) {
+      if (Array.isArray(meta.source))
+        return errorText("meta.source must be a single source-family slug, not an array.");
+      const slug = familySlug(String(meta.source));
+      if (!lakeFamilies().some((f) => f.slug === slug))
+        return errorText(
+          `Unknown meta.source "${meta.source}" — use one source-family slug of: ` +
+            `${lakeFamilies().map((f) => f.slug).join(", ")}. Omit it for team-wide knowledge.`,
+        );
+      meta.source = slug; // store the normalized slug the deny list speaks
+    }
     // Links must resolve to exactly one existing doc, validated HERE so a dangling
     // or ambiguous link can never enter the store (bad data unrepresentable, not
     // checked-for after the fact). Build the graph over the prospective doc set
@@ -857,7 +894,7 @@ server.registerTool(
 
     lines.push(
       "",
-      `KNOWLEDGE STORE: ${store.docCount} curated docs — call find_context to retrieve what your data MEANS (definitions, gotchas, canonical SQL).`,
+      `KNOWLEDGE STORE: ${visibleDocs().length} curated docs — call find_context to retrieve what your data MEANS (definitions, gotchas, canonical SQL).`,
       "",
       'Reminder: everything queryable lives in ClickHouse — business tables as biz.*, logs/errors/events/finance/chat as setoku.*. Always run_query with dialect:"clickhouse".',
     );
@@ -989,8 +1026,7 @@ server.registerTool(
       // naming convention. Only meaningful against the FULL listing — when
       // `tables` filters the result, absence is by request, not drift.
       const documented = new Map(
-        store
-          .listDocs()
+        visibleDocs()
           .filter((d) => d.type === "entity" && d.meta.table)
           .map((d) => [mirrorNameOf(String(d.meta.table)), String(d.meta.table).toLowerCase()]),
       );
