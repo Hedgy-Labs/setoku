@@ -50,7 +50,13 @@ export function SourceAccessDialog({
     if ((t.rows ?? 0) > 0 || beatIsLive(t.beat)) connected.add(familyOf(t.source));
   }
 
-  const families = lakeFamilies();
+  // Connected families first (they're what an admin is here to manage), each
+  // partition in catalog order — sort() is stable. While the sources fetch is
+  // in flight `connected` is empty, so the list starts in catalog order and
+  // settles when the hints land.
+  const families = [...lakeFamilies()].sort(
+    (a, b) => Number(connected.has(b.family)) - Number(connected.has(a.family)),
+  );
   // A deny can outlive its connector — surface unknown slugs so they can still
   // be re-checked rather than becoming an invisible, unremovable restriction.
   const stale = [...denied].filter((d) => !families.some((f) => f.slug === d));
