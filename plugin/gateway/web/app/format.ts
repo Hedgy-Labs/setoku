@@ -52,11 +52,11 @@ export function freshness(
 
 /**
  * Absolute share link for an app. Public ones get the credential-free
- * /p/<id>; team ones the session-gated in-app /admin/p/<id>. Single source of
+ * /p/<id>; team ones the session-gated in-app /apps/<id>. Single source of
  * truth for both the list and the viewer (server mirrors it as publishUrl).
  */
 export function appShareUrl(r: { id: string; visibility: "team" | "public" }): string {
-  return r.visibility === "public" ? `${location.origin}/p/${r.id}` : `${location.origin}/admin/p/${r.id}`;
+  return r.visibility === "public" ? `${location.origin}/p/${r.id}` : `${location.origin}/apps/${r.id}`;
 }
 
 /** Audit payload (a JSON string) → a compact "k=v · k=v" summary. */

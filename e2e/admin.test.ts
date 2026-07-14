@@ -98,7 +98,7 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
     const page = await ctx.newPage();
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.goto(`${BASE}/admin`, { waitUntil: "networkidle" });
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle" });
     if (login) {
       await page.fill('input[name="username"]', login.user);
       await page.fill('input[name="password"]', login.pass);

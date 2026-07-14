@@ -131,7 +131,7 @@ cover it — hybrid embedding retrieval (below) is what catches the rest.
 - **suggested connections** — doc pairs with strong topic overlap but no edge,
   *below* the merge threshold (so "should link" ≠ "are duplicates");
 - **broken links** — declared refs that resolve to no doc.
-All three feed `KnowledgeHealth` / the `/admin/knowledge` browser and can become
+All three feed `KnowledgeHealth` / the `/knowledge` browser and can become
 pending corrections. **Recommend-only** — a human commits the `meta.links` edit.
 
 ## The membrane caveat (why this is not "LLM owns the wiki")

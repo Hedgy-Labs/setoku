@@ -317,7 +317,7 @@ function handoffMessage(creds: Creds, self: boolean): string {
     );
   if (creds.newLogin)
     parts.push(
-      `Web login${origin ? ` (${origin}/admin)` : " (/admin)"}:\n` +
+      `Web login${origin ? ` (${origin})` : ""}:\n` +
         `  Username: ${creds.newLogin.username}\n` +
         `  ${self ? "Password" : "Temp password"}: ${creds.newLogin.tempPassword}`,
     );

@@ -10,7 +10,7 @@ const root = document.getElementById("root");
 if (root) {
   createRoot(root).render(
     <StrictMode>
-      <BrowserRouter basename="/admin">
+      <BrowserRouter basename="/">
         <AuthProvider>
           <App />
         </AuthProvider>

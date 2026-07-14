@@ -113,6 +113,12 @@ const ADMIN_SHELL = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <script type="module" src="/admin/app.js?v=${ADMIN_JS_VER}"></script>
 </body></html>`;
 
+// The app's top-level route sections (see web/app/App.tsx). Used by the root
+// fallback to decide which paths get the SPA shell vs a 404: the root, plus any
+// path whose first segment is one of these (so /knowledge/review, /apps/<id>,
+// etc. deep-link correctly). Keep in sync when adding a top-level route.
+const SPA_SECTIONS = new Set(["knowledge", "sources", "team", "audit", "apps"]);
+
 function storePath(): string {
   const res = loadConfig(projectDir);
   if (res.ok && typeof res.config.knowledgeDb === "string") {
@@ -1038,8 +1044,9 @@ function publicAppShell(opts: {
     // stamp — e.g. every panel currently errored) rather than render a blank time.
     stamp.textContent=(d.updatedAt?'data updated '+rel(d.updatedAt)+' · ':'')+(d.mirrorAsOf?'source data as of '+rel(d.mirrorAsOf)+' · ':'')+'auto-refreshes every '+iv;
   }).catch(function(){}); }
-  // Reveal the Admin link only if this viewer has a box session (the cookie is
-  // Path=/admin, so it rides along to /admin/api/session but not to /p/*).
+  // Reveal the Admin link only if this viewer has a box session — probe the
+  // session endpoint with credentials (the cookie is HttpOnly, so JS can't read
+  // it directly; a 200 here means signed in).
   fetch('/admin/api/session',{credentials:'include'}).then(function(r){
     if(r.ok){ var a=document.getElementById('adminlink'); a.href=CFG.admin; a.style.display='inline-block'; }
   }).catch(function(){});
@@ -1224,7 +1231,7 @@ const httpServer = http.createServer(async (req, res) => {
           framePath: `/p/${encodeURIComponent(id)}/frame`,
           dataPath: `/p/${encodeURIComponent(id)}/data`,
           statePath: `/p/${encodeURIComponent(id)}/state`,
-          adminPath: `/admin/p/${encodeURIComponent(id)}`,
+          adminPath: `/apps/${encodeURIComponent(id)}`,
           refreshSeconds: meta.refreshSeconds ?? 300,
           hasPanels,
           params: meta.params ?? [],
@@ -1232,12 +1239,16 @@ const httpServer = http.createServer(async (req, res) => {
       );
       return;
     }
-    // ---- web approval surface — React SPA + JSON API ----
-    // Auth is a session COOKIE, not a token in the URL: every /admin route is safe
-    // to share. The SPA shell and its assets are public (no secrets); the JSON API
-    // under /admin/api/* is session-gated, and mutations additionally require the
-    // CSRF token (x-csrf-token header) + admin role. The token only ever travels in
-    // the POST /admin/api/login body (I9 — the agent has the token, not the password).
+    // ---- web approval surface — authenticated plumbing under /admin/ ----
+    // The React app itself now lives at the site ROOT (served by the fallback
+    // below); its authenticated plumbing stays namespaced under /admin/ so the
+    // move is a small, contained change. That plumbing is: the JSON API
+    // (/admin/api/*, session-gated, mutations additionally need the CSRF header +
+    // admin role), the sandboxed team frame (/admin/frame/*), and the
+    // content-versioned bundle (/admin/app.{css,js}). Any OTHER /admin path is a
+    // legacy UI URL and 302s to its root equivalent. The token only ever travels
+    // in the POST /admin/api/login body (I9 — the agent has the token, not the
+    // password).
     if (req.url === "/admin" || req.url?.startsWith("/admin/") || req.url?.startsWith("/admin?")) {
       const reqPath = req.url.split("?")[0];
 
@@ -1411,7 +1422,7 @@ const httpServer = http.createServer(async (req, res) => {
           return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
 
         // published apps/reports — TEAM-ONLY: gated behind this session
-        // check, so a shared /admin/p/<id> link only renders for a box login.
+        // check, so a shared /apps/<id> link only renders for a box login.
         // The list UI needs only panel COUNT, not the queries — strip each panel's
         // raw SQL so the list doesn't broadcast every app's query text to all
         // members (SQL stays team-tier, shown only in the per-app drawer).
@@ -1895,27 +1906,54 @@ const httpServer = http.createServer(async (req, res) => {
         return json(404, { ok: false, error: "unknown endpoint" });
       }
 
-      // A logged-OUT visitor to /admin/p/<id> for a PUBLIC app should see
-      // the public view, not the login wall — bounce them to /p/<id>. (Signed-in
-      // users fall through to the SPA, which renders the full team view.)
-      const pm = reqPath.match(/^\/admin\/p\/([^/]+)$/);
-      if (pm && req.method === "GET" && !sessions.get(sessionIdFromCookie(req.headers.cookie))) {
-        const pmeta = store.getPublishedMeta(decodeURIComponent(pm[1]));
-        if (pmeta && !pmeta.archivedAt && pmeta.visibility === "public") {
-          res.writeHead(302, { location: `/p/${encodeURIComponent(pmeta.id)}`, "referrer-policy": "no-referrer" });
-          res.end();
-          return;
-        }
-      }
-
-      // SPA shell for every other /admin GET — client-side routing renders the
-      // view; the app fetches /admin/api/session and shows login if unauthenticated.
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "referrer-policy": "no-referrer" });
-      res.end(ADMIN_SHELL);
+      // Any other /admin path is a legacy UI URL — the app moved to the root.
+      // 302 (not 301: a permanent redirect pins the mapping in browser caches,
+      // which would defeat any future rollback) to the equivalent root path so
+      // old bookmarks and shared links keep working. Team apps were
+      // /admin/p/<id>; they (and any /admin/p/... subpath) map to /apps/... — the
+      // credential-free public surface owns /p/<id>, so we must NOT strip the
+      // prefix down to a /p/... path. The querystring rides along.
+      const qs = req.url.slice(reqPath.length);
+      const legacyApp = reqPath.match(/^\/admin\/p\/(.+)$/);
+      const raw = legacyApp ? `/apps/${legacyApp[1]}` : reqPath.replace(/^\/admin/, "");
+      // Collapse leading slashes to exactly one: a stripped path like
+      // "/admin//evil.com" → "//evil.com" would be a protocol-relative (offsite)
+      // redirect, so force a single-slash, same-origin path.
+      const dest = `/${raw.replace(/^\/+/, "")}${qs}`;
+      res.writeHead(302, { location: dest, "referrer-policy": "no-referrer" });
+      res.end();
       return;
     }
 
+    // ---- the admin app now lives at the site root ----
+    // Serve the SPA shell for the root and the app's known top-level sections
+    // (the React router client-routes within each). We match by first path
+    // segment so deep links (/knowledge/review, /apps/<id>) resolve, while any
+    // OTHER path still 404s — a genuine typo/dead link stays a not-found rather
+    // than a 200 shell that would mask it from monitoring. Everything above
+    // (/health*, /i/*, /p/*, /admin/*, /mcp) was already handled and returned.
     if (!req.url?.startsWith("/mcp")) {
+      const reqPath = req.url?.split("?")[0] ?? "/";
+      const section = reqPath.split("/")[1] ?? "";
+      const isAppRoute = reqPath === "/" || SPA_SECTIONS.has(section);
+      if (req.method === "GET" && isAppRoute) {
+        // A logged-OUT visitor to a team app URL (/apps/<id>) for a PUBLIC app
+        // should see the public view, not the login wall — bounce to /p/<id>.
+        // (Signed-in users send the session cookie, so they get the full team
+        // view in the SPA. The cookie is Path=/ now, so it reaches /apps.)
+        const am = reqPath.match(/^\/apps\/([^/]+)$/);
+        if (am && !sessions.get(sessionIdFromCookie(req.headers.cookie))) {
+          const pmeta = store.getPublishedMeta(decodeURIComponent(am[1]));
+          if (pmeta && !pmeta.archivedAt && pmeta.visibility === "public") {
+            res.writeHead(302, { location: `/p/${encodeURIComponent(pmeta.id)}`, "referrer-policy": "no-referrer" });
+            res.end();
+            return;
+          }
+        }
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", "referrer-policy": "no-referrer" });
+        res.end(ADMIN_SHELL);
+        return;
+      }
       res.writeHead(404).end();
       return;
     }
