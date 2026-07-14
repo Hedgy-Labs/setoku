@@ -115,7 +115,7 @@ export interface AuditRow {
 /**
  * A report an agent published to the box (the "publish" surface). The agent
  * passes self-contained HTML via the publish_report tool; we mint an opaque id
- * and serve it under /admin/p/<id>, which is session-gated — so v0 sharing is
+ * and serve it under /apps/<id>, which is session-gated — so v0 sharing is
  * TEAM-ONLY (a viewer must hold a box login). The body is rendered in a
  * sandboxed iframe (opaque origin) so an injected agent's HTML can't reach the
  * admin origin's cookie or API. `body` is omitted from list views (it can be
@@ -452,7 +452,7 @@ export class KnowledgeStore {
     )`);
     // Published reports (the "Reports" surface). An agent calls publish_report
     // with self-contained HTML; we store it under an opaque id. A "team" report
-    // serves session-gated at /admin/p/<id>; a "public" one (an admin promotes
+    // serves session-gated at /apps/<id>; a "public" one (an admin promotes
     // it) serves credential-free at /p/<id>. `archived_at` is a soft delete — an
     // archived link 404s everywhere but the row (and its audit trail) stays.
     this.db.run(`CREATE TABLE IF NOT EXISTS published (

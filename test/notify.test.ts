@@ -25,19 +25,19 @@ afterAll(() => {
 
 describe("formatEvent", () => {
   it("renders a published app with its link and panel count", () => {
-    const t = formatEvent({ kind: "app_published", title: "Sales", url: "/admin/p/x", by: "al@co", panels: 3 });
+    const t = formatEvent({ kind: "app_published", title: "Sales", url: "/apps/x", by: "al@co", panels: 3 });
     expect(t).toContain("App published");
     expect(t).toContain("Sales");
     expect(t).toContain("al@co");
     expect(t).toContain("3 live panels");
-    expect(t).toContain("/admin/p/x");
+    expect(t).toContain("/apps/x");
   });
 
   it("renders an update with the author note and the changed facets", () => {
     const t = formatEvent({
       kind: "app_updated",
       title: "Sales",
-      url: "/admin/p/x",
+      url: "/apps/x",
       by: "bo@co",
       changed: ["content", "data"],
       message: "Added a weekly revenue panel",

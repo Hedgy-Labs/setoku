@@ -87,8 +87,13 @@
 		reverse_proxy server:8787
 	}
 
+	# The web console (React SPA) is served at the site ROOT by the gateway, so
+	# the gateway is the default backend: it renders the SPA shell for its known
+	# routes (/, /apps/<id>, /knowledge, /sources, /team, /audit) and returns 404
+	# for anything else. The specific handles above (ingest/mcp/i/admin/p/health)
+	# still win by matcher specificity.
 	handle {
-		respond "setoku" 404
+		reverse_proxy server:8787
 	}
 }
 

@@ -286,13 +286,27 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     return fetch(`${BASE}/admin/api/${path}`, { method: "POST", headers, body: JSON.stringify(opts.body ?? {}) });
   }
 
-  it("the bare /admin link is safe to share — it serves a data-less SPA shell, and unauthenticated API reads are refused", async () => {
-    // GET /admin → the static React shell: no session, no secrets, no data
-    const r = await fetch(`${BASE}/admin`);
+  it("the bare / link is safe to share — it serves a data-less SPA shell, and unauthenticated API reads are refused", async () => {
+    // GET / → the static React shell: no session, no secrets, no data
+    const r = await fetch(`${BASE}/`);
     expect(r.status).toBe(200);
     const page = await r.text();
     expect(page).toContain('id="root"');
     expect(page).toContain("/admin/app.js");
+    // the legacy /admin path redirects to the root the app now lives at (302,
+    // not 301 — a permanent redirect would pin the mapping in browser caches).
+    const legacy = await fetch(`${BASE}/admin`, { redirect: "manual" });
+    expect(legacy.status).toBe(302);
+    expect(legacy.headers.get("location")).toBe("/");
+    // legacy deep links strip the prefix: /admin/knowledge → /knowledge
+    const deep = await fetch(`${BASE}/admin/knowledge`, { redirect: "manual" });
+    expect(deep.headers.get("location")).toBe("/knowledge");
+    // a doubled slash must NOT become a protocol-relative (offsite) redirect
+    const evil = await fetch(`${BASE}/admin//evil.com`, { redirect: "manual" });
+    expect(evil.status).toBe(302);
+    expect(evil.headers.get("location")).toBe("/evil.com"); // same-origin, not //evil.com
+    // an unknown root path is a genuine 404, not a 200 SPA shell
+    expect((await fetch(`${BASE}/nope`, { redirect: "manual" })).status).toBe(404);
     // and no API data leaks without a session
     expect((await apiGet("session")).status).toBe(401);
     expect((await apiGet("pending")).status).toBe(401);
@@ -729,7 +743,7 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
     // escapes it on render. The static shell never carries it either.
     const pending = (await (await apiGet("pending", cookie)).json()) as { content: string }[];
     expect(pending.some((c) => c.content === "<script>alert('xss')</script> pwn")).toBe(true);
-    const shell = await (await fetch(`${BASE}/admin`)).text();
+    const shell = await (await fetch(`${BASE}/`)).text();
     expect(shell).not.toContain("<script>alert('xss')</script>");
   });
 
@@ -1148,7 +1162,7 @@ describe("live apps (end-to-end render path)", () => {
       refreshSeconds: 30,
     });
     expect(pub.isError).toBe(false);
-    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    const id = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
     expect(id).toBeTruthy();
     await alice.close();
 
@@ -1210,11 +1224,21 @@ describe("live apps (end-to-end render path)", () => {
     expect(shell).toContain("<iframe");
     expect(shell).toContain(`/p/${id}/frame`);
 
-    // 6b. A logged-OUT hit on /admin/p/<id> for a public app bounces to the
-    //     public view rather than the login wall.
-    const bounce = await fetch(`${BASE}/admin/p/${id}`, { redirect: "manual" });
+    // 6b. A logged-OUT hit on the team app URL /apps/<id> for a public app
+    //     bounces to the public view rather than the login wall.
+    const bounce = await fetch(`${BASE}/apps/${id}`, { redirect: "manual" });
     expect(bounce.status).toBe(302);
     expect(bounce.headers.get("location")).toBe(`/p/${id}`);
+    // 6c. A SIGNED-IN hit on /apps/<id> does NOT bounce — the session cookie is
+    //     Path=/, so it reaches /apps and the team view (SPA shell) renders even
+    //     for a public app. (Regression guard: with Path=/admin this 302'd.)
+    const teamView = await fetch(`${BASE}/apps/${id}`, { headers: { cookie: boss.cookie }, redirect: "manual" });
+    expect(teamView.status).toBe(200);
+    expect(await teamView.text()).toContain('id="root"');
+    // 6d. The legacy /admin/p/<id> link 302s to the new /apps/<id> home.
+    const legacy = await fetch(`${BASE}/admin/p/${id}`, { redirect: "manual" });
+    expect(legacy.status).toBe(302);
+    expect(legacy.headers.get("location")).toBe(`/apps/${id}`);
 
     // 7. Archiving 404s the link everywhere (and drops cached data).
     const arch = await fetch(`${BASE}/admin/api/archive`, {
@@ -1246,7 +1270,7 @@ describe("live apps (end-to-end render path)", () => {
       // no dialect: clickhouse is the default (the only engine there is)
       panels: [{ key: "p", sql: "SELECT count(*) AS n FROM biz.orders" }],
     });
-    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    const id = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
     await alice.close();
     // a MEMBER session cannot make it public
     const viewer = await session("viewer", "viewer-pass");
@@ -1277,10 +1301,10 @@ describe("live apps (end-to-end render path)", () => {
       refreshSeconds: 10_000_000,
       panels: [{ key: "p", sql: "SELECT count(*) AS n FROM biz.orders", dialect: "clickhouse" }],
     });
-    const bigId = (big.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    const bigId = (big.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
     // a zero-panel fragment app (state-only / presentational — no live data)
     const stateOnly = await call(alice, "publish_app", { title: "state-only", html: "<div id=todo></div>" });
-    const soId = (stateOnly.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    const soId = (stateOnly.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
     await alice.close();
 
     const boss = await session("boss", "s3cret-pass");
@@ -1318,7 +1342,7 @@ describe("live apps (end-to-end render path)", () => {
       html: "<div id=x></div>",
       panels: [{ key: "a", sql: "SELECT count(*) AS n FROM biz.orders", dialect: "clickhouse" }],
     });
-    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    const id = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
     await alice.close();
 
     // a different identity cannot edit it

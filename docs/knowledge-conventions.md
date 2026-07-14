@@ -4,7 +4,7 @@
 pattern calls the *schema*: the config that defines how the wiki is organized so an
 agent maintaining it keeps the structure consistent instead of reinventing it every
 run. `/setoku:generate` and `/setoku:curate` should follow these rules; the
-`/admin/knowledge` browser and the lint in `lib/facts.ts` assume them.
+`/knowledge` browser and the lint in `lib/facts.ts` assume them.
 
 It is **conventions, not enforcement**. Nothing here is a new authority path —
 knowledge still lands as proposals and a human commits (I2/I9). These rules make

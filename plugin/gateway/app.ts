@@ -1175,7 +1175,7 @@ server.registerTool(
 // A zero-panel app is a static / state-only fragment (a todo, a poll, a
 // presentational summary); it still renders through the runtime shell.
 //
-// v0 is TEAM-ONLY: the link (/admin/p/<id>) is session-gated, so only people who
+// v0 is TEAM-ONLY: the link (/apps/<id>) is session-gated, so only people who
 // hold a box login can view it — that's what keeps a (prompt-injectable) analyst
 // session from turning publish into a public data-exfiltration channel. Promotion
 // to a public /p/<id> link is a human click in /admin, never an agent action.
@@ -1194,10 +1194,10 @@ const MAX_UPDATE_MESSAGE_CHARS = 500;
 // (also used by the installer links); without it we return the path and tell the
 // agent to prefix its box URL.
 const publishBase = (process.env.SETOKU_PUBLIC_URL ?? "").replace(/\/+$/, "");
-// Team apps live in the session-gated SPA (/admin/p/<id>); public ones serve
+// Team apps live in the session-gated SPA (/apps/<id>); public ones serve
 // credential-free at /p/<id>. The link an agent hands out follows visibility.
 const publishUrl = (id: string, visibility: "team" | "public" = "team"): string => {
-  const path = visibility === "public" ? `/p/${id}` : `/admin/p/${id}`;
+  const path = visibility === "public" ? `/p/${id}` : `/apps/${id}`;
   return publishBase ? `${publishBase}${path}` : path;
 };
 

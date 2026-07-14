@@ -154,14 +154,20 @@ export function sessionIdFromCookie(cookieHeader: string | undefined): string | 
 // it. Never set this on a real deployment.
 const secureAttr = (): string => (process.env.SETOKU_COOKIE_INSECURE === "1" ? "" : " Secure;");
 
+// Path=/ (not /admin): the web app now lives at the site root, so the cookie has
+// to ride along to BOTH the /admin/api plumbing AND the team app views at
+// /apps/<id> (whose logged-in vs logged-out check is a real server request). It's
+// still sent to the credential-free /p/* surface, but that's harmless: the public
+// handler never reads it, the cookie is HttpOnly (unreadable by app JS) + Secure,
+// and SameSite=Strict + the CSRF header guard every mutation.
 /** Set-Cookie value for a new session (HttpOnly, Secure, SameSite=Strict). */
 export function sessionSetCookie(sid: string): string {
-  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly;${secureAttr()} SameSite=Strict; Path=/admin; Max-Age=${SESSION_TTL_MS / 1000}`;
+  return `${COOKIE}=${encodeURIComponent(sid)}; HttpOnly;${secureAttr()} SameSite=Strict; Path=/; Max-Age=${SESSION_TTL_MS / 1000}`;
 }
 
 /** Set-Cookie value that clears the session cookie. */
 export function sessionClearCookie(): string {
-  return `${COOKIE}=; HttpOnly;${secureAttr()} SameSite=Strict; Path=/admin; Max-Age=0`;
+  return `${COOKIE}=; HttpOnly;${secureAttr()} SameSite=Strict; Path=/; Max-Age=0`;
 }
 
 /* ------------------------------ shared types ------------------------------ */

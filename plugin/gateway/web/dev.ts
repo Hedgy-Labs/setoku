@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Interactive local /admin — runs the REAL gateway (http.ts) against a throwaway
+ * Interactive local console — runs the REAL gateway (http.ts) against a throwaway
  * store seeded with sample data, so you can actually click: invite teammates,
  * change roles, approve/reject pending knowledge, reset passwords, etc.
  *
@@ -116,12 +116,12 @@ for (let i = 0; i < 50; i++) {
   await new Promise((r) => setTimeout(r, 100));
 }
 
-console.log(`\n  Setoku admin (live) → ${BASE}/admin`);
+console.log(`\n  Setoku admin (live) → ${BASE}/   (legacy /admin 301s here)`);
 console.log(`  login:  ${USER} / ${PASS}   (also: viewer / viewer — a member, view-only)`);
 console.log(`  fresh throwaway data in ${dir}`);
 console.log(`  Ctrl-C to stop.\n`);
 const opener = process.platform === "darwin" ? "open" : "xdg-open";
-spawn([opener, `${BASE}/admin`]).exited.catch(() => {});
+spawn([opener, `${BASE}/`]).exited.catch(() => {});
 
 // 5. clean up on exit
 const cleanup = () => {

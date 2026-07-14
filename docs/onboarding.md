@@ -26,7 +26,7 @@ flow surfaced gaps the prose hid, all now fixed in the skill:
   (it was only in the `onboard` wrapper, but `connect` is the front door).
 - Dropped the implied durable idempotency (there's no `provisioning_log` MCP
   tool); the agent records what it applied in the Phase 4 summary instead.
-- Phase 4 now points the human at `https://<domain>/admin` and `/setoku:curate`
+- Phase 4 now points the human at `https://<domain>/` and `/setoku:curate`
   to promote `report_correction`s, instead of dead-ending them.
 - Data gotcha caught by exercising: lake tables mix engines — `ReplacingMergeTree`
   needs `FINAL`, plain `MergeTree` rejects it (`ILLEGAL_FINAL`). Noted in the

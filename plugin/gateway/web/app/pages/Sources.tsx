@@ -259,7 +259,7 @@ function EgressKvs({ egress, reload }: { egress: EgressData; reload: () => void 
         ? kv(
             "app",
             <Link
-              to={`/p/${egress.appId}`}
+              to={`/apps/${egress.appId}`}
               className="text-stone-600 underline underline-offset-2 hover:text-stone-900"
             >
               Mirror egress →
