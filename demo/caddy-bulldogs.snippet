@@ -38,7 +38,10 @@ demo.setoku.com, demo.51-81-222-176.sslip.io, stags.setoku.com, stags.51-81-222-
 	handle /health* {
 		reverse_proxy setoku-bulldogs-demo-server-1:8787
 	}
+	# The web console is served at the site root by the gateway (see the main
+	# Caddyfile) — route everything not matched above to it; it serves the SPA
+	# shell for its known routes (/, /apps/<id>, …) and 404s the rest.
 	handle {
-		respond "setoku demo (bulldogs)" 404
+		reverse_proxy setoku-bulldogs-demo-server-1:8787
 	}
 }
