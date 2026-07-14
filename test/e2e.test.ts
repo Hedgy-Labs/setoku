@@ -397,7 +397,7 @@ describe("app surface", () => {
     expect(pub.text).toContain("TEAM-ONLY");
     expect(pub.text).toContain("1 live panel"); // dry-ran + reported
     expect(pub.text).not.toContain("no curated metric"); // "revenue" exists in the fixture
-    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    const id = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
     expect(id).toBeTruthy();
 
     // get_app surfaces how it's calculated: the SQL + the last run
@@ -448,7 +448,7 @@ describe("app surface", () => {
       html: "<h1>Q2 revenue</h1><p>$225</p>",
     });
     expect(pub.isError).toBeFalsy();
-    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    const id = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
     expect(id).toBeTruthy();
     const listed = await call("list_apps");
     expect(listed.text).toContain("Q2 revenue");
@@ -478,7 +478,7 @@ describe("app surface", () => {
       html: "<div id=x></div>",
       panels: [{ key: "a", sql: "SELECT count(*) AS n FROM orders WHERE status='paid'", dialect: "postgres" }],
     });
-    const id = (pub.text.match(/\/admin\/p\/([0-9a-f]+)/) ?? [])[1];
+    const id = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
 
     const upd = await call("update_app", {
       id,

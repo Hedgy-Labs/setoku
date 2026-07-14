@@ -66,7 +66,7 @@ on a single session**, by enforcement rather than discipline.
    curator connector when it sets up the box.
 
 5. **Audit.** Every curator write is already audited with the curator identity;
-   surfaced on `/admin`'s audit page alongside approvals.
+   surfaced on the web console's audit page alongside approvals.
 
 ## Residual risk & mitigation
 
@@ -82,7 +82,7 @@ on a single session**, by enforcement rather than discipline.
 ## Alternative considered: propose + bulk-approve (rejected as the default)
 
 Have `generate` emit its docs as **pending corrections** to the box, and add a
-"bulk-approve this generate batch" action on `/admin`. Membrane-pure (every
+"bulk-approve this generate batch" action in the web console. Membrane-pure (every
 write is a human click outside the loop). Rejected as the default because
 generate reads the customer's *own* codebase (trusted, human-initiated) — gating
 it behind the same approval as Slack-mined corrections is friction without

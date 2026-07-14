@@ -39,7 +39,7 @@ export function App() {
         <Route path="sources/trends" element={<Trends />} />
         <Route path="team" element={<Team />} />
         <Route path="audit" element={<Audit />} />
-        <Route path="p/:id" element={<AppView />} />
+        <Route path="apps/:id" element={<AppView />} />
         <Route path="*" element={<Apps />} />
       </Route>
     </Routes>

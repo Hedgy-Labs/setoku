@@ -15,7 +15,7 @@ underbuilt and confusing:
   status and tells you "shape it into a doc in a curator session." So the human
   accepts, then has to *separately* `upsert_context` the real edit. That gap is
   the friction.
-- Three surfaces (curator MCP connector, skills, `/admin`) with no obvious "home."
+- Three surfaces (curator MCP connector, skills, web console) with no obvious "home."
 - A pending correction is a raw note, not a ready change — encoding it into a doc
   edit is mental work done at approval time.
 
@@ -34,7 +34,7 @@ The membrane (I2/I9) is structural, and these facts are load-bearing:
   untrusted source where injection lives.
 - `resolve_correction` = **queue status only** (`UPDATE corrections SET status`),
   grants zero knowledge authority.
-- **Accept = `applyApprovalAction` on `/admin`, gated by username+password** (a
+- **Accept = `applyApprovalAction` in the web console, gated by username+password** (a
   local account, NOT the MCP bearer token). An injected agent holds its token but
   never the human's password, so it cannot self-approve. This is the airtight bless.
 - **Rules that fall out, and must hold for everything below:**
@@ -42,7 +42,7 @@ The membrane (I2/I9) is structural, and these facts are load-bearing:
   2. **Committing untrusted-derived content stays the password-gated human click.** Never auto-commit it.
   3. **Auto-reject is safe** (removes from queue, never grants authority); auto-accept is not.
   4. Capabilities are partitioned by **grant vs remove** authority and enforced at the **capability** level, never by instruction.
-  5. The **curator MCP write** (`upsert_context`) is safe only for **trusted-source** content (generate from the company's own code/schema). Untrusted-derived promotion goes through `/admin`.
+  5. The **curator MCP write** (`upsert_context`) is safe only for **trusted-source** content (generate from the company's own code/schema). Untrusted-derived promotion goes through the web console.
 
 ## Existing data model
 
@@ -54,7 +54,7 @@ The membrane (I2/I9) is structural, and these facts are load-bearing:
 
 ---
 
-## A. `/admin` curation cockpit  (piece #1 — the hub, highest UX win)
+## A. Web-console curation cockpit  (piece #1 — the hub, highest UX win)
 
 Turn each pending correction into a one-click, ready-to-approve change.
 
@@ -95,7 +95,7 @@ pending correction:
 **Security:** it reads untrusted pending content + trusted sources, and writes only a
 draft (no authority). It must hold a **draft-only** capability — NOT `upsert_context`,
 NOT accept. Add `draft_correction(id, draft)` (writes draft/flags to the correction row;
-touches no curated doc). Capability-enforced. The commit remains the human `/admin` click.
+touches no curated doc). Capability-enforced. The commit remains the human web-console click.
 
 ## C. Pre-filter / auto-reject janitor  (piece #3 — short, high-signal inbox)
 
@@ -146,7 +146,7 @@ and undoable.
 
 - `draft_correction(id, draft)` — draft-only; writes draft/flags; no curated write. (piece B)
 - `reject_correction(id, reason)` — reject-only; pending status only; not accept-capable. (piece C)
-- Accept stays `applyApprovalAction` on `/admin` (password). **Do NOT add an accept MCP tool.**
+- Accept stays `applyApprovalAction` in the web console (password). **Do NOT add an accept MCP tool.**
 - The auto-draft/janitor Claude authenticates with a **draft/reject-only token**, never a
   curator (accept/upsert) token.
 - Decide during impl: does `reject_correction` supersede `resolve_correction`, or coexist
@@ -155,7 +155,7 @@ and undoable.
 ## Phasing (implementation order)
 
 1. **Cockpit** — generalize `applyApprovalAction` to upsert the drafted doc for all
-   kinds; `/admin` API returns draft+flags; SPA review cards with Approve/Edit/Reject.
+   kinds; the web-console API returns draft+flags; SPA review cards with Approve/Edit/Reject.
    (Closes the non-gotcha gap; biggest win; works with hand-typed drafts before B exists.)
 2. **`draft_correction` + auto-draft job** — fills drafts+flags so the cockpit shows
    finished changes.
@@ -170,7 +170,7 @@ and undoable.
 - Draft/reject capabilities: a draft/reject-only token cannot `upsert_context` or accept
   (capability test). Auto-reject is reversible (un-reject restores pending).
 - Lint: live-store version flags a deliberately-broken metric; passes clean store.
-- Security: confirm no MCP path commits untrusted-derived knowledge without the `/admin`
+- Security: confirm no MCP path commits untrusted-derived knowledge without the web-console
   password (the membrane regression).
 
 ## Non-goals (explicitly skipped)

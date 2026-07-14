@@ -22,7 +22,7 @@ Deployed on the hedgy box:
 | | URL |
 |---|---|
 | **Claude connector (MCP)** | `https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0` |
-| **Admin / approval surface** | https://demo.setoku.com/admin |
+| **Admin / approval surface** | https://demo.setoku.com/ |
 | **Health** | https://demo.setoku.com/health |
 
 (`demo.51-81-222-176.sslip.io` serves the same endpoints — a stable alias.)
@@ -60,14 +60,15 @@ things the way the business does instead of guessing from column names.
 
 ### Admin login
 
-`/admin` is the human approval surface — where pending knowledge (an analyst's
-`report_correction`) gets promoted into curated context, outside the agent loop.
+The web console (served at the box root) is the human approval surface — where
+pending knowledge (an analyst's `report_correction`) gets promoted into curated
+context, outside the agent loop.
 
-- **URL:** https://demo.setoku.com/admin  ·  **Username:** `peter`  ·  **Password:** `bulldogs-demo-2026`
+- **URL:** https://demo.setoku.com/  ·  **Username:** `peter`  ·  **Password:** `bulldogs-demo-2026`
 - Demo credentials over synthetic data. Rotate on the box:
   `docker exec -it -e SETOKU_NEW_PASSWORD='…' setoku-bulldogs-demo-server-1 bun gateway/admin-cli.ts set-password peter`.
 - Demo flow to show a prospect: ask a question → correct a definition in chat
-  (`report_correction`) → it lands **pending** → approve it in `/admin` → the next answer uses it.
+  (`report_correction`) → it lands **pending** → approve it in the web console → the next answer uses it.
 
 ### Inviting people (fresh token per person)
 

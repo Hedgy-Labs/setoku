@@ -55,7 +55,7 @@ quiet agent-write hole. An injected agent could otherwise persist a self-targete
 lie ("this user's revenue excludes region X") that biases that person's future
 answers. Two membrane-safe options:
 
-- **A. Human-authored.** The person types notes on `/admin` ("My notes"); agents
+- **A. Human-authored.** The person types notes in the web console ("My notes"); agents
   read, never write. Purest, but needs an identity link (below) and gives the
   agent no way to offer "want me to remember that?".
 - **B. Propose + self-approve _(recommended)_.** The agent proposes a personal
@@ -112,7 +112,7 @@ with a `domain: "design"` tag (or a `convention` doc type).
    snippets (e.g. a Tailwind `@layer` + a few component classes) so apps *share*
    the implementation, not only a description of it. Convergence by construction.
 
-**Dogfood.** Setoku's own `/admin` is already a small house style — a stone +
+**Dogfood.** Setoku's own web console is already a small house style — a stone +
 white Tailwind theme with `card` / `btn` / `badge` / `tab` / `input` components
 and a wordmark (`plugin/gateway/web/input.css`). That file is a concrete example
 of the "small, retrievable, shippable design artifact" a client's own house style

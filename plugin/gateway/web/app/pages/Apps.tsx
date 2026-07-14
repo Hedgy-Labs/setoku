@@ -94,7 +94,7 @@ export function Apps() {
                 return (
                   <div key={r.id} className="card flex items-center gap-3 p-4">
                     <div className="min-w-0 flex-1">
-                      <Link to={`/p/${r.id}`} className="text-sm font-medium text-stone-900 hover:underline">
+                      <Link to={`/apps/${r.id}`} className="text-sm font-medium text-stone-900 hover:underline">
                         {r.title}
                       </Link>
                       <div className="mt-0.5 text-xs text-stone-500">

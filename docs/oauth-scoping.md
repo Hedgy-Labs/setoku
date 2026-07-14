@@ -43,7 +43,7 @@ auth-code + PKCE + refresh** — *if* the server advertises the right metadata.
 ## Build options
 
 ### Path A — Self-contained AS in the gateway, reusing our accounts  ★ recommended
-The gateway is both RS and AS. **Reuse the existing argon2 accounts + `/admin` login** as
+The gateway is both RS and AS. **Reuse the existing argon2 accounts + web-console login** as
 the authn + consent UI; map roles/capabilities to **scopes** (`setoku:analyst`,
 `setoku:curator` ↔ `canWrite`/`denyLakeRead`). Generate signing keys at bootstrap.
 - **Pro:** fully self-hosted, **no new container**, one identity source (our accounts), per-user OAuth identity = the account, matches Setoku's "one small box" ethos. Co-locating `/authorize`+`/token` is also the *lowest client-compat risk* topology.
@@ -98,7 +98,7 @@ provides everything protocol-level, so **Path A is "wire up the SDK + our accoun
   `ProxyOAuthServerProvider` if we ever delegate.
 
 **We implement only the `OAuthServerProvider` (≈7 well-defined methods) + storage:**
-`clientsStore` (DCR clients), `authorize()` (← reuse our existing `/admin` argon2 accounts +
+`clientsStore` (DCR clients), `authorize()` (← reuse our existing web-console argon2 accounts +
 session login + a consent page), `challengeForAuthorizationCode()`, `exchangeAuthorizationCode()`,
 `exchangeRefreshToken()` (rotation), `verifyAccessToken()` (→ identity + scopes → our
 `canWrite`/`denyLakeRead`), optional `revokeToken()`. Backing storage = a few SQLite tables
@@ -107,7 +107,7 @@ session login + a consent page), `challengeForAuthorizationCode()`, `exchangeAut
 **The one real surprise:** the SDK auth router is **Express-based**, but our gateway is raw
 `node:http`. So the biggest non-OAuth task is **moving the HTTP layer to Express** (mount the
 auth router + the StreamableHTTP `/mcp` transport — which supports Express, per the SDK's
-`simpleStreamableHttp` example — + our existing `/admin` and `/health`). Moderate, well-trodden.
+`simpleStreamableHttp` example — + our existing web console and `/health`). Moderate, well-trodden.
 
 **Revised estimate (Path A, with the SDK): ~1.5–2.5 weeks**, roughly half the hand-rolled
 number, and it removes the riskiest crypto (PKCE, token endpoint, metadata) from our code:

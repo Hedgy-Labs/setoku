@@ -117,7 +117,7 @@ Endpoints:
 | Surface | Shell | Frame (strict CSP) | Provenance JSON | State |
 | --- | --- | --- | --- | --- |
 | **Public** (`visibility=public`) | `GET /p/<id>` | `GET /p/<id>/frame` | `GET /p/<id>/data` — **no SQL** | `GET·POST /p/<id>/state` |
-| **Team** (signed-in) | `/admin/p/<id>` (React) | `GET /admin/frame/<id>` | `GET /admin/api/app_data?id=` — **with SQL** | `GET·POST /admin/api/app_state` |
+| **Team** (signed-in) | `/apps/<id>` (React) | `GET /admin/frame/<id>` | `GET /admin/api/app_data?id=` — **with SQL** | `GET·POST /admin/api/app_state` |
 
 - The **frame** document re-runs the panels (TTL-cached) and serves the template
   with data injected, under a strict CSP. It is the only place the agent's HTML
@@ -163,7 +163,7 @@ and once empty a panel renders cache-only (last good rows, else "data temporaril
 unavailable") rather than hitting the DB. Charged per execution, so cached hits
 are free and a normal viewer never notices; an anonymous hammer streaming distinct
 `?p.<name>=` values can't amplify load against the business DB/lake. Authenticated
-`/admin` views are not rate-limited (the viewer is logged in and audited).
+Team app views are not rate-limited (the viewer is logged in and audited).
 
 ## Viewer params — interactive apps
 
@@ -205,7 +205,7 @@ keystroke.
 
 The **control bar** renders the declared params as stone widgets — on *both*
 surfaces: the public shell (`/p/<id>`, server-rendered) and the React `AppView`
-(`/admin/p/<id>`). Changing a control re-requests the frame with `?p.<name>=…`,
+(`/apps/<id>`). Changing a control re-requests the frame with `?p.<name>=…`,
 which re-runs the panels bound to the new value (the param variant caches
 separately — see Freshness). Controls are chrome: they live in the trusted shell,
 not the sandboxed template, so the agent never hand-rolls input widgets.
@@ -332,7 +332,7 @@ Replaces `publish_report` / `list_published` / `unpublish_report`:
 
 The agent already develops and eyeball-validates SQL in-session with `run_query`;
 `publish_app` promotes those exact validated queries to live bindings. (The app's
-title can also be renamed in place from the `/admin` detail page — author or
+title can also be renamed in place from the app detail page — author or
 admin, no agent round-trip.)
 
 ## Reliable rendering (the agent publishes blind)
@@ -372,7 +372,7 @@ the deferred next step — it pairs with `update_app` for a see-then-fix loop.
   they need no per-write human gate. Team apps expose nothing beyond what the
   viewer's own token already grants. The one escalation risk — an injection-driven
   **public** exfil — is closed by reusing the report rule verbatim: **the agent
-  can only publish team-only; flipping to public is a human click in `/admin`**
+  can only publish team-only; flipping to public is a human click in the web console**
   (the agent holds no web session).
 - **Renders run under the gateway role, not a session.** Panel re-execution
   carries no `denyLakeRead` — the membrane is enforced at *authorship* (a curator

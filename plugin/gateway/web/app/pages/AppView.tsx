@@ -138,7 +138,7 @@ export function AppView() {
   }, []);
 
   // Reset per-app state on navigation (one AppView instance is reused across
-  // /admin/p/:id). reloadFrame bumps the nonce so a late echo from the PREVIOUS
+  // /apps/:id). reloadFrame bumps the nonce so a late echo from the PREVIOUS
   // app's frame can't match the new one, and clears any lingering force.
   useEffect(() => {
     touched.current = new Set();
@@ -808,7 +808,7 @@ function EditDialog({
   canEdit: boolean;
   onCopied: () => void;
 }) {
-  const url = `${location.origin}/admin/p/${id}`;
+  const url = `${location.origin}/apps/${id}`;
   const named = title ? ` "${title}"` : "";
   const prompt = canEdit
     ? `Edit my Setoku app${named} at ${url}\n` +

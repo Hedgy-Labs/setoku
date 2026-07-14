@@ -90,7 +90,7 @@ A periodic pass over the extracted facts that produces a `CompactionReport` of
   that are explicitly marked suspect → flagged for review.
 
 The deterministic detectors (`compact()` over the extracted facts) catch
-structural + lexical signals and feed the `/admin/knowledge` health bar. But
+structural + lexical signals and feed the `/knowledge` health bar. But
 compaction itself — deciding *which* fact is right, merging two into one good
 fact, rewriting verbose into concise — is judgment, so it runs **in a curator
 session** via [`/setoku:compact-knowledge`](../plugin/skills/compact-knowledge/SKILL.md), not as a
@@ -140,7 +140,7 @@ next steps, each its own PR:
 
 1. Persist structured columns on `corrections` (`fact`, `commentary`, `subject`,
    `predicate`) — nullable, backward compatible.
-2. Surface auto-judgement verdicts + compaction proposals on the `/admin`
+2. Surface auto-judgement verdicts + compaction proposals on the web-console
    approval queue (still a human click to accept).
 3. Wire the semantic (in-session) halves into `/setoku:curate` and
    `/setoku:generate`.
