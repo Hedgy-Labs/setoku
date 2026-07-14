@@ -39,9 +39,12 @@ export function SourceAccessDialog({
   }, [open]);
   const saveRef = useRef<HTMLButtonElement>(null);
 
-  // Connected-ness is display only (a hint, not a gate) — fetched lazily so the
-  // Team page doesn't probe the lake until someone actually opens this.
-  const { data: sources } = useApi<SourcesData | null>(
+  // Which families are actually flowing — fetched lazily so the Team page
+  // doesn't probe the lake until someone opens this. The list shows CONNECTED
+  // families only (a box never hooks up Monarch etc., so offering it is noise),
+  // plus any family this person is already denied so a lingering restriction
+  // stays visible and removable.
+  const { data: sources, loading } = useApi<SourcesData | null>(
     () => (open ? api.sources() : Promise.resolve(null)),
     [open],
   );
@@ -50,16 +53,14 @@ export function SourceAccessDialog({
     if ((t.rows ?? 0) > 0 || beatIsLive(t.beat)) connected.add(familyOf(t.source));
   }
 
-  // Connected families first (they're what an admin is here to manage), each
-  // partition in catalog order — sort() is stable. While the sources fetch is
-  // in flight `connected` is empty, so the list starts in catalog order and
-  // settles when the hints land.
-  const families = [...lakeFamilies()].sort(
-    (a, b) => Number(connected.has(b.family)) - Number(connected.has(a.family)),
-  );
-  // A deny can outlive its connector — surface unknown slugs so they can still
-  // be re-checked rather than becoming an invisible, unremovable restriction.
-  const stale = [...denied].filter((d) => !families.some((f) => f.slug === d));
+  // Connected first, then a denied-but-quiet family; catalog order within each
+  // partition (sort() is stable).
+  const families = lakeFamilies()
+    .filter((f) => connected.has(f.family) || denies.includes(f.slug))
+    .sort((a, b) => Number(connected.has(b.family)) - Number(connected.has(a.family)));
+  // A deny can outlive its connector entirely (family dropped from the catalog)
+  // — surface those unknown slugs too so they can still be un-checked.
+  const stale = [...denied].filter((d) => !lakeFamilies().some((f) => f.slug === d));
 
   const same = (): boolean => {
     const live = new Set(denies);
@@ -133,17 +134,27 @@ export function SourceAccessDialog({
             aria-label={`Sources ${identity} can query`}
             className="mt-3 max-h-80 space-y-1.5 overflow-y-auto pr-1"
           >
-            {families.map((f) => (
-              <RowBox
-                key={f.slug}
-                slug={f.slug}
-                label={f.family}
-                hint={connected.has(f.family) ? undefined : "not connected yet"}
-              />
-            ))}
-            {stale.map((slug) => (
-              <RowBox key={slug} slug={slug} label={slug} hint="source no longer in the catalog" />
-            ))}
+            {loading && !sources ? (
+              <p className="py-2 text-xs text-stone-400">Loading connected sources…</p>
+            ) : !families.length && !stale.length ? (
+              <p className="py-2 text-xs text-stone-400">
+                No data sources are connected yet — nothing to restrict.
+              </p>
+            ) : (
+              <>
+                {families.map((f) => (
+                  <RowBox
+                    key={f.slug}
+                    slug={f.slug}
+                    label={f.family}
+                    hint={connected.has(f.family) ? undefined : "not connected"}
+                  />
+                ))}
+                {stale.map((slug) => (
+                  <RowBox key={slug} slug={slug} label={slug} hint="source no longer in the catalog" />
+                ))}
+              </>
+            )}
           </div>
           <div className="mt-4 flex justify-end gap-2">
             <AlertDialog.Close data-role="cancel" className="btn btn-ghost">
