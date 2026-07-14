@@ -12,16 +12,17 @@
      Per-source access control rides on ROLES, one per source family
      (lib/sources.ts lakeFamilies() — a lint test pins this file to that
      catalog, so adding a connector forces adding its role here):
-       - DIRECT grants (ingest_heartbeats, pg_mirror_runs ONLY) are the
-         always-on core plumbing: ClickHouse applies a user's direct grants
-         regardless of which roles are active, so these stay readable under ANY
-         explicit `role` list. Deliberately NO `setoku.*` OR `biz.*` wildcard
-         here — a direct wildcard would defeat the role subsetting (a business
-         "Postgres" deny would become a silent no-op). biz.* rides on the
-         setoku_src_business role like every other source; an ad-hoc hand-made
-         setoku.* table is unreadable until it joins a family.
-       - FAMILY roles carry each source's tables — INCLUDING biz.* (the business
-         "Postgres" family, setoku_src_business). All of them are granted (and
+       - DIRECT grants (ingest_heartbeats ONLY) are the always-on core plumbing:
+         ClickHouse applies a user's direct grants regardless of which roles are
+         active, so heartbeats stay readable under ANY explicit `role` list.
+         Deliberately NO `setoku.*` OR `biz.*` wildcard here — a direct wildcard
+         would defeat the role subsetting (a business "Postgres" deny would
+         become a silent no-op). biz.* AND the pg_mirror_runs run-log (which
+         enumerates the mirrored business tables) ride on setoku_src_business; an
+         ad-hoc hand-made setoku.* table is unreadable until it joins a family.
+       - FAMILY roles carry each source's tables — INCLUDING biz.* + the
+         mirror run-log (the business "Postgres" family, setoku_src_business).
+         All of them are granted (and
          therefore default-active: an unrestricted request sends no `role`
          parameter and sees everything, including families added later). A
          restricted user's request activates only the allowed subset via the
@@ -97,6 +98,11 @@
         <setoku_src_business>
             <grants>
                 <query>GRANT SELECT ON biz.*</query>
+                <!-- the run-log describes the mirrored business tables (names,
+                     row + byte volumes), so it rides on the business role too —
+                     NOT a core direct grant, or a business-denied user could
+                     reconstruct the catalog the deny hides. -->
+                <query>GRANT SELECT ON setoku.pg_mirror_runs</query>
             </grants>
         </setoku_src_business>
         <!-- grants NOTHING: activated when every family is denied, because
@@ -112,10 +118,11 @@
             <networks><ip>::/0</ip></networks>
             <grants>
                 <!-- the always-on core: direct grants survive any explicit role
-                     list (plumbing every session needs). biz.* is NOT here — it
-                     rides on setoku_src_business so it can be subset per user. -->
+                     list. ONLY ingest_heartbeats (liveness plumbing every
+                     session needs, describes no business/source data). biz.* AND
+                     pg_mirror_runs ride on setoku_src_business so they can be
+                     subset per user. -->
                 <query>GRANT SELECT ON setoku.ingest_heartbeats</query>
-                <query>GRANT SELECT ON setoku.pg_mirror_runs</query>
                 <!-- source access rides ONLY on roles, so the HTTP role
                      parameter can subset it per user -->
                 <query>GRANT setoku_src_vercel_logs</query>

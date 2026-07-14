@@ -21,6 +21,7 @@ import {
   roleFor,
   grantTargetsFor,
   CORE_LAKE_TABLES,
+  CORE_DIRECT_GRANT_TABLES,
   LAKE_SOURCES,
   NO_SOURCES_ROLE,
 } from "../plugin/gateway/lib/sources";
@@ -51,19 +52,25 @@ describe("lake-users.xml ↔ lakeFamilies() drift lock", () => {
     expect(XML).toContain(`<query>GRANT ${NO_SOURCES_ROLE}</query>`);
   });
 
-  it("keeps the always-on core (heartbeats + mirror-run log) as DIRECT grants", () => {
-    for (const t of CORE_LAKE_TABLES) {
-      expect(XML).toContain(`<query>GRANT SELECT ON setoku.${t}</query>`);
+  it("keeps ONLY heartbeats as an always-on core DIRECT grant", () => {
+    const roGrants = XML.slice(XML.indexOf("<setoku_ro>"));
+    for (const t of CORE_DIRECT_GRANT_TABLES) {
+      expect(roGrants).toContain(`<query>GRANT SELECT ON setoku.${t}</query>`);
     }
+    // pg_mirror_runs must NOT be a direct grant (it's business-family now)
+    expect(roGrants).not.toContain("<query>GRANT SELECT ON setoku.pg_mirror_runs</query>");
   });
 
-  it("biz.* is a family role (setoku_src_business), NOT a direct grant on setoku_ro", () => {
-    // the whole point: business data must be subsettable per user, so biz.* can't
-    // ride on setoku_ro as a direct grant (which would survive any role subset)
+  it("biz.* AND the mirror run-log are family roles, NOT direct grants on setoku_ro", () => {
+    // business data + its catalog (pg_mirror_runs) must be subsettable per user,
+    // so neither can ride on setoku_ro as a direct grant (which survives any subset)
     const roGrants = XML.slice(XML.indexOf("<setoku_ro>"));
     expect(roGrants).not.toContain("<query>GRANT SELECT ON biz.*</query>");
+    expect(roGrants).not.toContain("<query>GRANT SELECT ON setoku.pg_mirror_runs</query>");
     expect(roGrants).toContain("<query>GRANT setoku_src_business</query>");
-    expect(XML).toContain("<query>GRANT SELECT ON biz.*</query>"); // present, but on the role
+    // present, but on the role — grantTargetsFor(BUSINESS_FAMILY) checked below
+    expect(XML).toContain("<query>GRANT SELECT ON biz.*</query>");
+    expect(XML).toContain("<query>GRANT SELECT ON setoku.pg_mirror_runs</query>");
   });
 
   it("has NO setoku.* direct wildcard — it would defeat the role subsetting", () => {
@@ -100,7 +107,9 @@ describe("family helpers", () => {
     expect(biz).toBeDefined();
     expect(biz!.family).toBe("Postgres");
     expect(biz!.role).toBe("setoku_src_business");
-    expect(grantTargetsFor(biz!)).toEqual(["biz.*"]);
+    // biz.* plus the run-log that enumerates the mirrored tables (both must
+    // ride on the role, not a core direct grant)
+    expect(grantTargetsFor(biz!)).toEqual(["biz.*", "setoku.pg_mirror_runs"]);
   });
 
   it("denying 'business' drops setoku_src_business from the active role list", () => {
@@ -144,12 +153,20 @@ describe("lakeRolesFor", () => {
     expect(lakeRolesFor(lakeFamilies().map((f) => f.slug))).toEqual([NO_SOURCES_ROLE]);
   });
 
-  it("SETOKU_SOURCE_ACCESS=0 is the kill-switch", () => {
+  it("SETOKU_SOURCE_ACCESS=0 is the kill-switch — roles AND filtering go inert together", async () => {
+    const { effectiveDenies, sourceAccessDisabled } = await import("../plugin/gateway/lib/sources");
     process.env.SETOKU_SOURCE_ACCESS = "0";
     try {
+      // the engine can't enforce → lakeRolesFor unrestricted...
       expect(lakeRolesFor(["slack"])).toBeNull();
+      // ...and effectiveDenies (which every web/knowledge filter routes through)
+      // must be empty too, so nothing asserts a restriction the engine isn't
+      // holding. Both keyed on the same gate.
+      expect(sourceAccessDisabled()).toBe(true);
+      expect(effectiveDenies(["slack", "mercury"])).toEqual([]);
     } finally {
       delete process.env.SETOKU_SOURCE_ACCESS;
     }
+    expect(effectiveDenies(["slack"])).toEqual(["slack"]); // on again → stored denies apply
   });
 });

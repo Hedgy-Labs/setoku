@@ -22,13 +22,16 @@ export interface LakeSource {
   connector?: string;
 }
 
-/** Lake plumbing tables that are NOT a deniable source: heartbeats power the
- *  liveness UI, and pg_mirror_runs is the mirror's run log. Direct grants on
- *  the ClickHouse reader cover these two; every source — including the biz.*
- *  business tables (the "Postgres" family) — rides on a family role instead,
- *  so it can be subset per user. (pg_mirror_runs is only the run LOG; the biz.*
- *  data tables it describes are the setoku_src_business family.) */
+/** Lake plumbing tables NOT auto-grouped into their own deniable family (they'd
+ *  slug to a spurious family from their label). heartbeats power the liveness UI
+ *  and are the sole always-on core DIRECT grant. pg_mirror_runs is the mirror's
+ *  run log — skipped here, but it belongs to the business ("Postgres") family
+ *  (its rows enumerate the mirrored business tables, so it follows the business
+ *  deny), granted via setoku_src_business, not as a core direct grant. */
 export const CORE_LAKE_TABLES = ["ingest_heartbeats", "pg_mirror_runs"] as const;
+/** The tables that are ALWAYS-ON direct grants on setoku_ro (survive any role
+ *  subset) — only heartbeats; pg_mirror_runs is NOT here (it's business-family). */
+export const CORE_DIRECT_GRANT_TABLES = ["ingest_heartbeats"] as const;
 
 export const LAKE_SOURCES: LakeSource[] = [
   { table: "logs_vercel", source: "Vercel logs", ts: "ts", blurb: "Vercel platform logs — HTTP requests, build & runtime errors, status codes, latency (level=error/fatal are problems)" },
@@ -80,8 +83,8 @@ export function roleFor(slug: string): string {
  *  parameter's empty-list case is a trap: appending zero `role` params is the
  *  same as omitting the parameter, which activates the DEFAULT roles — i.e.
  *  full access. Activating this empty role instead keeps the engine holding
- *  the line (the direct core grants — heartbeats + the mirror-run log — still
- *  apply; biz.* is a family role now, so it too is denied here). */
+ *  the line (only the core direct grant — heartbeats — still applies; biz.*,
+ *  the mirror run-log, and every source are family roles, so all denied here). */
 export const NO_SOURCES_ROLE = "setoku_src_none";
 
 export interface LakeFamily {
@@ -92,21 +95,44 @@ export interface LakeFamily {
    *  business-DB mirror family lives in "biz". */
   db: string;
   tables: string[];
+  /** Explicit GRANT targets, when the family's grants don't reduce to
+   *  `db.table` (e.g. the business family, whose role carries `biz.*` PLUS the
+   *  setoku.pg_mirror_runs run-log that describes the mirrored tables). */
+  grants?: string[];
 }
 
 /** The business-DB mirror as a deniable family. `biz.*` (one Postgres source
  *  per box, mirrored by pg-mirror) is the whole database, so it's a single
- *  all-or-nothing toggle labelled "Postgres". Its role carries `biz.*`; unlike
- *  the always-on core (heartbeats, mirror-run log) it is subsettable, so an
- *  admin can fence off the business data from a person the same way as a lake
- *  source. `db: "biz"` + `tables: ["*"]` → the grant target is `biz.*`. */
+ *  all-or-nothing toggle labelled "Postgres". Its role carries `biz.*` AND
+ *  `setoku.pg_mirror_runs` — the run-log rows enumerate every mirrored business
+ *  table plus its row/byte volume, so leaving that log an always-on core grant
+ *  would let a business-denied user reconstruct the very catalog the deny
+ *  hides. Unlike the core plumbing (heartbeats) it is subsettable. */
 export const BUSINESS_FAMILY: LakeFamily = {
   family: "Postgres",
   slug: "business",
   role: roleFor("business"),
   db: "biz",
   tables: ["*"],
+  grants: ["biz.*", "setoku.pg_mirror_runs"],
 };
+
+/** True when per-source access is globally disabled (SETOKU_SOURCE_ACCESS=0 —
+ *  the rollout kill-switch for a box whose ClickHouse predates the HTTP `role`
+ *  parameter, 24.5). When on, the ENGINE can't enforce denies, so NOTHING must
+ *  filter on them — otherwise the web UI asserts a restriction the agent's lake
+ *  access doesn't actually hold. Every deny-consulting read path routes through
+ *  effectiveDenies() so the whole feature is consistently on or off. */
+export function sourceAccessDisabled(): boolean {
+  return process.env.SETOKU_SOURCE_ACCESS === "0";
+}
+
+/** The denies to ACT ON for filtering/enforcement: the stored set, or [] when
+ *  the kill-switch is on (so web filtering and knowledge hiding can't claim a
+ *  restriction the engine isn't enforcing). */
+export function effectiveDenies(stored: string[]): string[] {
+  return sourceAccessDisabled() ? [] : stored;
+}
 
 /** The deniable source families: LAKE_SOURCES grouped by family (minus the core
  *  plumbing in CORE_LAKE_TABLES — the mirror's run log and the heartbeats, which
@@ -130,9 +156,10 @@ export function lakeFamilies(): LakeFamily[] {
 }
 
 /** The GRANT targets a family's role carries, e.g. `["setoku.slack_messages"]`
- *  or `["biz.*"]` — the drift-lock test pins lake-users.xml to these. */
+ *  or `["biz.*", "setoku.pg_mirror_runs"]` — the drift-lock test pins
+ *  lake-users.xml to these. */
 export function grantTargetsFor(f: LakeFamily): string[] {
-  return f.tables.map((t) => `${f.db}.${t}`);
+  return f.grants ?? f.tables.map((t) => `${f.db}.${t}`);
 }
 
 /**
@@ -147,7 +174,7 @@ export function grantTargetsFor(f: LakeFamily): string[] {
  * predates the HTTP `role` parameter, 24.5): every session runs unrestricted.
  */
 export function lakeRolesFor(denies: string[]): string[] | null {
-  if (process.env.SETOKU_SOURCE_ACCESS === "0") return null;
+  if (sourceAccessDisabled()) return null;
   if (!denies.length) return null;
   const denied = new Set(denies);
   const roles = lakeFamilies()

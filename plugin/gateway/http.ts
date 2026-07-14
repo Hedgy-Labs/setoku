@@ -544,7 +544,7 @@ echo "    how many companies are paying us right now?"
 
 // Lake source tables we know how to surface (shared with the list_sources MCP
 // tool) — query only the ones that actually exist; see gatherSources().
-import { LAKE_SOURCES, BUSINESS_FAMILY, familySlug, lakeFamilies } from "./lib/sources";
+import { LAKE_SOURCES, BUSINESS_FAMILY, effectiveDenies, familyOf, familySlug, lakeFamilies } from "./lib/sources";
 
 /**
  * Gather the /admin Sources view live: which biz.* tables the mirror carries,
@@ -560,7 +560,11 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
   // otherwise a restricted member reads row counts / freshness for a source
   // they can't query. The biz.* mirror follows the "business" (Postgres) family
   // and is gated separately below (mirror.tables).
-  const sources = LAKE_SOURCES.filter((s) => !denied.has(familySlug(s.source.split(" · ")[0])));
+  const sources = LAKE_SOURCES.filter(
+    // pg_mirror_runs is the mirror's run-log (shown in the separate mirror card,
+    // and it follows the business deny) — not a queryable lake source here.
+    (s) => s.table !== "pg_mirror_runs" && !denied.has(familySlug(familyOf(s.source))),
+  );
 
   const mirror: SourcesData["mirror"] = { tables: [] };
   const lake: SourcesData["lake"] = { configured: false, ok: false, tables: [] };
@@ -659,7 +663,11 @@ async function gatherSourceSeries(denied: Set<string> = new Set()): Promise<Sour
     const lakeUrl = resolveLakeUrl(projectDir, config);
     if (lakeUrl.ok) {
       const qopts = { rowCap: 100, statementTimeoutMs: 8_000 };
-      const sources = LAKE_SOURCES.filter((s) => !denied.has(familySlug(s.source.split(" · ")[0])));
+      const sources = LAKE_SOURCES.filter(
+    // pg_mirror_runs is the mirror's run-log (shown in the separate mirror card,
+    // and it follows the business deny) — not a queryable lake source here.
+    (s) => s.table !== "pg_mirror_runs" && !denied.has(familySlug(familyOf(s.source))),
+  );
       const results = await Promise.all(
         sources.map(async (s): Promise<SourceSeries | null> => {
           try {
@@ -1400,39 +1408,54 @@ const httpServer = http.createServer(async (req, res) => {
             mustChangePassword: !!store.getAccount(session.identity)?.mustChangePassword,
           });
 
-        // read endpoints — any signed-in user (members included) may view
+        // Knowledge + correction views follow per-user source access: a MEMBER's
+        // view drops docs tagged (meta.source) to a family denied for them, and
+        // pending/rejected proposals ABOUT such a hidden doc — the same predicate
+        // the MCP tools apply, so the web and the agent agree (and the same
+        // SETOKU_SOURCE_ACCESS=0 kill-switch, so nothing is hidden that the engine
+        // isn't enforcing). Admins always see everything: they manage the store.
+        const sessionDenied = (): Set<string> =>
+          canApprove(session.role) ? new Set() : new Set(effectiveDenies(store.sourceDenies(session.identity)));
+        const docsForSession = (): ReturnType<typeof store.listDocs> => {
+          const denied = sessionDenied();
+          const docs = store.listDocs();
+          if (!denied.size) return docs;
+          return docs.filter((d) => !(typeof d.meta.source === "string" && denied.has(familySlug(d.meta.source))));
+        };
+        // Corrections whose relatesTo names a hidden doc are dropped for the
+        // session (parity with app.ts find_context / list_corrections).
+        const correctionsForSession = (status: "pending" | "rejected") => {
+          const denied = sessionDenied();
+          const rows = store.listCorrections(status);
+          if (!denied.size) return rows;
+          const hidden = new Set(
+            store
+              .listDocs()
+              .filter((d) => typeof d.meta.source === "string" && denied.has(familySlug(d.meta.source)))
+              .map((d) => d.name),
+          );
+          return rows.filter((c) => !(c.relatesTo && hidden.has(c.relatesTo)));
+        };
+        // read endpoints — any signed-in user (members included) may view the
         // pending list for the cockpit: each item carries the best-available
         // DRAFT (persisted auto-draft, else the synthesized gotcha default) so a
         // review card can render a finished, editable change. Advisory only.
         if (api === "pending" && req.method === "GET")
           return json(
             200,
-            store.listCorrections("pending").map((c) => ({ ...c, draft: defaultDraft(c) })),
+            correctionsForSession("pending").map((c) => ({ ...c, draft: defaultDraft(c) })),
           );
         // bot-rejected items the cockpit can review + un-reject (piece C: soft,
         // reversible, audited — a janitor suppressing good proposals is undoable).
         if (api === "rejected" && req.method === "GET")
-          return json(200, store.listCorrections("rejected"));
-        // Knowledge views follow per-user source access: a MEMBER's view drops
-        // docs tagged (meta.source) to a family denied for them — the same
-        // predicate the MCP tools apply, so the web and the agent agree.
-        // Admins always see everything: they manage the store and the denies.
-        const docsForSession = (): ReturnType<typeof store.listDocs> => {
-          const docs = store.listDocs();
-          if (canApprove(session.role)) return docs;
-          const denied = new Set(store.sourceDenies(session.identity));
-          if (!denied.size) return docs;
-          return docs.filter(
-            (d) => !(typeof d.meta.source === "string" && denied.has(familySlug(d.meta.source))),
-          );
-        };
+          return json(200, correctionsForSession("rejected"));
         if (api === "knowledge" && req.method === "GET") return json(200, docsForSession());
         if (api === "knowledge_view" && req.method === "GET")
           return json(
             200,
             buildKnowledgeView(
               docsForSession(),
-              store.listCorrections("pending"),
+              correctionsForSession("pending"),
               store.knowledgeUsage(),
             ),
           );
@@ -1443,8 +1466,7 @@ const httpServer = http.createServer(async (req, res) => {
         // and 30-day series. Admins manage sources, so they see everything; the
         // biz.* mirror follows the "business" (Postgres) family deny too, gated
         // inside gatherSources (a member denied Postgres doesn't see the card).
-        const sourceDeniesFor = (): Set<string> =>
-          canApprove(session.role) ? new Set() : new Set(store.sourceDenies(session.identity));
+        const sourceDeniesFor = (): Set<string> => sessionDenied();
         if (api === "sources" && req.method === "GET") return json(200, await gatherSources(sourceDeniesFor()));
         if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries(sourceDeniesFor()));
         // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert threshold

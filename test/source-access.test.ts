@@ -409,17 +409,31 @@ describe("source access over HTTP + MCP", () => {
     await bob.close();
 
     await post("source_access", { ...admin, body: { username: "alice@co.test", denies: ["slack"] } });
+    // also deny the web member "viewer" so the web endpoints can be checked
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: ["slack"] } });
     const alice = await connect(BASE, "tok-alice");
     const fc = await gwCall(alice, "find_context", { question: "slack message volume bot messages" });
     expect(fc.text).not.toContain("slack_volume");
     expect(fc.text).not.toContain("exclude bot messages");
+    // the MCP list_corrections tool hides it on the same session (was a leak)
+    const lc = await gwCall(alice, "list_corrections", { status: "pending" });
+    expect(lc.text).not.toContain("slack_volume");
+    expect(lc.text).not.toContain("exclude bot messages");
     await alice.close();
-    // an unrestricted teammate still gets the pending fact
+    // the web /admin/api/pending hides it for the denied MEMBER (was a leak)...
+    const member = await session("viewer@co.test", "viewer-pass");
+    const memberPending = (await (await fetch(`${BASE}/admin/api/pending`, { headers: { cookie: member.cookie } })).json()) as { fact?: string; content?: string; relatesTo?: string }[];
+    expect(memberPending.some((c) => c.relatesTo === "slack_volume")).toBe(false);
+    // ...but the ADMIN (who manages the store) still sees it
+    const adminPending = (await (await fetch(`${BASE}/admin/api/pending`, { headers: { cookie: admin.cookie } })).json()) as { relatesTo?: string }[];
+    expect(adminPending.some((c) => c.relatesTo === "slack_volume")).toBe(true);
+    // an unrestricted teammate's agent still gets the pending fact
     const carol = await connect(BASE, "tok-carol");
     const fc2 = await gwCall(carol, "find_context", { question: "slack message volume bot messages" });
     expect(fc2.text).toContain("exclude bot messages");
     await carol.close();
     await post("source_access", { ...admin, body: { username: "alice@co.test", denies: [] } });
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: [] } });
   });
 
   it("removing a person clears their denies — a re-invite starts at full access", async () => {

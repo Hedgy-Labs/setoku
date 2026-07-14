@@ -26,7 +26,7 @@ import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
 import { mirroredTables, type MirroredTable } from "./lib/mirror";
-import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
+import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, effectiveDenies, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
 import { notifyActivity } from "./lib/notify";
 import { VERSION } from "./lib/version";
 
@@ -114,7 +114,11 @@ const server = new McpServer({ name: "setoku", version: VERSION });
 // Enforcement is the ENGINE's: a denied family's tables are ACCESS_DENIED and
 // hidden from SHOW TABLES / system.columns, so discovery filters itself.
 const lakeRoles = (): string[] | null => lakeRolesFor(store.sourceDenies(user));
-const deniedFamilies = (): Set<string> => new Set(store.sourceDenies(user));
+// effectiveDenies applies the SETOKU_SOURCE_ACCESS=0 kill-switch, so knowledge
+// hiding and source-list filtering go inert exactly when the ENGINE can't
+// enforce the deny — never asserting a restriction the agent's lake access
+// doesn't actually hold (lakeRoles uses the same gate inside lakeRolesFor).
+const deniedFamilies = (): Set<string> => new Set(effectiveDenies(store.sourceDenies(user)));
 
 /** Whether a doc's OPTIONAL source tag (meta.source, a family slug set by the
  *  curator — never inferred) falls inside a denied set. Untagged docs are
@@ -537,7 +541,12 @@ server.registerTool(
     },
   },
   async ({ status }) => {
-    const rows = store.listCorrections(status ?? "pending");
+    // Same source membrane as find_context: a proposal ABOUT a hidden
+    // (source-tagged, denied) doc must not leak the hidden fact/doc-name here.
+    const hidden = hiddenDocNames();
+    const rows = store
+      .listCorrections(status ?? "pending")
+      .filter((c) => !(c.relatesTo && hidden.has(c.relatesTo)));
     store.audit(user, "list_corrections", {
       status: status ?? "pending",
       count: rows.length,
@@ -806,7 +815,7 @@ server.registerTool(
       lines.push(
         "",
         'DATA LAKE: a curator session can\'t read the lake. Switch to an analyst connector to query it (run_query dialect:"clickhouse"). Known lake sources:',
-        ...LAKE_SOURCES.filter((s) => s.table !== "ingest_raw")
+        ...LAKE_SOURCES.filter((s) => s.table !== "ingest_raw" && s.table !== "pg_mirror_runs")
           .filter((s) => !denied.has(familySlug(familyOf(s.source))))
           .map((s) => `  - ${s.table} — ${s.blurb}`),
       );
@@ -825,9 +834,12 @@ server.registerTool(
           const present = new Set(res.rows.map((r) => String(Object.values(r)[0] ?? "")));
           // Belt-and-suspenders under the engine filter: a denied family must
           // not list even on a box whose role XML hasn't landed yet.
-          const known = LAKE_SOURCES.filter((s) => present.has(s.table)).filter(
-            (s) => !denied.has(familySlug(s.source.split(" · ")[0])),
-          );
+          const known = LAKE_SOURCES.filter((s) => present.has(s.table))
+            // pg_mirror_runs is the mirror's run-log, not a queryable source —
+            // the biz.* mirror is shown in the BUSINESS DATA section above, and
+            // the log itself follows the business deny (it enumerates biz.*).
+            .filter((s) => s.table !== "pg_mirror_runs")
+            .filter((s) => !denied.has(familySlug(familyOf(s.source))));
           // plumbing tables (connector liveness beats) aren't a queryable source
           const extra = [...present].filter(
             (t) => t !== "ingest_heartbeats" && !LAKE_SOURCES.some((s) => s.table === t),
@@ -867,7 +879,6 @@ server.registerTool(
               }
             }),
           );
-          const familyOf = (s: (typeof known)[number]): string => s.source.split(" · ")[0];
           const connectedFams = new Set(
             known
               .filter((s, i) => {
@@ -875,17 +886,17 @@ server.registerTool(
                 const beatMs = s.connector ? beats.get(s.connector) : undefined;
                 return beatMs != null && Date.now() - beatMs < BEAT_LIVE_MS;
               })
-              .map(familyOf),
+              .map((s) => familyOf(s.source)),
           );
           // A connected family lists ALL its present tables (an empty sibling is
           // still queryable and its blurb still documents it). The raw catch-all
           // is a diagnostic sink, not a source anyone "connects" — never flagged.
-          const connected = known.filter((s) => connectedFams.has(familyOf(s)));
+          const connected = known.filter((s) => connectedFams.has(familyOf(s.source)));
           const notConnected = known.filter(
-            (s) => !connectedFams.has(familyOf(s)) && s.table !== "ingest_raw",
+            (s) => !connectedFams.has(familyOf(s.source)) && s.table !== "ingest_raw",
           );
           const families = (list: typeof known): string =>
-            [...new Set(list.map(familyOf))].join(", ");
+            [...new Set(list.map((s) => familyOf(s.source)))].join(", ");
           if (connected.length || extra.length) {
             lines.push("", 'DATA LAKE (ClickHouse) — run_query with dialect:"clickhouse" — tables:');
             for (const s of connected) lines.push(`  - setoku.${s.table} — ${s.blurb}`);
