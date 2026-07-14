@@ -1441,7 +1441,8 @@ const httpServer = http.createServer(async (req, res) => {
         // (no per-request role param), so a MEMBER'S denies must be applied in
         // CODE here — otherwise a member denied Slack still sees Slack row counts
         // and 30-day series. Admins manage sources, so they see everything; the
-        // biz.* mirror stays team-wide regardless (it's core).
+        // biz.* mirror follows the "business" (Postgres) family deny too, gated
+        // inside gatherSources (a member denied Postgres doesn't see the card).
         const sourceDeniesFor = (): Set<string> =>
           canApprove(session.role) ? new Set() : new Set(store.sourceDenies(session.identity));
         if (api === "sources" && req.method === "GET") return json(200, await gatherSources(sourceDeniesFor()));

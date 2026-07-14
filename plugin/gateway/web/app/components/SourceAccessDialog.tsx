@@ -48,6 +48,7 @@ export function SourceAccessDialog({
     () => (open ? api.sources() : Promise.resolve(null)),
     [open],
   );
+  const allFamilies = lakeFamilies();
   const connected = new Set<string>();
   for (const t of sources?.lake.tables ?? []) {
     if ((t.rows ?? 0) > 0 || beatIsLive(t.beat)) connected.add(familyOf(t.source));
@@ -55,22 +56,23 @@ export function SourceAccessDialog({
   // The business-DB mirror (Postgres) is "connected" when it carries any table.
   if ((sources?.mirror.tables.length ?? 0) > 0) connected.add(BUSINESS_FAMILY.family);
 
-  // When the lake probe FAILED (unreachable), we can't tell what's connected —
-  // fall back to the full catalog so an admin can still apply a restriction
-  // during a transient lake outage (never blocking an I9 human act on a blip).
-  const probeOk = sources != null && sources.lake.ok;
+  // Three states, distinguished so we neither block a restriction on a blip nor
+  // invent phantom sources on a box that has no lake:
+  //   - probe OK          → show CONNECTED families only (the honest list).
+  //   - configured but !ok → a transient OUTAGE: we can't tell what's live, so
+  //     show the full catalog (never block an I9 human act on a blip) and say so.
+  //   - not configured     → there's no lake at all → "nothing to restrict".
+  const outage = sources != null && sources.lake.configured && !sources.lake.ok;
   // Connected first, then a denied-but-quiet family; catalog order within each
   // partition (sort() is stable). Filter on `denies` (the persisted set), not
   // the in-session `denied` state, so a row an admin just toggled doesn't vanish.
   const families = (
-    probeOk
-      ? lakeFamilies().filter((f) => connected.has(f.family) || denies.includes(f.slug))
-      : lakeFamilies()
+    outage ? allFamilies : allFamilies.filter((f) => connected.has(f.family) || denies.includes(f.slug))
   ).sort((a, b) => Number(connected.has(b.family)) - Number(connected.has(a.family)));
   // A deny can outlive its connector entirely (family dropped from the catalog)
   // — surface those unknown slugs too (from the persisted set) so they can still
   // be un-checked without vanishing mid-session on toggle.
-  const stale = denies.filter((d) => !lakeFamilies().some((f) => f.slug === d));
+  const stale = denies.filter((d) => !allFamilies.some((f) => f.slug === d));
 
   const same = (): boolean => {
     const live = new Set(denies);
@@ -152,12 +154,19 @@ export function SourceAccessDialog({
               </p>
             ) : (
               <>
+                {outage ? (
+                  <p className="mb-1 text-xs text-amber-600">
+                    Couldn’t reach the lake — showing all sources; connection status is unavailable.
+                  </p>
+                ) : null}
                 {families.map((f) => (
                   <RowBox
                     key={f.slug}
                     slug={f.slug}
                     label={f.family}
-                    hint={connected.has(f.family) ? undefined : "not connected"}
+                    // During an outage we can't tell what's live, so don't claim
+                    // "not connected" — that could drive a wrong access decision.
+                    hint={outage || connected.has(f.family) ? undefined : "not connected"}
                   />
                 ))}
                 {stale.map((slug) => (
