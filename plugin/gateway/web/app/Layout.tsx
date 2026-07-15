@@ -53,10 +53,12 @@ export function Layout() {
   const viewer = me?.role === "viewer";
   return (
     <>
-      {IS_DEMO ? <DemoBanner /> : null}
-      {/* header pins just below the demo banner (h-9) when it's present */}
-      <header className={cn("sticky z-10 border-b border-stone-200 bg-stone-50/80 backdrop-blur", IS_DEMO ? "top-9" : "top-0")}>
-        <div className="mx-auto flex max-w-4xl items-center gap-x-4 px-5 py-3">
+      {/* Banner + header stick to the top as ONE unit, so the banner can wrap on
+          narrow screens without clipping or overlapping the nav. */}
+      <div className="sticky top-0 z-20">
+        {IS_DEMO ? <DemoBanner /> : null}
+        <header className="border-b border-stone-200 bg-stone-50/80 backdrop-blur">
+          <div className="mx-auto flex max-w-4xl items-center gap-x-4 px-5 py-3">
           <NavLink to="/" aria-label="Setoku">
             <Brand className="gap-1 text-xl" />
           </NavLink>
@@ -101,6 +103,7 @@ export function Layout() {
           </div>
         </div>
       </header>
+      </div>
       <main className="mx-auto max-w-4xl px-5 py-8">
         <Outlet />
       </main>
