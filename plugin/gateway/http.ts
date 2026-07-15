@@ -827,11 +827,12 @@ function appProvenance(
   knowledge: KnowledgeStore,
   meta: PublishedMeta,
   panels: RenderedPanel[],
-  // The VIEWER's denied families: a panel's linked metric doc tagged to a denied
-  // source is hidden here too, so the provenance drawer can't disclose a metric
-  // summary the knowledge tools (get_metric/describe_entity) answer "not found"
-  // for. Empty for admins / no-deny viewers.
-  denied: Set<string> = new Set(),
+  // The VIEWER's denied families (REQUIRED, no default — a caller must not
+  // fail open): a panel's linked metric doc tagged to a denied source is hidden
+  // here too, so the provenance drawer can't disclose a metric summary/name the
+  // knowledge tools (get_metric/describe_entity) answer "not found" for. Pass an
+  // empty set for admins / no-deny viewers.
+  denied: Set<string>,
 ): Record<string, unknown> {
   const byKey = new Map(panels.map((p) => [p.key, p]));
   return {
@@ -1347,7 +1348,7 @@ const httpServer = http.createServer(async (req, res) => {
         // source denies — their data (renders under the creator's access), SQL,
         // provenance, and existence are visible to every signed-in member. A
         // published app cannot be hidden by source without parsing its panel SQL,
-        // which I8/I9 forbid for access control. See the "known limitation" note
+        // which I9 forbids for access control. See the "known limitation" note
         // in docs/invariants.md. (This is why the built-in Mirror-egress app is
         // team-visible; fencing the business family from a member does not hide
         // team dashboards built over it.)
@@ -1509,15 +1510,26 @@ const httpServer = http.createServer(async (req, res) => {
         // check, so a shared /apps/<id> link only renders for a box login.
         // The list UI needs only panel COUNT, not the queries — strip each panel's
         // raw SQL so the list doesn't broadcast every app's query text to all
-        // members (SQL stays team-tier, shown only in the per-app drawer).
-        if (api === "published" && req.method === "GET")
+        // members (SQL stays team-tier, shown only in the per-app drawer). A
+        // panel's metricId names a KNOWLEDGE doc, which follows the knowledge
+        // membrane even though the app is team-tier — null it when that metric
+        // is source-hidden for the viewer (parity with app_data / get_metric).
+        if (api === "published" && req.method === "GET") {
+          const hiddenMetrics = accessHiddenDocNames(sessionDocs(), sessionDenied());
           return json(
             200,
             store.listPublished().map((r) => ({
               ...r,
-              panels: r.panels ? r.panels.map((p) => ({ ...p, sql: "" })) : null,
+              panels: r.panels
+                ? r.panels.map((p) => ({
+                    ...p,
+                    sql: "",
+                    metricId: p.metricId && hiddenMetrics.has(String(p.metricId)) ? null : p.metricId,
+                  }))
+                : null,
             })),
           );
+        }
         // Provenance + rendered panel metadata for the team viewer's drawer.
         // Includes raw SQL (this surface is authenticated). The rows themselves
         // arrive via the sandboxed /admin/frame/<id>.

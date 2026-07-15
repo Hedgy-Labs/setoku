@@ -485,6 +485,19 @@ describe("source access over HTTP + MCP", () => {
     const panel = prov.panels.find((p) => p.title === "Burn") ?? prov.panels[0];
     expect(panel.metricSummary).toBeNull();
     expect(panel.metricId).toBeNull();
+    // the /admin/api/published list must null the same hidden metricId (name)
+    const pubList = (await (await fetch(`${BASE}/admin/api/published`, { headers: { cookie: member.cookie } })).json()) as { panels: { metricId: string | null }[] | null }[];
+    expect(pubList.some((a) => (a.panels ?? []).some((p) => p.metricId === "mercury_burn"))).toBe(false);
+    // ...and get_app on the MCP plane must omit the hidden metric annotation
+    // (denies are read per tool call, so no reconnect needed)
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: ["mercury"] } });
+    const aliceM = await connect(BASE, "tok-alice");
+    const ga = await gwCall(aliceM, "get_app", { id: appId });
+    expect(ga.isError).toBe(false);
+    expect(ga.text).not.toContain("mercury_burn");
+    await aliceM.close();
+    await post("source_access", { ...admin, body: { username: "alice@co.test", denies: [] } });
+
     // an unrestricted admin still sees the provenance link
     const adminProv = (await (await fetch(`${BASE}/admin/api/app_data?id=${appId}`, { headers: { cookie: admin.cookie } })).json()) as { panels: { metricId: string | null; metricSummary: string | null }[] };
     expect((adminProv.panels.find((p) => p.metricId === "mercury_burn"))?.metricSummary).toBe("monthly burn");

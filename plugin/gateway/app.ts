@@ -354,12 +354,18 @@ server.registerTool(
     inputSchema: {},
   },
   async () => {
-    const docs = visibleDocs();
-    // Counts follow the same source membrane as the listings — a pending
-    // proposal about a hidden doc must not be counted here, or the delta vs
-    // list_corrections/find_context reveals hidden proposals exist for a denied
-    // source. Both use the shared visibleCorrections filter.
-    const visiblePending = visibleCorrections(store.listCorrections("pending"), hiddenDocNames());
+    // Read the store once (docs + denies), then derive both the visible docs and
+    // the hidden-name set for the pending count from it. Counts follow the same
+    // source membrane as the listings — a pending proposal about a hidden doc
+    // must not be counted, or the delta vs list_corrections/find_context reveals
+    // hidden proposals exist for a denied source.
+    const denied = deniedFamilies();
+    const allDocs = store.listDocs();
+    const docs = accessVisibleDocs(allDocs, denied);
+    const visiblePending = visibleCorrections(
+      store.listCorrections("pending"),
+      accessHiddenDocNames(allDocs, denied),
+    );
     if (docs.length === 0 && visiblePending.length === 0) return text(NO_KNOWLEDGE_HINT);
     const lines: string[] = [];
     if (docs.length === 0)
@@ -1829,10 +1835,16 @@ server.registerTool(
     if (!ps.length) {
       lines.push("(no live panels — a static report.)", "");
     }
+    // A panel's metricId names a KNOWLEDGE doc — it follows the knowledge
+    // membrane even though the app itself is team-tier. Omit the annotation when
+    // the linked metric is source-hidden for this session (parity with the web
+    // app_data drawer + get_metric answering "not found").
+    const hiddenMetrics = hiddenDocNames();
     for (const p of ps) {
       const cache = store.getPanelCache(dash.id, p.key);
+      const metricTag = p.metricId && !hiddenMetrics.has(String(p.metricId)) ? ` · metric:${p.metricId}` : "";
       lines.push(
-        `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${p.metricId ? ` · metric:${p.metricId}` : ""}`,
+        `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${metricTag}`,
       );
       // Surface description so a read-before-edit (get_app → update_app)
       // round-trip can preserve it — update_app REPLACES the whole panel set.
