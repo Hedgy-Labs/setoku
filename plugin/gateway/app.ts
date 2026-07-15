@@ -218,14 +218,18 @@ server.registerTool(
   },
   async ({ question, max_results }) => {
     const started = Date.now();
-    const allDocs = visibleDocs();
+    // Read the store once (docs + denies) and derive both the visible set and
+    // the hidden-name set from it — same dedup as list_entities.
+    const denied = deniedFamilies();
+    const storeDocs = store.listDocs();
+    const allDocs = accessVisibleDocs(storeDocs, denied);
     const docs = allDocs.filter((d) => d.type !== "gotcha");
     const gotchaDocs = allDocs.filter((d) => d.type === "gotcha");
     // Pending proposals follow the same source membrane as curated docs: a
     // proposal ABOUT a hidden doc (relates_to a source-tagged denied family)
     // must not leak that fact through the unverified-knowledge channel.
     const pending = matchByTokens(
-      visibleCorrections(store.listCorrections("pending"), hiddenDocNames()),
+      visibleCorrections(store.listCorrections("pending"), accessHiddenDocNames(storeDocs, denied)),
       (c) => `${c.fact ?? c.content} ${c.relatesTo ?? ""}`,
       question,
     ).slice(0, 5);
@@ -1386,7 +1390,15 @@ const clampRefresh = (refreshSeconds: number | undefined, hasPanels: boolean): n
 // missing curated metric links + static render-lint of the template.
 async function publishNotes(html: string, panels: AppPanel[]): Promise<string> {
   const notes: string[] = [];
-  const missing = panels.filter((p) => p.metricId && !store.getDoc("metric", String(p.metricId))).map((p) => p.metricId);
+  // A source-hidden metric reads as MISSING to this session (the note fires
+  // whether it's truly absent or just hidden), so the warning can't be used as
+  // an existence oracle for a metric get_metric answers "not found" for.
+  const denied = deniedFamilies();
+  const metricVisible = (mid: unknown): boolean => {
+    const d = mid ? store.getDoc("metric", String(mid)) : null;
+    return !!d && !docHidden(d.meta, denied);
+  };
+  const missing = panels.filter((p) => p.metricId && !metricVisible(p.metricId)).map((p) => p.metricId);
   if (missing.length)
     notes.push(`no curated metric named ${missing.map((m) => `"${m}"`).join(", ")} — that provenance link is dropped (document it with /setoku:generate or upsert_context).`);
   // A panel without a title shows its raw slug in the "how is this calculated"
@@ -1838,11 +1850,16 @@ server.registerTool(
     // A panel's metricId names a KNOWLEDGE doc — it follows the knowledge
     // membrane even though the app itself is team-tier. Omit the annotation when
     // the linked metric is source-hidden for this session (parity with the web
-    // app_data drawer + get_metric answering "not found").
-    const hiddenMetrics = hiddenDocNames();
+    // app_data drawer + get_metric answering "not found"). Type-EXACT lookup so a
+    // same-named hidden gotcha doesn't over-hide a visible metric link.
+    const denied = deniedFamilies();
+    const metricLinkHidden = (mid: unknown): boolean => {
+      const d = mid ? store.getDoc("metric", String(mid)) : null;
+      return !!d && docHidden(d.meta, denied);
+    };
     for (const p of ps) {
       const cache = store.getPanelCache(dash.id, p.key);
-      const metricTag = p.metricId && !hiddenMetrics.has(String(p.metricId)) ? ` · metric:${p.metricId}` : "";
+      const metricTag = p.metricId && !metricLinkHidden(p.metricId) ? ` · metric:${p.metricId}` : "";
       lines.push(
         `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${metricTag}`,
       );

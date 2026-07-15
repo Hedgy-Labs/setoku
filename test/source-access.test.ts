@@ -348,6 +348,13 @@ describe("source access over HTTP + MCP", () => {
 
   // ---- review fixes: web read paths + get_schema follow the denies too ----
 
+  it("the audit trail is admin-only (its payloads carry hidden doc names/SQL)", async () => {
+    const admin = await session("boss@co.test", "s3cret-pass");
+    const member = await session("viewer@co.test", "viewer-pass");
+    expect((await fetch(`${BASE}/admin/api/audit`, { headers: { cookie: member.cookie } })).status).toBe(403);
+    expect((await fetch(`${BASE}/admin/api/audit`, { headers: { cookie: admin.cookie } })).status).toBe(200);
+  });
+
   it("the team roster hides everyone's denies from a member (admin-only map)", async () => {
     const admin = await session("boss@co.test", "s3cret-pass");
     await post("source_access", { ...admin, body: { username: "alice@co.test", denies: ["slack"] } });

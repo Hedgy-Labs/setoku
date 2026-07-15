@@ -1477,7 +1477,14 @@ const httpServer = http.createServer(async (req, res) => {
               store.knowledgeUsage(),
             ),
           );
-        if (api === "audit" && req.method === "GET") return json(200, store.listAudit(200));
+        // The audit trail is operator/security data — its raw payloads carry doc
+        // names, SQL, and identities (including source-hidden knowledge names the
+        // membrane hides everywhere else), and filtering arbitrary payloads
+        // per-source is fragile. Admin-only, so it can't be a membrane bypass.
+        if (api === "audit" && req.method === "GET") {
+          if (!canApprove(session.role)) return json(403, { ok: false, error: "not authorized" });
+          return json(200, store.listAudit(200));
+        }
         // The Sources views run the lake probes as the shared server credential
         // (no per-request role param), so a MEMBER'S denies must be applied in
         // CODE here — otherwise a member denied Slack still sees Slack row counts
@@ -1515,17 +1522,20 @@ const httpServer = http.createServer(async (req, res) => {
         // membrane even though the app is team-tier — null it when that metric
         // is source-hidden for the viewer (parity with app_data / get_metric).
         if (api === "published" && req.method === "GET") {
-          const hiddenMetrics = accessHiddenDocNames(sessionDocs(), sessionDenied());
+          const denied = sessionDenied();
+          // Type-EXACT (matches app_data's getDoc): a metricId names a METRIC
+          // doc, so a same-named hidden gotcha/entity must not over-hide a
+          // legitimately-visible metric link.
+          const metricLinkHidden = (mid: unknown): boolean => {
+            const d = mid ? store.getDoc("metric", String(mid)) : null;
+            return !!d && docHidden(d.meta, denied);
+          };
           return json(
             200,
             store.listPublished().map((r) => ({
               ...r,
               panels: r.panels
-                ? r.panels.map((p) => ({
-                    ...p,
-                    sql: "",
-                    metricId: p.metricId && hiddenMetrics.has(String(p.metricId)) ? null : p.metricId,
-                  }))
+                ? r.panels.map((p) => ({ ...p, sql: "", metricId: metricLinkHidden(p.metricId) ? null : p.metricId }))
                 : null,
             })),
           );
