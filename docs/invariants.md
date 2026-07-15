@@ -16,8 +16,8 @@ README) so the references resolve without bloating the front page.
   commit knowledge structurally cannot ingest the untrusted bulk text that would
   weaponize the write tool. The two capabilities never coexist. Acceptance of
   team-proposed knowledge is the web approval surface; `/setoku:generate` /
-  `/setoku:curate` use the curator token (they read the customer's own code and the
-  business Postgres, never the lake).
+  `/setoku:curate` use the curator token (they read the customer's own code and
+  schema metadata, never lake content).
 - **I3 — No pilot-tenant data in the repo.** No real metric definitions, gotchas,
   channel names, or log samples. CI greps a denylist (terms in the private overlay,
   fed via the `SETOKU_DENYLIST` secret).
@@ -28,11 +28,13 @@ README) so the references resolve without bloating the front page.
   on the next reload, so it lives in its own database and stays OUT of the backup
   and Parquet-export story.
 - **I5 — Dialect-routed, engine-portable knowledge.** Metric SQL declares its
-  dialect (`postgres` | `clickhouse` | future `bigquery`/`snowflake`); `run_query`
-  routes accordingly. The context layer is storage-agnostic. A metric is canonical
-  in exactly **one** dialect — with the business-DB mirror (issue #47), scan-shaped
-  metrics are canonical in `clickhouse` against `biz.*` from day one, so a
-  two-dialect drift problem never exists.
+  dialect (`clickhouse` today; future `bigquery`/`snowflake`); `run_query` routes
+  accordingly. The context layer is storage-agnostic. A metric is canonical in
+  exactly **one** dialect — business tables are read via the `biz.*` mirror, so
+  metrics are canonical in `clickhouse` and a two-dialect drift problem never
+  exists. (`postgres` was a runnable dialect until the direct business-Postgres
+  read path was retired; legacy postgres docs are flagged by knowledge-lint for
+  migration, and `run_query` rejects the dialect with a pointer to `biz.*`.)
 - **I6 — Single-tenant by architecture.** One deploy = one org. No tenancy layer —
   isolation as a feature.
 - **I7 — Verify vendor facts at build time.** Slack rate limits, Vercel/Render plan
@@ -60,13 +62,37 @@ README) so the references resolve without bloating the front page.
   knowledge — the defense is a human action the agent *cannot perform* (a click on
   the approval surface), not a permission the agent holds. Access is enforced by the
   database engines (per-role users + GRANTs), never by SQL parsing in our code — the
-  gateway's lake user is a SELECT-only, settings-constrained ClickHouse role
-  ([`deploy/clickhouse/lake-users.xml`](../deploy/clickhouse/lake-users.xml)), and
-  the business-DB role is read-only ([`deploy/readonly-role.sql`](../deploy/readonly-role.sql)).
+  gateway's lake user is a SELECT-only, settings-constrained ClickHouse user whose
+  per-source grants ride on roles
+  ([`deploy/clickhouse/lake-users.xml`](../deploy/clickhouse/lake-users.xml)), so
+  per-user source access is a role subset the engine enforces. The gateway holds
+  **no** business-DB credential at all: the read-only Postgres role
+  ([`deploy/readonly-role.sql`](../deploy/readonly-role.sql)) belongs to
+  `ingest/pg-mirror`, the one container that reads the source database, and
+  business tables reach sessions only as the `biz.*` mirror.
+
+## Per-user source access — scope & known limits
+
+Per-user data-source access (the Team-page "Data access" dialog) fences a
+person's **agent queries and curated knowledge** off a denied source, enforced
+by the ClickHouse engine (role subset) and, for knowledge, the shared
+`lib/access` membrane (docs/corrections tagged `meta.source`). It does **not**
+cover **published apps**. A published app is a TEAM-tier artifact: its rendered
+data (it runs under the *creator's* access), its panel SQL, its provenance, and
+its very existence are visible to every signed-in member and to any analyst
+connector, regardless of that person's source denies. This is deliberate and
+load-bearing: hiding an app by source would require parsing its panel SQL to
+decide which sources it touches, which is exactly the "access by SQL parsing"
+I9 forbids. **Consequence:** to fence a source from someone, do not build team
+apps over it — the deny governs their agent and their knowledge, not a dashboard
+a colleague published. (The built-in "Mirror egress" app is the shipped instance:
+it is team-visible even to a business-denied member.)
 
 ## Requires a human (the agent should stop and ask)
 
 - Buying the VPS & object storage; DNS; SSH keys.
 - Provider credentials: Vercel token (Pro), Render API key, Slack app install.
-- Creating the read-only DB role on the customer's database.
+- Creating the read-only DB role on the customer's database (used by pg-mirror,
+  never the gateway).
+- Limiting a person's data-source access (the Team page dialog, admin-only).
 - **Accepting any correction into curated context.**

@@ -28,24 +28,21 @@ export interface NotificationsConfig {
 }
 
 export interface SetokuConfig {
+  /**
+   * The business database — consumed by ingest/pg-mirror (which reads the
+   * source and fills biz.*), NOT by the gateway: the gateway holds no
+   * business-DB credential and its only query engine is ClickHouse. The
+   * `envFile` here also anchors where the other resolvers look for env vars.
+   * Table allow/deny lists live with pg-mirror (what gets mirrored IS the
+   * table scope).
+   */
   dataSource: DataSourceConfig;
   /** The bundled ClickHouse lake, target of run_query's `clickhouse` dialect (I5). */
   lake?: LakeConfig;
   /** Outbound activity notifications — Slack today, more channels later (issue #63). */
   notifications?: NotificationsConfig;
-  allowTables: string[];
-  denyTables: string[];
   rowCap: number;
   statementTimeoutMs: number;
-  /**
-   * How hard the box steers queries onto the biz.* business-DB mirror
-   * (issue #47) when one exists. "require" (the default): postgres-dialect
-   * queries/panels that touch a mirrored table are REJECTED with the biz.*
-   * rewrite — the mirror is the read path; prod postgres stays for
-   * verification (run_query force_postgres) and unmirrored tables.
-   * "prefer": advisory nudge only.
-   */
-  mirrorPolicy?: "require" | "prefer";
   /** Optional override for the knowledge-store SQLite path (absolute, or relative to the project dir). */
   knowledgeDb?: string;
   /**
@@ -87,8 +84,6 @@ export function connectorName(projectDir: string, suffix = ""): string {
 export const DEFAULTS = {
   rowCap: 200,
   statementTimeoutMs: 15_000,
-  allowTables: ["public.*"],
-  denyTables: [] as string[],
 };
 
 /**
@@ -166,42 +161,9 @@ export type UrlResult =
   | { ok: false; error: string };
 
 /**
- * Resolve the database connection URL without ever exposing it to the model.
- * Precedence: dataSource.url (discouraged literal) → process.env[urlEnv] → envFile[urlEnv].
- */
-export function resolveDatabaseUrl(
-  projectDir: string,
-  config: SetokuConfig,
-): UrlResult {
-  const ds = config.dataSource ?? {};
-  if ((ds.kind ?? "postgres") !== "postgres") {
-    return {
-      ok: false,
-      error: `Unsupported dataSource.kind "${ds.kind}" (v0 supports "postgres").`,
-    };
-  }
-  if (ds.url) return { ok: true, url: ds.url };
-  const varName = ds.urlEnv;
-  if (!varName) {
-    return {
-      ok: false,
-      error:
-        "config.dataSource.urlEnv is not set (name of the env var holding the Postgres URL).",
-    };
-  }
-  if (process.env[varName]) return { ok: true, url: process.env[varName]! };
-  const envFile = path.join(projectDir, ds.envFile ?? ".env");
-  const parsed = parseEnvFile(envFile);
-  if (parsed[varName]) return { ok: true, url: parsed[varName] };
-  return {
-    ok: false,
-    error: `Env var ${varName} not found in process env or ${envFile}. Set it or fix .setoku/config.json.`,
-  };
-}
-
-/**
- * Resolve the ClickHouse lake URL (run_query dialect "clickhouse").
- * Precedence mirrors resolveDatabaseUrl: lake.url → env[lake.urlEnv|SETOKU_LAKE_URL] → project envFile.
+ * Resolve the ClickHouse lake URL (run_query dialect "clickhouse") — the
+ * gateway's ONLY data credential (no business-DB URL is ever resolved here).
+ * Precedence: lake.url → env[lake.urlEnv|SETOKU_LAKE_URL] → project envFile.
  */
 export function resolveLakeUrl(
   projectDir: string,
@@ -261,28 +223,3 @@ export function resolveUser(projectDir: string): string {
   return "unknown";
 }
 
-/** Glob match for "schema.table" patterns where * matches within a segment. */
-export function tableMatches(pattern: string, qualified: string): boolean {
-  const re = new RegExp(
-    "^" +
-      pattern
-        .split("*")
-        .map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-        .join("[^.]*") +
-      "$",
-  );
-  return re.test(qualified);
-}
-
-export function isTableAllowed(
-  config: SetokuConfig,
-  schema: string,
-  table: string,
-): boolean {
-  const qualified = `${schema}.${table}`;
-  if ((config.denyTables ?? []).some((p) => tableMatches(p, qualified)))
-    return false;
-  return (config.allowTables ?? ["*.*"]).some((p) =>
-    tableMatches(p, qualified),
-  );
-}

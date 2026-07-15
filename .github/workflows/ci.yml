@@ -27,6 +27,9 @@ jobs:
           CLICKHOUSE_USER: ci
           CLICKHOUSE_PASSWORD: ci
           CLICKHOUSE_DB: ci
+          # lets the `ci` user CREATE ROLE / GRANT — needed by the per-source
+          # role-enforcement engine test (test/source-roles-engine.test.ts)
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
         ports: ["8123:8123"]
         options: >-
           --health-cmd "clickhouse-client --user ci --password ci --query 'SELECT 1'"

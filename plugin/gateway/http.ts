@@ -62,8 +62,7 @@ import {
 import { authenticate, canApprove, hashPassword, isRole, MIN_PASSWORD_LENGTH } from "./lib/accounts";
 import { buildKnowledgeView } from "./lib/facts";
 import { VERSION } from "./lib/version";
-import { resolveDatabaseUrl, resolveLakeUrl } from "./lib/config";
-import { introspectSchema } from "./lib/db";
+import { resolveLakeUrl } from "./lib/config";
 import { runLakeQuery } from "./lib/lake";
 
 const projectDir = resolveProjectDir();
@@ -313,11 +312,13 @@ function teamPeople(): {
   used: boolean;
   envBacked: boolean;
   role?: string;
+  denies: string[];
 }[] {
   const tokenIds = new Set(analystIdentities());
   const envIds = envBackedIdentities();
   const active = store.activeIdentities();
   const accounts = store.listAccounts();
+  const denies = store.allSourceDenies();
   const ids = new Set<string>([...tokenIds, ...accounts.map((a) => a.username)]);
   return [...ids]
     .sort()
@@ -327,6 +328,8 @@ function teamPeople(): {
       used: active.has(identity),
       envBacked: envIds.has(identity),
       role: accounts.find((a) => a.username === identity)?.role,
+      // Denied source-family slugs (the Data access dialog). [] = full access.
+      denies: denies[identity] ?? [],
     }));
 }
 
@@ -541,36 +544,39 @@ echo "    how many companies are paying us right now?"
 
 // Lake source tables we know how to surface (shared with the list_sources MCP
 // tool) — query only the ones that actually exist; see gatherSources().
-import { LAKE_SOURCES } from "./lib/sources";
+import { LAKE_SOURCES, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, sourceAccessDisabled } from "./lib/sources";
+import {
+  deniedFamiliesFor,
+  metricDocHidden,
+  hiddenDocNames as accessHiddenDocNames,
+  visibleCorrections as accessVisibleCorrections,
+  visibleDocs as accessVisibleDocs,
+} from "./lib/access";
 
 /**
- * Gather the /admin Sources view live: is Postgres configured + reachable (+
- * table count), is the lake reachable, and per-connector row counts/freshness.
- * All read-only; every probe is independently try/caught so one failure
- * degrades to "—" rather than blanking the page.
+ * Gather the /admin Sources view live: which biz.* tables the mirror carries,
+ * is the lake reachable, and per-connector row counts/freshness. All
+ * read-only; every probe is independently try/caught so one failure degrades
+ * to "—" rather than blanking the page. (The gateway holds no business-DB
+ * credential — the mirror IS the business-data story here.)
  */
-async function gatherSources(): Promise<SourcesData> {
+async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesData> {
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
+  // A denied source is invisible on this page too (not just to the agent) —
+  // otherwise a restricted member reads row counts / freshness for a source
+  // they can't query. The biz.* mirror follows the "business" (Postgres) family
+  // and is gated separately below (mirror.tables).
+  const sources = LAKE_SOURCES.filter(
+    // pg_mirror_runs is the mirror's run-log (shown in the separate mirror card,
+    // and it follows the business deny) — not a queryable lake source here.
+    (s) => s.table !== "pg_mirror_runs" && !denied.has(familySlug(familyOf(s.source))),
+  );
 
-  const postgres: SourcesData["postgres"] = { configured: false, ok: false };
+  const mirror: SourcesData["mirror"] = { tables: [] };
   const lake: SourcesData["lake"] = { configured: false, ok: false, tables: [] };
 
   if (config) {
-    const pgUrl = resolveDatabaseUrl(projectDir, config);
-    if (pgUrl.ok) {
-      postgres.configured = true;
-      postgres.envVar = config.dataSource?.urlEnv;
-      postgres.allow = config.allowTables;
-      try {
-        const tables = await introspectSchema(pgUrl.url, config);
-        postgres.ok = true;
-        postgres.tableCount = tables.length;
-      } catch (e) {
-        postgres.error = String(e).slice(0, 200);
-      }
-    }
-
     const lakeUrl = resolveLakeUrl(projectDir, config);
     if (lakeUrl.ok) {
       lake.configured = true;
@@ -603,7 +609,7 @@ async function gatherSources(): Promise<SourcesData> {
           /* ingest_heartbeats absent — sources fall back to data-recency freshness */
         }
         const probes = await Promise.all(
-          LAKE_SOURCES.map(async (s): Promise<SourceTable | null> => {
+          sources.map(async (s): Promise<SourceTable | null> => {
             try {
               const res = await runLakeQuery(
                 lakeUrl.url,
@@ -625,14 +631,32 @@ async function gatherSources(): Promise<SourcesData> {
           }),
         );
         lake.tables = probes.filter((p): p is SourceTable => p !== null);
+        // The biz.* mirror — which business tables are queryable and how fresh
+        // each copy is. Best-effort like every other probe on this page. Hidden
+        // when the caller is denied the "business" (Postgres) family, same as a
+        // denied lake source.
+        if (!denied.has(BUSINESS_FAMILY.slug))
+          try {
+            mirror.tables = (await mirroredTables(lakeUrl.url)).map((m) => ({
+              target: m.target,
+              source: m.source,
+              asOf: m.asOf,
+            }));
+          } catch {
+            /* no mirror on this box — the card simply doesn't render */
+          }
       }
     }
   }
 
+  // Knowledge summary follows the SAME source denies as the knowledge view, so
+  // a restricted member can't infer how many source-tagged docs exist for a
+  // denied family from the counts. `denied` is empty for admins / no-deny users.
+  const visibleKnowledge = accessVisibleDocs(store.listDocs(), denied);
   const byType: Record<string, number> = {};
-  for (const d of store.listDocs()) byType[d.type] = (byType[d.type] ?? 0) + 1;
+  for (const d of visibleKnowledge) byType[d.type] = (byType[d.type] ?? 0) + 1;
 
-  return { postgres, lake, knowledge: { docs: store.docCount, byType } };
+  return { mirror, lake, knowledge: { docs: visibleKnowledge.length, byType } };
 }
 
 /**
@@ -642,7 +666,7 @@ async function gatherSources(): Promise<SourcesData> {
  * and column come from the trusted LAKE_SOURCES constant (never user input), so
  * the interpolation is safe — same pattern as gatherSources().
  */
-async function gatherSourceSeries(): Promise<SourceSeriesData> {
+async function gatherSourceSeries(denied: Set<string> = new Set()): Promise<SourceSeriesData> {
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
   const series: SourceSeries[] = [];
@@ -650,8 +674,13 @@ async function gatherSourceSeries(): Promise<SourceSeriesData> {
     const lakeUrl = resolveLakeUrl(projectDir, config);
     if (lakeUrl.ok) {
       const qopts = { rowCap: 100, statementTimeoutMs: 8_000 };
+      const sources = LAKE_SOURCES.filter(
+    // pg_mirror_runs is the mirror's run-log (shown in the separate mirror card,
+    // and it follows the business deny) — not a queryable lake source here.
+    (s) => s.table !== "pg_mirror_runs" && !denied.has(familySlug(familyOf(s.source))),
+  );
       const results = await Promise.all(
-        LAKE_SOURCES.map(async (s): Promise<SourceSeries | null> => {
+        sources.map(async (s): Promise<SourceSeries | null> => {
           try {
             const res = await runLakeQuery(
               lakeUrl.url,
@@ -798,6 +827,12 @@ function appProvenance(
   knowledge: KnowledgeStore,
   meta: PublishedMeta,
   panels: RenderedPanel[],
+  // The VIEWER's denied families (REQUIRED, no default — a caller must not
+  // fail open): a panel's linked metric doc tagged to a denied source is hidden
+  // here too, so the provenance drawer can't disclose a metric summary/name the
+  // knowledge tools (get_metric/describe_entity) answer "not found" for. Pass an
+  // empty set for admins / no-deny viewers.
+  denied: Set<string>,
 ): Record<string, unknown> {
   const byKey = new Map(panels.map((p) => [p.key, p]));
   return {
@@ -814,13 +849,17 @@ function appProvenance(
     panels: (meta.panels ?? []).map((p) => {
       const r = byKey.get(p.key);
       const doc = p.metricId ? knowledge.getDoc("metric", String(p.metricId)) : null;
+      // A metric doc tagged to a denied family is invisible to this viewer —
+      // drop its summary (and don't echo the metricId, which is the hidden doc's
+      // name) so the drawer matches what get_metric would answer.
+      const metricHidden = metricDocHidden(doc, denied);
       return {
         key: p.key,
         title: p.title ?? null,
         description: p.description ?? null,
         dialect: p.dialect,
-        metricId: p.metricId ?? null,
-        metricSummary: doc ? String(doc.meta.summary ?? "") : null,
+        metricId: metricHidden ? null : (p.metricId ?? null),
+        metricSummary: doc && !metricHidden ? String(doc.meta.summary ?? "") : null,
         sql: p.sql,
         rowCount: r?.rowCount ?? 0,
         truncated: r?.truncated ?? false,
@@ -1305,6 +1344,14 @@ const httpServer = http.createServer(async (req, res) => {
         const force =
           new URL(req.url ?? "", "http://x").searchParams.get("force") === "1" &&
           (rep.createdBy === session.identity || canApprove(session.role));
+        // NB: published apps are a TEAM-tier surface and do NOT enforce per-user
+        // source denies — their data (renders under the creator's access), SQL,
+        // provenance, and existence are visible to every signed-in member. A
+        // published app cannot be hidden by source without parsing its panel SQL,
+        // which I9 forbids for access control. See the "known limitation" note
+        // in docs/invariants.md. (This is why the built-in Mirror-egress app is
+        // team-visible; fencing the business family from a member does not hide
+        // team dashboards built over it.)
         const panels = (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw, force }) : [];
         store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
         // The app template needs no network (data is injected) → strict CSP.
@@ -1390,50 +1437,104 @@ const httpServer = http.createServer(async (req, res) => {
             mustChangePassword: !!store.getAccount(session.identity)?.mustChangePassword,
           });
 
-        // read endpoints — any signed-in user (members included) may view
+        // Knowledge + correction views follow per-user source access through the
+        // SAME shared lib/access helpers the MCP tools use, so the web and the
+        // agent can't drift (and the same SETOKU_SOURCE_ACCESS=0 kill-switch, so
+        // nothing is hidden the engine isn't enforcing). Admins see everything:
+        // they manage the store and the denies. `store.listDocs()` is read once
+        // per request and reused across both views.
+        const sessionDenied = (): Set<string> =>
+          deniedFamiliesFor(store.sourceDenies(session.identity), canApprove(session.role));
+        let _sessionDocs: ReturnType<typeof store.listDocs> | null = null;
+        const sessionDocs = (): ReturnType<typeof store.listDocs> => (_sessionDocs ??= store.listDocs());
+        const docsForSession = (): ReturnType<typeof store.listDocs> =>
+          accessVisibleDocs(sessionDocs(), sessionDenied());
+        const correctionsForSession = (status: "pending" | "rejected") =>
+          accessVisibleCorrections(
+            store.listCorrections(status),
+            accessHiddenDocNames(sessionDocs(), sessionDenied()),
+          );
+        // read endpoints — any signed-in user (members included) may view the
         // pending list for the cockpit: each item carries the best-available
         // DRAFT (persisted auto-draft, else the synthesized gotcha default) so a
         // review card can render a finished, editable change. Advisory only.
         if (api === "pending" && req.method === "GET")
           return json(
             200,
-            store.listCorrections("pending").map((c) => ({ ...c, draft: defaultDraft(c) })),
+            correctionsForSession("pending").map((c) => ({ ...c, draft: defaultDraft(c) })),
           );
         // bot-rejected items the cockpit can review + un-reject (piece C: soft,
         // reversible, audited — a janitor suppressing good proposals is undoable).
         if (api === "rejected" && req.method === "GET")
-          return json(200, store.listCorrections("rejected"));
-        if (api === "knowledge" && req.method === "GET") return json(200, store.listDocs());
+          return json(200, correctionsForSession("rejected"));
+        if (api === "knowledge" && req.method === "GET") return json(200, docsForSession());
         if (api === "knowledge_view" && req.method === "GET")
           return json(
             200,
             buildKnowledgeView(
-              store.listDocs(),
-              store.listCorrections("pending"),
+              docsForSession(),
+              correctionsForSession("pending"),
               store.knowledgeUsage(),
             ),
           );
-        if (api === "audit" && req.method === "GET") return json(200, store.listAudit(200));
-        if (api === "sources" && req.method === "GET") return json(200, await gatherSources());
-        if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries());
-        // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert threshold
-        if (api === "egress" && req.method === "GET") return json(200, await gatherEgress(projectDir, store));
-        if (api === "team" && req.method === "GET")
-          return json(200, { people: teamPeople(), adminCount: store.countRole("admin") });
+        // The audit trail is operator/security data — its raw payloads carry doc
+        // names, SQL, and identities (including source-hidden knowledge names the
+        // membrane hides everywhere else), and filtering arbitrary payloads
+        // per-source is fragile. Admin-only, so it can't be a membrane bypass.
+        if (api === "audit" && req.method === "GET") {
+          if (!canApprove(session.role)) return json(403, { ok: false, error: "not authorized" });
+          return json(200, store.listAudit(200));
+        }
+        // The Sources views run the lake probes as the shared server credential
+        // (no per-request role param), so a MEMBER'S denies must be applied in
+        // CODE here — otherwise a member denied Slack still sees Slack row counts
+        // and 30-day series. Admins manage sources, so they see everything; the
+        // biz.* mirror follows the "business" (Postgres) family deny too, gated
+        // inside gatherSources (a member denied Postgres doesn't see the card).
+        const sourceDeniesFor = (): Set<string> => sessionDenied();
+        if (api === "sources" && req.method === "GET") return json(200, await gatherSources(sourceDeniesFor()));
+        if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries(sourceDeniesFor()));
+        // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert
+        // threshold. Derived from pg_mirror_runs, which follows the business
+        // ("Postgres") deny — so a business-denied member gets the empty ledger,
+        // parity with the hidden mirror card (else the byte volumes + a mirror's
+        // existence leak on this endpoint).
+        if (api === "egress" && req.method === "GET") {
+          if (sessionDenied().has(BUSINESS_FAMILY.slug))
+            return json(200, { days: [], todayBytes: 0, thresholdBytes: null, configured: false, appId: null });
+          return json(200, await gatherEgress(projectDir, store));
+        }
+        if (api === "team" && req.method === "GET") {
+          // Everyone signed in may see the roster (to know who to ask), but a
+          // person's source restrictions are admin-only — don't broadcast the
+          // org's access-restriction map to every member.
+          const admin = canApprove(session.role);
+          const people = teamPeople().map((p) => (admin ? p : { ...p, denies: [] }));
+          return json(200, { people, adminCount: store.countRole("admin") });
+        }
 
         // published apps/reports — TEAM-ONLY: gated behind this session
         // check, so a shared /apps/<id> link only renders for a box login.
         // The list UI needs only panel COUNT, not the queries — strip each panel's
         // raw SQL so the list doesn't broadcast every app's query text to all
-        // members (SQL stays team-tier, shown only in the per-app drawer).
-        if (api === "published" && req.method === "GET")
+        // members (SQL stays team-tier, shown only in the per-app drawer). A
+        // panel's metricId names a KNOWLEDGE doc, which follows the knowledge
+        // membrane even though the app is team-tier — null it when that metric
+        // is source-hidden for the viewer (parity with app_data / get_metric).
+        if (api === "published" && req.method === "GET") {
+          const denied = sessionDenied();
+          const hideLink = (mid: unknown): boolean =>
+            metricDocHidden(mid ? store.getDoc("metric", String(mid)) : null, denied);
           return json(
             200,
             store.listPublished().map((r) => ({
               ...r,
-              panels: r.panels ? r.panels.map((p) => ({ ...p, sql: "" })) : null,
+              panels: r.panels
+                ? r.panels.map((p) => ({ ...p, sql: "", metricId: hideLink(p.metricId) ? null : p.metricId }))
+                : null,
             })),
           );
+        }
         // Provenance + rendered panel metadata for the team viewer's drawer.
         // Includes raw SQL (this surface is authenticated). The rows themselves
         // arrive via the sandboxed /admin/frame/<id>.
@@ -1446,7 +1547,7 @@ const httpServer = http.createServer(async (req, res) => {
           // per-variant numbers come from the frame's provenance echo, so this
           // endpoint does NOT render any panel — it just reads the freshness stamp
           // from the cache (no query). Keeps the metadata fetch off the DB entirely.
-          const prov = appProvenance(store, meta, []);
+          const prov = appProvenance(store, meta, [], sessionDenied());
           prov.updatedAt = store.newestPanelComputedAt(id);
           prov.mirrorAsOf = await appMirrorAsOf(meta);
           // Last-editor stamp for the header (#58) — the newest version's author +
@@ -1882,12 +1983,16 @@ const httpServer = http.createServer(async (req, res) => {
               if (acct) store.deleteAccount(uname);
               const { removed, envBacked } = removeAnalystTokens(uname);
               const sessionsKilled = store.destroySessionsFor(uname);
+              // A removed person's source denies go too — a later re-invite
+              // starts at the default (full access), not a stale restriction.
+              const deniesCleared = store.clearSourceDenies(uname);
               store.audit(session.identity, "person_removed", {
                 username: uname,
                 accountDeleted: !!acct,
                 tokensRevoked: removed,
                 sessionsKilled,
                 envBacked,
+                deniesCleared,
               });
               let flash = `Removed ${uname} (${acct ? "login deleted, " : ""}${removed} connector${removed === 1 ? "" : "s"} revoked).`;
               if (envBacked)
@@ -1898,6 +2003,50 @@ const httpServer = http.createServer(async (req, res) => {
               return json(200, { ok: true, flash });
             }
             return json(400, { ok: false, error: "Unknown operation." });
+          }
+
+          // Limit which lake source families a person's agent can query (the
+          // Team page "Data access…" dialog). Full replacement of the deny
+          // set — the dialog Saves a snapshot of its checkboxes. I9: this is a
+          // HUMAN action on the approval surface behind the admin gate above;
+          // no MCP tool can reach it, so an agent can never widen (or narrow)
+          // anyone's data access. Enforcement is the ClickHouse role subset
+          // (lib/sources.ts lakeRolesFor) — the engine denies, we just store.
+          if (api === "source_access") {
+            // Refuse when the feature is globally off (SETOKU_SOURCE_ACCESS=0
+            // makes lakeRolesFor a no-op): storing a deny the engine won't
+            // enforce would make this surface assert a restriction that isn't
+            // real. Fail loudly so the operator turns the kill-switch off first.
+            if (sourceAccessDisabled())
+              return json(409, {
+                ok: false,
+                error:
+                  "Per-source access is disabled on this box (SETOKU_SOURCE_ACCESS=0). Remove that env var and restart the server before setting data-access limits — otherwise a deny here wouldn't actually be enforced.",
+              });
+            const body = (await readBody(req)) as { username?: string; denies?: unknown } | undefined;
+            const uname = (body?.username ?? "").trim();
+            if (!uname) return json(400, { ok: false, error: "Username required." });
+            const isPerson = analystIdentities().includes(uname) || !!store.getAccount(uname);
+            if (!isPerson) return json(404, { ok: false, error: `No person "${uname}" (no login, no connector).` });
+            if (!Array.isArray(body?.denies) || body.denies.some((d) => typeof d !== "string"))
+              return json(400, { ok: false, error: "Pass denies — an array of source-family slugs." });
+            // Normalize whatever arrives to catalog-shaped slugs; unknown slugs
+            // are kept (a deny must outlive its connector), just normalized.
+            const denies = [...new Set((body.denies as string[]).map((d) => familySlug(d)).filter(Boolean))];
+            store.setSourceDenies(uname, denies, session.identity);
+            // Published apps render under the CREATOR's access and cache shared
+            // rows; drop this person's apps' caches so the new limit takes hold
+            // on the next view instead of after the stale ceiling (~30 min).
+            const purged = store.purgePanelCacheForCreator(uname);
+            store.audit(session.identity, "source_access_set", { username: uname, denies, cachePurged: purged });
+            const catalog = new Map(lakeFamilies().map((f) => [f.slug, f.family]));
+            const labels = denies.map((d) => catalog.get(d) ?? d);
+            return json(200, {
+              ok: true,
+              flash: denies.length
+                ? `${uname} can no longer query: ${labels.join(", ")}.`
+                : `${uname} has full data access.`,
+            });
           }
 
           return json(404, { ok: false, error: "unknown endpoint" });

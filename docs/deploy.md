@@ -64,7 +64,8 @@ in the `/setoku:connect` skill's Recipes; this is the deploy mechanics.)
 ```bash
 # 1) put the credential + config on the box
 ssh BOX '$EDITOR DIR/.env'        # e.g. RENDER_API_KEY=…, SLACK_BOT_TOKEN=…, MERCURY_API_TOKEN=…
-#    business DB: prefer deploy/connect-postgres.sh (creates a read-only role + URL)
+#    business DB: prefer deploy/connect-postgres.sh (creates the read-only role + URL
+#    that pg-mirror reads the source with — the gateway gets no DB URL)
 
 # 2) enable the source's compose profile (profiles are off unless listed)
 #    add it to COMPOSE_PROFILES=… in DIR/.env, then:
@@ -75,10 +76,11 @@ ssh BOX 'cd DIR && docker compose up -d server'
 ```
 
 **The business-DB mirror** (`pg-mirror`, profile `mirror`) follows the same
-pattern with one extra rule: the table allow/deny list is **baked into both**
-the server and pg-mirror images from `.setoku/config.json`, so after editing it
-rebuild both — `docker compose up -d --build server pg-mirror` — or the lists
-drift (the gateway would hide a table the mirror keeps copying).
+pattern and is how business tables become queryable at all: the gateway reads
+them only as `biz.*` (it holds no DB URL or pg client). The table allow/deny
+list is **baked into the pg-mirror image** from `.setoku/config.json`, so after
+editing it rebuild — `docker compose up -d --build pg-mirror`; what pg-mirror
+mirrors is exactly what the gateway can see.
 Verify: `list_sources` (the new source should appear), then query it.
 
 ## 4. Rollback
@@ -90,9 +92,10 @@ ssh BOX 'cd DIR && git checkout <previous-sha> && docker compose up -d --build s
 ## 5. Troubleshooting
 - **`/health` version didn't change after deploy** → the image cached old code. Re-sync
   the right paths (watch the rsync trailing-slash footgun), or `docker compose build --no-cache server`.
-- **`get_schema` returns 0 tables / "permission denied for schema public"** → the
-  business-DB role lost its grants (common after an app DB migration), or
-  `SETOKU_DATABASE_URL` points at the wrong DB (e.g. staging vs prod). Re-grant
+- **`get_schema` shows no `biz.*` tables / pg-mirror logs "permission denied for
+  schema public"** → the business-DB role lost its grants (common after an app DB
+  migration), or `SETOKU_DATABASE_URL` (the URL pg-mirror reads the source with)
+  points at the wrong DB (e.g. staging vs prod). Re-grant
   `USAGE`+`SELECT` on the right project, or repoint the URL. For Supabase, use the
   **direct/non-pooling** URL for role/grant DDL (the pooler can cache stale grants).
 - **A new lake table never receives data (custom ClickHouse connector)** → `ingest/schemas/*.sql`

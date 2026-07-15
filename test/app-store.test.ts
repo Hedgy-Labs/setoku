@@ -80,7 +80,7 @@ describe("bounded resources — the disk guard", () => {
 
 describe("the overlay pattern — annotate business rows without writing prod", () => {
   it("keys app state by a business row id to layer a 'reviewed' flag", () => {
-    // business row id 'order-4821' lives in read-only Postgres; the flag lives here
+    // business row id 'order-4821' lives in the read-only biz.* mirror; the flag lives here
     store.set("triage", "app", null, "order-4821", { reviewed: true, by: "alice" }, T);
     expect(store.get("triage", "app", null, "order-4821")?.value).toEqual({
       reviewed: true,

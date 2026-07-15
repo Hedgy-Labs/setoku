@@ -63,7 +63,7 @@ allowlists (`mcp__<name>-setoku`), so keep them identical.
 See what's already connected, then offer a menu. (Lake discovery needs the
 analyst connector — on curator it's blocked.)
 
-- Business DB: `get_schema` (no args) lists the connected Postgres tables, if any.
+- Business DB: `get_schema` (no args) lists the mirrored business tables (`biz.*`), if any.
 - Lake connectors: `run_query` `dialect:"clickhouse"`, `SHOW TABLES` (then
   `DESCRIBE <table>`); the tables that exist tell you what's flowing.
 
@@ -80,8 +80,8 @@ config and restart. The credential lives on the box, never in a repo.
 
 > **Box vs. repo — keep them straight.** Credentials and profiles live on the
 > box (`/opt/setoku/.env`). The Postgres table allow-list lives in the **repo's**
-> `.setoku/config.json` (`allowTables` / `denyTables`), because the gateway reads
-> it per-project. "Set the config" can mean either — say which.
+> `.setoku/config.json` (`allowTables` / `denyTables`) — it scopes what pg-mirror
+> mirrors into `biz.*`. "Set the config" can mean either — say which.
 
 **Unknown source — improvise, carefully:**
 
@@ -121,7 +121,8 @@ note so a re-run or a teammate doesn't redo it. Never print a secret back.
 ## 3 — Verify it understands the data  *(do not skip)*
 
 Now interrogate the source until your model of it matches the human's. Use your
-read access (analyst reads the lake; either connector reads the business DB):
+read access on the analyst connector (it reads the lake, business tables
+included as `biz.*`; curator reads neither):
 
 - **Shape it:** row counts per key table, date ranges, distinct values of
   categorical columns, null rates, the obvious join keys.
@@ -156,7 +157,7 @@ you set up the **curator** connector. It's a separate connector on purpose:
 
 | | **analyst** (setup default) | **curator** |
 |---|---|---|
-| reads business DB / lake | ✅ | DB ✅, **lake ❌ hard-blocked** |
+| reads the lake (incl. `biz.*` business tables) | ✅ | **❌ hard-blocked** |
 | `report_correction` (propose) | ✅ | ✅ |
 | `upsert_context` (commit knowledge) | ❌ | ✅ |
 
@@ -250,15 +251,17 @@ so enabling a source means adding its profile — see the cheat-sheet below.
   ```
 
   It creates a least-privilege read-only role `setoku_ro`, **verifies writes are
-  refused**, and writes `SETOKU_DATABASE_URL` into the box's `.env`. Re-running is
-  safe — it **reuses** the role's password (won't knock a running gateway offline);
-  `--rotate` forces a new one; `--allow-remote` is required for a non-local host.
-  Then restart: `docker compose up -d server`. (No `--env-file`? It prints the line.
-  MySQL: no helper yet — create a read-only user by hand and set the URL.)
+  refused**, and writes `SETOKU_DATABASE_URL` into the box's `.env`. That URL is
+  consumed by **pg-mirror** (the mirror step below), not the gateway — the server
+  container gets no DB URL. Re-running is safe — it **reuses** the role's password
+  (won't knock a running mirror offline); `--rotate` forces a new one;
+  `--allow-remote` is required for a non-local host. (No `--env-file`? It prints
+  the line. MySQL: no helper yet — create a read-only user by hand and set the URL.)
 
-  Last, set the table allow-list in the **repo's** `.setoku/config.json` (scaffold
-  it if missing — `dataSource.urlEnv` is the env-var *name*, `allowTables` the
-  globs):
+  Last, set the table allow-list in the **repo's** `.setoku/config.json` — it
+  scopes what pg-mirror mirrors into `biz.*`, which is exactly what the agent
+  can query (scaffold it if missing — `dataSource.urlEnv` is the env-var *name*,
+  `allowTables` the globs):
 
   ```json
   { "dataSource": { "kind": "postgres", "urlEnv": "SETOKU_DATABASE_URL" },
@@ -266,34 +269,33 @@ so enabling a source means adding its profile — see the cheat-sheet below.
     "rowCap": 200, "statementTimeoutMs": 15000 }
   ```
 
-  The config holds only the *name*; the actual URL is resolved at query time from
-  `process.env[urlEnv]` first, then the repo's `.env`. So keep the secret on the box
+  The config holds only the *name*; pg-mirror resolves the actual URL from
+  `process.env[urlEnv]`. So keep the secret on the box
   (`/opt/setoku/.env`) and out of git. `allowTables: ["public.*"]` is a good default
   — it also scopes away Supabase system schemas (`auth`, `storage`, …); keep
-  `_prisma_migrations` in `denyTables`. Verify with `get_schema`.
+  `_prisma_migrations` in `denyTables`. Verify with `get_schema` after the first
+  mirror run (business tables appear as `biz.<table>`).
 
-  **Finally, enable the mirror (recommended whenever the lake profile is on).**
-  The `pg-mirror` container full-reloads every allowlisted table into ClickHouse
-  `biz.*` on a loop, so heavy app panels and scan-shaped metrics run on the lake
-  instead of seq-scanning the business DB (issue #47). It reuses
-  `SETOKU_DATABASE_URL` (the read-only role — the allow-list is inherited, a
-  denied table never leaves the DB) and needs no extra secrets: add `mirror` to
-  `COMPOSE_PROFILES`, then `docker compose --profile mirror up -d --build
-  pg-mirror`. **Do this during onboarding** so no box has a pre-mirror era:
-  watch the first reload land (`list_sources` grows a BUSINESS-DB MIRROR section
-  with per-table "data as of"; `/healthz` gains a `mirror` field), then verify
-  one table with a count in both dialects (`SELECT count(*) FROM <t>` on
-  postgres with `force_postgres: true` vs `SELECT count() FROM biz.<t>` on
-  clickhouse — equal, modulo one reload interval of drift). Once the mirror is
-  up it is THE read path: the gateway **rejects** postgres queries and panels
-  against mirrored tables and answers with the `biz.*` rewrite
-  (`force_postgres: true` stays available for source verification; set
-  `"mirrorPolicy": "prefer"` in `.setoku/config.json` to soften this to a
-  nudge). If the box has pre-mirror metric/query docs, run the "Migrating
-  knowledge to the mirror" pass in /setoku:generate. Poolers are fine here
-  (plain SELECTs, no replication prereqs). ⚠ The allow/deny list is **baked into both images** —
-  after editing `.setoku/config.json`, rebuild both so the lists can't drift:
-  `docker compose up -d --build server pg-mirror`.
+  **Finally, enable the mirror (required — it IS the read path).** The
+  `pg-mirror` container full-reloads every allowlisted table into ClickHouse
+  `biz.*` on a loop; the gateway holds no pg client or DB URL, so business
+  tables are queryable only as their `biz.*` mirror copies (issue #47). It
+  reuses `SETOKU_DATABASE_URL` (the read-only role — the allow-list is
+  inherited, a denied table never leaves the DB) and needs no extra secrets:
+  add `mirror` to `COMPOSE_PROFILES`, then `docker compose --profile mirror up
+  -d --build pg-mirror`. Watch the first reload land (`list_sources` grows a
+  BUSINESS-DB MIRROR section with per-table "data as of"; `/healthz` gains a
+  `mirror` field), then verify against the mirror: run counts and shape queries
+  on `biz.<table>` (`SELECT count() FROM biz.<t>` — clickhouse is the default
+  and only `run_query` dialect; postgres statements are rejected with the
+  `biz.*` rewrite) and reconcile them with the human's expectations plus the
+  table's "data as of". The live source is not reachable from the gateway, so
+  all verification happens via `biz.*` after the first mirror run. If the box
+  has legacy postgres-dialect metric/query docs, run the "Migrating knowledge
+  to the mirror" pass in /setoku:generate. Poolers are fine here (plain
+  SELECTs, no replication prereqs). ⚠ The allow/deny list is **baked into the
+  pg-mirror image** — after editing `.setoku/config.json`, rebuild:
+  `docker compose up -d --build pg-mirror`.
 - **Vercel logs.** Create a log drain to `https://<domain>/ingest/vercel` with
   the ingest token; set `SETOKU_VERCEL_VERIFY` to the value Vercel requires;
   enable the `ingest` profile; restart.
@@ -328,10 +330,10 @@ $EDITOR /opt/setoku/.env          # SETOKU_DATABASE_URL, RENDER_*, SLACK_*, MERC
 # enable a source's profile: add it to COMPOSE_PROFILES (comma-separated) in .env, then
 docker compose --profile <name> up -d <service>   # e.g. --profile mercury up -d mercury-poller
 
-# connect a Postgres business DB in one shot (role + read-only URL + verify)
+# connect a Postgres business DB in one shot (read-only role + URL for pg-mirror)
 ADMIN_URL='postgresql://owner:…@host:5432/db' deploy/connect-postgres.sh --env-file /opt/setoku/.env
 
-# mirror the business DB into the lake (biz.* — the fast path for heavy panels)
+# mirror the business DB into the lake (biz.* — THE read path; the gateway gets no DB URL)
 docker compose --profile mirror up -d --build pg-mirror   # + add `mirror` to COMPOSE_PROFILES
 
 # apply config / restart the gateway (picks up .env + profile changes)
