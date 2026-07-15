@@ -35,6 +35,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // "expired" only when we WERE signed in (not the logged-out initial load).
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      // A read-only demo viewer legitimately hits 401 if some app frame attempts
+      // a write (e.g. persisting state) — that's not an expired session, so stay
+      // on the console instead of bouncing to the login wall.
+      if (meRef.current?.role === "viewer") return;
       if (meRef.current) setExpired(true);
       setMe(null);
       setLoginPassword(null);

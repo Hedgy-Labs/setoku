@@ -20,6 +20,9 @@
  *                           Same "tok=identity" shape; for the cockpit's drafting cadence.
  *   SETOKU_TOKENS_FILE    — optional JSON file { "token": "identity", ... } (merged, analyst)
  *   SETOKU_HTTP_PORT    — default 8787
+ *   SETOKU_DEMO         — "1" to run as a public DEMO: the console is viewable
+ *                         read-only WITHOUT login and shows a demo banner. Never
+ *                         set on a real box. Grants zero write capability.
  *   <dataSource.urlEnv> — the Postgres URL env var named in config.json
  */
 import fs from "node:fs";
@@ -51,6 +54,7 @@ import {
   applyApprovalAction,
   defaultDraft,
   SessionStore,
+  type Session,
   sessionIdFromCookie,
   sessionSetCookie,
   sessionClearCookie,
@@ -95,10 +99,31 @@ const ADMIN_JS = ((): string => {
 })();
 const ADMIN_JS_VER = Bun.hash(ADMIN_JS).toString(36);
 
+// DEMO instances (SETOKU_DEMO=1) expose the console READ-ONLY to anonymous
+// visitors — no login wall — and show a "this is a demo" banner. Off by default,
+// so every real box is byte-identical to before. The flag drives (a) a synthetic
+// read-only viewer for safe GET reads (below) and (b) the banner (SPA reads the
+// window global). Nothing here grants write capability (the membrane, I2/I9).
+const DEMO = process.env.SETOKU_DEMO === "1" || process.env.SETOKU_DEMO === "true";
+
+// The capability-less pseudo-session an anonymous demo viewer runs as: identity
+// "public" (the audit actor the /p/<id> surface already uses), role "viewer" —
+// a role NO write path recognizes — and an empty CSRF token, so it can only read.
+const DEMO_VIEWER: Session = { identity: "public", role: "viewer", csrf: "", expires: 0 };
+
+// Read-only JSON API endpoints an anonymous demo viewer may GET. Anything not
+// here (and every mutation, which is a POST) still requires a real login.
+const VIEWER_READ_APIS = new Set([
+  "session", "pending", "rejected", "knowledge", "knowledge_view",
+  "sources", "source_series", "egress", "audit", "team",
+  "published", "app_data", "app_history", "app_state",
+]);
+
 // The single-page-app shell: a static document that boots the React app. It holds
 // no data and no secrets — the app fetches /admin/api/session and renders login
 // when unauthenticated — so it's safe to serve for every /admin route (deep links
-// included; client-side routing takes over once the bundle loads).
+// included; client-side routing takes over once the bundle loads). On a demo box
+// it also sets window.__SETOKU_DEMO__ so the SPA shows the demo banner.
 const ADMIN_SHELL = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Setoku — admin</title>
@@ -110,7 +135,7 @@ const ADMIN_SHELL = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 </head>
 <body class="min-h-screen bg-stone-50 font-sans text-stone-900 antialiased">
 <div id="root"></div>
-<script type="module" src="/admin/app.js?v=${ADMIN_JS_VER}"></script>
+${DEMO ? `<script>window.__SETOKU_DEMO__=true;</script>\n` : ""}<script type="module" src="/admin/app.js?v=${ADMIN_JS_VER}"></script>
 </body></html>`;
 
 // The app's top-level route sections (see web/app/App.tsx). Used by the root
@@ -1276,7 +1301,9 @@ const httpServer = http.createServer(async (req, res) => {
       // session (cookie); the React viewer embeds it as the iframe src so the
       // strict no-network CSP is a real response header, not a srcdoc guess.
       if (reqPath.startsWith("/admin/frame/")) {
-        const session = sessions.get(sessionIdFromCookie(req.headers.cookie));
+        // On a demo box, an anonymous visitor renders the frame as the read-only
+        // viewer (never ?force, audited as "public"); a real box still 401s.
+        const session = sessions.get(sessionIdFromCookie(req.headers.cookie)) ?? (DEMO ? DEMO_VIEWER : null);
         if (!session) {
           res.writeHead(401, { "content-type": "text/plain" });
           res.end("not signed in\n");
@@ -1363,31 +1390,42 @@ const httpServer = http.createServer(async (req, res) => {
           return;
         }
 
-        // everything below requires a session
-        if (!session) return json(401, { ok: false, error: "not signed in" });
+        // Demo box: an anonymous visitor gets a capability-less read-only viewer
+        // for SAFE GET reads only (allowlist above). Every mutation is a POST and
+        // every privileged read is off the list, so a viewer can never reach a
+        // write path — the 401 below still guards those (the membrane, I2/I9).
+        const viewer =
+          !session && DEMO && req.method === "GET" && VIEWER_READ_APIS.has(api) ? DEMO_VIEWER : null;
+        const actor = session ?? viewer;
+
+        // everything below requires a session (or the demo viewer, for reads)
+        if (!actor) return json(401, { ok: false, error: "not signed in" });
 
         // Sliding window: an active (non-logout) session renews on use, so a
         // working admin never gets logged out mid-use — only 14 days idle does.
         // Throttled inside, and the re-issued cookie slides the browser's copy too.
-        if (sessions.renew(sid, session)) renewedCookie = sessionSetCookie(sid!);
+        // (The viewer holds no cookie, so nothing to renew.)
+        if (session && sessions.renew(sid, session)) renewedCookie = sessionSetCookie(sid!);
 
         // The forced-change gate is enforced HERE, not only by the SPA (#73): a
         // flagged (temp-password) session may only ask who it is or change the
         // password — a raw HTTP client can't sidestep the React routing and
         // keep using the shared password indefinitely. (logout is handled
-        // above, before the session lookup.)
-        if (api !== "session" && api !== "password" && store.getAccount(session.identity)?.mustChangePassword)
+        // above, before the session lookup; a viewer has no account to flag.)
+        if (session && api !== "session" && api !== "password" && store.getAccount(session.identity)?.mustChangePassword)
           return json(403, { ok: false, error: "You must change your password before doing anything else." });
 
         // who am I — drives the SPA's auth state + the CSRF token for mutations.
         // mustChangePassword reads the ACCOUNT (not the session row) so an admin
-        // reset re-arms the gate for a session that was already signed in.
+        // reset re-arms the gate for a session that was already signed in. The
+        // demo viewer reports role "viewer" with no CSRF, so the SPA renders the
+        // console read-only (no write affordances).
         if (api === "session")
           return json(200, {
-            identity: session.identity,
-            role: session.role,
-            csrf: session.csrf,
-            mustChangePassword: !!store.getAccount(session.identity)?.mustChangePassword,
+            identity: actor.identity,
+            role: actor.role,
+            csrf: actor.csrf,
+            mustChangePassword: session ? !!store.getAccount(session.identity)?.mustChangePassword : false,
           });
 
         // read endpoints — any signed-in user (members included) may view
@@ -1457,7 +1495,7 @@ const httpServer = http.createServer(async (req, res) => {
             prov.editedAt = edit.ts;
             prov.versions = edit.versions;
           }
-          store.audit(session.identity, "app_viewed", { id });
+          store.audit(actor.identity, "app_viewed", { id });
           return json(200, prov);
         }
 
@@ -1488,7 +1526,7 @@ const httpServer = http.createServer(async (req, res) => {
           if (scope !== "app" && scope !== "viewer") return json(400, { ok: false, error: "bad scope" });
           const meta = store.getPublishedMeta(id);
           if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found" });
-          const owner = scope === "viewer" ? session.identity : null;
+          const owner = scope === "viewer" ? actor.identity : null;
           return json(200, {
             ok: true,
             entries: appStore.list(id, scope, owner),
@@ -1498,6 +1536,9 @@ const httpServer = http.createServer(async (req, res) => {
 
         // ---- mutations: CSRF (header) + admin role, mirroring the old form posts ----
         if (req.method === "POST") {
+          // The demo viewer is GET-only, so any POST past the !actor gate above
+          // carries a REAL session — a viewer can never reach a write path (I2/I9).
+          if (!session) return json(401, { ok: false, error: "not signed in" });
           if ((req.headers["x-csrf-token"] ?? "") !== session.csrf)
             return json(403, { ok: false, error: "bad csrf token" });
 
