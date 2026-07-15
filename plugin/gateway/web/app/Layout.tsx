@@ -17,13 +17,18 @@ import type { Correction } from "./types";
 // Ordered by how often a human actually visits. Knowledge (the agent-facing
 // store + its review queue) sits after Apps and carries a pending-count badge
 // so curators still get pulled in without the tab needing top billing.
-const TABS: { to: string; label: string }[] = [
+const TABS: { to: string; label: string; adminOnly?: boolean }[] = [
   { to: "/", label: "Apps" },
   { to: "/knowledge", label: "Knowledge" },
   { to: "/sources", label: "Sources" },
   { to: "/team", label: "Team" },
-  { to: "/audit", label: "Audit" },
+  // The audit trail is admin-only server-side (its payloads carry doc names/SQL),
+  // so the tab is admin-only too — else members get a dead 403 page.
+  { to: "/audit", label: "Audit", adminOnly: true },
 ];
+
+/** Tabs visible to a given role. */
+const tabsFor = (role: string): typeof TABS => TABS.filter((t) => !t.adminOnly || role === "admin");
 
 /** Count chip on the Knowledge tab: proposals waiting for review. */
 function PendingBadge({ n }: { n: number }) {
@@ -58,7 +63,7 @@ export function Layout() {
 
           {/* wide screens: inline tabs + identity + sign-out */}
           <nav className="hidden items-center gap-1 md:flex">
-            {TABS.map((t) => (
+            {tabsFor(me?.role ?? "").map((t) => (
               <NavLink
                 key={t.to}
                 to={t.to}
@@ -239,7 +244,7 @@ function MobileNav({
       <BaseMenu.Portal>
         <BaseMenu.Positioner align="end" sideOffset={6} className="z-30">
           <BaseMenu.Popup className="min-w-[12rem] overflow-hidden rounded-lg border border-stone-200 bg-white py-1 shadow-lg">
-            {TABS.map((t) => (
+            {tabsFor(role).map((t) => (
               <BaseMenu.Item
                 key={t.to}
                 className={cn("menu-item", isActive(t.to) && "bg-stone-100 text-stone-900")}

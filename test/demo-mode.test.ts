@@ -70,10 +70,16 @@ describe("SETOKU_DEMO — anonymous read-only console", () => {
   });
 
   it("allows anonymous GETs on the allowlisted read endpoints", async () => {
-    for (const api of ["knowledge", "published", "sources", "team", "audit", "pending"]) {
+    for (const api of ["knowledge", "published", "sources", "team", "pending"]) {
       const r = await fetch(`${BASE}/admin/api/${api}`);
       expect(r.status).toBe(200);
     }
+  });
+
+  it("keeps the audit trail off-limits to the anonymous viewer (admin-only)", async () => {
+    // Its payloads carry doc names, SQL, and identities — not for a public viewer.
+    const r = await fetch(`${BASE}/admin/api/audit`);
+    expect(r.status).toBe(401);
   });
 
   it("still 401s an anonymous GET on a non-allowlisted endpoint", async () => {

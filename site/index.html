@@ -607,9 +607,11 @@ Other         <span class="bar">█▌</span>                            <span c
             </dd>
             <dt>Read-only query<span class="t">get_schema · run_query</span></dt>
             <dd>
-              Read-only, with a row cap, a statement timeout, a table allow-list,
-              and an append-only audit log. Enforced by the database role, not by
-              parsing SQL.
+              Queries run on the box’s analytics engine: a read-only mirror of
+              your database plus the ingested lake. The gateway never holds your
+              production database credential. Row caps, statement timeouts, an
+              append-only audit log; read-only and table access enforced by the
+              database engine, not by parsing SQL.
             </dd>
             <dt>App tools<span class="t">publish_app · update_app</span></dt>
             <dd>

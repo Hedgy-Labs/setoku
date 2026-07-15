@@ -72,11 +72,11 @@ one.
 - **Known pattern** → run the proven recipe:
   - *Postgres/MySQL* — create a read-only role (`deploy/readonly-role.sql`), put
     the connection string in the box's `SETOKU_DATABASE_URL`, set the table
-    allow-list, restart. The credential lives on the box, never in the repo.
-    Then enable the **mirror** (profile `mirror`): pg-mirror full-reloads the
-    allowlisted tables into ClickHouse `biz.*` on a cron, and the mirror is the
-    read path — postgres queries on mirrored tables are rejected with the
-    rewrite. Do it during onboarding so no box has a pre-mirror era.
+    allow-list. That credential feeds **pg-mirror**, not the gateway (the
+    gateway gets no DB URL): enable the mirror (profile `mirror`) and pg-mirror
+    full-reloads the allowlisted tables into ClickHouse `biz.*` on a cron —
+    the mirror is how the data becomes queryable at all. The credential lives
+    on the box, never in the repo.
   - *Vercel / Render / Slack / Mercury* — the existing drain / pull-bridge
     patterns (`ingest/*-poller`): create the provider token, set its env on the
     box, enable the compose profile, restart.
@@ -141,7 +141,8 @@ connected, what was learned, and the open questions worth a human's attention.
      `connect` skill uses it to see what's connected without SSH;
    - a `log_provisioning` curator tool for durable idempotency + audit was
      considered and **not built** — steps land in the existing audit log instead.
-4. Reuse as-is: `deploy/bootstrap.sh`, `deploy/readonly-role.sql`, the
+4. Reuse as-is: `deploy/bootstrap.sh`, `deploy/readonly-role.sql` (the role
+   pg-mirror reads the source with — the gateway holds no DB credential), the
    `ingest/*-poller` patterns, compose profiles, the curator write-path.
 
 ## Open questions

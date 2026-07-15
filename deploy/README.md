@@ -5,11 +5,11 @@
 > and [hetzner.md](./hetzner.md) (recommended). This doc remains for the
 > gateway-only profile (no lake/ingest) used by the original pilot.
 
-One small container per company. Knowledge store on a persistent volume; database reached with a read-only role; users connect from Claude Code or Cowork with a bearer token.
+One small container per company. Knowledge store on a persistent volume; business data reached via the biz.* ClickHouse mirror (the gateway holds no database credential of its own); users connect from Claude Code or Cowork with a bearer token.
 
 ## 1. Database role (you run this — Setoku never executes DDL)
 
-Edit and run [`readonly-role.sql`](./readonly-role.sql) against the target database (staging recommended). Result: a `postgresql://setoku_ro:...` URL.
+Edit and run [`readonly-role.sql`](./readonly-role.sql) against the target database (staging recommended). Result: a `postgresql://setoku_ro:...` URL — consumed by the **pg-mirror** container (which fills biz.*), never by the gateway.
 
 ## 2. Build, with your knowledge seed baked in
 
@@ -27,11 +27,13 @@ Generate one token per user (`openssl rand -hex 24`). Then e.g. locally:
 
 ```bash
 docker run -d --name setoku -p 8787:8787 -v setoku-data:/data \
-  -e SETOKU_DATABASE_URL='postgresql://setoku_ro:...@host:5432/db' \
+  -e SETOKU_LAKE_URL='http://setoku_ro:...@clickhouse:8123/setoku' \
   -e SETOKU_TOKENS='<tok-a>=alice@co.com,<tok-b>=bob@co.com' \
   setoku-gateway
 curl localhost:8787/health
 ```
+
+(No `SETOKU_DATABASE_URL` — the gateway has no direct business-DB path. `SETOKU_DATABASE_URL` belongs in the pg-mirror container's env.)
 
 On Fly.io: `fly launch --no-deploy` (port 8787, add a volume mounted at `/data`), `fly secrets set SETOKU_DATABASE_URL=... SETOKU_TOKENS=...`, `fly deploy`.
 
@@ -133,7 +135,44 @@ The net loop: canary + generate + triage turn every pending item into a linted, 
 
 `deploy.sh` also runs the lint once after each deploy as a **warn-only** step (it never blocks a ship). See [`deploy/backup/cron.example`](./backup/cron.example) for the full crontab.
 
-## 6. Activity notifications (optional)
+## 6. Rolling out per-user source access (existing boxes)
+
+Per-user data access (the Team page "Data access…" dialog) rides on ClickHouse
+roles defined in [`clickhouse/lake-users.xml`](./clickhouse/lake-users.xml) —
+one `setoku_src_<family>` role per source family, activated per request via the
+HTTP `role` parameter (ClickHouse ≥ 24.5; the compose pins 25.3). Deploy order
+on an existing box (rsync via `scripts/deploy.sh` already carries the XML):
+
+1. After the rsync, confirm ClickHouse picked up the users.d change (it
+   hot-reloads; if the roles don't appear, `docker compose restart clickhouse`
+   — Vector buffers to disk, so nothing drops, I4):
+
+   ```bash
+   docker compose exec clickhouse clickhouse-client -q "SHOW ROLES" | grep setoku_src_
+   ```
+
+2. Verify the three engine facts as `setoku_ro` (curl the lake port from the
+   box; `$RO` = `http://setoku_ro:<CLICKHOUSE_RO_PASSWORD>@127.0.0.1:8123`):
+
+   ```bash
+   # (a) no role param → default roles → full access (new connectors opt in)
+   curl -s "$RO/?readonly=2" -d 'SELECT count() FROM setoku.slack_messages'
+   # (b) an explicit role list denies everything outside it…
+   curl -s "$RO/?readonly=2&role=setoku_src_github" -d 'SELECT count() FROM setoku.slack_messages'   # ACCESS_DENIED
+   # …while direct core grants survive it
+   curl -s "$RO/?readonly=2&role=setoku_src_github" -d 'SELECT count() FROM setoku.ingest_heartbeats' # works
+   # (c) the deny-everything role grants nothing but the core
+   curl -s "$RO/?readonly=2&role=setoku_src_none" -d 'SELECT count() FROM setoku.slack_messages'      # ACCESS_DENIED
+   ```
+
+3. Then restart the gateway (`docker compose up -d --build server`). Until an
+   admin actually unchecks a source, the gateway sends no `role` parameter, so
+   a half-applied state degrades to today's behavior, never an outage.
+
+Kill-switch: `SETOKU_SOURCE_ACCESS=0` in the server env disables the role
+subsetting entirely (for a hand-rolled box on ClickHouse < 24.5).
+
+## 7. Activity notifications (optional)
 
 Set `SETOKU_NOTIFY_WEBHOOK` in `/opt/setoku/.env` to a Slack incoming-webhook URL and the box posts a line when an app is **published** or **updated** (with the author’s update note), and when a **new version is deployed** (fired once, on the first boot of a changed version). It uses the same `{"text": …}` shape as the alert webhook, so any Slack-compatible endpoint works. Unset means notifications are off. To read the URL from a different env var, set `notifications.slackWebhookEnv` in `.setoku/config.json`; the URL itself never lives in config (so it never reaches the model).
 

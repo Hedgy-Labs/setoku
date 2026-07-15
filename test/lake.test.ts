@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 /**
- * e2e for run_query dialect routing (task 3.6, I5): real ClickHouse ⇄ the
- * box's http.ts ⇄ real MCP client. An **analyst** token reads the lake; a
- * **curator** token is refused (the I2/I9 mutual exclusion).
+ * e2e for run_query against a real ClickHouse — the gateway's ONLY query
+ * engine (I5; the direct business-Postgres path is retired): real ClickHouse
+ * ⇄ the box's http.ts ⇄ real MCP client. An **analyst** token reads the lake;
+ * a **curator** token is refused (the I2/I9 mutual exclusion).
  *
  * Gated on SETOKU_E2E_CH_URL (e.g. http://default:pass@127.0.0.1:18123/default)
  * — skipped when no ClickHouse is reachable. CI provides a service container;
@@ -126,6 +127,10 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
     try {
       const r = await call("list_sources");
       expect(r.isError).toBe(false);
+      // business data is the biz.* mirror now — no pg_mirror_runs in this lake,
+      // so the section reports the mirror isn't flowing (no direct-pg fallback)
+      expect(r.text).toContain("no biz.* mirror is flowing yet");
+      expect(r.text).not.toContain("BUSINESS DATABASE (Postgres)");
       expect(r.text).toContain("setoku.slack_messages"); // has rows → listed
       expect(r.text).toContain("setoku.github_issues"); // empty but a live beat → listed
       expect(r.text).toMatch(/Not connected[^\n]*Vercel logs/); // empty, no beat → segregated
@@ -176,11 +181,27 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
     expect(await res.text()).toMatch(/readonly|READONLY/);
   });
 
-  it("postgres stays the default dialect (no lake config leakage)", async () => {
-    const r = await call("run_query", { sql: `SELECT * FROM ${TABLE} LIMIT 1` });
-    // default dialect targets the business Postgres — this table doesn't exist there
+  it("clickhouse is the default dialect — a bare run_query hits the lake", async () => {
+    // the direct business-Postgres path is retired, so no-dialect goes to the
+    // gateway's only engine and returns the data (same answer as the explicit
+    // dialect:"clickhouse" call above)
+    const r = await call("run_query", {
+      sql: `SELECT event_name, sum(n) AS total FROM ${TABLE} GROUP BY event_name ORDER BY total DESC`,
+    });
+    expect(r.isError).toBe(false);
+    expect(r.text).toContain("order_placed");
+    expect(r.text).toContain("12");
+  });
+
+  it('dialect:"postgres" is retired — rejected with the biz.* rewrite pointer', async () => {
+    const r = await call("run_query", {
+      sql: `SELECT * FROM ${TABLE} LIMIT 1`,
+      dialect: "postgres",
+    });
     expect(r.isError).toBe(true);
-    expect(r.text).not.toContain("order_placed");
+    expect(r.text).toContain("retired");
+    expect(r.text).toContain("biz.");
+    expect(r.text).not.toContain("order_placed"); // fails fast, never executed
   });
 
   it("a curator token is refused on the lake (mutual exclusion, I2/I9)", async () => {

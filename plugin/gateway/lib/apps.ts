@@ -2,7 +2,7 @@
 /**
  * Live-app rendering. A app's panels are saved read-only queries the
  * box re-runs through the SAME governed path as run_query (the gateway's own
- * read-only DB/lake role, caps, audit) — never a stored user token. Results are
+ * read-only lake role, caps, audit) — never a stored user token. Results are
  * cached per panel for the app's refresh TTL so a hammered public link
  * doesn't re-run every query on every hit, and the view carries an honest
  * "updated N ago" stamp.
@@ -10,9 +10,10 @@
  * Shared by the publish dry-run (app.ts) and the HTTP render path (http.ts) so
  * there is one execution and one cache, not two.
  */
-import { loadConfig, resolveDatabaseUrl, resolveLakeUrl, type SetokuConfig } from "./config";
-import { runReadOnlyQuery, type QueryOutcome } from "./db";
+import { loadConfig, resolveLakeUrl, type SetokuConfig } from "./config";
+import type { QueryOutcome } from "./db";
 import { runLakeQuery } from "./lake";
+import { lakeRolesFor } from "./sources";
 import {
   resolveParams,
   compilePostgres,
@@ -95,33 +96,40 @@ export const LAKE_MEMBRANE_ERROR =
   "that can commit curated knowledge can't ingest untrusted bulk text (the I2/I9 membrane). Use an " +
   "analyst connector to query the lake.";
 
+// The gateway holds no business-Postgres credential: business tables are read
+// via the biz.* ClickHouse mirror (pg-mirror is the only container that talks
+// to the source DB). The postgres dialect survives on the wire for stored
+// legacy panels, which surface this error until re-authored.
+export const PG_RETIRED_ERROR =
+  'The direct business-Postgres path is retired — business tables are read via the biz.* ClickHouse ' +
+  'mirror (dialect:"clickhouse", e.g. biz.<table>). list_sources shows the mirrored tables and their ' +
+  '"data as of"; get_schema describes their columns.';
+
 /** Errored cache is retried sooner than a successful one — a transient DB blip
  *  shouldn't pin an error on screen for the whole refresh TTL. */
 const ERROR_TTL_MS = 30_000;
 
-/** Execute one panel's saved query through the governed read path. Throws on a
- *  curator session reading the lake, an unconfigured source, or a query error. */
+/** Execute one panel's saved query through the governed read path — ClickHouse
+ *  only (the lake + the biz.* mirror). Throws on a curator session reading the
+ *  lake, a legacy postgres-dialect panel (retired path), an unconfigured lake,
+ *  or a query error. */
 export async function runPanel(
   projectDir: string,
   config: SetokuConfig,
   panel: AppPanel,
   compiled: CompiledPanel,
-  opts: { denyLakeRead?: boolean; rowCap?: number } = {},
+  opts: { denyLakeRead?: boolean; rowCap?: number; lakeRoles?: string[] | null } = {},
 ): Promise<QueryOutcome> {
   // The render path passes RENDER_FETCH_CEILING here so panels aren't held to
   // run_query's small model-context rowCap — rows go into a human-viewed iframe
   // bounded by MAX_RENDER_ROW_BYTES, not into the model. Absent (run_query, the
   // publish dry-run), it falls back to config.rowCap (the 200-row context cap).
   const caps = { rowCap: opts.rowCap ?? config.rowCap, statementTimeoutMs: config.statementTimeoutMs };
-  if (panel.dialect === "clickhouse") {
-    if (opts.denyLakeRead) throw new Error(LAKE_MEMBRANE_ERROR);
-    const lake = resolveLakeUrl(projectDir, config);
-    if (!lake.ok) throw new Error(lake.error);
-    return runLakeQuery(lake.url, compiled.text, caps, compiled.chParams ?? {});
-  }
-  const db = resolveDatabaseUrl(projectDir, config);
-  if (!db.ok) throw new Error(db.error);
-  return runReadOnlyQuery(db.url, compiled.text, caps, compiled.values ?? []);
+  if (panel.dialect !== "clickhouse") throw new Error(PG_RETIRED_ERROR);
+  if (opts.denyLakeRead) throw new Error(LAKE_MEMBRANE_ERROR);
+  const lake = resolveLakeUrl(projectDir, config);
+  if (!lake.ok) throw new Error(lake.error);
+  return runLakeQuery(lake.url, compiled.text, caps, compiled.chParams ?? {}, opts.lakeRoles ?? null);
 }
 
 /** Compile a panel's `:name` tokens to engine placeholders + bound values, using
@@ -210,7 +218,7 @@ function startBackgroundRefresh(
   panel: AppPanel,
   compiled: CompiledPanel,
   cacheKey: string,
-  opts: { denyLakeRead?: boolean; tryFreshRun?: () => boolean },
+  opts: { denyLakeRead?: boolean; lakeRoles?: string[] | null; tryFreshRun?: () => boolean },
 ): boolean {
   const key = `${appId}:${cacheKey}:${opts.denyLakeRead ? 1 : 0}`;
   if (bgRefreshes.has(key)) return true;
@@ -218,7 +226,7 @@ function startBackgroundRefresh(
   const p = (async () => {
     const t0 = performance.now();
     try {
-      const r = await runPanel(projectDir, config, panel, compiled, { denyLakeRead: opts.denyLakeRead, rowCap: RENDER_FETCH_CEILING });
+      const r = await runPanel(projectDir, config, panel, compiled, { denyLakeRead: opts.denyLakeRead, lakeRoles: opts.lakeRoles, rowCap: RENDER_FETCH_CEILING });
       // Trim to the payload budget before caching — keep the durable cache bounded
       // (see the blocking path in renderUncoalesced for why).
       const fit = trimRowsToBytes(r.rows, MAX_RENDER_ROW_BYTES);
@@ -294,6 +302,19 @@ async function renderUncoalesced(
   const config = cfg.ok ? cfg.config : null;
   const now = opts.now ?? Date.now();
   const limit = ttlMs(dash);
+  // Published panels run under the CREATOR's source access, never the viewer's:
+  // the panel cache is shared per (app, panel, variant), so viewer-scoped
+  // enforcement would either poison the cache or fork it per person — and,
+  // decisive, creator-scoping is what closes the bypass where a source-denied
+  // user publishes `SELECT * FROM setoku.slack_messages` and reads the render
+  // (their publish/update dry-run runs under their own roles, so a denied panel
+  // never reaches the store in the first place). The anchor is the CREATOR, not
+  // "last editor": a later cosmetic edit (a title fix) by an unrestricted admin
+  // must not silently re-scope a restricted creator's app to full access. A
+  // newly-denied creator's panels fail refresh and serve stale-then-error,
+  // which is honest and visible (refreshError in the frame chrome).
+  const actor = (dash as { createdBy?: string }).createdBy ?? "";
+  const lakeRoles = lakeRolesFor(store.sourceDenies(actor));
   // How long we'll keep serving last-good rows while refreshes fail before we
   // stop masking it and surface a hard error — a permanently-broken query (a
   // dropped column) must not show trustworthy-looking numbers forever.
@@ -329,7 +350,7 @@ async function renderUncoalesced(
         // fall through to the blocking path so a permanently-broken query can't
         // hide behind ever-older rows.
         if (!opts.force && cached != null && !cached.error && config != null && now - Date.parse(cached.computedAt) < staleCeiling) {
-          const running = startBackgroundRefresh(store, projectDir, config, dash.id, panel, compiled, cacheKey, opts);
+          const running = startBackgroundRefresh(store, projectDir, config, dash.id, panel, compiled, cacheKey, { ...opts, lakeRoles });
           return running
             ? { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, truncated: cached.truncated, computedAt: cached.computedAt, error: null, refreshing: true, durationMs: cached.durationMs }
             : { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, truncated: cached.truncated, computedAt: cached.computedAt, error: null, refreshError: "refresh rate-limited — showing the last cached result", durationMs: cached.durationMs };
@@ -355,7 +376,7 @@ async function renderUncoalesced(
         }
         const t0 = performance.now();
         try {
-          const r = await runPanel(projectDir, config, panel, compiled, { denyLakeRead: opts.denyLakeRead, rowCap: RENDER_FETCH_CEILING });
+          const r = await runPanel(projectDir, config, panel, compiled, { denyLakeRead: opts.denyLakeRead, lakeRoles, rowCap: RENDER_FETCH_CEILING });
           const durationMs = Math.round(performance.now() - t0);
           // Trim to the payload budget BEFORE caching so the durable knowledge.db
           // (I4) never stores more than MAX_RENDER_ROW_BYTES per entry — capRenderBytes

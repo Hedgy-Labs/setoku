@@ -78,16 +78,17 @@ interface AppPanel {
   key: string;        // stable id the template reads off window.__SETOKU__.panels[key]
   title?: string;     // human label for the provenance drawer
   sql: string;        // the executable binding — validated read-only SQL
-  dialect: "postgres" | "clickhouse";
+  dialect?: "clickhouse";  // the default and the only runnable dialect ("postgres" is retired)
   metricId?: string;  // optional link to a curated metric doc (provenance only)
 }
 ```
 
-`dialect` picks the engine: `postgres` (the business DB) or `clickhouse` (the
-lake **and the `biz.*` business-DB mirror** — see ingest/pg-mirror). When the box
-runs the mirror, mirrored tables are clickhouse-ONLY: publish/update REJECT
-postgres panels over them (config `mirrorPolicy: "prefer"` softens this to a
-note), and the app chrome shows the mirror's "data as of" beside the cache stamp.
+`dialect` is `clickhouse` (the default): every panel runs on the box's ClickHouse
+engine — the lake **and the `biz.*` business-DB mirror** (see ingest/pg-mirror).
+The direct postgres path is retired: publish/update REJECT a postgres-dialect
+panel, and a legacy stored postgres panel surfaces a "retired" error at render
+until it's re-authored against `biz.*`. The app chrome shows the mirror's
+"data as of" beside the cache stamp.
 
 `sql` is always the executable binding. `metricId` is **provenance only** — it
 links a panel to a curated metric so the "how is this calculated" drawer can show
@@ -129,7 +130,7 @@ Endpoints:
 - Auto-refresh = the shell reloads the child frame on the app's `refreshSeconds`
   and re-reads the provenance endpoint.
 
-**Re-execution runs under the gateway's own read-only DB/lake role — never a
+**Re-execution runs under the gateway's own read-only lake role — never a
 stored user token.** Same credentials the gateway already holds, same caps,
 same allow/deny list, every run audited (the app id rides in the payload).
 
@@ -156,13 +157,13 @@ row per distinct value — the cache is **capped per app**: the newest ~256 rows
 are kept and the oldest are evicted on write.
 
 The cap bounds storage but not *execution* — distinct param values still miss the
-cache, and each miss is a live prod query. So the **credential-free** `/p/<id>`
+cache, and each miss is a live lake query. So the **credential-free** `/p/<id>`
 surface also bounds the *rate* of fresh runs with a per-app token bucket (`~30`
 burst, refilling `~30/min`): each would-be cache-miss panel run spends one token,
 and once empty a panel renders cache-only (last good rows, else "data temporarily
 unavailable") rather than hitting the DB. Charged per execution, so cached hits
 are free and a normal viewer never notices; an anonymous hammer streaming distinct
-`?p.<name>=` values can't amplify load against the business DB/lake. Authenticated
+`?p.<name>=` values can't amplify load against the lake. Authenticated
 Team app views are not rate-limited (the viewer is logged in and audited).
 
 ## Viewer params — interactive apps
@@ -194,8 +195,8 @@ select month, revenue from monthly_revenue where region = :region order by month
 
 At render, `renderApp` resolves each param to the viewer's value (coerced to the
 declared type) or the default, then **compiles + binds** it through `lib/params.ts`:
-`:name` → `$n` for Postgres / `{name:Type}` for ClickHouse, with the value passed
-as a bound parameter to `runReadOnlyQuery` / `runLakeQuery`. Because the value is
+`:name` → `{name:Type}` for ClickHouse, with the value passed as a bound
+parameter to `runLakeQuery`. Because the value is
 bound, never concatenated, it is **injection-safe** and can't name a table or
 column or drive a write — an `enum` value that isn't in `options`, or a `text`
 value over `maxLength`, is rejected and the default is used. Publish is rejected
@@ -266,7 +267,7 @@ Combine a governed **read** with a private **write** to annotate production data
 *without writing production*: key app state by a business row's id.
 
 ```
-read-only Postgres:  order-4821, order-4822, …   (governed read)
+the read-only biz.* mirror:  order-4821, order-4822, …   (governed read)
 app state (private):  "order-4821" → { reviewed: true, by: "alice" }
 render:               join the two — a "reviewed" column that lives in the app
 ```
@@ -314,7 +315,7 @@ Replaces `publish_report` / `list_published` / `unpublish_report`:
 
 - **`publish_app({ title, html, panels?, params?, refreshSeconds? })`** — dry-runs
   every panel through the governed path **at publish time** (with the params bound
-  to their defaults); a broken query, an off-allow-list table, an undeclared
+  to their defaults); a broken query, a table the engine refuses, an undeclared
   `:token`, a default that won't coerce, or (on a curator session) a lake read is
   rejected with the offending panel key + error, so the agent fixes it in-loop
   instead of shipping a dead panel. Seeds the cache with the dry-run results.
@@ -339,7 +340,7 @@ admin, no agent round-trip.)
 
 The agent never sees the rendered pixels, so hand-rolled SVG/CSS repeatedly broke
 the same ways — an inline `<span>` ignores `width`/`height` (blank bars), and
-Postgres numerics arrive as **strings** so chart math silently NaNs to zero. Two
+SQL numerics can arrive as **strings** so chart math silently NaNs to zero. Two
 mitigations:
 
 - **Tested chart helpers** (`lib/app-runtime.ts`) are injected into every frame as

@@ -8,7 +8,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
     "fastembed": "^2.1.0",
-    "pg": "^8.16.0",
     "zod": "^3.25.0"
   },
   "trustedDependencies": ["onnxruntime-node"]

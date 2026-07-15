@@ -46,7 +46,7 @@ Full walkthrough, the web approval surface, and the data model: [`demo/README.md
 Setoku gives the AI three kinds of MCP tools, and one rule: look up what the data means before you touch it.
 
 1. **Context tools** (`find_context`, `get_metric`, `report_correction`) read what your data means first: canonical metric definitions, entity docs, and the gotchas that make a naive query wrong (e.g. "active user" excludes internal test accounts; refunds must be subtracted from revenue; a status column is current-state only, so you count events from the log table instead). The AI can propose changes to what Setoku knows, but a person accepts them on the admin page, outside the agent loop, so an injected session can't rewrite the brain.
-2. **Read-only query** (`get_schema`, `run_query`) runs with a row cap, a statement timeout, a table allow-list, and an append-only audit log. Read-only is enforced by the database engine (a SELECT-only role), not by parsing SQL in our code.
+2. **Read-only query** (`get_schema`, `run_query`) runs against the box's analytics engine — the ingested lake plus a read-only mirror of your database — with a row cap, a statement timeout, and an append-only audit log. The gateway never holds a credential to your production database (a mirror job does, read-only), and both read-only and per-source access are enforced by the database engine, not by parsing SQL in our code.
 3. **App tools** (`publish_app`, `update_app`) turn an answer into a small web app on live data, published at a link anyone on the team can open. No SQL required.
 
 The agent looks up the context first, then runs the query, so it answers the way your business actually computes things instead of guessing from column names. Once it's set up, **any MCP client** can use it: Claude, Codex, or whatever you run.
@@ -57,7 +57,7 @@ It ships **tools, not models**. No AI runs on the server; the reasoning happens 
 
 Once your AI can read and _understand_ the data, the natural next step is building little things on top of it. Ask your agent for a chart, a poll, a triage list — it writes a self-contained **app** (`publish_app`) and hands you a URL. Nothing to deploy, no frontend to maintain; a non-technical teammate just describes what they want and edits it the same way ("make the bars green, add last quarter").
 
-- **Backed by live data, read-only.** Apps query through the exact same governed path as everything else — row caps, audit, a SELECT-only database role. An app never gets write access to your sources.
+- **Backed by live data, read-only.** Apps query through the exact same governed path as everything else — row caps, audit, a SELECT-only engine role. An app never gets write access to your sources.
 - **Their own private state.** Each app keeps its own state — todos, poll tallies, notes, annotations — in a sandbox that belongs to the _app_, not your database. So an app can be genuinely interactive (and a prompt-injected one still can't touch your data; worst case it messes up its own notes). The useful trick: tag a business row by its id to mark it "reviewed" or attach a note, an overlay on top of read-only data without ever writing the source.
 - **Shareable by link.** A team link is login-gated; an admin can flip one public for a credential-free URL. The page runs in a locked-down, no-network sandbox, so a published app can't phone home.
 
@@ -112,13 +112,13 @@ Then add the plugin and run `/setoku:onboard` from your project; it detects the 
 
 </details>
 
-The point isn't that an agent can query your Postgres; if you're an engineer, it already can. The point is that the _meaning_ gets captured once and **shared with the whole team**: `add-teammate` mints a connector for anyone, so a non-technical teammate can query and visualize their own data in plain language ("show me signups by week") and get the _right_ number, because your annotations ride along.
+The point isn't that an agent can query your data; if you're an engineer, it already can. The point is that the _meaning_ gets captured once and **shared with the whole team**: `add-teammate` mints a connector for anyone, so a non-technical teammate can query and visualize their own data in plain language ("show me signups by week") and get the _right_ number, because your annotations ride along.
 
 ## Connectors
 
 Point Setoku at the data you already have. Every source lands in a local [ClickHouse](https://clickhouse.com/) data lake, on purpose: agents write arbitrary queries (scans, GROUP BYs, whole-table aggregations), and a columnar engine answers those in about a second, so the apps and dashboards they build stay quick.
 
-- **Your app database (PostgreSQL):** connected read-only, then mirrored into the box's analytics engine on a cron. Dashboards and heavy questions run against the mirror (fast, no load on prod); the live connection stays for verification and anything the mirror doesn't carry.
+- **Your app database (PostgreSQL):** mirrored read-only into the box's analytics engine on a cron. Every question runs against the mirror (fast, zero load on prod); the gateway itself never holds a credential to your production database.
 - **Ingested into the lake (ClickHouse):** GitHub (issues, PRs & commits), Vercel and Render (deploys & logs), Slack (messages), Mercury (banking & finance).
 
 No connector for your source yet? The included setup skills give your coding agent the patterns to wire one up itself. You maintain a handful of proven patterns, not one connector per vendor. See [CONTRIBUTING.md](./CONTRIBUTING.md), or open an issue.
