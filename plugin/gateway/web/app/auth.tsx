@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, setCsrf, setUnauthorizedHandler } from "./api";
+import { IS_DEMO } from "./env";
 import type { Me } from "./types";
 
 interface AuthValue {
@@ -35,6 +36,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // "expired" only when we WERE signed in (not the logged-out initial load).
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      // A read-only demo viewer legitimately hits 401 if some app frame attempts
+      // a write (e.g. persisting state) — that's not an expired session, so stay
+      // on the console instead of bouncing to the login wall.
+      if (meRef.current?.role === "viewer") return;
       if (meRef.current) setExpired(true);
       setMe(null);
       setLoginPassword(null);
@@ -67,7 +72,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = async (): Promise<void> => {
     await api.logout();
     setLoginPassword(null);
-    setMe(null);
+    // On a demo box, signing out drops back to the anonymous read-only viewer —
+    // re-fetch the session so we land on the console, not a login wall. On a real
+    // box, keep the plain signed-out state (no probe, no "expired" notice).
+    if (IS_DEMO) {
+      try {
+        const m = await api.session();
+        setMe(m);
+        setCsrf(m.csrf);
+      } catch {
+        setMe(null);
+        setCsrf("");
+      }
+    } else {
+      setMe(null);
+    }
   };
 
   const passwordChanged = (): void => {

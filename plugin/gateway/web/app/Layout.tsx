@@ -2,11 +2,12 @@
 import { Menu as BaseMenu } from "@base-ui-components/react/menu";
 import { Dialog } from "@base-ui-components/react/dialog";
 import { useState } from "react";
-import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api } from "./api";
 import { useApi } from "./hooks";
 import { useAuth } from "./auth";
 import { Brand } from "./components/Brand";
+import { DemoBanner } from "./components/DemoBanner";
 import { ChangePasswordForm } from "./components/ChangePasswordForm";
 import { toast } from "./components/Toast";
 import { cn } from "./cn";
@@ -46,10 +47,17 @@ export function Layout() {
   // refreshed on every navigation, so approving/rejecting updates the badge
   const { data: queue } = useApi<Correction[]>(() => api.pending(), [pathname]);
   const pending = queue?.length ?? 0;
+  // Anonymous demo viewer: no identity actions (change password / sign out), just
+  // a way to sign in as a real admin.
+  const viewer = me?.role === "viewer";
   return (
     <>
-      <header className="sticky top-0 z-10 border-b border-stone-200 bg-stone-50/80 backdrop-blur">
-        <div className="mx-auto flex max-w-4xl items-center gap-x-4 px-5 py-3">
+      {/* Banner + header stick to the top as ONE unit, so the banner can wrap on
+          narrow screens without clipping or overlapping the nav. */}
+      <div className="sticky top-0 z-20">
+        <DemoBanner />
+        <header className="border-b border-stone-200 bg-stone-50/80 backdrop-blur">
+          <div className="mx-auto flex max-w-4xl items-center gap-x-4 px-5 py-3">
           <NavLink to="/" aria-label="Setoku">
             <Brand className="gap-1 text-xl" />
           </NavLink>
@@ -69,12 +77,16 @@ export function Layout() {
             ))}
           </nav>
           <div className="ml-auto hidden md:block">
-            <AccountMenu
-              identity={me?.identity ?? ""}
-              role={me?.role ?? ""}
-              onChangePassword={() => setPwOpen(true)}
-              onSignOut={() => void logout()}
-            />
+            {viewer ? (
+              <SignInLink />
+            ) : (
+              <AccountMenu
+                identity={me?.identity ?? ""}
+                role={me?.role ?? ""}
+                onChangePassword={() => setPwOpen(true)}
+                onSignOut={() => void logout()}
+              />
+            )}
           </div>
 
           {/* small screens: everything collapses into a hamburger */}
@@ -83,12 +95,14 @@ export function Layout() {
               identity={me?.identity ?? ""}
               role={me?.role ?? ""}
               pending={pending}
+              viewer={viewer}
               onChangePassword={() => setPwOpen(true)}
               onSignOut={() => void logout()}
             />
           </div>
         </div>
       </header>
+      </div>
       <main className="mx-auto max-w-4xl px-5 py-8">
         <Outlet />
       </main>
@@ -190,17 +204,32 @@ function AccountMenu({
   );
 }
 
+/** A quiet "Sign in" link — the only account action a read-only demo viewer
+ *  gets. It routes to /?signin=1, which App reads to show the login form. */
+function SignInLink() {
+  return (
+    <Link
+      to="/?signin=1"
+      className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-stone-500 outline-none transition hover:bg-stone-100 hover:text-stone-800"
+    >
+      Sign in
+    </Link>
+  );
+}
+
 /** The small-width nav: a hamburger opening the tabs + identity + sign-out. */
 function MobileNav({
   identity,
   role,
   pending,
+  viewer,
   onChangePassword,
   onSignOut,
 }: {
   identity: string;
   role: string;
   pending: number;
+  viewer: boolean;
   onChangePassword: () => void;
   onSignOut: () => void;
 }) {
@@ -228,15 +257,23 @@ function MobileNav({
               </BaseMenu.Item>
             ))}
             <BaseMenu.Separator className="my-1 h-px bg-stone-200" />
-            <div className="px-3 py-1 text-xs text-stone-500">
-              {identity} · {role}
-            </div>
-            <BaseMenu.Item className="menu-item" onClick={onChangePassword}>
-              Change password
-            </BaseMenu.Item>
-            <BaseMenu.Item className="menu-item" onClick={onSignOut}>
-              Sign out
-            </BaseMenu.Item>
+            {viewer ? (
+              <BaseMenu.Item className="menu-item" onClick={() => navigate("/?signin=1")}>
+                Sign in
+              </BaseMenu.Item>
+            ) : (
+              <>
+                <div className="px-3 py-1 text-xs text-stone-500">
+                  {identity} · {role}
+                </div>
+                <BaseMenu.Item className="menu-item" onClick={onChangePassword}>
+                  Change password
+                </BaseMenu.Item>
+                <BaseMenu.Item className="menu-item" onClick={onSignOut}>
+                  Sign out
+                </BaseMenu.Item>
+              </>
+            )}
           </BaseMenu.Popup>
         </BaseMenu.Positioner>
       </BaseMenu.Portal>

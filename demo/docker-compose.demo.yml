@@ -114,6 +114,9 @@ services:
       # Optional curator token (commit curated knowledge; cannot read the lake — I2)
       SETOKU_CURATOR_TOKENS: ${DEMO_CURATOR_TOKENS:-}
       SETOKU_PUBLIC_URL: ${DEMO_PUBLIC_URL:-http://localhost:8788}
+      # Public DEMO: the web console is viewable READ-ONLY without login and shows
+      # a "this is a demo" banner. Read-only — grants zero write capability (I2/I9).
+      SETOKU_DEMO: ${DEMO_PUBLIC_CONSOLE:-1}
       # Optional Slack incoming webhook for activity notifications (issue #63):
       # app published/updated, and a new version deployed. Unset → off.
       SETOKU_NOTIFY_WEBHOOK: ${DEMO_NOTIFY_WEBHOOK:-}

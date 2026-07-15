@@ -4,6 +4,7 @@ import { AlertDialog } from "@base-ui-components/react/alert-dialog";
 import { api, type MutationResult } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";
+import { IS_DEMO } from "../env";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { toast } from "../components/Toast";
 import { Badge } from "../components/Badge";
@@ -32,9 +33,19 @@ interface Creds {
   newLogin: NewLogin | null;
 }
 
+/** The read-only demo nudge shown when an anonymous viewer touches a management
+ *  control — the controls are visible (to show the product's governance surface)
+ *  but every action is inert until an admin signs in. */
+const RO_NUDGE = "This is a read-only demo — sign in to manage the team.";
+
 export function Team() {
   const { me } = useAuth();
   const mayManage = me?.role === "admin";
+  // On a demo box the anonymous viewer SEES the full management surface (invite,
+  // roles, the per-person actions menu) so a prospect can see how access is
+  // governed — but interacting only nudges them to sign in (nothing mutates).
+  const readOnly = IS_DEMO && me?.role === "viewer";
+  const showControls = mayManage || readOnly;
   const { data, loading, error, reload } = useApi<TeamData>(() => api.team(), []);
   const [creds, setCreds] = useState<Creds | null>(null);
   const [confirm, setConfirm] = useState<ConfirmSpec | null>(null);
@@ -68,11 +79,15 @@ export function Team() {
             knowledge.
           </Heading>
         </div>
-        {mayManage ? (
+        {showControls ? (
           <form
             className="flex shrink-0"
             onSubmit={(e) => {
               e.preventDefault();
+              if (readOnly) {
+                toast(RO_NUDGE);
+                return;
+              }
               if (inviteEmail.trim()) {
                 void apply(api.invite(inviteEmail.trim()));
                 setInviteEmail("");
@@ -116,7 +131,8 @@ export function Team() {
               key={p.identity}
               p={p}
               me={me?.identity ?? ""}
-              mayManage={!!mayManage}
+              showControls={showControls}
+              readOnly={readOnly}
               adminCount={data?.adminCount ?? 0}
               onApply={apply}
               onConfirm={setConfirm}
@@ -158,7 +174,8 @@ export function Team() {
 function PersonRow({
   p,
   me,
-  mayManage,
+  showControls,
+  readOnly,
   adminCount,
   onApply,
   onConfirm,
@@ -166,7 +183,10 @@ function PersonRow({
 }: {
   p: Person;
   me: string;
-  mayManage: boolean;
+  // Whether to RENDER the management controls (admins always; demo viewers, who
+  // see them read-only). The write gate is `readOnly` + guard(), NOT this flag.
+  showControls: boolean;
+  readOnly: boolean;
   adminCount: number;
   onApply: (pr: Promise<MutationResult>) => void;
   onConfirm: (c: ConfirmSpec) => void;
@@ -174,6 +194,9 @@ function PersonRow({
 }) {
   const isSelf = p.identity === me;
   const isLastAdmin = p.role === "admin" && adminCount <= 1;
+  // A demo viewer sees every action but can't fire it — run() is skipped and the
+  // nudge is shown instead (no request, so nothing 401s).
+  const guard = (run: () => void) => () => (readOnly ? toast(RO_NUDGE) : run());
 
   // One quiet sub-line says the state in words; the monogram's dot says it at
   // a glance (green only when the person is fully set up AND has connected).
@@ -188,7 +211,10 @@ function PersonRow({
 
   let access: ReactNode;
   if (p.role) {
-    access = mayManage ? (
+    // The interactive role selector is admin-only; a read-only demo viewer sees
+    // the role as a static badge (like a member does), so every viewer affordance
+    // is consistently non-interactive.
+    access = showControls && !readOnly ? (
       <select
         className="input w-auto border-transparent bg-transparent py-1 text-sm text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900"
         aria-label={`role for ${p.identity}`}
@@ -210,26 +236,26 @@ function PersonRow({
   }
 
   const items: ReactNode[] = [];
-  if (mayManage) {
+  if (showControls) {
     if (p.hasToken)
       items.push(
         <MenuItem
           key="reset-connector"
-          onSelect={() =>
+          onSelect={guard(() =>
             onConfirm({
               title: "Reset agent connector?",
               body: "A new connector is issued and the old token stops working immediately.",
               confirmLabel: "Reset",
               run: () => api.invite(p.identity, true),
-            })
-          }
+            }),
+          )}
         >
           Reset agent connector
         </MenuItem>,
       );
     else
       items.push(
-        <MenuItem key="cfg" onSelect={() => onApply(api.invite(p.identity))}>
+        <MenuItem key="cfg" onSelect={guard(() => onApply(api.invite(p.identity)))}>
           Configure agent
         </MenuItem>,
       );
@@ -237,26 +263,26 @@ function PersonRow({
       items.push(
         <MenuItem
           key="reset-password"
-          onSelect={() =>
+          onSelect={guard(() =>
             onConfirm({
               title: "Reset password?",
               body: "A new password is issued and the current one stops working.",
               confirmLabel: "Reset",
               run: () => api.users("reset", p.identity),
-            })
-          }
+            }),
+          )}
         >
           Reset password
         </MenuItem>,
       );
     else
       items.push(
-        <MenuItem key="grant" onSelect={() => onApply(api.users("create", p.identity, "member"))}>
+        <MenuItem key="grant" onSelect={guard(() => onApply(api.users("create", p.identity, "member")))}>
           Grant login
         </MenuItem>,
       );
     items.push(
-      <MenuItem key="data-access" onSelect={() => onDataAccess(p)}>
+      <MenuItem key="data-access" onSelect={guard(() => onDataAccess(p))}>
         Data access…
       </MenuItem>,
     );
@@ -264,7 +290,7 @@ function PersonRow({
       <MenuItem
         key="remove"
         danger
-        onSelect={() =>
+        onSelect={guard(() =>
           onConfirm({
             title: "Remove person?",
             body:
@@ -274,8 +300,8 @@ function PersonRow({
                 : ""),
             confirmLabel: "Remove",
             run: () => api.users("delete", p.identity),
-          })
-        }
+          }),
+        )}
       >
         Remove
       </MenuItem>,

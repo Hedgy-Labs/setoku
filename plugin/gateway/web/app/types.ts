@@ -2,7 +2,10 @@
 // Client mirrors of the JSON the gateway's /admin/api/* endpoints return. Kept in
 // sync by hand with the server shapes in http.ts / lib/approval.ts / lib/store.ts.
 
-export type Role = "admin" | "member";
+// "viewer" is the anonymous read-only identity a demo box (SETOKU_DEMO=1) hands
+// out — it holds no write capability, so every `role === "admin"` / ownership
+// check in the SPA naturally fails for it and no write affordance renders.
+export type Role = "admin" | "member" | "viewer";
 
 /** Mirrors MIN_PASSWORD_LENGTH in lib/accounts.ts (the server enforces it). */
 export const MIN_PASSWORD_LENGTH = 8;

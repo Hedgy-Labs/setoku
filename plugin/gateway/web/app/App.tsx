@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, useLocation } from "react-router-dom";
 import { useAuth } from "./auth";
 import { Layout } from "./Layout";
 import { Brand } from "./components/Brand";
+import { DemoBanner } from "./components/DemoBanner";
 import { Login } from "./pages/Login";
 import { ForcePasswordChange } from "./pages/ChangePassword";
 import { Review } from "./pages/Review";
@@ -16,6 +17,10 @@ import { AppView } from "./pages/AppView";
 
 export function App() {
   const { me, loading } = useAuth();
+  // On a demo box an admin still needs a way in past the read-only viewer: the
+  // "Sign in" chrome links to /?signin=1, which shows the login form even though
+  // the viewer "me" is present.
+  const wantsSignIn = new URLSearchParams(useLocation().search).get("signin") === "1";
 
   if (loading)
     return (
@@ -24,7 +29,13 @@ export function App() {
       </div>
     );
 
-  if (!me) return <Login />;
+  if (!me || (me.role === "viewer" && wantsSignIn))
+    return (
+      <>
+        <DemoBanner />
+        <Login />
+      </>
+    );
 
   // Temp (admin-minted) password: force a change before anything else (#73).
   if (me.mustChangePassword) return <ForcePasswordChange />;
