@@ -38,7 +38,9 @@ export function App() {
         <Route path="sources" element={<Sources />} />
         <Route path="sources/trends" element={<Trends />} />
         <Route path="team" element={<Team />} />
-        <Route path="audit" element={<Audit />} />
+        {/* Audit is admin-only (its data endpoint is admin-gated) — a member who
+            bookmarks/types /audit is bounced to Apps rather than a dead 403. */}
+        <Route path="audit" element={me.role === "admin" ? <Audit /> : <Apps />} />
         <Route path="apps/:id" element={<AppView />} />
         <Route path="*" element={<Apps />} />
       </Route>
