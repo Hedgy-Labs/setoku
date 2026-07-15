@@ -355,11 +355,12 @@ server.registerTool(
   },
   async () => {
     const docs = visibleDocs();
-    const pendingCount = store.pendingCount;
-    // Only truly empty (no committed docs AND no pending proposals) shows the
-    // "nothing here yet" hint. With pending proposals present we fall through so
-    // the "# pending corrections" section below actually surfaces them.
-    if (docs.length === 0 && pendingCount === 0) return text(NO_KNOWLEDGE_HINT);
+    // Counts follow the same source membrane as the listings — a pending
+    // proposal about a hidden doc must not be counted here, or the delta vs
+    // list_corrections/find_context reveals hidden proposals exist for a denied
+    // source. Both use the shared visibleCorrections filter.
+    const visiblePending = visibleCorrections(store.listCorrections("pending"), hiddenDocNames());
+    if (docs.length === 0 && visiblePending.length === 0) return text(NO_KNOWLEDGE_HINT);
     const lines: string[] = [];
     if (docs.length === 0)
       lines.push(
@@ -389,11 +390,10 @@ server.registerTool(
         "# gotchas",
         `${gotchaCount} recorded — surfaced automatically by find_context.`,
       );
-    const pending = store.listCorrections("pending").length;
-    if (pending)
+    if (visiblePending.length)
       lines.push(
         "# pending corrections",
-        `${pending} awaiting curation (/setoku:curate).`,
+        `${visiblePending.length} awaiting curation (/setoku:curate).`,
       );
     store.audit(user, "list_entities", {});
     return text(lines.join("\n"));

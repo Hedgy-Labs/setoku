@@ -71,6 +71,23 @@ README) so the references resolve without bloating the front page.
   `ingest/pg-mirror`, the one container that reads the source database, and
   business tables reach sessions only as the `biz.*` mirror.
 
+## Per-user source access — scope & known limits
+
+Per-user data-source access (the Team-page "Data access" dialog) fences a
+person's **agent queries and curated knowledge** off a denied source, enforced
+by the ClickHouse engine (role subset) and, for knowledge, the shared
+`lib/access` membrane (docs/corrections tagged `meta.source`). It does **not**
+cover **published apps**. A published app is a TEAM-tier artifact: its rendered
+data (it runs under the *creator's* access), its panel SQL, its provenance, and
+its very existence are visible to every signed-in member and to any analyst
+connector, regardless of that person's source denies. This is deliberate and
+load-bearing: hiding an app by source would require parsing its panel SQL to
+decide which sources it touches, which is exactly the "access by SQL parsing"
+I9 forbids. **Consequence:** to fence a source from someone, do not build team
+apps over it — the deny governs their agent and their knowledge, not a dashboard
+a colleague published. (The built-in "Mirror egress" app is the shipped instance:
+it is team-visible even to a business-denied member.)
+
 ## Requires a human (the agent should stop and ask)
 
 - Buying the VPS & object storage; DNS; SSH keys.

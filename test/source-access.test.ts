@@ -446,12 +446,48 @@ describe("source access over HTTP + MCP", () => {
     // ...but the ADMIN (who manages the store) still sees it
     const adminPending = (await (await fetch(`${BASE}/admin/api/pending`, { headers: { cookie: admin.cookie } })).json()) as { relatesTo?: string }[];
     expect(adminPending.some((c) => c.relatesTo === "slack_volume")).toBe(true);
+    // list_entities' pending COUNT follows the same filter (a delta vs
+    // list_corrections would reveal hidden proposals exist)
+    const alice2 = await connect(BASE, "tok-alice");
+    const le = await gwCall(alice2, "list_entities");
+    expect(le.text).not.toContain("slack_volume");
+    await alice2.close();
     // an unrestricted teammate's agent still gets the pending fact
     const carol = await connect(BASE, "tok-carol");
     const fc2 = await gwCall(carol, "find_context", { question: "slack message volume bot messages" });
     expect(fc2.text).toContain("exclude bot messages");
     await carol.close();
     await post("source_access", { ...admin, body: { username: "alice@co.test", denies: [] } });
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: [] } });
+  });
+
+  it("app provenance drawer hides a denied viewer's linked-metric summary (knowledge membrane)", async () => {
+    const admin = await session("boss@co.test", "s3cret-pass");
+    // publish an app (as an unrestricted analyst) whose panel links the
+    // mercury-tagged metric seeded earlier
+    const bob = await connect(BASE, "tok-bob");
+    const pub = await gwCall(bob, "publish_app", {
+      title: "Burn dashboard",
+      html: '<div id="b"></div>',
+      panels: [{ key: "b", title: "Burn", sql: "SELECT 1 AS n FROM biz.orders", metricId: "mercury_burn" }],
+    });
+    expect(pub.isError).toBe(false);
+    const appId = (pub.text.match(/\/(?:admin\/)?p(?:\/|apps\/)?([A-Za-z0-9_-]{6,})/) ?? [])[1]
+      ?? (pub.text.match(/([A-Za-z0-9_-]{10,})/) ?? [])[1];
+    await bob.close();
+    expect(appId).toBeTruthy();
+
+    // a mercury-denied member's provenance drawer must not carry the hidden
+    // metric's summary or id (parity with get_metric answering "not found")
+    await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: ["mercury"] } });
+    const member = await session("viewer@co.test", "viewer-pass");
+    const prov = (await (await fetch(`${BASE}/admin/api/app_data?id=${appId}`, { headers: { cookie: member.cookie } })).json()) as { panels: { title?: string; metricId: string | null; metricSummary: string | null }[] };
+    const panel = prov.panels.find((p) => p.title === "Burn") ?? prov.panels[0];
+    expect(panel.metricSummary).toBeNull();
+    expect(panel.metricId).toBeNull();
+    // an unrestricted admin still sees the provenance link
+    const adminProv = (await (await fetch(`${BASE}/admin/api/app_data?id=${appId}`, { headers: { cookie: admin.cookie } })).json()) as { panels: { metricId: string | null; metricSummary: string | null }[] };
+    expect((adminProv.panels.find((p) => p.metricId === "mercury_burn"))?.metricSummary).toBe("monthly burn");
     await post("source_access", { ...admin, body: { username: "viewer@co.test", denies: [] } });
   });
 

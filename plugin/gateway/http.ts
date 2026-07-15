@@ -32,7 +32,7 @@ import { EmbedIndex } from "./lib/embed-index";
 import { DerivedSynonyms } from "./lib/derived-synonyms";
 import { loadConfig, resolveProjectDir, connectorName } from "./lib/config";
 import { notifyActivity } from "./lib/notify";
-import { gatherEgress, setEgressThreshold, egressTick, egressAppId } from "./lib/egress";
+import { gatherEgress, setEgressThreshold, egressTick } from "./lib/egress";
 import {
   KnowledgeStore,
   defaultDbPath,
@@ -547,6 +547,7 @@ echo "    how many companies are paying us right now?"
 import { LAKE_SOURCES, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, sourceAccessDisabled } from "./lib/sources";
 import {
   deniedFamiliesFor,
+  docHidden,
   hiddenDocNames as accessHiddenDocNames,
   visibleCorrections as accessVisibleCorrections,
   visibleDocs as accessVisibleDocs,
@@ -826,6 +827,11 @@ function appProvenance(
   knowledge: KnowledgeStore,
   meta: PublishedMeta,
   panels: RenderedPanel[],
+  // The VIEWER's denied families: a panel's linked metric doc tagged to a denied
+  // source is hidden here too, so the provenance drawer can't disclose a metric
+  // summary the knowledge tools (get_metric/describe_entity) answer "not found"
+  // for. Empty for admins / no-deny viewers.
+  denied: Set<string> = new Set(),
 ): Record<string, unknown> {
   const byKey = new Map(panels.map((p) => [p.key, p]));
   return {
@@ -842,13 +848,17 @@ function appProvenance(
     panels: (meta.panels ?? []).map((p) => {
       const r = byKey.get(p.key);
       const doc = p.metricId ? knowledge.getDoc("metric", String(p.metricId)) : null;
+      // A metric doc tagged to a denied family is invisible to this viewer —
+      // drop its summary (and don't echo the metricId, which is the hidden doc's
+      // name) so the drawer matches what get_metric would answer.
+      const metricHidden = !!doc && docHidden(doc.meta, denied);
       return {
         key: p.key,
         title: p.title ?? null,
         description: p.description ?? null,
         dialect: p.dialect,
-        metricId: p.metricId ?? null,
-        metricSummary: doc ? String(doc.meta.summary ?? "") : null,
+        metricId: metricHidden ? null : (p.metricId ?? null),
+        metricSummary: doc && !metricHidden ? String(doc.meta.summary ?? "") : null,
         sql: p.sql,
         rowCount: r?.rowCount ?? 0,
         truncated: r?.truncated ?? false,
@@ -1333,19 +1343,15 @@ const httpServer = http.createServer(async (req, res) => {
         const force =
           new URL(req.url ?? "", "http://x").searchParams.get("force") === "1" &&
           (rep.createdBy === session.identity || canApprove(session.role));
-        // The built-in "Mirror egress" app enumerates the mirrored business
-        // catalog (setoku.pg_mirror_runs), so a viewer denied the "business"
-        // family gets its shell with NO panel data — parity with the mirror
-        // card / egress endpoint they can't see either. (Team apps otherwise
-        // render under the creator's access — see lib/apps renderApp.)
-        const businessDeniedViewer =
-          id === egressAppId(store) &&
-          !canApprove(session.role) &&
-          deniedFamiliesFor(store.sourceDenies(session.identity)).has(BUSINESS_FAMILY.slug);
-        const panels =
-          !businessDeniedViewer && (rep.panels?.length ?? 0) > 0
-            ? await renderApp(store, projectDir, rep, { rawParams: raw, force })
-            : [];
+        // NB: published apps are a TEAM-tier surface and do NOT enforce per-user
+        // source denies — their data (renders under the creator's access), SQL,
+        // provenance, and existence are visible to every signed-in member. A
+        // published app cannot be hidden by source without parsing its panel SQL,
+        // which I8/I9 forbid for access control. See the "known limitation" note
+        // in docs/invariants.md. (This is why the built-in Mirror-egress app is
+        // team-visible; fencing the business family from a member does not hide
+        // team dashboards built over it.)
+        const panels = (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw, force }) : [];
         store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
         // The app template needs no network (data is injected) → strict CSP.
         res.writeHead(200, {
@@ -1524,7 +1530,7 @@ const httpServer = http.createServer(async (req, res) => {
           // per-variant numbers come from the frame's provenance echo, so this
           // endpoint does NOT render any panel — it just reads the freshness stamp
           // from the cache (no query). Keeps the metadata fetch off the DB entirely.
-          const prov = appProvenance(store, meta, []);
+          const prov = appProvenance(store, meta, [], sessionDenied());
           prov.updatedAt = store.newestPanelComputedAt(id);
           prov.mirrorAsOf = await appMirrorAsOf(meta);
           // Last-editor stamp for the header (#58) — the newest version's author +

@@ -68,13 +68,6 @@ export function setEgressThreshold(store: KnowledgeStore, bytes: number | null):
 
 const todayUTC = (): string => new Date().toISOString().slice(0, 10);
 
-/** The built-in "Mirror egress" app's id, if it was seeded and is still live —
- *  exported so the render path can gate it (its panels enumerate the mirrored
- *  business catalog, so a business-denied viewer must not see its data). */
-export function egressAppId(store: KnowledgeStore): string | null {
-  return liveEgressAppId(store);
-}
-
 /** The built-in app's id, if it was seeded and hasn't been archived. Archiving
  *  is respected (returns null, and the seed guard never re-creates it) — the
  *  operator's delete is a decision, not a bug to heal. */
