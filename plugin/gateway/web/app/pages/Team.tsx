@@ -131,7 +131,7 @@ export function Team() {
               key={p.identity}
               p={p}
               me={me?.identity ?? ""}
-              mayManage={showControls}
+              showControls={showControls}
               readOnly={readOnly}
               adminCount={data?.adminCount ?? 0}
               onApply={apply}
@@ -174,7 +174,7 @@ export function Team() {
 function PersonRow({
   p,
   me,
-  mayManage,
+  showControls,
   readOnly,
   adminCount,
   onApply,
@@ -183,7 +183,9 @@ function PersonRow({
 }: {
   p: Person;
   me: string;
-  mayManage: boolean;
+  // Whether to RENDER the management controls (admins always; demo viewers, who
+  // see them read-only). The write gate is `readOnly` + guard(), NOT this flag.
+  showControls: boolean;
   readOnly: boolean;
   adminCount: number;
   onApply: (pr: Promise<MutationResult>) => void;
@@ -209,12 +211,14 @@ function PersonRow({
 
   let access: ReactNode;
   if (p.role) {
-    access = mayManage ? (
+    // The interactive role selector is admin-only; a read-only demo viewer sees
+    // the role as a static badge (like a member does), so every viewer affordance
+    // is consistently non-interactive.
+    access = showControls && !readOnly ? (
       <select
-        className="input w-auto border-transparent bg-transparent py-1 text-sm text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900 disabled:opacity-100"
+        className="input w-auto border-transparent bg-transparent py-1 text-sm text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900"
         aria-label={`role for ${p.identity}`}
         title={isLastAdmin ? "Last admin — the server refuses demotion or removal" : undefined}
-        disabled={readOnly}
         value={p.role}
         onChange={(e) => onApply(api.users("role", p.identity, e.target.value))}
       >
@@ -232,7 +236,7 @@ function PersonRow({
   }
 
   const items: ReactNode[] = [];
-  if (mayManage) {
+  if (showControls) {
     if (p.hasToken)
       items.push(
         <MenuItem

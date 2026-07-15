@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { Routes, Route, useLocation } from "react-router-dom";
 import { useAuth } from "./auth";
-import { IS_DEMO } from "./env";
 import { Layout } from "./Layout";
 import { Brand } from "./components/Brand";
 import { DemoBanner } from "./components/DemoBanner";
@@ -33,7 +32,7 @@ export function App() {
   if (!me || (me.role === "viewer" && wantsSignIn))
     return (
       <>
-        {IS_DEMO ? <DemoBanner /> : null}
+        <DemoBanner />
         <Login />
       </>
     );

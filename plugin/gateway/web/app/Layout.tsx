@@ -4,7 +4,6 @@ import { Dialog } from "@base-ui-components/react/dialog";
 import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api } from "./api";
-import { IS_DEMO } from "./env";
 import { useApi } from "./hooks";
 import { useAuth } from "./auth";
 import { Brand } from "./components/Brand";
@@ -56,7 +55,7 @@ export function Layout() {
       {/* Banner + header stick to the top as ONE unit, so the banner can wrap on
           narrow screens without clipping or overlapping the nav. */}
       <div className="sticky top-0 z-20">
-        {IS_DEMO ? <DemoBanner /> : null}
+        <DemoBanner />
         <header className="border-b border-stone-200 bg-stone-50/80 backdrop-blur">
           <div className="mx-auto flex max-w-4xl items-center gap-x-4 px-5 py-3">
           <NavLink to="/" aria-label="Setoku">

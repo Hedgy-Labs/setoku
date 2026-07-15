@@ -120,6 +120,21 @@ const VIEWER_READ_APIS = new Set([
   "published", "app_data", "app_history", "app_state",
 ]);
 
+// The demo viewer can hit the live lake-probe endpoints (sources / source_series
+// / egress) without a session — each fans out one ClickHouse query per source.
+// Cache the anonymous (undenied) result briefly so a crawler can't amplify one
+// page-load into an unbounded fan-out (a public-demo DoS surface). Admins, who
+// pass per-user denies, always get live results.
+const VIEWER_PROBE_TTL_MS = 30_000;
+const viewerProbeCache = new Map<string, { at: number; value: unknown }>();
+async function viewerCached<T>(key: string, produce: () => Promise<T>): Promise<T> {
+  const hit = viewerProbeCache.get(key);
+  if (hit && Date.now() - hit.at < VIEWER_PROBE_TTL_MS) return hit.value as T;
+  const value = await produce();
+  viewerProbeCache.set(key, { at: Date.now(), value });
+  return value;
+}
+
 // The single-page-app shell: a static document that boots the React app. It holds
 // no data and no secrets — the app fetches /admin/api/session and renders login
 // when unauthenticated — so it's safe to serve for every /admin route (deep links
@@ -1382,7 +1397,10 @@ const httpServer = http.createServer(async (req, res) => {
         // team-visible; fencing the business family from a member does not hide
         // team dashboards built over it.)
         const panels = (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw, force }) : [];
-        store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
+        // Don't audit anonymous demo-viewer reads — a crawler on a public demo
+        // box would otherwise grow the append-only audit log without bound.
+        if (session !== DEMO_VIEWER)
+          store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
         // The app template needs no network (data is injected) → strict CSP.
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
@@ -1535,8 +1553,10 @@ const httpServer = http.createServer(async (req, res) => {
         // biz.* mirror follows the "business" (Postgres) family deny too, gated
         // inside gatherSources (a member denied Postgres doesn't see the card).
         const sourceDeniesFor = (): Set<string> => sessionDenied();
-        if (api === "sources" && req.method === "GET") return json(200, await gatherSources(sourceDeniesFor()));
-        if (api === "source_series" && req.method === "GET") return json(200, await gatherSourceSeries(sourceDeniesFor()));
+        if (api === "sources" && req.method === "GET")
+          return json(200, viewer ? await viewerCached("sources", () => gatherSources()) : await gatherSources(sourceDeniesFor()));
+        if (api === "source_series" && req.method === "GET")
+          return json(200, viewer ? await viewerCached("source_series", () => gatherSourceSeries()) : await gatherSourceSeries(sourceDeniesFor()));
         // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert
         // threshold. Derived from pg_mirror_runs, which follows the business
         // ("Postgres") deny — so a business-denied member gets the empty ledger,
@@ -1545,7 +1565,7 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "egress" && req.method === "GET") {
           if (sessionDenied().has(BUSINESS_FAMILY.slug))
             return json(200, { days: [], todayBytes: 0, thresholdBytes: null, configured: false, appId: null });
-          return json(200, await gatherEgress(projectDir, store));
+          return json(200, viewer ? await viewerCached("egress", () => gatherEgress(projectDir, store)) : await gatherEgress(projectDir, store));
         }
         if (api === "team" && req.method === "GET") {
           // Everyone signed in may see the roster (to know who to ask), but a
@@ -1579,8 +1599,10 @@ const httpServer = http.createServer(async (req, res) => {
           );
         }
         // Provenance + rendered panel metadata for the team viewer's drawer.
-        // Includes raw SQL (this surface is authenticated). The rows themselves
-        // arrive via the sandboxed /admin/frame/<id>.
+        // Includes raw SQL — a signed-in team surface, PLUS the anonymous demo
+        // viewer (SETOKU_DEMO): a demo deliberately shows how its apps query the
+        // synthetic data, so exposing panel SQL there is intended, not a leak.
+        // The rows themselves arrive via the sandboxed /admin/frame/<id>.
         if (api === "app_data" && req.method === "GET") {
           const url = new URL(req.url ?? "", "http://x");
           const id = url.searchParams.get("id") ?? "";
@@ -1601,7 +1623,9 @@ const httpServer = http.createServer(async (req, res) => {
             prov.editedAt = edit.ts;
             prov.versions = edit.versions;
           }
-          store.audit(actor.identity, "app_viewed", { id });
+          // Skip anonymous demo-viewer reads (see the frame handler) — no
+          // crawler-driven growth of the append-only audit log.
+          if (actor !== DEMO_VIEWER) store.audit(actor.identity, "app_viewed", { id });
           return json(200, prov);
         }
 
