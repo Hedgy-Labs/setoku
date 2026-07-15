@@ -547,7 +547,7 @@ echo "    how many companies are paying us right now?"
 import { LAKE_SOURCES, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, sourceAccessDisabled } from "./lib/sources";
 import {
   deniedFamiliesFor,
-  docHidden,
+  metricDocHidden,
   hiddenDocNames as accessHiddenDocNames,
   visibleCorrections as accessVisibleCorrections,
   visibleDocs as accessVisibleDocs,
@@ -852,7 +852,7 @@ function appProvenance(
       // A metric doc tagged to a denied family is invisible to this viewer —
       // drop its summary (and don't echo the metricId, which is the hidden doc's
       // name) so the drawer matches what get_metric would answer.
-      const metricHidden = !!doc && docHidden(doc.meta, denied);
+      const metricHidden = metricDocHidden(doc, denied);
       return {
         key: p.key,
         title: p.title ?? null,
@@ -1523,19 +1523,14 @@ const httpServer = http.createServer(async (req, res) => {
         // is source-hidden for the viewer (parity with app_data / get_metric).
         if (api === "published" && req.method === "GET") {
           const denied = sessionDenied();
-          // Type-EXACT (matches app_data's getDoc): a metricId names a METRIC
-          // doc, so a same-named hidden gotcha/entity must not over-hide a
-          // legitimately-visible metric link.
-          const metricLinkHidden = (mid: unknown): boolean => {
-            const d = mid ? store.getDoc("metric", String(mid)) : null;
-            return !!d && docHidden(d.meta, denied);
-          };
+          const hideLink = (mid: unknown): boolean =>
+            metricDocHidden(mid ? store.getDoc("metric", String(mid)) : null, denied);
           return json(
             200,
             store.listPublished().map((r) => ({
               ...r,
               panels: r.panels
-                ? r.panels.map((p) => ({ ...p, sql: "", metricId: metricLinkHidden(p.metricId) ? null : p.metricId }))
+                ? r.panels.map((p) => ({ ...p, sql: "", metricId: hideLink(p.metricId) ? null : p.metricId }))
                 : null,
             })),
           );

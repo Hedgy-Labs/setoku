@@ -30,6 +30,7 @@ import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, familyOf, familySlug, lake
 import {
   deniedFamiliesFor,
   docHidden,
+  metricDocHidden,
   hiddenDocNames as accessHiddenDocNames,
   visibleCorrections,
   visibleDocs as accessVisibleDocs,
@@ -1394,9 +1395,12 @@ async function publishNotes(html: string, panels: AppPanel[]): Promise<string> {
   // whether it's truly absent or just hidden), so the warning can't be used as
   // an existence oracle for a metric get_metric answers "not found" for.
   const denied = deniedFamilies();
+  // A metric that EXISTS but is source-hidden reads as missing to this session
+  // (so the note fires either way — no existence oracle). "exists and visible"
+  // = the doc resolves AND its link isn't membrane-hidden.
   const metricVisible = (mid: unknown): boolean => {
     const d = mid ? store.getDoc("metric", String(mid)) : null;
-    return !!d && !docHidden(d.meta, denied);
+    return !!d && !metricDocHidden(d, denied);
   };
   const missing = panels.filter((p) => p.metricId && !metricVisible(p.metricId)).map((p) => p.metricId);
   if (missing.length)
@@ -1853,13 +1857,11 @@ server.registerTool(
     // app_data drawer + get_metric answering "not found"). Type-EXACT lookup so a
     // same-named hidden gotcha doesn't over-hide a visible metric link.
     const denied = deniedFamilies();
-    const metricLinkHidden = (mid: unknown): boolean => {
-      const d = mid ? store.getDoc("metric", String(mid)) : null;
-      return !!d && docHidden(d.meta, denied);
-    };
+    const hideLink = (mid: unknown): boolean =>
+      metricDocHidden(mid ? store.getDoc("metric", String(mid)) : null, denied);
     for (const p of ps) {
       const cache = store.getPanelCache(dash.id, p.key);
-      const metricTag = p.metricId && !metricLinkHidden(p.metricId) ? ` · metric:${p.metricId}` : "";
+      const metricTag = p.metricId && !hideLink(p.metricId) ? ` · metric:${p.metricId}` : "";
       lines.push(
         `## panel ${p.key}${p.title ? ` — ${p.title}` : ""} [${p.dialect}]${metricTag}`,
       );

@@ -37,6 +37,16 @@ export function docHidden(meta: { source?: unknown }, denied: Set<string>): bool
   return typeof meta.source === "string" && denied.has(familySlug(meta.source));
 }
 
+/** Whether a panel's linked-metric doc is hidden for a session — a panel's
+ *  `metricId` names a METRIC doc, so it follows the knowledge membrane even
+ *  though the app it's on is team-tier. Callers pass the type-EXACT lookup
+ *  result (`store.getDoc("metric", metricId)`) so a same-named non-metric doc
+ *  can't over-hide a visible metric link. This single-sources the rule the
+ *  app_data drawer, the published list, and get_app all enforce. */
+export function metricDocHidden(doc: TaggedDoc | null | undefined, denied: Set<string>): boolean {
+  return !!doc && docHidden(doc.meta, denied);
+}
+
 /** Names of docs hidden from a session — so a correction ABOUT one can be
  *  dropped without leaking the hidden fact/doc-name through the pending channel. */
 export function hiddenDocNames(docs: readonly TaggedDoc[], denied: Set<string>): Set<string> {
