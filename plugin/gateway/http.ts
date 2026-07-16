@@ -1066,7 +1066,7 @@ function publicAppShell(opts: {
   .pc select:focus,.pc input:focus{outline:none;border-color:#a8a29e;box-shadow:0 0 0 2px #e7e5e4}
 </style></head><body>
 <header><h1>${title}</h1><span class="muted" id="stamp"></span><a class="brand" href="https://setoku.com" target="_blank" rel="noopener noreferrer">Made with Setoku</a><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
-<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms" referrerpolicy="no-referrer"></iframe><div id="ldr"><div class="card"><span class="sp"></span>updating…</div></div></main>
+<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe><div id="ldr"><div class="card"><span class="sp"></span>updating…</div></div></main>
 <script>
 (function(){
   var CFG=${cfg};
@@ -1287,7 +1287,7 @@ const httpServer = http.createServer(async (req, res) => {
         store.audit("public", "app_frame_public", { id });
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms`,
+          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox`,
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
@@ -1404,7 +1404,7 @@ const httpServer = http.createServer(async (req, res) => {
         // The app template needs no network (data is injected) → strict CSP.
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
-          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms`,
+          "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox`,
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });

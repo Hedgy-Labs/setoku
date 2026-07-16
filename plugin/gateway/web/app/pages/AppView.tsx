@@ -540,9 +540,11 @@ export function AppView() {
               src={`/admin/frame/${encodeURIComponent(id)}?${paramQuery ? paramQuery + "&" : ""}${frame.force ? "force=1&" : ""}t=${frame.n}`}
               // allow-forms so an app's <form> submit handler fires (the natural
               // app pattern); the frame CSP pins form-action 'none', so no actual
-              // submission can leave the sandbox. Must match the response CSP's
-              // sandbox directive (the effective sandbox is the intersection).
-              sandbox="allow-scripts allow-forms"
+              // submission can leave the sandbox. allow-popups (+ escape) lets an
+              // app's target="_blank" links open as normal top-level tabs. Must
+              // match the response CSP's sandbox directive (the effective sandbox
+              // is the intersection).
+              sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox"
               referrerPolicy="no-referrer"
               className="h-full w-full border-0 bg-white"
             />
