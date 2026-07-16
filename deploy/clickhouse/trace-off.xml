@@ -1,0 +1,33 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Setoku ClickHouse: disable the query/memory profilers on the default profile.
+
+     ClickHouse's profilers write sampled rows into system.trace_log. The memory
+     profiler is the dangerous one: memory_profiler_step defaults to 4 MiB, so
+     every query logs a Memory + MemoryPeak trace for each 4 MiB it allocates. A
+     single heavy scan or a pg-mirror full-reload allocates GBs, i.e. thousands
+     of traces per query — on the campsh box this grew system.trace_log to
+     ~1.3 BILLION rows / 22 GiB and filled a 38 GiB disk to 100%, at which point
+     ClickHouse can't even TRUNCATE (it needs to reserve space first). The
+     time-based TTL in system-logs.xml never saved it: the disk overflows long
+     before the 14-day horizon.
+
+     These are PROFILE settings, not server settings, which is why the config.d
+     TTL file couldn't reach them — they belong in a users.d default profile.
+     Setoku runs no server-side inference (I8) and nobody flamegraphs these
+     boxes, so profiler sampling is pure downside here. Turn it all off; the
+     table then stays empty and trace_log stops being a disk-fill risk.
+     TTL in system-logs.xml still caps the other telemetry tables (query_log,
+     text_log, metric_log, …) that grow from normal activity.
+     Mounted at /etc/clickhouse-server/users.d/ ; applies on (re)start. -->
+<clickhouse>
+    <profiles>
+        <default>
+            <!-- 0 disables each sampler -->
+            <memory_profiler_step>0</memory_profiler_step>
+            <memory_profiler_sample_probability>0</memory_profiler_sample_probability>
+            <query_profiler_real_time_period_ns>0</query_profiler_real_time_period_ns>
+            <query_profiler_cpu_time_period_ns>0</query_profiler_cpu_time_period_ns>
+            <trace_profile_events>0</trace_profile_events>
+        </default>
+    </profiles>
+</clickhouse>

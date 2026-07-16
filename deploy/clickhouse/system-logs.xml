@@ -9,7 +9,14 @@
 
      14 days is plenty for post-incident debugging. On a fresh box the tables
      grow from empty, so the TTL applies incrementally (no expensive rewrite).
-     Mounted at /etc/clickhouse-server/config.d/ ; applies on (re)start. -->
+     Mounted at /etc/clickhouse-server/config.d/ ; applies on (re)start.
+
+     NOTE: a time-based TTL alone is NOT enough for trace_log — its default
+     accrual rate can fill the disk to 100% (at which point ClickHouse can't
+     even run the TTL) long before the 14-day horizon. trace_off.xml disables
+     the profilers that feed it, so trace_log stays empty; this TTL is the
+     backstop for the telemetry tables that still grow (query_log, text_log,
+     metric_log, …). -->
 <clickhouse>
     <query_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_log>
     <query_thread_log><ttl>event_date + INTERVAL 14 DAY DELETE</ttl></query_thread_log>

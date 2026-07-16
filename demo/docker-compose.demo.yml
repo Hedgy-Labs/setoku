@@ -59,6 +59,7 @@ services:
       - demo_ch:/var/lib/clickhouse
       - ../deploy/clickhouse/small.xml:/etc/clickhouse-server/config.d/zz-setoku-preset.xml:ro
       - ../deploy/clickhouse/system-logs.xml:/etc/clickhouse-server/config.d/zz-setoku-system-logs.xml:ro
+      - ../deploy/clickhouse/trace-off.xml:/etc/clickhouse-server/users.d/zz-setoku-trace-off.xml:ro
       - ../deploy/clickhouse/lake-users.xml:/etc/clickhouse-server/users.d/zz-setoku-lake.xml:ro
       - ../ingest/schemas:/docker-entrypoint-initdb.d:ro
     ulimits:
