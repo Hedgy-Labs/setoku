@@ -26,7 +26,7 @@ import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
-import { mirroredTables, type MirroredTable } from "./lib/mirror";
+import { mirroredTables, mirrorNameOf, queryableTableName, type MirroredTable } from "./lib/mirror";
 import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
 import {
   deniedFamiliesFor,
@@ -381,7 +381,13 @@ server.registerTool(
     }
     for (const { doc } of top) {
       out.push(`## [${doc.type}] ${doc.name}`);
-      if (doc.meta.table) out.push(`table: ${doc.meta.table}`);
+      if (doc.meta.table) {
+        // Show the QUERYABLE name (biz.*); keep the pg provenance name alongside
+        // it when they differ, so the context layer never hands the agent a name
+        // run_query can't use.
+        const q = queryableTableName(String(doc.meta.table));
+        out.push(q === String(doc.meta.table) ? `table: ${q}` : `table: ${q} (source: ${doc.meta.table})`);
+      }
       if (doc.meta.summary) out.push(String(doc.meta.summary));
       if (doc.body.length <= 1500) {
         out.push("", doc.body, "");
@@ -469,7 +475,7 @@ server.registerTool(
       for (const d of ofType) {
         const summary = d.meta.summary ?? d.meta.question ?? "";
         lines.push(
-          `- ${d.name}${d.meta.table ? ` (${d.meta.table})` : ""}${summary ? ` — ${summary}` : ""}`,
+          `- ${d.name}${d.meta.table ? ` (${queryableTableName(String(d.meta.table))})` : ""}${summary ? ` — ${summary}` : ""}`,
         );
       }
     }
@@ -1005,16 +1011,6 @@ server.registerTool(
     return text(lines.join("\n"));
   },
 );
-
-/** Map a documented pg-style entity table name to its biz.* mirror name —
- *  public.orders → orders, ticketing.seat_txn → ticketing_seat_txn, bare names
- *  pass through. The same convention pg-mirror uses to name its targets. */
-function mirrorNameOf(pgName: string): string {
-  const parts = pgName.toLowerCase().split(".");
-  if (parts.length < 2) return parts[0];
-  const [schema, ...rest] = parts;
-  return schema === "public" ? rest.join("_") : [schema, ...rest].join("_");
-}
 
 server.registerTool(
   "get_schema",

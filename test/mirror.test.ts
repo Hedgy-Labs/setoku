@@ -2,12 +2,47 @@
 // Pure helpers of the gateway's mirror view (lib/mirror) — the lake-reading
 // side is exercised end-to-end in ingest/pg-mirror/mirror.test.ts.
 import { describe, it, expect } from "bun:test";
-import { mirrorAsOf, referencedBizTables, type MirroredTable } from "../plugin/gateway/lib/mirror";
+import {
+  mirrorAsOf,
+  referencedBizTables,
+  mirrorNameOf,
+  queryableTableName,
+  type MirroredTable,
+} from "../plugin/gateway/lib/mirror";
 
 const TABLES: MirroredTable[] = [
   { target: "orders", source: "public.orders", asOf: "2026-07-03T10:00:00.000Z" },
   { target: "ticketing_seat_txn", source: "ticketing.seat_txn", asOf: "2026-07-03T09:00:00.000Z" },
 ];
+
+describe("mirrorNameOf", () => {
+  it("strips the pg schema, lowercasing for case-insensitive matching by default", () => {
+    expect(mirrorNameOf("public.JobPost")).toBe("jobpost");
+    expect(mirrorNameOf("ticketing.seat_txn")).toBe("ticketing_seat_txn");
+    expect(mirrorNameOf("orders")).toBe("orders");
+  });
+  it("preserves case for a display name (ClickHouse table names are case-sensitive)", () => {
+    expect(mirrorNameOf("public.JobPost", true)).toBe("JobPost");
+    expect(mirrorNameOf("Ticketing.Seat_Txn", true)).toBe("Ticketing_Seat_Txn");
+  });
+});
+
+describe("queryableTableName", () => {
+  it("maps a pg-qualified provenance name to its case-preserved biz.* mirror", () => {
+    expect(queryableTableName("public.JobPost")).toBe("biz.JobPost");
+    expect(queryableTableName("public.Company")).toBe("biz.Company");
+    expect(queryableTableName("ticketing.seat_txn")).toBe("biz.ticketing_seat_txn");
+  });
+  it("passes bare lake/unqualified names through untouched", () => {
+    expect(queryableTableName("mercury_transactions")).toBe("mercury_transactions");
+    expect(queryableTableName("slack_messages")).toBe("slack_messages");
+  });
+  it("leaves already-ClickHouse-qualified names alone (lake db / mirror)", () => {
+    // a lake table documented as setoku.X must NOT become biz.setoku_X
+    expect(queryableTableName("setoku.github_issues")).toBe("setoku.github_issues");
+    expect(queryableTableName("biz.orders")).toBe("biz.orders");
+  });
+});
 
 describe("mirrorAsOf", () => {
   it("is the OLDEST fresh copy — an app is only as current as its stalest input", () => {
