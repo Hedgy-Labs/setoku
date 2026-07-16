@@ -911,6 +911,19 @@ export class KnowledgeStore {
       .all(limit) as unknown as AuditRow[];
   }
 
+  /** The full audit history for one tool, oldest-first — the chronological
+   *  order the friction miner (friction-cli.ts) needs to spot a per-user
+   *  fail→retry→success sequence. `id` is the append order (ts can tie at
+   *  ISO-second granularity), so ordering by it keeps same-second retries in
+   *  the order they actually happened. */
+  auditForTool(tool: string): AuditRow[] {
+    return this.db
+      .query(
+        "SELECT ts, user, tool, payload FROM audit WHERE tool = ? ORDER BY id ASC",
+      )
+      .all(tool) as unknown as AuditRow[];
+  }
+
   /* -------------------------------- accounts ---------------------------- */
 
   /** Create a local account (Phase 5.1). pwhash must already be argon2id.

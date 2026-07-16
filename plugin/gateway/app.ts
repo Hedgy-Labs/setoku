@@ -21,11 +21,12 @@ import type { EmbedIndex } from "./lib/embed-index";
 import type { DerivedSynonyms } from "./lib/derived-synonyms";
 import { KnowledgeStore, mintShareId, type AppPanel, type DocType } from "./lib/store";
 import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, MAX_RENDER_ROW_BYTES, RENDER_FETCH_CEILING, PG_RETIRED_ERROR, runPanel, trimRowsToBytes, compilePanel, isFullDoc } from "./lib/apps";
+import { queryErrorHint, extractTableRefs, extractUnknownColumn, matchReferencedTables, renderColumnHint } from "./lib/queryhint";
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
 import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
-import { mirroredTables, type MirroredTable } from "./lib/mirror";
+import { mirroredTables, mirrorNameOf, queryableTableName, type MirroredTable } from "./lib/mirror";
 import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
 import {
   deniedFamiliesFor,
@@ -102,6 +103,12 @@ export interface GatewayDeps {
    */
   derivedSynonyms?: DerivedSynonyms | null;
 }
+
+/** Lake table → its source (for family resolution). Built once at module load,
+ *  not per-request: scopedSchema's deny filter runs on the get_schema and the
+ *  run_query unknown-column error paths, so a per-table linear scan of
+ *  LAKE_SOURCES would be O(tables × sources) on a hot path. */
+const LAKE_SOURCE_BY_TABLE = new Map(LAKE_SOURCES.map((s) => [s.table, s.source]));
 
 export function buildServer({
   projectDir,
@@ -189,6 +196,83 @@ const NO_KNOWLEDGE_HINT =
   "(test accounts not excluded, etc.); say so. Build context with /setoku:generate " +
   "or report_correction; both work on this (analyst) connector and land as pending " +
   "for a human to approve. (upsert_context commits directly but needs a curator connector.)";
+
+interface SchemaTbl {
+  database: string;
+  table: string;
+  columns: { name: string; type: string }[];
+}
+
+/** The queryable schema scoped to THIS session — the single source get_schema
+ *  and the run_query unknown-column augment both read, so the augment can never
+ *  reveal a table or column get_schema wouldn't. Roles ride the system.columns
+ *  read (the engine hides denied families) and the denied-family belt filter
+ *  re-applies in code (parity with list_sources / get_schema). */
+async function scopedSchema(): Promise<{
+  schema: SchemaTbl[];
+  lakeUrl: string;
+  roles: string[] | null;
+}> {
+  const config = requireConfig();
+  const lakeRes = resolveLakeUrl(projectDir, config);
+  if (!lakeRes.ok) throw new Error(lakeRes.error);
+  // Metadata is identifiers + types, never row content, but a big schema can
+  // exceed a small row cap and silently drop trailing tables' columns — cap high.
+  const qopts = { rowCap: 200_000, statementTimeoutMs: config.statementTimeoutMs };
+  const roles = lakeRoles();
+  const res = await runLakeQuery(
+    lakeRes.url,
+    "SELECT database, table, name, type FROM system.columns " +
+      "WHERE database IN ('biz','setoku') " +
+      "AND (database, table) NOT IN (('setoku','ingest_heartbeats'), ('setoku','pg_mirror_runs')) " +
+      "ORDER BY database, table, position",
+    qopts,
+    {},
+    roles,
+  );
+  const byTable = new Map<string, SchemaTbl>();
+  for (const r of res.rows as Array<Record<string, unknown>>) {
+    const key = `${r.database}.${r.table}`;
+    let t = byTable.get(key);
+    if (!t) {
+      t = { database: String(r.database), table: String(r.table), columns: [] };
+      byTable.set(key, t);
+    }
+    t.columns.push({ name: String(r.name), type: String(r.type) });
+  }
+  const denied = deniedFamilies();
+  const schema = [...byTable.values()].filter((t) =>
+    t.database === "biz"
+      ? !denied.has(BUSINESS_FAMILY.slug)
+      : !denied.has(
+          familySlug(familyOf(LAKE_SOURCE_BY_TABLE.get(t.table) ?? t.table)),
+        ),
+  );
+  return { schema, lakeUrl: lakeRes.url, roles };
+}
+
+/** On an unknown-column failure, surface the referenced tables' real columns
+ *  (scoped identically to get_schema) + a "did you mean". Returns null when it
+ *  can't add signal (no tables parsed, none matched, or the lake is down). */
+async function unknownColumnSchemaHint(sql: string, errMsg: string): Promise<string | null> {
+  const refs = extractTableRefs(sql);
+  if (!refs.length) return null;
+  let scoped: Awaited<ReturnType<typeof scopedSchema>>;
+  try {
+    scoped = await scopedSchema();
+  } catch {
+    return null; // lake unreachable — fall back to the static hint alone
+  }
+  const matched = matchReferencedTables(
+    refs,
+    scoped.schema.map((t) => ({
+      database: t.database,
+      table: t.table,
+      columns: t.columns.map((c) => c.name),
+    })),
+  );
+  return renderColumnHint(extractUnknownColumn(errMsg), matched);
+}
 
 /* ------------------------------ context tools ------------------------------ */
 
@@ -303,7 +387,13 @@ server.registerTool(
     }
     for (const { doc } of top) {
       out.push(`## [${doc.type}] ${doc.name}`);
-      if (doc.meta.table) out.push(`table: ${doc.meta.table}`);
+      if (doc.meta.table) {
+        // Show the QUERYABLE name (biz.*); keep the pg provenance name alongside
+        // it when they differ, so the context layer never hands the agent a name
+        // run_query can't use.
+        const q = queryableTableName(String(doc.meta.table));
+        out.push(q === String(doc.meta.table) ? `table: ${q}` : `table: ${q} (source: ${doc.meta.table})`);
+      }
       if (doc.meta.summary) out.push(String(doc.meta.summary));
       if (doc.body.length <= 1500) {
         out.push("", doc.body, "");
@@ -391,7 +481,7 @@ server.registerTool(
       for (const d of ofType) {
         const summary = d.meta.summary ?? d.meta.question ?? "";
         lines.push(
-          `- ${d.name}${d.meta.table ? ` (${d.meta.table})` : ""}${summary ? ` — ${summary}` : ""}`,
+          `- ${d.name}${d.meta.table ? ` (${queryableTableName(String(d.meta.table))})` : ""}${summary ? ` — ${summary}` : ""}`,
         );
       }
     }
@@ -928,16 +1018,6 @@ server.registerTool(
   },
 );
 
-/** Map a documented pg-style entity table name to its biz.* mirror name —
- *  public.orders → orders, ticketing.seat_txn → ticketing_seat_txn, bare names
- *  pass through. The same convention pg-mirror uses to name its targets. */
-function mirrorNameOf(pgName: string): string {
-  const parts = pgName.toLowerCase().split(".");
-  if (parts.length < 2) return parts[0];
-  const [schema, ...rest] = parts;
-  return schema === "public" ? rest.join("_") : [schema, ...rest].join("_");
-}
-
 server.registerTool(
   "get_schema",
   {
@@ -962,57 +1042,13 @@ server.registerTool(
     const started = Date.now();
     try {
       const config = requireConfig();
-      const lakeRes = resolveLakeUrl(projectDir, config);
-      if (!lakeRes.ok) throw new Error(lakeRes.error);
-      const lakeUrl = lakeRes.url;
-      // Metadata is identifiers + types, never row content, but a big schema
-      // (dozens of biz.* tables) can exceed a small row cap and silently drop
-      // trailing tables' columns — cap high so the listing is never truncated.
-      const qopts = { rowCap: 200_000, statementTimeoutMs: config.statementTimeoutMs };
       // Schema METADATA only — so it runs on every role: a curator needs the
       // business-table shape to write context docs (the I2/I9 membrane gates
-      // lake content, not table shape). ClickHouse filters system.columns to
-      // tables the caller may read, and the session's role subset (per-user
-      // source access) rides on the same request — so a denied family's tables
-      // vanish from this listing by the engine's hand.
-      const roles = lakeRoles();
-      const res = await runLakeQuery(
-        lakeUrl,
-        // Exclude the plumbing tables — heartbeats (core, no data) and the
-        // pg_mirror_runs run-log (its rows enumerate the mirrored business
-        // catalog, so it follows the business deny; the belt-filter below can't
-        // map its label to the 'business' slug, and it's not a queryable source).
-        "SELECT database, table, name, type FROM system.columns " +
-          "WHERE database IN ('biz','setoku') " +
-          "AND (database, table) NOT IN (('setoku','ingest_heartbeats'), ('setoku','pg_mirror_runs')) " +
-          "ORDER BY database, table, position",
-        qopts,
-        {},
-        roles,
-      );
-      type Tbl = { database: string; table: string; columns: { name: string; type: string }[] };
-      const byTable = new Map<string, Tbl>();
-      for (const r of res.rows as Array<Record<string, unknown>>) {
-        const key = `${r.database}.${r.table}`;
-        let t = byTable.get(key);
-        if (!t) {
-          t = { database: String(r.database), table: String(r.table), columns: [] };
-          byTable.set(key, t);
-        }
-        t.columns.push({ name: String(r.name), type: String(r.type) });
-      }
-      // Belt-and-suspenders (parity with list_sources): the engine already
-      // hides denied families, but during a partial rollout — new code, old
-      // lake-users.xml still holding a `setoku.*`/`biz.*` wildcard, or a
-      // ClickHouse that ignores the role param — drop a denied family's tables
-      // in code too, so a denied source's shape never leaks. biz.* follows the
-      // "business" (Postgres) family; lake tables follow their own family.
-      const denied = deniedFamilies();
-      let schema = [...byTable.values()].filter((t) =>
-        t.database === "biz"
-          ? !denied.has(BUSINESS_FAMILY.slug)
-          : !denied.has(familySlug(familyOf(LAKE_SOURCES.find((s) => s.table === t.table)?.source ?? t.table))),
-      );
+      // lake content, not table shape). scopedSchema() applies the session's
+      // role subset + the denied-family belt filter; get_schema and the
+      // run_query unknown-column augment read this same scoped view.
+      const { schema: schema0, lakeUrl, roles } = await scopedSchema();
+      let schema = schema0;
       if (tables?.length) {
         // Match on the qualified biz/setoku name OR a bare table name. A pg-style
         // qualified name copied from an entity doc's meta.table ("public.orders")
@@ -1033,6 +1069,7 @@ server.registerTool(
       if (tables?.length) {
         // ORDER BY key (the ClickHouse analogue of "how is this table keyed") —
         // one metadata fetch, joined in for the detail view.
+        const qopts = { rowCap: 200_000, statementTimeoutMs: config.statementTimeoutMs };
         const sortKeys = new Map<string, string>();
         try {
           const sk = await runLakeQuery(
@@ -1251,7 +1288,24 @@ server.registerTool(
         ms: Date.now() - started, // no SQL completed — wall-clock is all we have
         totalMs: Date.now() - started,
       });
-      return errorText(`run_query failed: ${msg}`);
+      // Append an actionable "→ next step" that points at a discovery tool, so
+      // the agent resolves the blocker in-loop instead of re-guessing. The hint
+      // is membrane-safe (a denied table and a nonexistent one share one hint —
+      // see lib/queryhint.ts). On an unknown-column error, go further and surface
+      // the referenced tables' REAL columns + a "did you mean" — scoped exactly
+      // like get_schema, so it reveals nothing new.
+      const hint = queryErrorHint(msg, sql);
+      const parts = [`run_query failed: ${msg}`];
+      if (hint) parts.push(`→ ${hint.hint}`);
+      if (hint?.code === "unknown_column") {
+        try {
+          const schemaHint = await unknownColumnSchemaHint(sql, msg);
+          if (schemaHint) parts.push(schemaHint);
+        } catch {
+          /* augmentation is best-effort — the static hint still stands */
+        }
+      }
+      return errorText(parts.join("\n\n"));
     }
   },
 );

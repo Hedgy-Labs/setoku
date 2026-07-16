@@ -29,6 +29,34 @@ export interface MirroredTable {
   asOf: string;
 }
 
+/** Map a documented pg-style entity table name to its biz.* mirror name —
+ *  public.orders → orders, ticketing.seat_txn → ticketing_seat_txn, bare names
+ *  pass through. The same convention pg-mirror uses to name its targets.
+ *  Lowercases by default (callers match case-insensitively); pass preserveCase
+ *  for a DISPLAY name — ClickHouse table names are case-sensitive, so
+ *  `biz.JobPost` must keep its case to be queryable. */
+export function mirrorNameOf(pgName: string, preserveCase = false): string {
+  const parts = (preserveCase ? pgName : pgName.toLowerCase()).split(".");
+  if (parts.length < 2) return parts[0];
+  const [schema, ...rest] = parts;
+  return schema.toLowerCase() === "public" ? rest.join("_") : [schema, ...rest].join("_");
+}
+
+/** The name an agent should QUERY a documented entity by — bridges the context
+ *  layer to the ClickHouse names run_query/get_schema use. A pg-qualified
+ *  provenance name (public.JobPost) becomes its biz.* mirror (biz.JobPost, case
+ *  preserved). Names that are ALREADY ClickHouse-qualified — the lake db
+ *  (setoku.github_issues) or the mirror itself (biz.orders) — and bare names
+ *  (mercury_transactions, or an unqualified doc) pass through untouched. Keeps
+ *  meta.table's pg provenance intact in the store while showing a queryable
+ *  name. */
+export function queryableTableName(metaTable: string): string {
+  if (!metaTable.includes(".")) return metaTable;
+  const schema = metaTable.split(".")[0].toLowerCase();
+  if (schema === "biz" || schema === "setoku") return metaTable; // already queryable
+  return `biz.${mirrorNameOf(metaTable, true)}`;
+}
+
 /** Lake timestamp ("2026-07-03 12:00:00.000", UTC) → ISO string. */
 const lakeTsToIso = (s: string): string => {
   let t = s.includes("T") ? s : s.replace(" ", "T");
