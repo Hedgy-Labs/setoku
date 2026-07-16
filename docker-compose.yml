@@ -158,6 +158,9 @@ services:
       # rolling TTL on ClickHouse's own telemetry tables (system.*_log) so they
       # can't outgrow the lake — see deploy/clickhouse/system-logs.xml
       - ./deploy/clickhouse/system-logs.xml:/etc/clickhouse-server/config.d/zz-setoku-system-logs.xml:ro
+      # disable the query/memory profilers (default profile) so system.trace_log
+      # stops growing at the source — see deploy/clickhouse/trace-off.xml
+      - ./deploy/clickhouse/trace-off.xml:/etc/clickhouse-server/users.d/zz-setoku-trace-off.xml:ro
       # the gateway's read-only lake user (grants + settings constraints)
       - ./deploy/clickhouse/lake-users.xml:/etc/clickhouse-server/users.d/zz-setoku-lake.xml:ro
       - ./ingest/schemas:/docker-entrypoint-initdb.d:ro
