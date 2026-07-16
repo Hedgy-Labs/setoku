@@ -143,12 +143,19 @@ describe("schema-aware unknown-column helpers", () => {
     expect(extractTableRefs("SELECT * FROM (SELECT 1) t")).toEqual([]);
   });
 
-  it("extracts the unknown identifier from ClickHouse and Postgres phrasings", () => {
+  it("extracts the unknown identifier across ClickHouse and Postgres phrasings", () => {
+    // the "or function" variant AND the plain "expression identifier" variant
+    // (modern analyzer) — the plain one used to return the literal "identifier"
     expect(extractUnknownColumn("Code: 47. Unknown expression or function identifier `timestamp` in scope")).toBe("timestamp");
+    expect(extractUnknownColumn("Code: 47. Unknown expression identifier `revenue` in scope SELECT")).toBe("revenue");
+    // the single-quoted "cannot be resolved" form used to return null
+    expect(extractUnknownColumn("Code: 47. Identifier 'u.linkedinUrl' cannot be resolved from table with name u")).toBe("linkedinUrl");
     expect(extractUnknownColumn("Unknown identifier: custmer_id")).toBe("custmer_id");
     expect(extractUnknownColumn('column "salaryMin" does not exist')).toBe("salaryMin");
     // strips a table-alias prefix down to the bare column
     expect(extractUnknownColumn("Unknown identifier `u.resumeUrl`")).toBe("resumeUrl");
+    // never returns the literal word "identifier"
+    expect(extractUnknownColumn("Code: 47. Unknown expression identifier `x` in scope")).not.toBe("identifier");
     expect(extractUnknownColumn("something else entirely")).toBeNull();
   });
 
@@ -166,6 +173,20 @@ describe("schema-aware unknown-column helpers", () => {
     ];
     const m = matchReferencedTables(['biz.JobPost', '"logs_vercel"', "jp"], schema);
     expect(m.map((t) => t.table).sort()).toEqual(["biz.JobPost", "setoku.logs_vercel"]);
+  });
+
+  it("a QUALIFIED ref never drags in a same-named table from another db", () => {
+    const schema = [
+      { database: "biz", table: "events", columns: ["id"] },
+      { database: "setoku", table: "events", columns: ["ts"] },
+    ];
+    // biz.events must match ONLY biz.events, not setoku.events
+    expect(matchReferencedTables(["biz.events"], schema).map((t) => t.table)).toEqual(["biz.events"]);
+    // a bare ref legitimately can't disambiguate — matches both
+    expect(matchReferencedTables(["events"], schema).map((t) => t.table).sort()).toEqual([
+      "biz.events",
+      "setoku.events",
+    ]);
   });
 
   it("renders the columns block and a did-you-mean; null when no tables matched", () => {

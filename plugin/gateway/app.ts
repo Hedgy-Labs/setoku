@@ -104,6 +104,12 @@ export interface GatewayDeps {
   derivedSynonyms?: DerivedSynonyms | null;
 }
 
+/** Lake table → its source (for family resolution). Built once at module load,
+ *  not per-request: scopedSchema's deny filter runs on the get_schema and the
+ *  run_query unknown-column error paths, so a per-table linear scan of
+ *  LAKE_SOURCES would be O(tables × sources) on a hot path. */
+const LAKE_SOURCE_BY_TABLE = new Map(LAKE_SOURCES.map((s) => [s.table, s.source]));
+
 export function buildServer({
   projectDir,
   store,
@@ -239,7 +245,7 @@ async function scopedSchema(): Promise<{
     t.database === "biz"
       ? !denied.has(BUSINESS_FAMILY.slug)
       : !denied.has(
-          familySlug(familyOf(LAKE_SOURCES.find((s) => s.table === t.table)?.source ?? t.table)),
+          familySlug(familyOf(LAKE_SOURCE_BY_TABLE.get(t.table) ?? t.table)),
         ),
   );
   return { schema, lakeUrl: lakeRes.url, roles };

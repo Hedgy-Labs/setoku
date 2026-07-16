@@ -208,10 +208,19 @@ export function extractTableRefs(sql: string): string[] {
  *  then the caller still lists columns, just without a "did you mean". */
 export function extractUnknownColumn(rawMsg: string): string | null {
   const m = String(rawMsg ?? "");
+  // ClickHouse wraps the offending identifier in backticks or single quotes
+  // right after the word "identifier" — across all its phrasings:
+  //   "Unknown expression identifier `x` in scope …"
+  //   "Unknown expression or function identifier `x` …"
+  //   "Identifier 'x' cannot be resolved from table with name u …"
+  // `[\s:]*` (whitespace/colon only) can't run past the quote into a later
+  // quoted token, so we never grab the literal word "identifier".
   const pats = [
-    /unknown (?:expression|identifier)(?: or function identifier)?[:`'\s]+([`"']?[\w.]+)/i,
-    /column\s+"?([\w.]+)"?\s+does not exist/i,
-    /there.?s no column[:`'\s]+([`"']?[\w.]+)/i,
+    /\bidentifier\b[\s:]*`([\w.]+)`/i,
+    /\bidentifier\b[\s:]*'([\w.]+)'/i,
+    /unknown identifier:\s*([\w.]+)/i, // colon form, unquoted
+    /column\s+"?([\w.]+)"?\s+does not exist/i, // Postgres
+    /there.?s no column[\s:]*[`'"]?([\w.]+)/i,
     /missing columns?:?\s*'?([\w.]+)/i,
   ];
   for (const p of pats) {
@@ -219,7 +228,8 @@ export function extractUnknownColumn(rawMsg: string): string | null {
     if (!mm) continue;
     const raw = mm[1].replace(/[`"']/g, "");
     const bare = raw.includes(".") ? raw.split(".").pop()! : raw;
-    if (bare) return bare;
+    // never surface the literal word "identifier" from a malformed match
+    if (bare && bare.toLowerCase() !== "identifier") return bare;
   }
   return null;
 }
@@ -271,13 +281,15 @@ export function matchReferencedTables(
   tables: RefTable[],
 ): { table: string; columns: string[] }[] {
   const norm = (s: string) => s.replace(/["'`\s]/g, "").toLowerCase();
-  const qualified = new Set(refs.map(norm));
-  const bare = new Set(
-    refs.map((r) => {
-      const n = norm(r);
-      return n.includes(".") ? n.split(".").pop()! : n;
-    }),
-  );
+  // A QUALIFIED ref (biz.events) matches only that exact db.table. A ref matches
+  // by bare table name ONLY when the ref itself is bare — otherwise `biz.events`
+  // would also drag in an unrelated `setoku.events` and pool its columns.
+  const qualified = new Set<string>();
+  const bare = new Set<string>();
+  for (const r of refs) {
+    const n = norm(r);
+    (n.includes(".") ? qualified : bare).add(n);
+  }
   return tables
     .filter((t) => {
       const q = `${t.database}.${t.table}`.toLowerCase();
