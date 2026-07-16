@@ -11,7 +11,7 @@ export function DemoBanner() {
   if (!IS_DEMO) return null;
   return (
     <div className="flex min-h-9 flex-wrap items-center justify-center gap-x-2 gap-y-0.5 border-b border-stone-200 bg-stone-100 px-4 py-1.5 text-center text-xs text-stone-600">
-      <span>This is a public demo with synthetic data. This console is normally password-protected.</span>
+      <span>This is a public demo with synthetic data. This page is normally password-protected.</span>
       <a
         href="https://setoku.com"
         className="font-medium text-stone-800 underline decoration-stone-300 underline-offset-2 transition hover:text-stone-950 hover:decoration-stone-500"
