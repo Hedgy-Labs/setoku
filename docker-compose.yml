@@ -31,6 +31,26 @@ x-logging: &default-logging
     max-file: "3"
 
 services:
+  # Self-heal: restart any container Docker marks unhealthy — e.g. a Vector
+  # wedged mid-shutdown by a transient disk-full, which otherwise stays "up but
+  # unhealthy" and silently stops ingest until a human restarts it. Watches the
+  # Docker health status of EVERY container with a HEALTHCHECK (label=all) and
+  # restarts the sick one in place. Needs the Docker socket (root-equivalent on
+  # the host); acceptable on a single-tenant self-hosted box (I6) — it publishes
+  # no ports and never faces the internet (I1). Off-box /healthz alerting still
+  # pages, so a restart loop (e.g. a genuinely full disk) is visible, not masked.
+  autoheal:
+    image: willfarrell/autoheal@sha256:d1392205b4463b4f2adeaf0983c3acd9eb57784c58904e0d40f62a385b74e608
+    restart: always
+    logging: *default-logging
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: all # every container that declares a healthcheck
+      AUTOHEAL_INTERVAL: 15 # seconds between health scans
+      AUTOHEAL_START_PERIOD: 120 # grace after boot before the first restart
+      CURL_TIMEOUT: 30
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
   caddy:
     image: caddy:2-alpine@sha256:77c07d5ebfa5be9fd6c820d2094ae662c9e7eeb9bf98346b7f639900263ee2a2
     restart: unless-stopped
