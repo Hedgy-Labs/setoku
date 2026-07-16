@@ -29,6 +29,8 @@ DIR="${SETOKU_DEPLOY_DIR:-/opt/setoku}"
 DOMAIN="${SETOKU_DEPLOY_DOMAIN:-}"
 
 echo "→ rsync code to ${SSH}:${DIR}  (dirs WITHOUT trailing slashes — a slash flattens them into ${DIR}/)"
+# Hash the box's Caddyfile BEFORE rsync so we can tell if this deploy changed it.
+caddy_before="$(ssh "$SSH" "sha256sum ${DIR}/Caddyfile 2>/dev/null | cut -d' ' -f1" || true)"
 rsync -az \
   --exclude='.env' --exclude='.git' --exclude='node_modules' --exclude='seed-mercury-knowledge.ts' \
   plugin deploy ingest docker-compose.yml Caddyfile \
@@ -36,6 +38,18 @@ rsync -az \
 
 echo "→ rebuild + restart the gateway"
 ssh "$SSH" "cd ${DIR} && docker compose up -d --build server"
+
+# The Caddyfile is an inode-pinned bind mount (docker-compose.yml), so rsyncing a
+# new file (temp + rename = new inode) does NOT reach the running caddy container
+# and a reload reads the stale content — caddy must be force-recreated to pick it
+# up. Do that ONLY when the file actually changed, since recreating caddy is a
+# brief (~1–2s) edge blip we don't want on every deploy. --no-deps so the healthy
+# server container is left untouched.
+caddy_after="$(ssh "$SSH" "sha256sum ${DIR}/Caddyfile | cut -d' ' -f1")"
+if [ "$caddy_before" != "$caddy_after" ]; then
+  echo "→ Caddyfile changed — force-recreate caddy (edge, brief blip)"
+  ssh "$SSH" "cd ${DIR} && docker compose up -d --force-recreate --no-deps caddy"
+fi
 
 if [ -n "$DOMAIN" ]; then
   echo "→ verify (give it a moment)…"

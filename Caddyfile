@@ -5,6 +5,21 @@
 # (each gets its own Let's Encrypt cert) — used to keep an old domain alive
 # while migrating to a new one. Empty by default (single-domain deploys).
 
+# Gateway upstream (server:8787), reused by every route below via `import gateway`.
+# lb_try_duration makes Caddy ride out the brief window when the server container
+# is being recreated on deploy (docker compose up --build server stops the old
+# container, then the new one boots + passes /health). A request that lands in
+# that gap is re-dialled every lb_try_interval until the new container is
+# listening, instead of returning a 502 — so deploys don't drop requests or trip
+# the /healthz alerter (deploy/monitor/alert.sh). A dial failure means nothing
+# reached the server, so retrying is safe even for POST/MCP requests.
+(gateway) {
+	reverse_proxy server:8787 {
+		lb_try_duration 30s
+		lb_try_interval 250ms
+	}
+}
+
 {$SETOKU_DOMAIN:localhost} {$SETOKU_ALT_DOMAIN} {
 	encode gzip
 
@@ -69,22 +84,22 @@
 	# MCP gateway (header bearer auth, or token-in-URL-path for the consumer
 	# custom-connector dialog), the one-line installer, and health.
 	handle /mcp* {
-		reverse_proxy server:8787
+		import gateway
 	}
 	handle /i/* {
-		reverse_proxy server:8787
+		import gateway
 	}
 	# web approval surface — the human accept/reject path (Phase 5.5)
 	handle /admin* {
-		reverse_proxy server:8787
+		import gateway
 	}
 	# public reports — credential-free /p/<id> links (the server serves ONLY
 	# reports an admin promoted to public; everything else 404s).
 	handle /p/* {
-		reverse_proxy server:8787
+		import gateway
 	}
 	handle /health* {
-		reverse_proxy server:8787
+		import gateway
 	}
 
 	# The web console (React SPA) is served at the site ROOT by the gateway, so
@@ -93,7 +108,7 @@
 	# for anything else. The specific handles above (ingest/mcp/i/admin/p/health)
 	# still win by matcher specificity.
 	handle {
-		reverse_proxy server:8787
+		import gateway
 	}
 }
 
