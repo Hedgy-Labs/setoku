@@ -11,6 +11,7 @@
     "eval:value": "bun demo/eval/value.ts",
     "eval:retrieval": "bun demo/eval/retrieval.ts",
     "eval:embed": "bun demo/eval/embed-retrieval.ts",
+    "eval:friction": "bun plugin/gateway/friction-cli.ts",
     "knowledge-lint": "bun plugin/gateway/knowledge-lint.ts",
     "setup:hooks": "git config core.hooksPath scripts/hooks",
     "typecheck": "tsc --noEmit",

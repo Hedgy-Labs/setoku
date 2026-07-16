@@ -79,6 +79,16 @@ Reproduces what `find_context` would surface for each trap and checks whether th
 
 Scorecard: per trap, ungrounded ✓/✗ and grounded ✓/✗; the **answer-lift = grounded − ungrounded** correct rate. That single number is the closest thing to "is Setoku worth it" — a trap the agent gets right *only* when grounded is Setoku earning its keep. A trap it gets right *both* ways means the curated fact added nothing (drop it or harden the trap); wrong *both* ways means the fact is missing or unreachable (see the deterministic punch-list).
 
+## Tool friction (does the query surface itself get in the way?)
+
+The evals above score the *answer*. This one scores the **tool ergonomics** — where agents get stuck driving `run_query`. It's deterministic and model-free (I8): it mines the box's audit log for the fail→retry→success pattern, clusters failures by cause (`table_unavailable`, `syntax`, `unknown_column`, …), and reports the **in-session recovery rate** per cause.
+
+```bash
+bun run eval:friction --db <knowledge.db> [--window <min>] [--json] [--no-sql]
+```
+
+A cause with a **low recovery rate** is where agents stay blocked — the priority for a better error hint (`plugin/gateway/lib/queryhint.ts`, which already appends a "→ next step" to live `run_query` failures), a schema rename, or a new curated metric. The **"intents that keep failing"** section lists the `purpose` strings on repeated failed queries — a question agents can't reliably turn into SQL is often a metric worth curating. This is behavioral (grounded in what agents actually did), not self-report, so it doesn't depend on the model introspecting. SQL snippets can contain customer values; pass `--no-sql` before sharing a report off the box.
+
 ## Compaction (the companion pass — issue #10)
 
 Compaction ("REM sleep") — merging duplicate facts, resolving contradictions, tightening verbose docs — is judgment work, so it runs **in a curator session** via [`/setoku:compact-knowledge`](../compact-knowledge/SKILL.md), not as a server-side job (I8). The `/admin/knowledge` health bar surfaces the deterministic signals (contradictions / duplicates / verbose / stale counts) as a cheap map; the skill does the actual semantic cleanup and commits it through the curator membrane (I9). The metrics above are how you check that a compaction pass actually improved the store.
