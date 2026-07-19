@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AlertDialog } from "@base-ui-components/react/alert-dialog";
-import { Link } from "react-router-dom";
-import { api } from "../api";
+import { Link, useSearchParams } from "react-router-dom";
+import { api, type MutationResult } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";
 import { Heading, Loading, ErrorMsg } from "../components/Page";
 import { Status } from "../components/Status";
 import { Sparkline } from "../components/Sparkline";
 import { Button } from "../components/Button";
+import { Confirm } from "../components/Confirm";
 import { toast } from "../components/Toast";
 import { relTime, freshness, beatIsLive, type StatusColor } from "../format";
 import { formatBytes } from "../../../lib/format";
@@ -28,6 +29,17 @@ export function Sources() {
   // Connect dialog state: null = closed, { source? } = open, optionally
   // pre-filled with the Available row that launched it.
   const [connect, setConnect] = useState<{ source?: string } | null>(null);
+  // Surface the flash the Gmail OAuth callback redirects back with (?flash=…), once.
+  const [params, setParams] = useSearchParams();
+  useEffect(() => {
+    const flash = params.get("flash");
+    if (flash) {
+      toast(flash);
+      params.delete("flash");
+      setParams(params, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   return (
     <>
       <Heading
@@ -48,6 +60,7 @@ export function Sources() {
           series={series}
           egress={egress}
           reloadEgress={reloadEgress}
+          isAdmin={isAdmin}
           onConnect={(source) => setConnect({ source })}
         />
       ) : null}
@@ -354,6 +367,91 @@ function GroupRow({ name, members, series }: { name: string; members: SourceTabl
   );
 }
 
+/** Gmail is connected through the UI (OAuth per-mailbox), not the agent — so its
+ *  card carries the management the others don't: connect/disconnect mailboxes,
+ *  plus the one-time OAuth-client setup hint and the data-flow status. Admin-only
+ *  (the status endpoint is admin-gated; members see Gmail as an ordinary source). */
+function GmailCard({ table }: { table: SourceTable | null }) {
+  const { data, loading, reload } = useApi(() => api.gmailStatus(), []);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
+
+  const apply = async (p: Promise<MutationResult>) => {
+    try {
+      const r = await p;
+      if (r.flash) toast(r.flash);
+      reload();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed.");
+    }
+  };
+
+  const mailboxes = data?.mailboxes ?? [];
+  const status: { color: StatusColor; label: string } = loading
+    ? { color: "yellow", label: "…" }
+    : !data?.clientConfigured
+      ? { color: "yellow", label: "setup needed" }
+      : mailboxes.length === 0
+        ? { color: "yellow", label: "no mailboxes" }
+        : table
+          ? freshness(table.rows, table.last, table.beat)
+          : { color: "yellow", label: "syncing" };
+  const time = table?.beat ? `checked ${relTime(table.beat)}` : null;
+
+  return (
+    <Row name="Gmail" status={status} time={time}>
+      {data && !data.clientConfigured ? (
+        <div className="mb-3 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700">
+          <p className="font-medium">Set up the OAuth client first (one time)</p>
+          <p className="mt-1 leading-relaxed">
+            Set <code className="kbd">GMAIL_CLIENT_ID</code> / <code className="kbd">GMAIL_CLIENT_SECRET</code> on the box,
+            and register this authorized redirect URI on the Google client:
+          </p>
+          <code className="mt-2 block break-all rounded bg-stone-200 px-2 py-1 text-xs">{data.redirectUri}</code>
+        </div>
+      ) : null}
+
+      {kv("mailboxes", mailboxes.length ? String(mailboxes.length) : "none connected yet")}
+      {mailboxes.map((m) =>
+        kv(
+          m.email || "(mailbox)",
+          <button
+            className="text-xs text-stone-500 underline underline-offset-2 hover:text-stone-800"
+            onClick={() => setDisconnecting(m.email)}
+          >
+            disconnect
+          </button>,
+        ),
+      )}
+      {table ? <MemberKvs t={table} series={new Map()} /> : null}
+
+      <div className="mt-3">
+        <Button disabled={!data?.clientConfigured} onClick={() => (window.location.href = "/admin/api/gmail/oauth/start")}>
+          Connect a mailbox
+        </Button>
+      </div>
+
+      <Confirm
+        open={disconnecting !== null}
+        title="Disconnect mailbox?"
+        body={
+          <>
+            Stop syncing <span className="font-medium">{disconnecting}</span>. Already-ingested mail stays until it ages
+            out; reconnecting later re-syncs it.
+          </>
+        }
+        confirmLabel="Disconnect"
+        danger
+        onConfirm={() => {
+          const email = disconnecting!;
+          setDisconnecting(null);
+          void apply(api.gmailDisconnect(email));
+        }}
+        onClose={() => setDisconnecting(null)}
+      />
+    </Row>
+  );
+}
+
 /** The sources this box could ingest but isn't yet — kept out of the connected
  *  list (an unconfigured feed isn't a problem to fix), but listed so it's easy
  *  to see what a box can take. */
@@ -402,16 +500,21 @@ function SourceList({
   series,
   egress,
   reloadEgress,
+  isAdmin,
   onConnect,
 }: {
   data: SourcesData;
   series: SeriesMap;
   egress: EgressData | null;
   reloadEgress: () => void;
+  isAdmin: boolean;
   onConnect: (source: string) => void;
 }) {
   const rows: ReactNode[] = [];
   const lake = data.lake;
+  // Gmail is connected through the UI (OAuth), not the agent, so admins manage it
+  // in a dedicated card (below) rather than the generic connected/Available rows.
+  const gmailTable = lake.ok ? (lake.tables.find((t) => t.table === "gmail_messages") ?? null) : null;
 
   // The business DB reaches agents only as its biz.* mirror in the lake — the
   // gateway holds no direct Postgres credential, so this card IS the business
@@ -470,8 +573,17 @@ function SourceList({
     for (const [fam, members] of groups) {
       if (!members.some(isConnected)) continue;
       connectedFamilies.add(fam);
+      if (isAdmin && fam === "Gmail") continue; // rendered as the GmailCard below
       rows.push(<GroupRow key={fam} name={fam} members={members} series={series} />);
     }
+  }
+
+  // Gmail's admin management card — connect/disconnect mailboxes + its data-flow
+  // status — always shown to admins (even before a mailbox is connected), and
+  // excluded from the generic connected/Available rows so it appears exactly once.
+  if (isAdmin) {
+    connectedFamilies.add("Gmail");
+    rows.push(<GmailCard key="gmail" table={gmailTable} />);
   }
 
   const k = data.knowledge;

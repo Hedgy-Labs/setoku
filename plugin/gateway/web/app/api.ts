@@ -118,6 +118,17 @@ export const api = {
   // a human act on this surface; no MCP tool can change data access).
   setSourceAccess: (username: string, denies: string[]) =>
     req<MutationResult>("source_access", { method: "POST", body: { username, denies } }),
+  // ---- Gmail Connect (OAuth) — admin-only source connection (I9). The Connect
+  // action itself is a top-level navigation to /admin/api/gmail/oauth/start (it
+  // 302s to Google), not an api() fetch — see the Connectors page. ----
+  gmailStatus: () =>
+    req<{
+      clientConfigured: boolean;
+      redirectUri: string;
+      mailboxes: { email: string; connectedAt: string; connectedBy: string }[];
+    }>("gmail_status"),
+  gmailDisconnect: (email: string) =>
+    req<MutationResult>("gmail_disconnect", { method: "POST", body: { email } }),
   apps: () => req<PublishedMeta[]>("published"),
   // App metadata + per-panel SQL/description (param-independent). The LIVE per-variant
   // numbers come from the frame's own provenance echo (postMessage), not this
