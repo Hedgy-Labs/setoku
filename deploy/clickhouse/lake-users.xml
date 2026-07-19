@@ -87,6 +87,11 @@
                 <query>GRANT SELECT ON setoku.monarch_holdings</query>
             </grants>
         </setoku_src_monarch>
+        <setoku_src_gmail>
+            <grants>
+                <query>GRANT SELECT ON setoku.gmail_messages</query>
+            </grants>
+        </setoku_src_gmail>
         <setoku_src_unrouted_raw>
             <grants>
                 <query>GRANT SELECT ON setoku.ingest_raw</query>
@@ -132,6 +137,7 @@
                 <query>GRANT setoku_src_mercury</query>
                 <query>GRANT setoku_src_github</query>
                 <query>GRANT setoku_src_monarch</query>
+                <query>GRANT setoku_src_gmail</query>
                 <query>GRANT setoku_src_unrouted_raw</query>
                 <query>GRANT setoku_src_business</query>
                 <query>GRANT setoku_src_none</query>

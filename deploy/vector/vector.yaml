@@ -18,6 +18,7 @@
 #   /ingest/monarch/transactions → monarch_transactions (poller, ReplacingMergeTree)
 #   /ingest/monarch/budgets      → monarch_budgets      (poller; monthly budget vs actual)
 #   /ingest/monarch/holdings     → monarch_holdings     (poller; investment portfolio breakdown)
+#   /ingest/gmail/messages       → gmail_messages       (poller; personal email, plain-text bodies, ReplacingMergeTree)
 #   /ingest/heartbeat            → ingest_heartbeats    (poller liveness beats — no CH creds in pollers)
 #   anything else                → ingest_raw    (catch-all; nothing is silently dropped)
 #
@@ -60,6 +61,7 @@ transforms:
       monarch_txn: '._path == "/ingest/monarch/transactions"'
       monarch_budget: '._path == "/ingest/monarch/budgets"'
       monarch_holding: '._path == "/ingest/monarch/holdings"'
+      gmail_msg: '._path == "/ingest/gmail/messages"'
       heartbeat: '._path == "/ingest/heartbeat"'
 
   vercel_parse:
@@ -400,6 +402,19 @@ transforms:
       if e1 != null { ts_snap = now() }
       .snapshot_ts = format_timestamp!(ts_snap, "%F %T%.3f")
 
+  gmail_messages_parse:
+    type: remap
+    inputs: [router.gmail_msg]
+    source: |
+      del(.source_type)
+      del(._path)
+      ts_rc, e1 = parse_timestamp(to_string(.received_at) ?? "", "%+")
+      if e1 != null { ts_rc = now() }
+      .received_at = format_timestamp!(ts_rc, "%F %T%.3f")
+      ts_in, e2 = parse_timestamp(to_string(.ingested_at) ?? "", "%+")
+      if e2 != null { ts_in = now() }
+      .ingested_at = format_timestamp!(ts_in, "%F %T%.3f")
+
   heartbeat_parse:
     type: remap
     inputs: [router.heartbeat]
@@ -597,6 +612,18 @@ sinks:
     compression: gzip
     batch: { timeout_secs: 10, max_events: 10000 }
     buffer: { type: disk, max_size: 536870912, when_full: block }
+
+  lake_gmail_messages:
+    type: clickhouse
+    inputs: [gmail_messages_parse]
+    endpoint: http://clickhouse:8123
+    database: setoku
+    table: gmail_messages
+    auth: { strategy: basic, user: "${CLICKHOUSE_USER}", password: "${CLICKHOUSE_PASSWORD}" }
+    compression: gzip
+    batch: { timeout_secs: 10, max_events: 10000 }
+    # 1 GiB disk buffer — full message bodies are the heaviest lake payload
+    buffer: { type: disk, max_size: 1073741824, when_full: block }
 
   lake_heartbeats:
     type: clickhouse

@@ -50,6 +50,7 @@ export const LAKE_SOURCES: LakeSource[] = [
   { table: "monarch_net_worth", source: "Monarch · net worth", ts: "ingested_at", blurb: "Daily net-worth history — assets vs. liabilities per day (query with FINAL)", connector: "monarch-poller" },
   { table: "monarch_budgets", source: "Monarch · budgets", ts: "ingested_at", blurb: "Monthly budget vs. actual by category (query with FINAL)", connector: "monarch-poller" },
   { table: "monarch_holdings", source: "Monarch · holdings", ts: "snapshot_ts", blurb: "Investment holdings snapshots — positions and value per account over time", connector: "monarch-poller" },
+  { table: "gmail_messages", source: "Gmail", ts: "received_at", blurb: "Personal email — sender, subject, plain-text body (UNTRUSTED free text: anyone can email you). Spam/trash & auth/2FA mail excluded; marketing flagged is_bulk=1 (filter WHERE is_bulk=0); 18-mo retention. Mutable rows: query with FINAL", connector: "gmail-poller" },
   { table: "pg_mirror_runs", source: "Business-DB mirror", ts: "finished_at", blurb: "Reload history of the biz.* business-DB mirror — the mirrored tables themselves live in the biz database (query biz.<table>, clickhouse dialect)", connector: "pg-mirror" },
   { table: "ingest_raw", source: "Unrouted (raw)", ts: "ingested_at", blurb: "Raw ingest that didn't match a known schema (rarely queried directly)" },
 ];
