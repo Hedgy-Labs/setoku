@@ -211,6 +211,26 @@ which re-runs the panels bound to the new value (the param variant caches
 separately — see Freshness). Controls are chrome: they live in the trusted shell,
 not the sandboxed template, so the agent never hand-rolls input widgets.
 
+### App-driven param changes (`Setoku.setParam`)
+
+The control bar is the viewer's door; `Setoku.setParam(name, value)` is the
+*template's* door to the same room. An in-frame widget — a search box, an
+autocomplete list, a "next page" button — calls it to change a declared param and
+re-run the panels bound to it, which is the **only** way the no-network frame can
+fetch new data on demand (it can't reach the box itself). This is what lets an app
+load a slim list up front and then pull one row's detail *async* when the viewer
+picks it, instead of shipping every row's detail in the first payload.
+
+It rides the same `postMessage` bridge as `Setoku.state`, and it **spends no
+trust**: the value takes the identical path as a control change — coerced to the
+param's declared type and engine-bound in `renderApp` (never spliced into SQL) —
+so it can't name a table/column or drive a write, exactly like `?p.<name>=`. The
+shell honors it **only for a declared param** (an unknown name has no control and
+is ignored, so a template can't mint arbitrary query keys). It's fire-and-forget
+(the shell reloads the frame; there's no reply to await). On a box that predates
+this it's a harmless no-op, so feature-detect (`typeof Setoku.setParam ===
+"function"`) and keep a control-bar fallback.
+
 ## Per-app state — an app's own datastore
 
 An app can **read** governed company data, but it can never **write** to a
@@ -344,7 +364,8 @@ SQL numerics can arrive as **strings** so chart math silently NaNs to zero. Two
 mitigations:
 
 - **Tested chart helpers** (`lib/app-runtime.ts`) are injected into every frame as
-  `window.Setoku.*`: `bar`, `table`, `stat`, `line` (plus `state`, above). They
+  `window.Setoku.*`: `bar`, `table`, `stat`, `line` (plus `state` and `setParam`,
+  above). They
   coerce numeric strings, size correctly (`display:block`), and render
   empty/error states — so the agent calls a known-good primitive instead of
   reinventing it. Covered by `test/app-runtime.test.ts` via a DOM stub. Custom

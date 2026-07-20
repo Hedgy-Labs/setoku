@@ -151,8 +151,22 @@ export const APP_RUNTIME = `(function () {
       del: function (scope, key) { return call("delete", scope, key); }
     };
   })();
+  // Ask the trusted parent shell to change a declared viewer param and re-run the
+  // panels bound to it — the app-driven equivalent of the viewer moving a control
+  // in the shell's param bar. Lets an in-frame widget (a search box, an
+  // autocomplete list) drive the async fetch that the no-network frame can't do
+  // itself. This spends NO trust: the value takes the SAME path as a control
+  // change — coerced to the param's declared type and ENGINE-BOUND in renderApp
+  // (never spliced into SQL), so it can't name a table/column or drive a write.
+  // The shell ignores names that aren't declared params. Fire-and-forget: the
+  // shell reloads the frame, so there's no reply to await; on a surface with no
+  // bridge (an old box that predates this) it's a harmless no-op. Feature-detect
+  // with \`typeof Setoku.setParam === "function"\` and keep a control-bar fallback.
+  function setParam(name, value) {
+    try { parent.postMessage({ __setoku_set_param: true, name: String(name), value: value == null ? "" : String(value) }, "*"); } catch (e) { /* no parent */ }
+  }
   window.Setoku = { bar: bar, table: table, stat: stat, line: line, fmt: fmt, num: num,
-    rows: function (k) { return resolve(k).rows; }, state: state };
+    rows: function (k) { return resolve(k).rows; }, state: state, setParam: setParam };
   // Echo the RESOLVED param values to the parent shell so the control bar reflects
   // what actually ran — a viewer value the server rejected shows as the default
   // here, not what was typed. The parent resets its controls to these.

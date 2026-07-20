@@ -111,6 +111,10 @@ export function AppView() {
   const [framePanels, setFramePanels] = useState<{ t: string; panels: Record<string, LivePanel> } | null>(null);
   const framePanelsRef = useRef(framePanels);
   framePanelsRef.current = framePanels;
+  // Declared params, mirrored into a ref so the (id-scoped) message handler can
+  // validate a frame-driven `setParam` name against the current app without being
+  // torn down and re-subscribed on every metadata change.
+  const paramsRef = useRef<AppParam[]>([]);
   const [frameErr, setFrameErr] = useState(false); // frame load failed (no echo)
   const lastRefresh = useRef(0); // debounce for the manual Refresh button
   // Live format for the watchdog's fire-time decision (see onFrameLoad).
@@ -136,6 +140,25 @@ export function AppView() {
     nonceRef.current += 1;
     setFrame({ n: nonceRef.current, force: !!opts.force });
   }, []);
+
+  // Apply one param change — from the shell's control bar OR from the frame's own
+  // `Setoku.setParam` bridge (both land here so they behave identically). Marks it
+  // touched (→ goes on the wire), records the sent value, drops any stale server
+  // echo for it, and reloads the frame for the new variant.
+  const onParamChange = useCallback(
+    (name: string, val: string) => {
+      touched.current.add(name); // an explicit change → goes on the wire
+      setParamVals((v) => ({ ...v, [name]: val }));
+      setEchoed((v) => {
+        if (!(name in v)) return v;
+        const next = { ...v };
+        delete next[name]; // an explicit value supersedes the prior server echo
+        return next;
+      });
+      reloadFrame({ clearLive: true }); // new variant → drop the old numbers
+    },
+    [reloadFrame],
+  );
 
   // Reset per-app state on navigation (one AppView instance is reused across
   // /apps/:id). reloadFrame bumps the nonce so a late echo from the PREVIOUS
@@ -164,6 +187,7 @@ export function AppView() {
   const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
   const active = !!data && !data.archivedAt;
   formatRef.current = fresh?.format; // for the watchdog's fire-time decision
+  paramsRef.current = data?.params ?? []; // for validating a frame-driven setParam
 
   // Live numbers for the CURRENT frame only (echo token must match the nonce).
   const livePanels = framePanels && framePanels.t === String(frame.n) ? framePanels.panels : null;
@@ -210,9 +234,11 @@ export function AppView() {
         __setoku_state_req?: boolean;
         __setoku_params_echo?: boolean;
         __setoku_provenance?: boolean;
+        __setoku_set_param?: boolean;
         t?: string | null;
         panels?: Record<string, LivePanel>;
         params?: Record<string, string>;
+        name?: unknown;
         id?: number;
         op?: string;
         scope?: string;
@@ -246,6 +272,18 @@ export function AppView() {
           });
         return;
       }
+      // Frame-driven param change (`Setoku.setParam`): the app asks us to re-run
+      // the panels bound to a new value — same effect as the viewer moving the
+      // control. Honored ONLY for a DECLARED param (an unknown name is ignored, so
+      // an app can't mint arbitrary query keys); the value is coerced + engine-bound
+      // downstream exactly like a control change, so this opens no injection hole.
+      if (m.__setoku_set_param === true) {
+        const name = typeof m.name === "string" ? m.name : "";
+        if (name && paramsRef.current.some((p) => p.name === name)) {
+          onParamChange(name, m.value == null ? "" : String(m.value));
+        }
+        return;
+      }
       if (m.__setoku_state_req !== true) return;
       const reply = (body: { result?: unknown; error?: string }) =>
         frame.contentWindow?.postMessage({ __setoku_state_res: true, id: m.id, ...body }, "*");
@@ -271,7 +309,7 @@ export function AppView() {
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [id]);
+  }, [id, onParamChange]);
 
   // Auto-refresh on the app's interval — a plain cache-bounded frame reload (no
   // force). reloadFrame is stable, so param changes don't tear down the timer; a
@@ -495,17 +533,7 @@ export function AppView() {
           // Controls show the echoed (server-resolved) value when present, else the
           // sent value, else the default — display overlaid on the sent state.
           values={{ ...paramVals, ...echoed }}
-          onChange={(name, val) => {
-            touched.current.add(name); // an explicit user change → goes on the wire
-            setParamVals((v) => ({ ...v, [name]: val }));
-            setEchoed((v) => {
-              if (!(name in v)) return v;
-              const next = { ...v };
-              delete next[name]; // user input supersedes the prior server echo
-              return next;
-            });
-            reloadFrame({ clearLive: true }); // new variant → drop the old numbers
-          }}
+          onChange={onParamChange}
         />
       ) : null}
       {/* Spinner/error only BEFORE the first metadata load. The iframe reloads on
