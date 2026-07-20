@@ -980,7 +980,16 @@ function paramControlsHtml(params: AppParam[]): string {
   };
   return (
     `<div id="controls">` +
-    params.map((p) => `<label class="pc"><span>${escapeHtml(p.label || p.name)}</span>${ctrl(p)}</label>`).join("") +
+    // A `hidden` param renders no visible control — but stays in the DOM as a
+    // hidden input carrying its data-pname, so paramQuery, the echo reset, and the
+    // Setoku.setParam lookup all keep finding it. The template drives it instead.
+    params
+      .map((p) =>
+        p.hidden
+          ? `<input type="hidden" data-pname="${escapeHtml(p.name)}" value="${escapeHtml(String(p.default ?? ""))}">`
+          : `<label class="pc"><span>${escapeHtml(p.label || p.name)}</span>${ctrl(p)}</label>`,
+      )
+      .join("") +
     `</div>`
   );
 }
@@ -1085,6 +1094,16 @@ function publicAppShell(opts: {
     // used, so a rejected input snaps back to the default instead of lingering.
     if(m.__setoku_params_echo===true){ document.querySelectorAll('[data-pname]').forEach(function(el){
       var v=m.params&&m.params[el.getAttribute('data-pname')]; if(v!==undefined&&v!==null) el.value=v; }); return; }
+    // Frame-driven param change (Setoku.setParam): re-run the panels bound to the
+    // new value, exactly as if the viewer changed the control. Honored ONLY for a
+    // declared param (we look up its control by data-pname; an unknown name has no
+    // control and is ignored). The value is coerced + engine-bound in renderApp,
+    // same as any control change — no injection surface. Param names are
+    // \`[A-Za-z_][A-Za-z0-9_]*\` (validated at publish), so the attribute selector
+    // is safe without escaping.
+    if(m.__setoku_set_param===true){ var pn=typeof m.name==='string'?m.name:'';
+      var pel=pn&&/^[A-Za-z_][A-Za-z0-9_]*$/.test(pn)?document.querySelector('[data-pname="'+pn+'"]'):null;
+      if(pel){ pel.value=(m.value==null?'':String(m.value)); reload(); } return; }
     if(m.__setoku_state_req!==true) return;
     var scope=m.scope==='viewer'?'viewer':'app', owner=scope==='viewer'?viewerId:'';
     var reply=function(b){ b.__setoku_state_res=true; b.id=m.id; frame.contentWindow.postMessage(b,'*'); };

@@ -184,6 +184,7 @@ interface AppParam {
   default: string | number | boolean; // REQUIRED — the app must render with no input
   options?: { value, label? }[];      // enum: the closed set of accepted values
   min?, max?, maxLength?;             // int / text bounds
+  hidden?: boolean;                   // render NO visible control; drive it via Setoku.setParam
 }
 ```
 
@@ -210,6 +211,34 @@ surfaces: the public shell (`/p/<id>`, server-rendered) and the React `AppView`
 which re-runs the panels bound to the new value (the param variant caches
 separately — see Freshness). Controls are chrome: they live in the trusted shell,
 not the sandboxed template, so the agent never hand-rolls input widgets.
+
+### App-driven param changes (`Setoku.setParam`)
+
+The control bar is the viewer's door; `Setoku.setParam(name, value)` is the
+*template's* door to the same room. An in-frame widget — a search box, an
+autocomplete list, a "next page" button — calls it to change a declared param and
+re-run the panels bound to it, which is the **only** way the no-network frame can
+fetch new data on demand (it can't reach the box itself). This is what lets an app
+load a slim list up front and then pull one row's detail *async* when the viewer
+picks it, instead of shipping every row's detail in the first payload.
+
+It rides the same `postMessage` bridge as `Setoku.state`, and it **spends no
+trust**: the value takes the identical path as a control change — coerced to the
+param's declared type and engine-bound in `renderApp` (never spliced into SQL) —
+so it can't name a table/column or drive a write, exactly like `?p.<name>=`. The
+shell honors it **only for a declared param** (an unknown name has no control and
+is ignored, so a template can't mint arbitrary query keys). It's fire-and-forget
+(the shell reloads the frame; there's no reply to await). On a box that predates
+this it's a harmless no-op, so feature-detect (`typeof Setoku.setParam ===
+"function"`) and keep a control-bar fallback.
+
+When an in-frame widget *owns* a param end-to-end (an autocomplete that IS the
+input), declare that param `hidden: true`: the shell renders no visible control
+for it — so the toolbar doesn't show a redundant second box next to the widget —
+but it still binds and stays fully drivable by `setParam`. On the public shell a
+hidden param is emitted as a `type="hidden"` input (keeping its `data-pname` in the
+DOM so the reload/echo/`setParam` plumbing still finds it); on the team shell the
+control bar simply skips it (and renders nothing at all if every param is hidden).
 
 ## Per-app state — an app's own datastore
 
@@ -344,7 +373,8 @@ SQL numerics can arrive as **strings** so chart math silently NaNs to zero. Two
 mitigations:
 
 - **Tested chart helpers** (`lib/app-runtime.ts`) are injected into every frame as
-  `window.Setoku.*`: `bar`, `table`, `stat`, `line` (plus `state`, above). They
+  `window.Setoku.*`: `bar`, `table`, `stat`, `line` (plus `state` and `setParam`,
+  above). They
   coerce numeric strings, size correctly (`display:block`), and render
   empty/error states — so the agent calls a known-good primitive instead of
   reinventing it. Covered by `test/app-runtime.test.ts` via a DOM stub. Custom

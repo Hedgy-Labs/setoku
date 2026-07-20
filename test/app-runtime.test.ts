@@ -70,6 +70,24 @@ describe("Setoku chart runtime", () => {
     expect(prov!.panels.cnt.error).toBe("boom"); // per-panel error rides along
   });
 
+  it("setParam: posts a declared-param change up to the parent shell (stringified)", () => {
+    const { Setoku, messages } = runRuntime({ rev: { rows: [{ v: 1 }], error: null } });
+    Setoku.setParam("person", "abc123");
+    const msg = messages.find((m) => m.__setoku_set_param === true) as
+      | { name: string; value: string }
+      | undefined;
+    expect(msg).toBeTruthy();
+    expect(msg!.name).toBe("person");
+    expect(msg!.value).toBe("abc123");
+
+    // A non-string value is coerced (params bind as strings); null/undefined → "".
+    Setoku.setParam("n", 42);
+    Setoku.setParam("blank", null);
+    const vals = messages.filter((m) => m.__setoku_set_param === true).map((m) => m.value);
+    expect(vals).toContain("42");
+    expect(vals).toContain("");
+  });
+
   it("stat + table coerce and render", () => {
     const { Setoku, html } = runRuntime({
       s: { rows: [{ n: "1298" }], error: null },

@@ -1494,6 +1494,10 @@ const PARAM_SCHEMA = z.object({
   min: z.number().optional().describe("int: inclusive minimum"),
   max: z.number().optional().describe("int: inclusive maximum"),
   maxLength: z.number().optional().describe("text: max length"),
+  hidden: z
+    .boolean()
+    .optional()
+    .describe("render NO visible shell control — the param still binds and is drivable via Setoku.setParam from the template (for a param an in-frame widget owns)"),
 });
 
 // The full app-authoring contract. Served on demand by the app_guide tool rather
@@ -1560,8 +1564,21 @@ const APP_GUIDE = [
   "Declared inputs the viewer can change. A panel's SQL references one as `:name` (e.g.",
   "`WHERE region = :region`); the value is type-coerced and ENGINE-BOUND (never string-interpolated, so",
   "injection-safe — it can't name a table/column or drive a write). Each param:",
-  "`{ name, type, default, label?, options?, min?, max?, maxLength? }` — `type` is date/int/text/bool/enum,",
+  "`{ name, type, default, label?, options?, min?, max?, maxLength?, hidden? }` — `type` is date/int/text/bool/enum,",
   "`default` is REQUIRED (the app must render with no viewer input), `options` is the closed set for enum.",
+  "By default each param renders a control in the trusted toolbar (chrome — you never hand-roll it).",
+  "",
+  "## Async fetch on demand — `Setoku.setParam` + `hidden`",
+  "The frame has NO network, so the ONLY way to fetch new data after load is to change a param and let the",
+  "box re-run the panels bound to it. `Setoku.setParam(name, value)` lets YOUR in-frame widget (a search",
+  "box, an autocomplete, a pager) do exactly that — same coerced, engine-bound path as the toolbar control,",
+  "honored only for a DECLARED param. So an app can inject a slim list up front and pull ONE row's detail",
+  "async when the viewer picks it, instead of shipping every row's detail in the first payload (stay under",
+  "the ~3.5MB budget without trimming). Pattern: a no-param `roster` panel feeds a client-side finder; the",
+  "detail panels filter by `:sel`; on click call `Setoku.setParam('sel', id)`.",
+  "When your widget OWNS the input, mark that param `hidden: true` so the toolbar shows no redundant second",
+  "box — it still binds and is still drivable by setParam. Feature-detect (`typeof Setoku.setParam ===",
+  "'function'`) and keep a visible-control fallback for a box that predates setParam.",
   "",
   "## App state (interactive apps)",
   "The app has its OWN private datastore — it can persist state but CANNOT write your data sources:",

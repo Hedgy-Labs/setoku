@@ -206,6 +206,8 @@ export interface AppParam {
   min?: number;
   max?: number;
   maxLength?: number;
+  /** Render no visible control — still binds, still drivable via Setoku.setParam. */
+  hidden?: boolean;
 }
 
 /** The team viewer's data: app meta + freshly-rendered panel provenance.

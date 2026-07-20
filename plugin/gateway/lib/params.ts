@@ -46,6 +46,12 @@ export interface AppParam {
   max?: number;
   /** text length ceiling (defaults to TEXT_MAX). */
   maxLength?: number;
+  /** Render NO visible shell control for this param — it still exists, binds, and
+   *  is drivable via `Setoku.setParam` from the template. For a param an in-frame
+   *  widget owns end-to-end (an autocomplete that IS the input), so the toolbar
+   *  doesn't show a redundant second box. The value still flows the same coerced,
+   *  engine-bound path; hidden changes presentation only. */
+  hidden?: boolean;
 }
 
 /** A coerced, ready-to-bind value: a typed scalar, never raw viewer text. */
