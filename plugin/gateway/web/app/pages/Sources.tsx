@@ -121,6 +121,22 @@ function ConnectDialog({
     `Connect a new data source to my Setoku (${location.origin}).\n` +
     `Use the /setoku:connect skill — it wires the source up read-only, verifies data is actually flowing, and saves what it learns as knowledge.\n\n` +
     `What I want to connect: ${source ?? ""}\n`;
+  // Gmail's one-time OAuth-client setup, as an agent prompt (paste into Claude Code)
+  // rather than manual steps — same "your agent wires it up" model as every other
+  // source. It has the box's exact redirect URI baked in.
+  const gmailSetupPrompt =
+    `Set up the Gmail connector for my Setoku box (${location.origin}) end-to-end.\n\n` +
+    `1. Walk me step-by-step through the Google Cloud Console: create a project, enable the Gmail API, ` +
+    `configure the OAuth consent screen (pick "Internal" if my mailboxes are on a Google Workspace domain I ` +
+    `admin, otherwise "External" and add my address as a test user), add the gmail.readonly scope, and create ` +
+    `a "Web application" OAuth client with this authorized redirect URI:\n` +
+    `   ${gmail?.redirectUri ?? `${location.origin}/admin/api/gmail/oauth/callback`}\n\n` +
+    `2. Take the Client ID and Client secret I give you and set SETOKU_GMAIL_CLIENT_ID and ` +
+    `SETOKU_GMAIL_CLIENT_SECRET in the box's .env.\n\n` +
+    `3. Recreate the gateway and bring up the gmail-poller (the "gmail" compose profile). You can't connect a ` +
+    `mailbox yourself — that's a browser consent as the mailbox owner's own Google account — so once the ` +
+    `client is wired, send me back to Sources → Gmail → "Connect a mailbox" to consent to my own inbox ` +
+    `(each other mailbox owner connects theirs the same way, from their own admin login).\n`;
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
       <AlertDialog.Portal>
@@ -148,16 +164,26 @@ function ConnectDialog({
               ) : (
                 <>
                   <p className="mt-3 text-sm leading-relaxed text-stone-600">
-                    Set up the OAuth client once: create a Google Cloud “Web application” client, set{" "}
-                    <code className="kbd">GMAIL_CLIENT_ID</code> / <code className="kbd">GMAIL_CLIENT_SECRET</code> on the
-                    box, and register this authorized redirect URI:
+                    The one-time OAuth client isn’t set up yet. Paste this into Claude Code with the Setoku
+                    plugin — it’ll walk you through the Google Cloud Console and wire up the box:
                   </p>
-                  <code className="mt-2 block break-all rounded-lg bg-stone-50 px-2 py-1 text-xs text-stone-700">
-                    {gmail?.redirectUri ?? "…"}
-                  </code>
-                  <p className="mt-2 text-sm leading-relaxed text-stone-500">Then reload — a Connect button appears here.</p>
-                  <div className="mt-4 flex justify-end">
-                    <AlertDialog.Close className="btn btn-primary">Close</AlertDialog.Close>
+                  <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
+                    {gmailSetupPrompt}
+                  </pre>
+                  <p className="mt-2 text-sm leading-relaxed text-stone-500">
+                    Once it’s wired up, reload — a Connect button appears here.
+                  </p>
+                  <div className="mt-4 flex justify-end gap-2">
+                    <AlertDialog.Close className="btn btn-ghost">Close</AlertDialog.Close>
+                    <AlertDialog.Close
+                      className="btn btn-primary"
+                      onClick={() => {
+                        void navigator.clipboard?.writeText(gmailSetupPrompt).catch(() => {});
+                        onCopied();
+                      }}
+                    >
+                      Copy prompt
+                    </AlertDialog.Close>
                   </div>
                 </>
               )}
