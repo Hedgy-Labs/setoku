@@ -688,7 +688,7 @@ import {
 // one query per table, and firing all ~10 at once thundering-herds a small, busy
 // ClickHouse (queries queue and each stalls seconds). A small cap spreads them so
 // the uncached load stays gentle; results keep input order. (Repeated loads are
-// served from cachedProbe, so this only bites the first load per 30s window.)
+// served from cachedProbe, so this only bites the first load per 10s window.)
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
@@ -1587,35 +1587,37 @@ const httpServer = http.createServer(async (req, res) => {
                 redirect_uri: gmailRedirectUri(req.headers.host),
                 grant_type: "authorization_code",
               }),
+              signal: AbortSignal.timeout(30_000),
             });
             const tok = (await tokRes.json().catch(() => ({}))) as { refresh_token?: string; access_token?: string };
             if (!tokRes.ok || !tok.refresh_token)
               return back("Gmail did not return a refresh token. Revoke prior access at myaccount.google.com/permissions and retry.");
-            // discover which mailbox this is (best-effort — the poller re-derives it)
+            // Resolve the mailbox address — REQUIRED, not best-effort: we key dedup
+            // and the UI's disconnect on the email, so a blank-email account would be
+            // silently un-removable and could clobber another mailbox's token. The
+            // access token was just minted, so this near-always succeeds; retry a
+            // couple times for a transient hiccup, and reject rather than persist a
+            // blank if it truly can't be read.
             let email = "";
-            if (tok.access_token) {
+            for (let i = 0; i < 3 && !email && tok.access_token; i++) {
+              if (i > 0) await new Promise((r) => setTimeout(r, 400));
               const p = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
                 headers: { authorization: `Bearer ${tok.access_token}` },
+                signal: AbortSignal.timeout(15_000),
               })
                 .then((r) => (r.ok ? (r.json() as Promise<{ emailAddress?: string }>) : null))
                 .catch(() => null);
               email = p?.emailAddress ?? "";
             }
-            // Replace any prior entry for the SAME mailbox (by email when known) or
-            // the SAME refresh token, and collapse blank-email entries — so a
-            // reconnect (e.g. to rotate a revoked token) never leaves the old token
-            // behind, and a failed email lookup can't pile up un-removable "(mailbox)"
-            // rows (gmail_disconnect matches by exact non-empty email).
-            const accounts = readGmailAccounts().filter(
-              (a) =>
-                !(email && a.email === email) &&
-                a.refresh_token !== tok.refresh_token &&
-                !(!email && !a.email),
-            );
+            if (!email) return back("Connected to Google, but couldn’t read the mailbox address — please try connecting again.");
+            // Replace any prior entry for the SAME mailbox or the SAME refresh token,
+            // then add. Every stored account now has a real email, so dedup and
+            // /admin disconnect both key on it cleanly (no blank-email edge cases).
+            const accounts = readGmailAccounts().filter((a) => a.email !== email && a.refresh_token !== tok.refresh_token);
             accounts.push({ email, refresh_token: tok.refresh_token, connected_at: new Date().toISOString(), connected_by: identity });
             writeGmailAccounts(accounts);
             store.audit(identity, "gmail_connected", { email });
-            return back(email ? `Connected ${email}. It will start syncing shortly.` : "Gmail mailbox connected. It will start syncing shortly.");
+            return back(`Connected ${email}. It will start syncing shortly.`);
           } catch (e) {
             return back(`Gmail connection failed: ${String(e).slice(0, 120)}`);
           }

@@ -414,6 +414,13 @@ interface GmailMessage {
 
 // Parse a full message into a lake row (JSON line), or null if it's dropped.
 function toLine(msg: GmailMessage, account: string, ingestedAt: string): string | null {
+  const labels = msg.labelIds ?? [];
+  // Enforce the spam/trash exclusion HERE, for every path. messages.list (backfill)
+  // excludes SPAM/TRASH by default, but the steady-state history.list path reports
+  // newly-arrived mail REGARDLESS of label — so without this, new spam (the highest
+  // injection-risk text) would land in the lake on every tick past the first
+  // backfill, breaking the safety property the schema/README promise.
+  if (labels.includes("SPAM") || labels.includes("TRASH")) return null;
   const h = msg.payload?.headers;
   const from = parseAddress(header(h, "From"));
   const subject = header(h, "Subject");
@@ -430,7 +437,7 @@ function toLine(msg: GmailMessage, account: string, ingestedAt: string): string 
     subject: trunc(subject, 1000),
     snippet: msg.snippet ?? "",
     body: trunc(extractBody(msg.payload), BODY_CAP),
-    labels: JSON.stringify(msg.labelIds ?? []),
+    labels: JSON.stringify(labels),
     has_attachments: hasAttachment(msg.payload) ? 1 : 0,
     is_bulk: header(h, "List-Unsubscribe") ? 1 : 0,
     ingested_at: ingestedAt,
