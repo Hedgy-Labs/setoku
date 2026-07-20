@@ -184,6 +184,7 @@ interface AppParam {
   default: string | number | boolean; // REQUIRED — the app must render with no input
   options?: { value, label? }[];      // enum: the closed set of accepted values
   min?, max?, maxLength?;             // int / text bounds
+  hidden?: boolean;                   // render NO visible control; drive it via Setoku.setParam
 }
 ```
 
@@ -230,6 +231,14 @@ is ignored, so a template can't mint arbitrary query keys). It's fire-and-forget
 (the shell reloads the frame; there's no reply to await). On a box that predates
 this it's a harmless no-op, so feature-detect (`typeof Setoku.setParam ===
 "function"`) and keep a control-bar fallback.
+
+When an in-frame widget *owns* a param end-to-end (an autocomplete that IS the
+input), declare that param `hidden: true`: the shell renders no visible control
+for it — so the toolbar doesn't show a redundant second box next to the widget —
+but it still binds and stays fully drivable by `setParam`. On the public shell a
+hidden param is emitted as a `type="hidden"` input (keeping its `data-pname` in the
+DOM so the reload/echo/`setParam` plumbing still finds it); on the team shell the
+control bar simply skips it (and renders nothing at all if every param is hidden).
 
 ## Per-app state — an app's own datastore
 

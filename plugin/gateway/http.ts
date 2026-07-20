@@ -980,7 +980,16 @@ function paramControlsHtml(params: AppParam[]): string {
   };
   return (
     `<div id="controls">` +
-    params.map((p) => `<label class="pc"><span>${escapeHtml(p.label || p.name)}</span>${ctrl(p)}</label>`).join("") +
+    // A `hidden` param renders no visible control — but stays in the DOM as a
+    // hidden input carrying its data-pname, so paramQuery, the echo reset, and the
+    // Setoku.setParam lookup all keep finding it. The template drives it instead.
+    params
+      .map((p) =>
+        p.hidden
+          ? `<input type="hidden" data-pname="${escapeHtml(p.name)}" value="${escapeHtml(String(p.default ?? ""))}">`
+          : `<label class="pc"><span>${escapeHtml(p.label || p.name)}</span>${ctrl(p)}</label>`,
+      )
+      .join("") +
     `</div>`
   );
 }

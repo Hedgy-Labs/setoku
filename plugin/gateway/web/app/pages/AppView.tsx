@@ -527,7 +527,7 @@ export function AppView() {
           </Menu>
         </div>
       </header>
-      {data && data.params.length > 0 ? (
+      {data && data.params.some((p) => !p.hidden) ? (
         <ParamBar
           params={data.params}
           // Controls show the echoed (server-resolved) value when present, else the
@@ -765,7 +765,9 @@ function ParamBar({
 }) {
   return (
     <div className="flex flex-none flex-wrap items-center gap-x-4 gap-y-2 border-b border-stone-200 bg-stone-50/80 px-4 py-2">
-      {params.map((p) => (
+      {/* A `hidden` param renders no control — it still binds and is driven by the
+          template via Setoku.setParam (an in-frame widget owns the input). */}
+      {params.filter((p) => !p.hidden).map((p) => (
         <label key={p.name} className="flex items-center gap-1.5 text-xs text-stone-600">
           <span>{p.label || p.name}</span>
           <ParamControl p={p} value={values[p.name] ?? String(p.default)} onChange={(v) => onChange(p.name, v)} />
