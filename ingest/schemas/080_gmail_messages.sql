@@ -1,18 +1,25 @@
 -- SPDX-License-Identifier: Apache-2.0
 -- Personal Gmail messages (poll-based, format=full → plain-text body).
--- A message is MUTABLE (labels change: read/unread, archived, recategorized), so
--- the poller re-emits anything the History API reports and this is a
 -- ReplacingMergeTree keyed by (account, message_id) with ingested_at as the
 -- version — newest observation wins.
+--
+-- ⚠ LABELS ARE AS-OF-INGEST, not live. The incremental sync uses the History API
+-- with historyTypes=messageAdded, so a message's `labels` reflect its state when
+-- first ingested; a POST-ingest reclassification (INBOX → SPAM/TRASH, archive,
+-- read/unread) is NOT re-observed until a full resync (history-cursor expiry).
+-- Practical consequence: a message that ARRIVES as spam/trash is excluded (see
+-- below), but one that arrives in INBOX and is LATER marked spam stays queryable
+-- with its stale labels until the 18-month TTL. Don't rely on `labels` for current
+-- state. (Re-observing label changes is a known follow-up — see the poller README.)
 --
 -- ⚠ subject / snippet / body / from_name are UNTRUSTED free text — anyone can
 -- email you, so this is the single highest prompt-injection surface in the lake.
 -- Treat as hostile downstream (same posture as slack_messages / github bodies).
--- SPAM + TRASH are never listed by the poller; auth/2FA/password-reset mail is
--- dropped at the poller BEFORE it lands here (zero query value, high liability).
+-- SPAM + TRASH are dropped at the poller (by label, on every path) BEFORE they
+-- land here, as is auth/2FA/password-reset mail (zero query value, high liability).
 --
 -- ⚠ Merges are async: query with FINAL (or argMax / LIMIT 1 BY) for current
--- state — a message re-observed after a label change would otherwise appear twice.
+-- state — a message re-observed (e.g. on resync) would otherwise appear twice.
 --
 -- Retention: an 18-month TTL on received_at self-prunes the archive so a family
 -- box never hoards a lifetime of mail. Adjust the window here, not via a cron.

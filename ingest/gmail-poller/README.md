@@ -90,6 +90,26 @@ The tokens file wins when it exists; env is used only when it doesn't.
 
 ## Adding a mailbox later
 
-No new service, no restart: in `/admin → Connectors`, click **Connect a mailbox**
-and consent. The new mailbox backfills on its next tick; existing mailboxes keep
-their cursors. Per-account state is keyed by email in `/state/gmail-poller.json`.
+No new service, no restart: in `/admin → Sources → Gmail`, click **Connect a
+mailbox** and consent. The new mailbox backfills on its next tick; existing
+mailboxes keep their cursors. Per-mailbox state in `/state/gmail-poller.json` is
+keyed by the credential (a hash of the refresh token), so a disconnect+reconnect
+mints a new token → a fresh backfill (no gap-mail lost).
+
+## Known limitations
+
+- **Labels are as-of-ingest, not live.** The incremental sync only watches
+  `messageAdded`, so a message reclassified AFTER ingest (INBOX → SPAM/TRASH,
+  archive, read/unread) isn't re-observed until a full resync. Mail that *arrives*
+  as spam/trash is excluded; mail marked spam *later* stays queryable with stale
+  labels until the 18-month TTL. Re-observing label changes (via `labelAdded` /
+  `labelRemoved` history + a delete path) is a follow-up.
+- **`/admin` manages OAuth-connected mailboxes only.** Mailboxes seeded via
+  `GMAIL_REFRESH_TOKENS` (the `set-gmail-token.ts` CLI path) still sync (union with
+  the file), but the gateway can't see the poller's env, so they don't appear in
+  the Gmail card and can't be disconnected from the UI — manage those on the box.
+  Don't mix the CLI and admin paths for the same mailbox.
+- **Liveness goes dark on an all-mailbox failure.** If every mailbox errors in a
+  tick (e.g. Vector briefly unreachable), no heartbeat is emitted until the next
+  clean tick, so `/admin` can show the poller stale for up to one poll interval on
+  a transient hiccup. This matches the other pollers' convention.

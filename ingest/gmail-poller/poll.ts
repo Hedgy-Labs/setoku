@@ -83,7 +83,9 @@ const STATE_FILE = path.join(STATE_DIR, "gmail-poller.json");
 const LIST_PAGE = 500; // messages.list maxResults cap
 const FLUSH = 200; // messages per Vector POST — bounded memory, like github pages
 
-// Per-mailbox sync cursor, keyed by the account email in one state file.
+// Per-mailbox sync cursor, keyed by the credential (MailboxHandle.key), NOT the
+// email — so a disconnect+reconnect (new token → new key) does a fresh backfill
+// instead of resuming incrementally and skipping mail from the gap.
 interface AccountState {
   historyId?: string; // cursor for users.history.list
   backfilled?: boolean;
@@ -115,6 +117,9 @@ const gmailDate = (daysBack: number): string => isoDate(new Date(Date.now() - da
 // The rest of the poller only ever sees this — never how the token was obtained.
 interface MailboxHandle {
   label: string; // short id for logs before the email is known
+  key: string; // stable per-credential state key (survives restarts). A reconnect
+  // mints a NEW refresh token → new key → fresh backfill, so mail received during a
+  // disconnect gap isn't lost (keying by email would resume incrementally and skip it).
   token(): Promise<string>;
   invalidate(): void; // drop the cached access token (called on 401)
 }
@@ -204,6 +209,8 @@ function mailboxHandles(): MailboxHandle[] {
   }
   return oauthRefreshTokens().map((rt) => ({
     label: `…${rt.slice(-6)}`,
+    // hash (not the raw token) as the state key — no secret in the state file
+    key: `oauth:${String(Bun.hash(rt))}`,
     token: () => oauthAccessToken(clientId, clientSecret, rt),
     invalidate: () => tokenCache.delete(rt),
   }));
@@ -450,7 +457,11 @@ async function fetchAndPush(h: MailboxHandle, ids: string[], account: string, in
   let landed = 0;
   let batch: string[] = [];
   for (const id of ids) {
-    const msg = await api<GmailMessage>(h, `/messages/${id}?format=full`);
+    // notFoundOk: a message listed by history.list can be deleted/expunged before
+    // we fetch it — a 404 must SKIP it, not throw (a throw aborts the whole tick,
+    // the cursor never advances, and every later tick re-404s the same id until the
+    // history window ages out — days of a stalled mailbox from one deletion).
+    const msg = await api<GmailMessage>(h, `/messages/${id}?format=full`, /* notFoundOk */ true);
     if (!msg) continue;
     const line = toLine(msg, account, ingestedAt);
     if (!line) continue;
@@ -500,15 +511,17 @@ async function listHistoryIds(h: MailboxHandle, startHistoryId: string): Promise
 }
 
 /* ---------------------------------------------------------------- loop */
-// Sync ONE mailbox. Mutates `state[account]`; throws on any hard failure so the
+// Sync ONE mailbox. Mutates `state[h.key]`; throws on any hard failure so the
 // caller can keep this mailbox's old cursor and move on to the next.
 async function pollMailbox(h: MailboxHandle, state: State, ingestedAt: string): Promise<{ account: string; landed: number; mode: string }> {
   // Identity + current historyId, captured at START so the cursor we store never
   // runs ahead of what we've processed.
   const profile = await api<{ emailAddress?: string; historyId?: string }>(h, "/profile");
   const account = profile?.emailAddress ?? "unknown";
-  const startHistoryId = profile?.historyId ?? state[account]?.historyId;
-  const st: AccountState = state[account] ?? {};
+  // State keyed by the credential (h.key), NOT the email: a reconnect mints a new
+  // token → new key → this reads as a first run → fresh backfill (no gap-mail lost).
+  const startHistoryId = profile?.historyId ?? state[h.key]?.historyId;
+  const st: AccountState = state[h.key] ?? {};
 
   let landed = 0;
   let mode: string;
@@ -535,7 +548,7 @@ async function pollMailbox(h: MailboxHandle, state: State, ingestedAt: string): 
 
   if (startHistoryId) st.historyId = startHistoryId;
   st.backfilled = true;
-  state[account] = st;
+  state[h.key] = st;
   return { account, landed, mode };
 }
 

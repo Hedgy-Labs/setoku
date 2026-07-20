@@ -342,6 +342,17 @@ function readGmailAccounts(): GmailAccount[] {
   }
 }
 function writeGmailAccounts(accounts: GmailAccount[]): void {
+  // Refuse to overwrite an existing-but-unparseable file: readGmailAccounts()
+  // returns [] for BOTH "absent" and "corrupt", so without this a connect/disconnect
+  // performed while the file is corrupt would derive its new set from an empty read
+  // and silently drop every previously-connected mailbox. Callers surface the throw.
+  if (fs.existsSync(GMAIL_TOKENS_FILE)) {
+    try {
+      JSON.parse(fs.readFileSync(GMAIL_TOKENS_FILE, "utf8"));
+    } catch {
+      throw new Error("gmail-tokens.json is unreadable — refusing to overwrite it (fix or remove it first)");
+    }
+  }
   // tmp + rename so the gmail-poller, which reads this file fresh each tick over a
   // shared volume, never sees a half-written (torn) JSON and skips a sync tick.
   fs.mkdirSync(path.dirname(GMAIL_TOKENS_FILE), { recursive: true });
@@ -2123,7 +2134,11 @@ const httpServer = http.createServer(async (req, res) => {
             const before = readGmailAccounts();
             const after = before.filter((a) => a.email !== email);
             if (after.length === before.length) return json(404, { ok: false, error: "mailbox not connected" });
-            writeGmailAccounts(after);
+            try {
+              writeGmailAccounts(after); // throws if the file is corrupt (won't clobber)
+            } catch (e) {
+              return json(500, { ok: false, error: String(e instanceof Error ? e.message : e) });
+            }
             store.audit(session.identity, "gmail_disconnected", { email });
             return json(200, { ok: true, flash: `Disconnected ${email}. It will stop syncing shortly.` });
           }
