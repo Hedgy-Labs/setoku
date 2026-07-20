@@ -124,20 +124,35 @@ const VIEWER_READ_APIS = new Set([
 // one ClickHouse query per source — ~20 on the Sources page. Cache the result
 // briefly, keyed by the CALLER'S source-deny set, so repeated loads (and the demo
 // viewer's anonymous hits) don't re-probe a possibly-busy lake every time. This
-// covers admins too: on a small box the fan-out can stall for seconds under load,
-// and heartbeats/row-counts don't change fast enough to need per-load freshness.
-// Keying by denies means a restricted member never reads a result computed for
-// someone with broader access (each distinct deny-set caches separately; an
-// undenied admin and the undenied viewer share one entry, which is correct).
-const PROBE_TTL_MS = 30_000;
+// covers admins too: on a small box the fan-out can stall for seconds under load.
+// Kept SHORT (10s) so an admin watching a backfill land sees fresh row-counts on
+// the next reload, while still collapsing rapid re-loads. Keying by denies means a
+// restricted member never reads a result computed for someone with broader access
+// (each distinct deny-set caches separately; an undenied admin and the undenied
+// viewer share one entry, which is correct).
+const PROBE_TTL_MS = 10_000;
 const probeCache = new Map<string, { at: number; value: unknown }>();
+// In-flight requests share one produce() call: without this, N concurrent cache
+// misses (a crawler on the demo box, a burst of tabs) each run the full fan-out,
+// defeating the point of the cache. The promise is cleared when it settles.
+const probeInflight = new Map<string, Promise<unknown>>();
 const denyKey = (denied: Set<string>): string => [...denied].sort().join(",");
 async function cachedProbe<T>(key: string, produce: () => Promise<T>): Promise<T> {
   const hit = probeCache.get(key);
   if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.value as T;
-  const value = await produce();
-  probeCache.set(key, { at: Date.now(), value });
-  return value;
+  const pending = probeInflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const p = (async () => {
+    try {
+      const value = await produce();
+      probeCache.set(key, { at: Date.now(), value });
+      return value;
+    } finally {
+      probeInflight.delete(key);
+    }
+  })();
+  probeInflight.set(key, p);
+  return p as Promise<T>;
 }
 
 // The single-page-app shell: a static document that boots the React app. It holds
@@ -327,8 +342,12 @@ function readGmailAccounts(): GmailAccount[] {
   }
 }
 function writeGmailAccounts(accounts: GmailAccount[]): void {
+  // tmp + rename so the gmail-poller, which reads this file fresh each tick over a
+  // shared volume, never sees a half-written (torn) JSON and skips a sync tick.
   fs.mkdirSync(path.dirname(GMAIL_TOKENS_FILE), { recursive: true });
-  fs.writeFileSync(GMAIL_TOKENS_FILE, JSON.stringify({ accounts }, null, 2) + "\n", { mode: 0o600 });
+  const tmp = `${GMAIL_TOKENS_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ accounts }, null, 2) + "\n", { mode: 0o600 });
+  fs.renameSync(tmp, GMAIL_TOKENS_FILE);
 }
 /** The shared OAuth client (operator-set env). Null until configured. */
 function gmailClient(): { id: string; secret: string } | null {
@@ -345,8 +364,12 @@ function gmailRedirectUri(host?: string): string {
 // a pending consent that outlives a restart just fails and the admin retries.
 const gmailOAuthStates = new Map<string, { identity: string; exp: number }>();
 function newGmailState(identity: string): string {
+  const now = Date.now();
+  // sweep expired entries — abandoned consents (user closes the tab at Google)
+  // are never redeemed, so without this the map leaks an entry per abandon.
+  for (const [k, v] of gmailOAuthStates) if (v.exp < now) gmailOAuthStates.delete(k);
   const s = mintToken();
-  gmailOAuthStates.set(s, { identity, exp: Date.now() + 10 * 60_000 });
+  gmailOAuthStates.set(s, { identity, exp: now + 10 * 60_000 });
   return s;
 }
 function takeGmailState(s: string): string | null {
@@ -1578,7 +1601,17 @@ const httpServer = http.createServer(async (req, res) => {
                 .catch(() => null);
               email = p?.emailAddress ?? "";
             }
-            const accounts = readGmailAccounts().filter((a) => a.email !== email || !email);
+            // Replace any prior entry for the SAME mailbox (by email when known) or
+            // the SAME refresh token, and collapse blank-email entries — so a
+            // reconnect (e.g. to rotate a revoked token) never leaves the old token
+            // behind, and a failed email lookup can't pile up un-removable "(mailbox)"
+            // rows (gmail_disconnect matches by exact non-empty email).
+            const accounts = readGmailAccounts().filter(
+              (a) =>
+                !(email && a.email === email) &&
+                a.refresh_token !== tok.refresh_token &&
+                !(!email && !a.email),
+            );
             accounts.push({ email, refresh_token: tok.refresh_token, connected_at: new Date().toISOString(), connected_by: identity });
             writeGmailAccounts(accounts);
             store.audit(identity, "gmail_connected", { email });

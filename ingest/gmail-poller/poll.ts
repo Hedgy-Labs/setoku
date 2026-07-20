@@ -156,11 +156,18 @@ async function oauthAccessToken(clientId: string, clientSecret: string, refreshT
   throw new Error("token refresh gave up after retries");
 }
 
-// Refresh tokens read FRESH each tick. The admin flow's secrets file is
-// authoritative when present (accepting the {accounts:[{refresh_token}]} it
-// writes, plus {refresh_tokens:[…]} and a bare […] for the CLI); when the file
-// doesn't exist yet, fall back to the GMAIL_REFRESH_TOKENS env (CLI/dev path).
+// Refresh tokens read FRESH each tick — the UNION of the admin flow's secrets
+// file ({accounts:[{refresh_token}]}, plus {refresh_tokens:[…]} / bare […]) AND
+// the GMAIL_REFRESH_TOKENS env (CLI/dev), deduped. Union, not file-XOR-env: once
+// the admin connects a mailbox the file appears, and an XOR would silently shadow
+// every env-seeded mailbox. A corrupt/torn file read falls back to whatever env
+// gave us rather than dropping to zero.
 function oauthRefreshTokens(): string[] {
+  const tokens = new Set<string>();
+  for (const t of (process.env.GMAIL_REFRESH_TOKENS ?? process.env.GMAIL_REFRESH_TOKEN ?? "").split(",")) {
+    const v = t.trim();
+    if (v) tokens.add(v);
+  }
   const file = process.env.GMAIL_TOKENS_FILE;
   if (file && fs.existsSync(file)) {
     try {
@@ -168,15 +175,15 @@ function oauthRefreshTokens(): string[] {
         | { accounts?: { refresh_token?: string }[]; refresh_tokens?: unknown[] }
         | unknown[];
       const arr = Array.isArray(j) ? j : (j.accounts?.map((a) => a.refresh_token) ?? j.refresh_tokens ?? []);
-      return arr.map(String).map((t) => t.trim()).filter(Boolean);
+      for (const t of arr) {
+        const v = String(t ?? "").trim();
+        if (v) tokens.add(v);
+      }
     } catch {
-      return []; // file present but corrupt → no mailboxes (don't silently use stale env)
+      /* file present but mid-write/corrupt → keep the env tokens we already have */
     }
   }
-  return (process.env.GMAIL_REFRESH_TOKENS ?? process.env.GMAIL_REFRESH_TOKEN ?? "")
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
+  return [...tokens];
 }
 
 // Build the list of mailbox handles for this tick. The one place the auth scheme
@@ -221,11 +228,23 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
       h.invalidate(); // force a fresh access token, then retry
       continue;
     }
-    // 429 rate / 403 usageLimits / 5xx → back off (respect Retry-After if sent)
-    if (r.status === 429 || r.status === 403 || r.status >= 500) {
+    // 429 rate / 5xx → back off (respect Retry-After if sent)
+    if (r.status === 429 || r.status >= 500) {
       const retryAfter = Number(r.headers.get("retry-after") ?? 0) * 1000;
       await Bun.sleep(Math.min(Math.max(retryAfter, 2 ** attempt * 1000), 5 * 60_000));
       continue;
+    }
+    // 403 is ambiguous on Gmail: a rate limit (retryable) vs a permission/scope
+    // error (permanent). Retry ONLY the rate-limit flavor — a permanent 403 must
+    // fail fast, or it burns all 6 backoffs (up to 5 min each) and, since tick()
+    // polls mailboxes sequentially, stalls every OTHER mailbox behind it.
+    if (r.status === 403) {
+      const body = await r.text().catch(() => "");
+      if (/rateLimitExceeded|userRateLimitExceeded|rate limit|Too Many Requests/i.test(body)) {
+        await Bun.sleep(Math.min(2 ** attempt * 1000, 5 * 60_000));
+        continue;
+      }
+      throw new Error(`GET ${pathAndQuery} → 403 (permission/scope?) ${body.slice(0, 200)}`);
     }
     if (!r.ok) throw new Error(`GET ${pathAndQuery} → ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
     return (await r.json()) as T;
@@ -343,10 +362,32 @@ function parseAddress(raw: string): { name: string; email: string } {
   return { name: "", email: raw.trim().toLowerCase() };
 }
 
+// Split an address-list header on commas that are NOT inside a quoted display
+// name or an <angle-addr> — a naive split on every comma turns
+// `"Doe, John" <j@x>, jane@y` into a bogus recipient `"doe`.
+function splitAddressList(raw: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQuote = false;
+  let inAngle = false;
+  for (const ch of raw) {
+    if (ch === '"' && !inAngle) inQuote = !inQuote;
+    else if (ch === "<" && !inQuote) inAngle = true;
+    else if (ch === ">" && !inQuote) inAngle = false;
+    if (ch === "," && !inQuote && !inAngle) {
+      out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.trim()) out.push(cur);
+  return out;
+}
+
 function parseAddressList(raw: string): string[] {
   if (!raw) return [];
-  return raw
-    .split(",")
+  return splitAddressList(raw)
     .map((s) => parseAddress(s).email)
     .filter(Boolean);
 }
