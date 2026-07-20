@@ -90,6 +90,15 @@ services:
       # reject ONLY, both granting zero authority. Optional; powers the cockpit's
       # drafting cadence (curation-cockpit-spec). Never accept/upsert.
       SETOKU_JANITOR_TOKENS: ${SETOKU_JANITOR_TOKENS:-}
+      # Gmail Connect (OAuth): the shared OAuth client (operator sets once) so the
+      # "/admin → Connect Gmail" flow can start the consent + exchange the code.
+      # The redirect URI is SETOKU_PUBLIC_URL + /admin/api/gmail/oauth/callback —
+      # register it on the client. Per-mailbox refresh tokens are written here, on
+      # the gateway-owned /data volume (NOT the SQLite kv table), and read by the
+      # gmail-poller (below) via a read-only mount of the same volume.
+      GMAIL_CLIENT_ID: ${SETOKU_GMAIL_CLIENT_ID:-}
+      GMAIL_CLIENT_SECRET: ${SETOKU_GMAIL_CLIENT_SECRET:-}
+      GMAIL_TOKENS_FILE: /data/gmail-tokens.json
       # NB: no SETOKU_DATABASE_URL — the gateway holds no business-DB
       # credential. Business tables reach agents only as the biz.* ClickHouse
       # mirror; pg-mirror (below) is the one container that reads the source.
@@ -143,7 +152,7 @@ services:
 
   clickhouse:
     logging: *default-logging
-    profiles: [lake, ingest, slack, render, mercury, github, monarch, mirror]
+    profiles: [lake, ingest, slack, render, mercury, github, monarch, gmail, mirror]
     image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
     restart: unless-stopped
     environment:
@@ -177,7 +186,7 @@ services:
 
   vector:
     logging: *default-logging
-    profiles: [ingest, render, mercury, github, monarch]
+    profiles: [ingest, render, mercury, github, monarch, gmail]
     image: timberio/vector:0.49.0-alpine@sha256:2a31648e67280953aaf6b219c1b04729ac5ed12820ec2bfb698630b2d989d135
     restart: unless-stopped
     environment:
@@ -314,6 +323,43 @@ services:
       vector:
         condition: service_healthy
 
+  # Gmail → ingest bridge (profile: gmail). Personal email via the Gmail REST API
+  # (OAuth read-only, gmail.readonly). Pull-based like GitHub: full-history
+  # backfill for free, no public endpoint. format=full → plain-text body; SPAM +
+  # TRASH are never listed and auth/2FA mail is dropped at the poller. Mutable
+  # (labels change) → ReplacingMergeTree keyed (account, message_id). State on a
+  # volume so restarts don't re-backfill.
+  #
+  # Auth: per-mailbox refresh tokens come from the "/admin → Connect Gmail" flow,
+  # which the gateway writes to /data/gmail-tokens.json on the setoku_data volume;
+  # this poller mounts that volume READ-ONLY at /gateway-data and reads the file
+  # fresh each tick (connect a mailbox → it syncs on the next tick, no restart).
+  # SETOKU_GMAIL_REFRESH_TOKENS stays as a CLI/dev fallback (used only when the
+  # tokens file doesn't exist). The shared OAuth client id/secret let the poller
+  # refresh access tokens. :- defaults keep `docker compose config` valid for
+  # non-gmail deploys.
+  gmail-poller:
+    logging: *default-logging
+    profiles: [gmail]
+    build:
+      context: .
+      dockerfile: ingest/gmail-poller/Dockerfile
+    restart: unless-stopped
+    environment:
+      GMAIL_CLIENT_ID: ${SETOKU_GMAIL_CLIENT_ID:-}
+      GMAIL_CLIENT_SECRET: ${SETOKU_GMAIL_CLIENT_SECRET:-}
+      GMAIL_TOKENS_FILE: /gateway-data/gmail-tokens.json
+      GMAIL_REFRESH_TOKENS: ${SETOKU_GMAIL_REFRESH_TOKENS:-}
+      # first-run lookback (days) — bump later without a code change
+      GMAIL_BACKFILL_DAYS: ${SETOKU_GMAIL_BACKFILL_DAYS:-90}
+    volumes:
+      - gmail_state:/state
+      # read-only view of the gateway's data volume, for the Connect-flow tokens
+      - setoku_data:/gateway-data:ro
+    depends_on:
+      vector:
+        condition: service_healthy
+
   # GitHub → ingest bridge (profile: github). Pull-based like Mercury: webhooks
   # exist but a poller gets full-history backfill and needs no public endpoint.
   # Polls issues/PRs/commits/comments for the GITHUB_REPOS list and POSTs to
@@ -421,3 +467,4 @@ volumes:
   mercury_state:
   github_state:
   monarch_state:
+  gmail_state:

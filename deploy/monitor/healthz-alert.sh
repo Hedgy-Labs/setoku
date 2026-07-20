@@ -39,9 +39,12 @@ DISK_PCT_ALERT=75
 CONFIRM="${SETOKU_ALERT_CONFIRM:-2}"           # consecutive DOWN probes before paging
 STATE_DIR="${SETOKU_ALERT_STATE_DIR:-$HOME/.setoku/state}"
 mkdir -p "$STATE_DIR"
-# space- or comma-separated domain list (commas normalized to spaces first)
-read -ra BOXES <<< "${SETOKU_ALERT_BOXES:-hedgy.setoku.com setoku.campsh.com}"
-BOXES=("${BOXES[@]//,/ }")
+# space- or comma-separated domain list. Normalize commas to spaces BEFORE the
+# read so it splits into separate elements — `read -ra` splits on whitespace only,
+# so a comma form ("a,b") would otherwise stay one element and a later in-place
+# `//,/ ` only turns it into a single bogus "a b" host that curl can never reach.
+_boxes="${SETOKU_ALERT_BOXES:-hedgy.setoku.com setoku.campsh.com}"
+read -ra BOXES <<< "${_boxes//,/ }"
 
 for domain in "${BOXES[@]}"; do
   [ -z "$domain" ] && continue

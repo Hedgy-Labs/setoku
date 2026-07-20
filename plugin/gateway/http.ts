@@ -120,19 +120,39 @@ const VIEWER_READ_APIS = new Set([
   "published", "app_data", "app_history", "app_state",
 ]);
 
-// The demo viewer can hit the live lake-probe endpoints (sources / source_series
-// / egress) without a session — each fans out one ClickHouse query per source.
-// Cache the anonymous (undenied) result briefly so a crawler can't amplify one
-// page-load into an unbounded fan-out (a public-demo DoS surface). Admins, who
-// pass per-user denies, always get live results.
-const VIEWER_PROBE_TTL_MS = 30_000;
-const viewerProbeCache = new Map<string, { at: number; value: unknown }>();
-async function viewerCached<T>(key: string, produce: () => Promise<T>): Promise<T> {
-  const hit = viewerProbeCache.get(key);
-  if (hit && Date.now() - hit.at < VIEWER_PROBE_TTL_MS) return hit.value as T;
-  const value = await produce();
-  viewerProbeCache.set(key, { at: Date.now(), value });
-  return value;
+// The live lake-probe endpoints (sources / source_series / egress) each fan out
+// one ClickHouse query per source — ~20 on the Sources page. Cache the result
+// briefly, keyed by the CALLER'S source-deny set, so repeated loads (and the demo
+// viewer's anonymous hits) don't re-probe a possibly-busy lake every time. This
+// covers admins too: on a small box the fan-out can stall for seconds under load.
+// Kept SHORT (10s) so an admin watching a backfill land sees fresh row-counts on
+// the next reload, while still collapsing rapid re-loads. Keying by denies means a
+// restricted member never reads a result computed for someone with broader access
+// (each distinct deny-set caches separately; an undenied admin and the undenied
+// viewer share one entry, which is correct).
+const PROBE_TTL_MS = 10_000;
+const probeCache = new Map<string, { at: number; value: unknown }>();
+// In-flight requests share one produce() call: without this, N concurrent cache
+// misses (a crawler on the demo box, a burst of tabs) each run the full fan-out,
+// defeating the point of the cache. The promise is cleared when it settles.
+const probeInflight = new Map<string, Promise<unknown>>();
+const denyKey = (denied: Set<string>): string => [...denied].sort().join(",");
+async function cachedProbe<T>(key: string, produce: () => Promise<T>): Promise<T> {
+  const hit = probeCache.get(key);
+  if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.value as T;
+  const pending = probeInflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const p = (async () => {
+    try {
+      const value = await produce();
+      probeCache.set(key, { at: Date.now(), value });
+      return value;
+    } finally {
+      probeInflight.delete(key);
+    }
+  })();
+  probeInflight.set(key, p);
+  return p as Promise<T>;
 }
 
 // The single-page-app shell: a static document that boots the React app. It holds
@@ -295,6 +315,89 @@ function envBackedIdentities(): Set<string> {
  *  say so in the Remove flash. */
 function holdsOperatorToken(identity: string): boolean {
   return [...tokens.values()].some((t) => t.role !== "analyst" && t.identity === identity);
+}
+
+/* -------------------------- Gmail Connect (OAuth) ---------------------------
+ * The "/admin → Connect Gmail" flow mints per-mailbox gmail.readonly refresh
+ * tokens and stores them in a gateway-owned secrets FILE — NOT the kv table
+ * (store.ts forbids secrets there). The gmail-poller reads this file (shared
+ * volume, read-only) in place of the SETOKU_GMAIL_REFRESH_TOKENS env, exactly as
+ * the SETOKU_TOKENS_FILE / teammates.json precedent above. Connecting a mailbox
+ * is an authority change → admin-only, human click on /admin, audited (I9). */
+const GMAIL_TOKENS_FILE = process.env.GMAIL_TOKENS_FILE ?? "/data/gmail-tokens.json";
+const GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
+
+interface GmailAccount {
+  email: string;
+  refresh_token: string;
+  connected_at: string;
+  connected_by: string;
+}
+function readGmailAccounts(): GmailAccount[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(GMAIL_TOKENS_FILE, "utf8");
+  } catch {
+    return []; // genuinely absent (nobody connected yet) — not an error
+  }
+  try {
+    const j = JSON.parse(raw) as { accounts?: GmailAccount[] };
+    return Array.isArray(j.accounts) ? j.accounts : [];
+  } catch (e) {
+    // Corrupt EXISTING file — distinct from absent. The write path already refuses
+    // to clobber it; log loudly so this doesn't fail silently as "no mailboxes"
+    // (the only remaining signal, since the admin surface can't render an error here).
+    console.error(`gmail: ${GMAIL_TOKENS_FILE} is unreadable (${e}) — reporting no mailboxes until it is fixed/removed`);
+    return [];
+  }
+}
+function writeGmailAccounts(accounts: GmailAccount[]): void {
+  // Refuse to overwrite an existing-but-unparseable file: readGmailAccounts()
+  // returns [] for BOTH "absent" and "corrupt", so without this a connect/disconnect
+  // performed while the file is corrupt would derive its new set from an empty read
+  // and silently drop every previously-connected mailbox. Callers surface the throw.
+  if (fs.existsSync(GMAIL_TOKENS_FILE)) {
+    try {
+      JSON.parse(fs.readFileSync(GMAIL_TOKENS_FILE, "utf8"));
+    } catch {
+      throw new Error("gmail-tokens.json is unreadable — refusing to overwrite it (fix or remove it first)");
+    }
+  }
+  // tmp + rename so the gmail-poller, which reads this file fresh each tick over a
+  // shared volume, never sees a half-written (torn) JSON and skips a sync tick.
+  fs.mkdirSync(path.dirname(GMAIL_TOKENS_FILE), { recursive: true });
+  const tmp = `${GMAIL_TOKENS_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ accounts }, null, 2) + "\n", { mode: 0o600 });
+  fs.renameSync(tmp, GMAIL_TOKENS_FILE);
+}
+/** The shared OAuth client (operator-set env). Null until configured. */
+function gmailClient(): { id: string; secret: string } | null {
+  const id = process.env.GMAIL_CLIENT_ID ?? "";
+  const secret = process.env.GMAIL_CLIENT_SECRET ?? "";
+  return id && secret ? { id, secret } : null;
+}
+/** The redirect URI the OAuth client must register (derived from the box URL). */
+function gmailRedirectUri(host?: string): string {
+  const base = (process.env.SETOKU_PUBLIC_URL ?? `https://${host ?? ""}`).replace(/\/+$/, "");
+  return `${base}/admin/api/gmail/oauth/callback`;
+}
+// Short-lived OAuth `state` nonces (CSRF for the redirect round-trip), in-memory:
+// a pending consent that outlives a restart just fails and the admin retries.
+const gmailOAuthStates = new Map<string, { identity: string; exp: number }>();
+function newGmailState(identity: string): string {
+  const now = Date.now();
+  // sweep expired entries — abandoned consents (user closes the tab at Google)
+  // are never redeemed, so without this the map leaks an entry per abandon.
+  for (const [k, v] of gmailOAuthStates) if (v.exp < now) gmailOAuthStates.delete(k);
+  const s = mintToken();
+  gmailOAuthStates.set(s, { identity, exp: now + 10 * 60_000 });
+  return s;
+}
+function takeGmailState(s: string): string | null {
+  const e = gmailOAuthStates.get(s);
+  gmailOAuthStates.delete(s);
+  if (!e || Date.now() > e.exp) return null;
+  return e.identity;
 }
 
 const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
@@ -602,6 +705,25 @@ import {
  * to "—" rather than blanking the page. (The gateway holds no business-DB
  * credential — the mirror IS the business-data story here.)
  */
+// Run `fn` over items with at most `limit` in flight — the Sources probes fan out
+// one query per table, and firing all ~10 at once thundering-herds a small, busy
+// ClickHouse (queries queue and each stalls seconds). A small cap spreads them so
+// the uncached load stays gentle; results keep input order. (Repeated loads are
+// served from cachedProbe, so this only bites the first load per 10s window.)
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+const PROBE_CONCURRENCY = 4;
+
 async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesData> {
   const cfg = loadConfig(projectDir);
   const config = cfg.ok ? cfg.config : null;
@@ -650,28 +772,26 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
         } catch {
           /* ingest_heartbeats absent — sources fall back to data-recency freshness */
         }
-        const probes = await Promise.all(
-          sources.map(async (s): Promise<SourceTable | null> => {
-            try {
-              const res = await runLakeQuery(
-                lakeUrl.url,
-                `SELECT count() AS rows, toString(max(${s.ts})) AS last FROM setoku.${s.table}`,
-                qopts,
-              );
-              const row = (res.rows[0] ?? {}) as Record<string, unknown>;
-              const rows = Number(row.rows ?? 0);
-              return {
-                table: s.table,
-                source: s.source,
-                rows,
-                last: rows > 0 ? String(row.last) : null,
-                beat: s.connector ? (beats[s.connector] ?? null) : null,
-              };
-            } catch {
-              return null; // table absent or not granted — omit this connector
-            }
-          }),
-        );
+        const probes = await mapLimit(sources, PROBE_CONCURRENCY, async (s): Promise<SourceTable | null> => {
+          try {
+            const res = await runLakeQuery(
+              lakeUrl.url,
+              `SELECT count() AS rows, toString(max(${s.ts})) AS last FROM setoku.${s.table}`,
+              qopts,
+            );
+            const row = (res.rows[0] ?? {}) as Record<string, unknown>;
+            const rows = Number(row.rows ?? 0);
+            return {
+              table: s.table,
+              source: s.source,
+              rows,
+              last: rows > 0 ? String(row.last) : null,
+              beat: s.connector ? (beats[s.connector] ?? null) : null,
+            };
+          } catch {
+            return null; // table absent or not granted — omit this connector
+          }
+        });
         lake.tables = probes.filter((p): p is SourceTable => p !== null);
         // The biz.* mirror — which business tables are queryable and how fresh
         // each copy is. Best-effort like every other probe on this page. Hidden
@@ -721,27 +841,25 @@ async function gatherSourceSeries(denied: Set<string> = new Set()): Promise<Sour
     // and it follows the business deny) — not a queryable lake source here.
     (s) => s.table !== "pg_mirror_runs" && !denied.has(familySlug(familyOf(s.source))),
   );
-      const results = await Promise.all(
-        sources.map(async (s): Promise<SourceSeries | null> => {
-          try {
-            const res = await runLakeQuery(
-              lakeUrl.url,
-              `SELECT toString(toDate(${s.ts})) AS day, count() AS rows
+      const results = await mapLimit(sources, PROBE_CONCURRENCY, async (s): Promise<SourceSeries | null> => {
+        try {
+          const res = await runLakeQuery(
+            lakeUrl.url,
+            `SELECT toString(toDate(${s.ts})) AS day, count() AS rows
                FROM setoku.${s.table}
                WHERE ${s.ts} >= now() - INTERVAL 30 DAY
                GROUP BY day ORDER BY day`,
-              qopts,
-            );
-            const points = (res.rows as Array<Record<string, unknown>>).map((r) => ({
-              day: String(r.day),
-              rows: Number(r.rows ?? 0),
-            }));
-            return points.length ? { source: s.source, points } : null;
-          } catch {
-            return null; // table absent or not granted — omit this source
-          }
-        }),
-      );
+            qopts,
+          );
+          const points = (res.rows as Array<Record<string, unknown>>).map((r) => ({
+            day: String(r.day),
+            rows: Number(r.rows ?? 0),
+          }));
+          return points.length ? { source: s.source, points } : null;
+        } catch {
+          return null; // table absent or not granted — omit this source
+        }
+      });
       for (const r of results) if (r) series.push(r);
     }
   }
@@ -1476,6 +1594,75 @@ const httpServer = http.createServer(async (req, res) => {
           return;
         }
 
+        // Gmail OAuth callback — handled HERE, before the session-cookie gate: the
+        // browser returns from a CROSS-SITE navigation (accounts.google.com), and
+        // our SameSite=Strict session cookie is (correctly) NOT sent cross-site, so
+        // there IS no session on this request. Authentication rides on the one-time
+        // `state` nonce instead: it could only have been minted at /start, which
+        // was a same-site (cookie-bearing) navigation gated to an admin. state →
+        // identity is the capability; the code is single-use and only our
+        // client_id/secret can redeem it. Redirects back to the SPA (same-site, so
+        // the cookie returns) with a flash.
+        if (api === "gmail/oauth/callback" && req.method === "GET") {
+          const back = (flash: string): void => {
+            res.writeHead(302, { location: `/sources?flash=${encodeURIComponent(flash)}` });
+            res.end();
+          };
+          const url = new URL(req.url ?? "", "http://x");
+          const err = url.searchParams.get("error");
+          if (err) return back(`Gmail connection cancelled (${err}).`);
+          const code = url.searchParams.get("code") ?? "";
+          const identity = takeGmailState(url.searchParams.get("state") ?? "");
+          if (!code || !identity) return back("Gmail connection failed: expired or invalid request. Try again.");
+          const client = gmailClient();
+          if (!client) return back("Gmail OAuth client not configured.");
+          try {
+            const tokRes = await fetch("https://oauth2.googleapis.com/token", {
+              method: "POST",
+              headers: { "content-type": "application/x-www-form-urlencoded" },
+              body: new URLSearchParams({
+                code,
+                client_id: client.id,
+                client_secret: client.secret,
+                redirect_uri: gmailRedirectUri(req.headers.host),
+                grant_type: "authorization_code",
+              }),
+              signal: AbortSignal.timeout(30_000),
+            });
+            const tok = (await tokRes.json().catch(() => ({}))) as { refresh_token?: string; access_token?: string };
+            if (!tokRes.ok || !tok.refresh_token)
+              return back("Gmail did not return a refresh token. Revoke prior access at myaccount.google.com/permissions and retry.");
+            // Resolve the mailbox address — REQUIRED, not best-effort: we key dedup
+            // and the UI's disconnect on the email, so a blank-email account would be
+            // silently un-removable and could clobber another mailbox's token. The
+            // access token was just minted, so this near-always succeeds; retry a
+            // couple times for a transient hiccup, and reject rather than persist a
+            // blank if it truly can't be read.
+            let email = "";
+            for (let i = 0; i < 3 && !email && tok.access_token; i++) {
+              if (i > 0) await new Promise((r) => setTimeout(r, 400));
+              const p = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", {
+                headers: { authorization: `Bearer ${tok.access_token}` },
+                signal: AbortSignal.timeout(15_000),
+              })
+                .then((r) => (r.ok ? (r.json() as Promise<{ emailAddress?: string }>) : null))
+                .catch(() => null);
+              email = p?.emailAddress ?? "";
+            }
+            if (!email) return back("Connected to Google, but couldn’t read the mailbox address — please try connecting again.");
+            // Replace any prior entry for the SAME mailbox or the SAME refresh token,
+            // then add. Every stored account now has a real email, so dedup and
+            // /admin disconnect both key on it cleanly (no blank-email edge cases).
+            const accounts = readGmailAccounts().filter((a) => a.email !== email && a.refresh_token !== tok.refresh_token);
+            accounts.push({ email, refresh_token: tok.refresh_token, connected_at: new Date().toISOString(), connected_by: identity });
+            writeGmailAccounts(accounts);
+            store.audit(identity, "gmail_connected", { email });
+            return back(`Connected ${email}. It will start syncing shortly.`);
+          } catch (e) {
+            return back(`Gmail connection failed: ${String(e).slice(0, 120)}`);
+          }
+        }
+
         // Demo box: an anonymous visitor gets a capability-less read-only viewer
         // for SAFE GET reads only (allowlist above). Every mutation is a POST and
         // every privileged read is off the list, so a viewer can never reach a
@@ -1565,17 +1752,59 @@ const httpServer = http.createServer(async (req, res) => {
           if (!canApprove(actor.role)) return json(403, { ok: false, error: "not authorized" });
           return json(200, store.listAudit(200));
         }
+
+        // ---- Gmail Connect (OAuth) — admin-only, human click on /admin (I9) ----
+        // status: what's connected + whether the OAuth client is configured. The
+        // redirect URI is surfaced so the operator can register it on the client.
+        if (api === "gmail_status" && req.method === "GET") {
+          if (!canApprove(actor.role)) return json(403, { ok: false, error: "not authorized" });
+          const client = gmailClient();
+          return json(200, {
+            clientConfigured: !!client,
+            redirectUri: gmailRedirectUri(req.headers.host),
+            mailboxes: readGmailAccounts().map((a) => ({
+              email: a.email,
+              connectedAt: a.connected_at,
+              connectedBy: a.connected_by,
+            })),
+          });
+        }
+        // start: a top-level navigation (Connect button sets window.location), so
+        // it authenticates by the session COOKIE, not a CSRF header. 302 → Google.
+        if (api === "gmail/oauth/start" && req.method === "GET") {
+          if (!session || !canApprove(session.role)) return json(403, { ok: false, error: "not authorized" });
+          const client = gmailClient();
+          if (!client) return json(409, { ok: false, error: "Gmail OAuth client not configured (set GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET)." });
+          const url =
+            "https://accounts.google.com/o/oauth2/v2/auth?" +
+            new URLSearchParams({
+              client_id: client.id,
+              redirect_uri: gmailRedirectUri(req.headers.host),
+              response_type: "code",
+              scope: GMAIL_SCOPE,
+              access_type: "offline",
+              prompt: "consent", // force a refresh_token every time
+              state: newGmailState(session.identity),
+            });
+          res.writeHead(302, { location: url, ...(renewedCookie ? { "set-cookie": renewedCookie } : {}) });
+          res.end();
+          return;
+        }
         // The Sources views run the lake probes as the shared server credential
         // (no per-request role param), so a MEMBER'S denies must be applied in
         // CODE here — otherwise a member denied Slack still sees Slack row counts
         // and 30-day series. Admins manage sources, so they see everything; the
         // biz.* mirror follows the "business" (Postgres) family deny too, gated
         // inside gatherSources (a member denied Postgres doesn't see the card).
-        const sourceDeniesFor = (): Set<string> => sessionDenied();
-        if (api === "sources" && req.method === "GET")
-          return json(200, viewer ? await viewerCached("sources", () => gatherSources()) : await gatherSources(sourceDeniesFor()));
-        if (api === "source_series" && req.method === "GET")
-          return json(200, viewer ? await viewerCached("source_series", () => gatherSourceSeries()) : await gatherSourceSeries(sourceDeniesFor()));
+        const sourceDeniesFor = (): Set<string> => (viewer ? new Set<string>() : sessionDenied());
+        if (api === "sources" && req.method === "GET") {
+          const denied = sourceDeniesFor();
+          return json(200, await cachedProbe(`sources:${denyKey(denied)}`, () => gatherSources(denied)));
+        }
+        if (api === "source_series" && req.method === "GET") {
+          const denied = sourceDeniesFor();
+          return json(200, await cachedProbe(`series:${denyKey(denied)}`, () => gatherSourceSeries(denied)));
+        }
         // the mirror's source-egress ledger (pg_mirror_runs.bytes) + alert
         // threshold. Derived from pg_mirror_runs, which follows the business
         // ("Postgres") deny — so a business-denied member gets the empty ledger,
@@ -1584,7 +1813,11 @@ const httpServer = http.createServer(async (req, res) => {
         if (api === "egress" && req.method === "GET") {
           if (sessionDenied().has(BUSINESS_FAMILY.slug))
             return json(200, { days: [], todayBytes: 0, thresholdBytes: null, configured: false, appId: null });
-          return json(200, viewer ? await viewerCached("egress", () => gatherEgress(projectDir, store)) : await gatherEgress(projectDir, store));
+          // NOT cached for admins: this endpoint is read back right after an admin
+          // edits the alert threshold, so a stale cache would show the old value.
+          // It's one cheap query anyway (not the sources fan-out). Viewer stays
+          // cached (anonymous DoS guard), same as before.
+          return json(200, viewer ? await cachedProbe("egress", () => gatherEgress(projectDir, store)) : await gatherEgress(projectDir, store));
         }
         if (api === "team" && req.method === "GET") {
           // Everyone signed in may see the roster (to know who to ask), but a
@@ -1899,6 +2132,25 @@ const httpServer = http.createServer(async (req, res) => {
           if (!canApprove(session.role)) {
             store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
             return json(403, { ok: false, error: "not authorized" });
+          }
+
+          // Gmail: disconnect a mailbox — drop its token from the secrets file.
+          // The poller stops syncing it on the next tick; already-ingested mail is
+          // untouched (it ages out under the table's retention TTL).
+          if (api === "gmail_disconnect") {
+            const body = (await readBody(req)) as { email?: string } | undefined;
+            const email = (body?.email ?? "").trim();
+            if (!email) return json(400, { ok: false, error: "email required" });
+            const before = readGmailAccounts();
+            const after = before.filter((a) => a.email !== email);
+            if (after.length === before.length) return json(404, { ok: false, error: "mailbox not connected" });
+            try {
+              writeGmailAccounts(after); // throws if the file is corrupt (won't clobber)
+            } catch (e) {
+              return json(500, { ok: false, error: String(e instanceof Error ? e.message : e) });
+            }
+            store.audit(session.identity, "gmail_disconnected", { email });
+            return json(200, { ok: true, flash: `Disconnected ${email}. It will stop syncing shortly.` });
           }
 
           // daily egress-alert threshold (GB/day; 0 or null disables). A nudge

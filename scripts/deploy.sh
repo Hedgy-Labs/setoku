@@ -29,8 +29,12 @@ DIR="${SETOKU_DEPLOY_DIR:-/opt/setoku}"
 DOMAIN="${SETOKU_DEPLOY_DOMAIN:-}"
 
 echo "→ rsync code to ${SSH}:${DIR}  (dirs WITHOUT trailing slashes — a slash flattens them into ${DIR}/)"
-# Hash the box's Caddyfile BEFORE rsync so we can tell if this deploy changed it.
+# Hash the bind-mounted configs BEFORE rsync so we can tell what this deploy
+# changed — each is inode-pinned, so a rsynced change only reaches the running
+# container on a force-recreate (see the per-config blocks after the rsync).
 caddy_before="$(ssh "$SSH" "sha256sum ${DIR}/Caddyfile 2>/dev/null | cut -d' ' -f1" || true)"
+vector_before="$(ssh "$SSH" "sha256sum ${DIR}/deploy/vector/vector.yaml 2>/dev/null | cut -d' ' -f1" || true)"
+chcfg_before="$(ssh "$SSH" "cat ${DIR}/deploy/clickhouse/*.xml 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
 rsync -az \
   --exclude='.env' --exclude='.git' --exclude='node_modules' --exclude='seed-mercury-knowledge.ts' \
   plugin deploy ingest docker-compose.yml Caddyfile \
@@ -49,6 +53,29 @@ caddy_after="$(ssh "$SSH" "sha256sum ${DIR}/Caddyfile | cut -d' ' -f1")"
 if [ "$caddy_before" != "$caddy_after" ]; then
   echo "→ Caddyfile changed — force-recreate caddy (edge, brief blip)"
   ssh "$SSH" "cd ${DIR} && docker compose up -d --force-recreate --no-deps caddy"
+fi
+
+# Vector's pipeline config is bind-mounted the same way — a rsynced change (e.g. a
+# NEW ingest route) does NOT reach the running vector, so it silently never loads.
+# (This bit us: a Gmail source added to the config didn't route until vector was
+# recreated by hand.) Force-recreate only when it changed. Vector buffers to disk,
+# so the ingest pipeline absorbs the brief restart.
+vector_after="$(ssh "$SSH" "sha256sum ${DIR}/deploy/vector/vector.yaml 2>/dev/null | cut -d' ' -f1" || true)"
+if [ -n "$vector_after" ] && [ "$vector_before" != "$vector_after" ]; then
+  echo "→ Vector config changed — force-recreate vector (loads new ingest routes)"
+  ssh "$SSH" "cd ${DIR} && docker compose up -d --force-recreate --no-deps vector"
+fi
+
+# ClickHouse users/config XML (lake-users.xml grants+roles, system-logs.xml,
+# trace-off.xml) are bind-mounted too — a changed role or log policy needs a
+# container recreate to apply (a new source's role otherwise never loads). Only
+# on change; recreating clickhouse is a brief (~20s) lake blip. NB: this does NOT
+# create new lake TABLES — run scripts/apply-lake-schemas.sh (or apply the new
+# ingest/schemas/*.sql) BEFORE the role that grants on them can bind.
+chcfg_after="$(ssh "$SSH" "cat ${DIR}/deploy/clickhouse/*.xml 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
+if [ -n "$chcfg_after" ] && [ "$chcfg_before" != "$chcfg_after" ]; then
+  echo "→ ClickHouse config changed — force-recreate clickhouse (brief lake blip)"
+  ssh "$SSH" "cd ${DIR} && docker compose up -d --force-recreate --no-deps clickhouse"
 fi
 
 if [ -n "$DOMAIN" ]; then
