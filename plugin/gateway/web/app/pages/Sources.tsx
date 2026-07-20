@@ -16,6 +16,8 @@ import { formatBytes } from "../../../lib/format";
 import { LAKE_SOURCES, type LakeSource } from "../../../lib/sources";
 import type { SourcesData, SourceTable, SourceSeriesData, EgressData, EgressDay, TeamData } from "../types";
 
+type GmailStatus = Awaited<ReturnType<typeof api.gmailStatus>>;
+
 export function Sources() {
   const { me } = useAuth();
   const isAdmin = me?.role === "admin";
@@ -25,6 +27,15 @@ export function Sources() {
   const { data: seriesData } = useApi<SourceSeriesData>(() => api.sourceSeries(), []);
   // Egress ledger too — absent (non-mirror box, lake down) simply renders no card.
   const { data: egress, reload: reloadEgress } = useApi<EgressData>(() => api.egress(), []);
+  // Gmail is connected in-UI (OAuth), not by the agent — fetch its status once so
+  // we can decide whether Gmail earns its own management card yet (client set up OR
+  // a mailbox connected) vs. sitting quietly under Available like any other
+  // not-yet-connected source. Admin-only endpoint, so skip the call for members.
+  const { data: gmail, reload: reloadGmail } = useApi<GmailStatus | null>(
+    () => (isAdmin ? api.gmailStatus() : Promise.resolve(null)),
+    [isAdmin],
+  );
+  const gmailActive = !!gmail && (gmail.clientConfigured || gmail.mailboxes.length > 0);
   const series = new Map((seriesData?.series ?? []).map((s) => [s.source, s.points]));
   // Connect dialog state: null = closed, { source? } = open, optionally
   // pre-filled with the Available row that launched it.
@@ -61,6 +72,9 @@ export function Sources() {
           egress={egress}
           reloadEgress={reloadEgress}
           isAdmin={isAdmin}
+          gmailActive={gmailActive}
+          gmailStatus={gmail}
+          reloadGmail={reloadGmail}
           onConnect={(source) => setConnect({ source })}
         />
       ) : null}
@@ -68,6 +82,7 @@ export function Sources() {
         open={connect !== null}
         source={connect?.source}
         isAdmin={isAdmin}
+        gmail={gmail}
         onClose={() => setConnect(null)}
         onCopied={() => toast("Prompt copied — paste it into Claude Code and say which source.")}
       />
@@ -82,6 +97,7 @@ function ConnectDialog({
   open,
   source,
   isAdmin,
+  gmail,
   onClose,
   onCopied,
 }: {
@@ -89,6 +105,8 @@ function ConnectDialog({
   /** Pre-fills the prompt when launched from an Available row. */
   source?: string;
   isAdmin: boolean;
+  /** Gmail status (admin only) — drives the OAuth setup branch for the Gmail row. */
+  gmail: GmailStatus | null;
   onClose: () => void;
   onCopied: () => void;
 }) {
@@ -108,8 +126,43 @@ function ConnectDialog({
       <AlertDialog.Portal>
         <AlertDialog.Backdrop className="fixed inset-0 z-40 bg-stone-900/20 backdrop-blur-sm" />
         <AlertDialog.Popup className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl">
-          <AlertDialog.Title className="text-base font-semibold text-stone-900">Connect a source</AlertDialog.Title>
-          {isAdmin ? (
+          <AlertDialog.Title className="text-base font-semibold text-stone-900">
+            {isAdmin && source === "Gmail" ? "Connect Gmail" : "Connect a source"}
+          </AlertDialog.Title>
+          {isAdmin && source === "Gmail" ? (
+            // Gmail is the one source wired in-UI via OAuth. If the client is set up,
+            // send them straight into consent; otherwise show the one-time setup so
+            // the instructions live in the connect flow, not a permanent card.
+            <>
+              <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
+                Gmail connects with OAuth — each mailbox’s owner consents, read-only. Spam/trash are never
+                read and 2-step/password mail is dropped on the way in.
+              </AlertDialog.Description>
+              {gmail?.clientConfigured ? (
+                <div className="mt-4 flex justify-end gap-2">
+                  <AlertDialog.Close className="btn btn-ghost">Close</AlertDialog.Close>
+                  <button className="btn btn-primary" onClick={() => (window.location.href = "/admin/api/gmail/oauth/start")}>
+                    Connect a mailbox
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <p className="mt-3 text-sm leading-relaxed text-stone-600">
+                    Set up the OAuth client once: create a Google Cloud “Web application” client, set{" "}
+                    <code className="kbd">GMAIL_CLIENT_ID</code> / <code className="kbd">GMAIL_CLIENT_SECRET</code> on the
+                    box, and register this authorized redirect URI:
+                  </p>
+                  <code className="mt-2 block break-all rounded-lg bg-stone-50 px-2 py-1 text-xs text-stone-700">
+                    {gmail?.redirectUri ?? "…"}
+                  </code>
+                  <p className="mt-2 text-sm leading-relaxed text-stone-500">Then reload — a Connect button appears here.</p>
+                  <div className="mt-4 flex justify-end">
+                    <AlertDialog.Close className="btn btn-primary">Close</AlertDialog.Close>
+                  </div>
+                </>
+              )}
+            </>
+          ) : isAdmin ? (
             <>
               <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
                 Sources are connected by your agent, not a form. Paste this into Claude Code with the Setoku
@@ -371,8 +424,7 @@ function GroupRow({ name, members, series }: { name: string; members: SourceTabl
  *  card carries the management the others don't: connect/disconnect mailboxes,
  *  plus the one-time OAuth-client setup hint and the data-flow status. Admin-only
  *  (the status endpoint is admin-gated; members see Gmail as an ordinary source). */
-function GmailCard({ table }: { table: SourceTable | null }) {
-  const { data, loading, reload } = useApi(() => api.gmailStatus(), []);
+function GmailCard({ table, status: gmail, reload }: { table: SourceTable | null; status: GmailStatus; reload: () => void }) {
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
 
   const apply = async (p: Promise<MutationResult>) => {
@@ -385,28 +437,29 @@ function GmailCard({ table }: { table: SourceTable | null }) {
     }
   };
 
-  const mailboxes = data?.mailboxes ?? [];
-  const status: { color: StatusColor; label: string } = loading
-    ? { color: "yellow", label: "…" }
-    : !data?.clientConfigured
-      ? { color: "yellow", label: "setup needed" }
-      : mailboxes.length === 0
-        ? { color: "yellow", label: "no mailboxes" }
-        : table
-          ? freshness(table.rows, table.last, table.beat)
-          : { color: "yellow", label: "syncing" };
+  const mailboxes = gmail.mailboxes;
+  // The card only renders once Gmail is active (client configured OR ≥1 mailbox),
+  // so "setup needed" here is the edge case of tokens present but the client env
+  // since removed.
+  const status: { color: StatusColor; label: string } = !gmail.clientConfigured
+    ? { color: "yellow", label: "setup needed" }
+    : mailboxes.length === 0
+      ? { color: "yellow", label: "no mailboxes" }
+      : table
+        ? freshness(table.rows, table.last, table.beat)
+        : { color: "yellow", label: "syncing" };
   const time = table?.beat ? `checked ${relTime(table.beat)}` : null;
 
   return (
     <Row name="Gmail" status={status} time={time}>
-      {data && !data.clientConfigured ? (
+      {!gmail.clientConfigured ? (
         <div className="mb-3 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-700">
           <p className="font-medium">Set up the OAuth client first (one time)</p>
           <p className="mt-1 leading-relaxed">
             Set <code className="kbd">GMAIL_CLIENT_ID</code> / <code className="kbd">GMAIL_CLIENT_SECRET</code> on the box,
             and register this authorized redirect URI on the Google client:
           </p>
-          <code className="mt-2 block break-all rounded bg-stone-200 px-2 py-1 text-xs">{data.redirectUri}</code>
+          <code className="mt-2 block break-all rounded bg-stone-200 px-2 py-1 text-xs">{gmail.redirectUri}</code>
         </div>
       ) : null}
 
@@ -425,7 +478,7 @@ function GmailCard({ table }: { table: SourceTable | null }) {
       {table ? <MemberKvs t={table} series={new Map()} /> : null}
 
       <div className="mt-3">
-        <Button disabled={!data?.clientConfigured} onClick={() => (window.location.href = "/admin/api/gmail/oauth/start")}>
+        <Button disabled={!gmail.clientConfigured} onClick={() => (window.location.href = "/admin/api/gmail/oauth/start")}>
           Connect a mailbox
         </Button>
       </div>
@@ -501,6 +554,9 @@ function SourceList({
   egress,
   reloadEgress,
   isAdmin,
+  gmailActive,
+  gmailStatus,
+  reloadGmail,
   onConnect,
 }: {
   data: SourcesData;
@@ -508,6 +564,9 @@ function SourceList({
   egress: EgressData | null;
   reloadEgress: () => void;
   isAdmin: boolean;
+  gmailActive: boolean;
+  gmailStatus: GmailStatus | null;
+  reloadGmail: () => void;
   onConnect: (source: string) => void;
 }) {
   const rows: ReactNode[] = [];
@@ -573,17 +632,19 @@ function SourceList({
     for (const [fam, members] of groups) {
       if (!members.some(isConnected)) continue;
       connectedFamilies.add(fam);
-      if (isAdmin && fam === "Gmail") continue; // rendered as the GmailCard below
+      if (isAdmin && gmailActive && fam === "Gmail") continue; // rendered as the GmailCard below
       rows.push(<GroupRow key={fam} name={fam} members={members} series={series} />);
     }
   }
 
-  // Gmail's admin management card — connect/disconnect mailboxes + its data-flow
-  // status — always shown to admins (even before a mailbox is connected), and
-  // excluded from the generic connected/Available rows so it appears exactly once.
-  if (isAdmin) {
+  // Gmail's admin management card — connect/disconnect mailboxes + data-flow status
+  // — but ONLY once Gmail is actually set up (client configured OR a mailbox
+  // connected). Until then it isn't special: it falls through to the Available list
+  // like any other unconnected source, and its one-time OAuth setup lives in that
+  // row's Connect dialog — so a box that never uses Gmail shows no standing card.
+  if (isAdmin && gmailActive && gmailStatus) {
     connectedFamilies.add("Gmail");
-    rows.push(<GmailCard key="gmail" table={gmailTable} />);
+    rows.push(<GmailCard key="gmail" table={gmailTable} status={gmailStatus} reload={reloadGmail} />);
   }
 
   const k = data.knowledge;
