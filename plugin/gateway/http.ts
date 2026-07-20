@@ -334,11 +334,21 @@ interface GmailAccount {
   connected_by: string;
 }
 function readGmailAccounts(): GmailAccount[] {
+  let raw: string;
   try {
-    const j = JSON.parse(fs.readFileSync(GMAIL_TOKENS_FILE, "utf8")) as { accounts?: GmailAccount[] };
-    return Array.isArray(j.accounts) ? j.accounts : [];
+    raw = fs.readFileSync(GMAIL_TOKENS_FILE, "utf8");
   } catch {
-    return []; // file not written yet
+    return []; // genuinely absent (nobody connected yet) — not an error
+  }
+  try {
+    const j = JSON.parse(raw) as { accounts?: GmailAccount[] };
+    return Array.isArray(j.accounts) ? j.accounts : [];
+  } catch (e) {
+    // Corrupt EXISTING file — distinct from absent. The write path already refuses
+    // to clobber it; log loudly so this doesn't fail silently as "no mailboxes"
+    // (the only remaining signal, since the admin surface can't render an error here).
+    console.error(`gmail: ${GMAIL_TOKENS_FILE} is unreadable (${e}) — reporting no mailboxes until it is fixed/removed`);
+    return [];
   }
 }
 function writeGmailAccounts(accounts: GmailAccount[]): void {

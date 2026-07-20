@@ -440,7 +440,9 @@ function toLine(msg: GmailMessage, account: string, ingestedAt: string): string 
     received_at: new Date(receivedMs || Date.now()).toISOString(),
     from_email: from.email,
     from_name: trunc(from.name, 1000),
-    to_emails: JSON.stringify(parseAddressList(header(h, "To"))),
+    // cap recipients like every other free-text field — a mass-To message would
+    // otherwise serialize an unbounded string into the row.
+    to_emails: JSON.stringify(parseAddressList(header(h, "To")).slice(0, 100)),
     subject: trunc(subject, 1000),
     snippet: msg.snippet ?? "",
     body: trunc(extractBody(msg.payload), BODY_CAP),
@@ -526,12 +528,22 @@ async function pollMailbox(h: MailboxHandle, state: State, ingestedAt: string): 
   let landed = 0;
   let mode: string;
 
-  if (!st.backfilled || !st.historyId) {
+  if (!st.backfilled) {
     const query = `after:${gmailDate(BACKFILL_DAYS)} ${QUERY_EXTRA}`.trim();
     const ids = await listIds(h, query);
     console.error(`gmail-poller: ${account} backfill "${query}" → ${ids.length} message(s)`);
     landed = await fetchAndPush(h, ids, account, ingestedAt);
     mode = "backfill";
+  } else if (!st.historyId) {
+    // Backfilled, but we never captured a history cursor (rare: a /profile response
+    // that lacked historyId). Resync a SMALL recent window each tick rather than
+    // re-running the full backfill forever — bounds the quota burn until a later
+    // profile call yields a cursor (startHistoryId is stored below when present).
+    const query = `after:${gmailDate(RESYNC_DAYS)} ${QUERY_EXTRA}`.trim();
+    console.error(`gmail-poller: ${account} no history cursor yet; resync "${query}"`);
+    const ids = await listIds(h, query);
+    landed = await fetchAndPush(h, ids, account, ingestedAt);
+    mode = "resync";
   } else {
     let ids = await listHistoryIds(h, st.historyId);
     if (ids === null) {
@@ -565,6 +577,19 @@ async function tick(): Promise<void> {
   }
 
   const state = loadState();
+  // Prune cursor entries for mailboxes no longer connected — a disconnect+reconnect
+  // mints a new key, so stale keys would otherwise accumulate in the state file
+  // forever. Keyed off the CONFIGURED handles (not getProfile success), so a
+  // transiently-failing mailbox keeps its cursor.
+  const liveKeys = new Set(handles.map((h) => h.key));
+  let pruned = false;
+  for (const k of Object.keys(state))
+    if (!liveKeys.has(k)) {
+      delete state[k];
+      pruned = true;
+    }
+  if (pruned) saveState(state);
+
   let okAccounts = 0;
   let totalLanded = 0;
   const parts: string[] = [];
