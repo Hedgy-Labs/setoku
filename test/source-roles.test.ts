@@ -120,7 +120,7 @@ describe("family helpers", () => {
 
   it("excludes the core plumbing from deniable families", () => {
     const slugs = lakeFamilies().map((f) => f.slug);
-    expect(slugs).not.toContain(familySlug("Business-DB mirror"));
+    expect(slugs).not.toContain(familySlug("Postgres mirror"));
     const tables = lakeFamilies().flatMap((f) => f.tables);
     expect(tables).not.toContain("pg_mirror_runs");
     expect(tables).not.toContain("ingest_heartbeats");
