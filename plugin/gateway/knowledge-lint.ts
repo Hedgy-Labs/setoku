@@ -5,7 +5,7 @@
  *
  * Reads metric/query docs straight from the gateway's KnowledgeStore (not a repo
  * of files, so it works on ANY deployed box), pulls each canonical SQL, runs it
- * read-only against ClickHouse (the lake + the biz.* business-DB mirror), and
+ * read-only against ClickHouse (the lake + the biz.* Postgres mirror), and
  * bounds-checks the result. The check is model-free (I8): it just runs the SQL
  * an agent would run and verifies the doc's own declared invariant
  * (`expect`/`expect_nonempty`) — or, absent one, a column-name heuristic.

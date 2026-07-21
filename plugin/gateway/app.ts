@@ -560,7 +560,7 @@ server.registerTool(
     const dialect = String((doc.meta as Record<string, unknown>).dialect ?? "postgres");
     const retired =
       dialect !== "clickhouse"
-        ? `\n\n⚠ This doc declares dialect "${dialect}" — the direct business-Postgres path is retired. ` +
+        ? `\n\n⚠ This doc declares dialect "${dialect}" — the direct direct Postgres path is retired. ` +
           `Adapt the SQL to the biz.* mirror (run_query dialect:"clickhouse"; public.<table> → biz.<table>) ` +
           `and propose the migrated doc via report_correction.`
         : "";
@@ -856,7 +856,7 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
     title: "List connected data sources (capabilities)",
     description:
-      "Lists what Setoku can query RIGHT NOW: the biz.* business-DB mirror, data-lake tables (logs, " +
+      "Lists what Setoku can query RIGHT NOW: the biz.* Postgres mirror, data-lake tables (logs, " +
       "product events, finance, chat) with what each holds, and the knowledge store. Capabilities are " +
       "DYNAMIC, so call this whenever unsure whether Setoku has data for a question, BEFORE telling the " +
       'user it isn\'t available. Everything is queried via run_query dialect:"clickhouse" — business ' +
@@ -1024,8 +1024,8 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: true },
     title: "Queryable schema (biz.* mirror + lake, permission-scoped)",
     description:
-      "Describes every table you can query, straight from ClickHouse metadata: the biz.* business-DB " +
-      "mirror and the setoku.* lake tables (the gateway has no direct business-Postgres path). " +
+      "Describes every table you can query, straight from ClickHouse metadata: the biz.* Postgres " +
+      "mirror and the setoku.* lake tables (the gateway has no direct direct Postgres path). " +
       "With no arguments: compact list of all tables + column names, biz.* first. With `tables`: full " +
       "detail (column types + the table's ORDER BY key) for those tables. Tables not listed here are " +
       "off-limits — do not query them.",
@@ -1167,8 +1167,8 @@ server.registerTool(
     title: "Run a read-only SQL query (capped + audited)",
     description:
       "Executes ONE read-only ClickHouse SQL statement (statement timeout + row cap; audited with your " +
-      "identity): the biz.* business-DB mirror plus the lake (logs/events/Slack archive). The direct " +
-      "business-Postgres path is retired — business tables are read as biz.<table>. Engine-enforced " +
+      "identity): the biz.* Postgres mirror plus the lake (logs/events/Slack archive). The direct " +
+      "direct Postgres path is retired — business tables are read as biz.<table>. Engine-enforced " +
       "readonly and engine-enforced table access. " +
       "Workflow: find_context first, prefer canonical metric SQL via get_metric, always include an explicit " +
       "LIMIT, never SELECT * on wide tables. Writes/DDL are rejected. Discover tables with get_schema or " +
@@ -1179,7 +1179,7 @@ server.registerTool(
         .enum(["postgres", "clickhouse"])
         .optional()
         .describe(
-          'Only "clickhouse" (the default) runs — the lake + the biz.* business-DB mirror. "postgres" is ' +
+          'Only "clickhouse" (the default) runs — the lake + the biz.* Postgres mirror. "postgres" is ' +
             "retired and always rejected; adapt legacy metric SQL to biz.* instead.",
         ),
       purpose: z
@@ -1478,7 +1478,7 @@ const PANEL_SCHEMA = z.object({
   title: z.string().optional().describe("Recommended — label shown in the calc drawer (see app_guide)"),
   description: z.string().optional().describe("Recommended — one-line calc explanation; the only one public viewers get"),
   sql: z.string().describe("A single read-only SELECT/WITH (validate with run_query first)"),
-  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("clickhouse (the default and the only one that runs) = lake + biz.* business-DB mirror. postgres is retired and rejected"),
+  dialect: z.enum(["postgres", "clickhouse"]).optional().describe("clickhouse (the default and the only one that runs) = lake + biz.* Postgres mirror. postgres is retired and rejected"),
   metricId: z.string().optional().describe("Curated metric name this panel computes — links provenance"),
 });
 
@@ -1547,7 +1547,7 @@ const APP_GUIDE = [
   "Each panel: `{ key, sql, dialect?, title?, description?, metricId? }`.",
   "- `key` — stable slug the template reads (window.__SETOKU__.panels[key]).",
   "- `sql` — ONE read-only SELECT/WITH in ClickHouse SQL; validate with run_query first.",
-  "- `dialect` — `clickhouse` (the default and the only one that runs: the lake + the biz.* business-DB",
+  "- `dialect` — `clickhouse` (the default and the only one that runs: the lake + the biz.* Postgres",
   "  mirror). `postgres` is retired — publish/update reject it; write business panels against biz.<table>.",
   "- `title` / `description` — STRONGLY RECOMMENDED: shown in the 'how is this calculated' drawer; the",
   "  description is the ONLY calc explanation public viewers get. Without them viewers see the raw slug.",
@@ -1555,7 +1555,7 @@ const APP_GUIDE = [
   "Omit `panels` entirely for a static report.",
   "",
   "## Business tables — always via the biz.* mirror",
-  "The box has no direct business-Postgres path. Business tables are full copies in ClickHouse under",
+  "The box has no direct direct Postgres path. Business tables are full copies in ClickHouse under",
   "biz.<table>, reloaded on a cron — list_sources shows each table's \"data as of\", and the app chrome",
   "shows it beside the cache stamp so freshness stays legible to viewers. Metric SQL is canonical in",
   "exactly ONE dialect (I5) — today that means clickhouse.",

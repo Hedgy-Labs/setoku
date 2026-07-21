@@ -190,7 +190,7 @@ export const EGRESS_APP_PANELS = [
  *  entirely on the tested Setoku.* runtime. Single-series charts, neutral ink,
  *  the runtime's own default mark color: this ships with the product, so it
  *  stays out of arguments with whatever the user's real apps look like. */
-export const EGRESS_APP_TEMPLATE = `<div style="font:13px system-ui;color:#5b6b7a;max-width:60em;margin-bottom:16px">What the business-DB mirror pulled out of the source database — the traffic hosted-Postgres vendors meter and bill as egress. Unchanged tables are verified and skipped, so a quiet day costs almost nothing.</div>
+export const EGRESS_APP_TEMPLATE = `<div style="font:13px system-ui;color:#5b6b7a;max-width:60em;margin-bottom:16px">What the Postgres mirror pulled out of the source database — the traffic hosted-Postgres vendors meter and bill as egress. Unchanged tables are verified and skipped, so a quiet day costs almost nothing.</div>
 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:16px;margin-bottom:22px">
   <div id="today"></div>
   <div id="week"></div>

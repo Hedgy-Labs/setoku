@@ -365,8 +365,10 @@ function EgressKvs({ egress, reload }: { egress: EgressData; reload: () => void 
 function kv(k: string, v: ReactNode): ReactNode {
   return (
     <div className="flex items-start justify-between gap-4 py-1.5" key={k}>
-      <span className="text-stone-500">{k}</span>
-      <span className="text-right text-stone-800">{v}</span>
+      <span className="shrink-0 text-stone-500">{k}</span>
+      {/* min-w-0 so long values (e.g. the mirrored-table chip list) wrap inside
+       *  the card instead of running off the right edge of the page. */}
+      <span className="min-w-0 break-words text-right text-stone-800">{v}</span>
     </div>
   );
 }
@@ -618,18 +620,20 @@ function SourceList({
 
   if (mirrorConnected) {
     rows.push(
-      <Row key="mirror" name="Business DB (mirror)" status={mirrorWarning ?? { color: "green", label: "healthy" }}>
+      <Row key="mirror" name="Postgres (mirror)" status={mirrorWarning ?? { color: "green", label: "healthy" }}>
         {kv("read path", <code className="kbd">biz.*</code>)}
         {kv("mirrored tables", String(data.mirror.tables.length))}
         {mirrorRun ? kv("last reload", mirrorRun.last ? relTime(mirrorRun.last) : "—") : null}
         {data.mirror.tables.length
           ? kv(
               "tables",
-              data.mirror.tables.map((t) => (
-                <code key={t.target} className="kbd mr-1">
-                  {t.target}
-                </code>
-              )),
+              <span className="flex flex-wrap justify-end gap-1">
+                {data.mirror.tables.map((t) => (
+                  <code key={t.target} className="kbd">
+                    {t.target}
+                  </code>
+                ))}
+              </span>,
             )
           : null}
         {egress?.configured ? <EgressKvs egress={egress} reload={reloadEgress} /> : null}
@@ -693,7 +697,7 @@ function SourceList({
   const avail: { name: string; desc: string }[] = [];
   if (!lakeDown) {
     if (!mirrorConnected) {
-      avail.push({ name: "Business database", desc: "mirrored read-only into the lake (biz.*)" });
+      avail.push({ name: "Postgres database", desc: "mirrored read-only into the lake (biz.*)" });
     }
     const catalogFamilies = new Map<string, LakeSource[]>();
     for (const s of LAKE_SOURCES) {
