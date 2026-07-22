@@ -57,6 +57,37 @@ describe("source_denies store semantics", () => {
   });
 });
 
+describe("legacy slug migration (vercel_logs/render_logs → vercel/render)", () => {
+  it("reopening a store brings denies, doc tags, and pending drafts forward", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "setoku-slugmig-"));
+    const dbPath = path.join(dir, "k.db");
+    const old = new KnowledgeStore(dbPath);
+    // Simulate a box written before the rename: raw rows with the old slugs
+    // (one identity holds BOTH spellings so OR REPLACE has a collision to absorb).
+    old.db.run(
+      "INSERT INTO source_denies (identity, family, created_at) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)",
+      ["a@co.test", "vercel_logs", "t", "a@co.test", "vercel", "t", "b@co.test", "render_logs", "t"],
+    );
+    old.db.run("INSERT INTO docs (type, name, meta, body) VALUES ('note', 'n1', ?, 'b')", [
+      JSON.stringify({ source: "vercel_logs" }),
+    ]);
+    old.db.run(
+      "INSERT INTO corrections (ts, user, kind, content, status, draft_meta) VALUES ('t', 'u', 'fix', 'c', 'pending', ?)",
+      [JSON.stringify({ source: "render_logs" })],
+    );
+    old.db.close();
+
+    const store = new KnowledgeStore(dbPath);
+    expect(store.sourceDenies("a@co.test")).toEqual(["vercel"]);
+    expect(store.sourceDenies("b@co.test")).toEqual(["render"]);
+    const doc = store.db.query("SELECT meta FROM docs WHERE name = 'n1'").get() as { meta: string };
+    expect(JSON.parse(doc.meta).source).toBe("vercel");
+    const corr = store.db.query("SELECT draft_meta FROM corrections").get() as { draft_meta: string };
+    expect(JSON.parse(corr.draft_meta).source).toBe("render");
+    store.db.close();
+  });
+});
+
 describe("source access over HTTP + MCP", () => {
   beforeAll(async () => {
     lake = startFakeLake((sql) => {
@@ -157,15 +188,15 @@ describe("source access over HTTP + MCP", () => {
     // family LABELS normalize to slugs server-side
     const r = await post("source_access", {
       ...admin,
-      body: { username: "alice@co.test", denies: ["Slack", "Vercel logs"] },
+      body: { username: "alice@co.test", denies: ["Slack", "Vercel"] },
     });
     expect(r.status).toBe(200);
     const body = (await r.json()) as { ok: boolean; flash: string };
     expect(body.flash).toContain("Slack");
     const alice = (await team(admin.cookie)).find((p) => p.identity === "alice@co.test");
-    expect(alice?.denies).toEqual(["slack", "vercel_logs"]);
+    expect(alice?.denies).toEqual(["slack", "vercel"]);
 
-    // alice's run_query now activates every family role EXCEPT slack + vercel_logs
+    // alice's run_query now activates every family role EXCEPT slack + vercel
     const mcp = await connect(BASE, "tok-alice");
     lake.calls.length = 0;
     const q = await gwCall(mcp, "run_query", { sql: "SELECT count() AS n FROM setoku.github_issues" });
@@ -174,7 +205,7 @@ describe("source access over HTTP + MCP", () => {
     expect(roles).toContain(roleFor("github"));
     expect(roles).toContain(roleFor("mercury"));
     expect(roles).not.toContain(roleFor("slack"));
-    expect(roles).not.toContain(roleFor("vercel_logs"));
+    expect(roles).not.toContain(roleFor("vercel"));
     expect(roles.length).toBe(lakeFamilies().length - 2);
 
     // list_sources: every probe carries the same subset, and the denied family

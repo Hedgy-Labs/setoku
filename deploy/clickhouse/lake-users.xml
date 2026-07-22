@@ -43,16 +43,16 @@
         </setoku_readonly>
     </profiles>
     <roles>
-        <setoku_src_vercel_logs>
+        <setoku_src_vercel>
             <grants>
                 <query>GRANT SELECT ON setoku.logs_vercel</query>
             </grants>
-        </setoku_src_vercel_logs>
-        <setoku_src_render_logs>
+        </setoku_src_vercel>
+        <setoku_src_render>
             <grants>
                 <query>GRANT SELECT ON setoku.logs_render</query>
             </grants>
-        </setoku_src_render_logs>
+        </setoku_src_render>
         <setoku_src_slack>
             <grants>
                 <query>GRANT SELECT ON setoku.slack_messages</query>
@@ -130,8 +130,8 @@
                 <query>GRANT SELECT ON setoku.ingest_heartbeats</query>
                 <!-- source access rides ONLY on roles, so the HTTP role
                      parameter can subset it per user -->
-                <query>GRANT setoku_src_vercel_logs</query>
-                <query>GRANT setoku_src_render_logs</query>
+                <query>GRANT setoku_src_vercel</query>
+                <query>GRANT setoku_src_render</query>
                 <query>GRANT setoku_src_slack</query>
                 <query>GRANT setoku_src_first_party_events</query>
                 <query>GRANT setoku_src_mercury</query>
