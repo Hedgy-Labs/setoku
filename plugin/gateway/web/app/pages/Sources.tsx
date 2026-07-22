@@ -568,12 +568,14 @@ function AvailableSection({
   );
 }
 
-/** One line for the Available list: a multi-table family lists what it holds
- *  ("accounts, transactions, …"); a single table uses its blurb's head clause. */
+/** One line for the Available list — always a lowercase comma-separated list of
+ *  what the source holds: a multi-table family joins its member names
+ *  ("accounts, transactions, …"); a single table takes its blurb's entity list
+ *  (the clause after " — ", caveat parenthetical stripped). */
 function availDesc(members: LakeSource[]): string {
   return members.length > 1
     ? members.map((m) => memberName(m.source)).join(", ")
-    : members[0].blurb.split(" (")[0];
+    : members[0].blurb.split(" (")[0].split(" — ").pop()!;
 }
 
 function SourceList({
@@ -697,7 +699,7 @@ function SourceList({
   const avail: { name: string; desc: string }[] = [];
   if (!lakeDown) {
     if (!mirrorConnected) {
-      avail.push({ name: "Postgres database", desc: "mirrored read-only into the lake (biz.*)" });
+      avail.push({ name: "Postgres database", desc: "business tables, mirrored read-only into the lake (biz.*)" });
     }
     const catalogFamilies = new Map<string, LakeSource[]>();
     for (const s of LAKE_SOURCES) {

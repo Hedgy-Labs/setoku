@@ -457,6 +457,17 @@ export class KnowledgeStore {
       created_by TEXT,
       PRIMARY KEY (identity, family)
     )`);
+    // The "Vercel logs" / "Render logs" labels dropped their suffix, renaming
+    // the family slugs vercel_logs→vercel / render_logs→render. Bring every
+    // stored slug forward (idempotent): denies (so a restriction doesn't
+    // silently re-open), doc source tags (so tagged knowledge keeps following
+    // those denies), and pending drafts (so a later bless commits the live
+    // slug). OR REPLACE absorbs an identity that somehow holds both spellings.
+    for (const [from, to] of [["vercel_logs", "vercel"], ["render_logs", "render"]] as const) {
+      this.db.run("UPDATE OR REPLACE source_denies SET family = ? WHERE family = ?", [to, from]);
+      this.db.run("UPDATE docs SET meta = json_set(meta, '$.source', ?) WHERE json_extract(meta, '$.source') = ?", [to, from]);
+      this.db.run("UPDATE corrections SET draft_meta = json_set(draft_meta, '$.source', ?) WHERE json_extract(draft_meta, '$.source') = ?", [to, from]);
+    }
     // Published reports (the "Reports" surface). An agent calls publish_report
     // with self-contained HTML; we store it under an opaque id. A "team" report
     // serves session-gated at /apps/<id>; a "public" one (an admin promotes

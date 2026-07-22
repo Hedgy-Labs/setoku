@@ -89,7 +89,7 @@ describe("lake-users.xml ↔ lakeFamilies() drift lock", () => {
 
 describe("family helpers", () => {
   it("slugs are stable and role-prefixed", () => {
-    expect(familySlug("Vercel logs")).toBe("vercel_logs");
+    expect(familySlug("Vercel")).toBe("vercel");
     expect(familySlug("Unrouted (raw)")).toBe("unrouted_raw");
     expect(familySlug("First-party events")).toBe("first_party_events");
     expect(roleFor("mercury")).toBe("setoku_src_mercury");

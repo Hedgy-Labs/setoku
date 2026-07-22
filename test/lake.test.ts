@@ -133,7 +133,7 @@ describe.skipIf(!CH_URL)("run_query dialect routing (lake)", () => {
       expect(r.text).not.toContain("BUSINESS DATABASE (Postgres)");
       expect(r.text).toContain("setoku.slack_messages"); // has rows → listed
       expect(r.text).toContain("setoku.github_issues"); // empty but a live beat → listed
-      expect(r.text).toMatch(/Not connected[^\n]*Vercel logs/); // empty, no beat → segregated
+      expect(r.text).toMatch(/Not connected[^\n]*Vercel/); // empty, no beat → segregated
       // family-level classification: the empty webhooks sibling neither flags
       // Mercury as not-connected nor vanishes — the family is connected, so
       // all its present tables list
