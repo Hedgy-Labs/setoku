@@ -472,6 +472,8 @@ describe("stale-while-revalidate + run-duration telemetry (renderApp direct)", (
     createdBy: "test",
     createdAt: new Date().toISOString(),
     archivedAt: null,
+    lockedAt: null,
+    lockedBy: null,
     panels: [{ key: "kpi", title: "n", sql, dialect: "clickhouse" as const }],
     params: [],
   });
@@ -564,7 +566,7 @@ describe("panel row cap decoupled from run_query (byte-bounded render)", () => {
   const mkRowsDash = (id: string, sql: string) => ({
     id, title: "t", format: "app" as const, body: "<div id=kpi></div>",
     refreshSeconds: 30, visibility: "team" as const, createdBy: "test",
-    createdAt: new Date().toISOString(), archivedAt: null,
+    createdAt: new Date().toISOString(), archivedAt: null, lockedAt: null, lockedBy: null,
     panels: [{ key: "kpi", title: "n", sql, dialect: "clickhouse" as const }],
     params: [],
   });
@@ -598,7 +600,7 @@ describe("panel row cap decoupled from run_query (byte-bounded render)", () => {
     const wide = "select number g, repeat('x', 400) pad from numbers(8000)";
     const dash = {
       id: "cap-fair", title: "t", format: "app" as const, body: "<div></div>",
-      refreshSeconds: 30, visibility: "team" as const, createdBy: "test", createdAt: new Date().toISOString(), archivedAt: null,
+      refreshSeconds: 30, visibility: "team" as const, createdBy: "test", createdAt: new Date().toISOString(), archivedAt: null, lockedAt: null, lockedBy: null,
       panels: [{ key: "a", title: "a", sql: wide, dialect: "clickhouse" as const }, { key: "b", title: "b", sql: wide, dialect: "clickhouse" as const }],
       params: [],
     };

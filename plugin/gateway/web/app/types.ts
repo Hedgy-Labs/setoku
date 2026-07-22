@@ -173,6 +173,9 @@ export interface PublishedMeta {
   createdBy: string;
   createdAt: string;
   archivedAt: string | null;
+  /** Set when the app is locked — agents can't edit or archive it. */
+  lockedAt: string | null;
+  lockedBy: string | null;
 }
 
 /** One panel as the team provenance drawer sees it (server: appProvenance).
@@ -222,6 +225,9 @@ export interface AppData {
   createdBy: string;
   createdAt: string;
   archivedAt: string | null;
+  /** Set when the app is locked — agents can't edit or archive it. */
+  lockedAt: string | null;
+  lockedBy: string | null;
   updatedAt: string | null;
   /** Business-DB mirror freshness ("data as of") when clickhouse panels read biz.* tables. */
   mirrorAsOf?: string | null;

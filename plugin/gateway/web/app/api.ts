@@ -144,6 +144,9 @@ export const api = {
   unarchive: (id: string) => req<MutationResult>("unarchive", { method: "POST", body: { id } }),
   setVisibility: (id: string, visibility: "team" | "public") =>
     req<MutationResult>("set_visibility", { method: "POST", body: { id, visibility } }),
+  // Lock (freeze against agent edits) / unlock — author-or-admin.
+  setLocked: (id: string, locked: boolean) =>
+    req<MutationResult>("set_locked", { method: "POST", body: { id, locked } }),
   // Per-app private state — read/write an app's OWN sandbox (never a business
   // source). Used by the AppView postMessage bridge, not pages directly.
   appStateList: (id: string, scope: "app" | "viewer") =>

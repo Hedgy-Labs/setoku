@@ -72,6 +72,9 @@ export function AppView() {
   const [showCalc, setShowCalc] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [archiveOpen, setArchiveOpen] = useState(false);
+  // Lock confirm (the ⋮ menu's "Lock…"). Unlock is a direct action — reversing
+  // a freeze needs no ceremony.
+  const [lockOpen, setLockOpen] = useState(false);
   // Version history drawer (#58). `historyNonce` re-fetches the list after a
   // restore; `revertSeq` is the version awaiting the restore confirm (null = none).
   const [showHistory, setShowHistory] = useState(false);
@@ -186,6 +189,9 @@ export function AppView() {
   const isApp = (data?.panels?.length ?? 0) > 0;
   const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
   const active = !!data && !data.archivedAt;
+  // Locked = frozen against AGENT edits (update_app/unpublish_app). Human
+  // author/admin actions (rename, visibility, archive, restore) stay open.
+  const locked = !!data?.lockedAt;
   formatRef.current = fresh?.format; // for the watchdog's fire-time decision
   paramsRef.current = data?.params ?? []; // for validating a frame-driven setParam
 
@@ -473,6 +479,11 @@ export function AppView() {
             onOpen={() => setVisOpen(true)}
           />
         ) : null}
+        {locked ? (
+          <span title={`Locked${data?.lockedBy ? ` by ${data.lockedBy}` : ""} — agents can’t edit or archive it.`}>
+            <Badge tone="idle">locked</Badge>
+          </span>
+        ) : null}
         {data ? (
           <span className="hidden text-xs text-stone-500 sm:inline">
             published by {data.createdBy}
@@ -514,10 +525,18 @@ export function AppView() {
               <MenuItem onSelect={() => setShowHistory(true)}>Version history</MenuItem>
             ) : null}
             {isApp ? <MenuItem onSelect={() => manualRefresh()}>Refresh data</MenuItem> : null}
-            {isApp ? <MenuItem onSelect={() => setEditOpen(true)}>Edit…</MenuItem> : null}
+            {/* Every app is agent-editable (static ones included), so Edit is
+                gated only on the app existing — never on panels or role (the
+                dialog itself adapts to author/admin/other). */}
+            {data ? <MenuItem onSelect={() => setEditOpen(true)}>Edit…</MenuItem> : null}
             <MenuItem onSelect={() => void copy()}>Copy link</MenuItem>
             {data && !data.archivedAt && (isAdmin || mine) ? (
               <MenuItem onSelect={() => setVisOpen(true)}>Change visibility…</MenuItem>
+            ) : null}
+            {data && !data.archivedAt && (isAdmin || mine) ? (
+              <MenuItem onSelect={() => (locked ? void act(() => api.setLocked(id, false)) : setLockOpen(true))}>
+                {locked ? "Unlock" : "Lock…"}
+              </MenuItem>
             ) : null}
             {data && !data.archivedAt && (isAdmin || mine) ? (
               <MenuItem danger onSelect={() => setArchiveOpen(true)}>
@@ -632,12 +651,26 @@ export function AppView() {
         }}
         onClose={() => setVisOpen(false)}
       />
+      <Confirm
+        open={lockOpen}
+        title="Lock this app?"
+        body={`Agents won’t be able to edit or archive "${data?.title ?? ""}" until it’s unlocked — anyone can still view it or copy it into a new app. You (or an admin) can unlock it from this menu anytime.`}
+        confirmLabel="Lock"
+        defaultAction
+        onConfirm={() => {
+          setLockOpen(false);
+          void act(() => api.setLocked(id, true));
+        }}
+        onClose={() => setLockOpen(false)}
+      />
       <EditDialog
         open={editOpen}
         onClose={() => setEditOpen(false)}
         id={id}
         title={data?.title ?? ""}
-        canEdit={mine}
+        canEdit={mine && !locked}
+        locked={locked}
+        canUnlock={mine || isAdmin}
         onCopied={() => toast("Prompt copied — paste it into your agent (with the changes you want).")}
       />
       <Confirm
@@ -831,13 +864,20 @@ function EditDialog({
   id,
   title,
   canEdit,
+  locked,
+  canUnlock,
   onCopied,
 }: {
   open: boolean;
   onClose: () => void;
   id: string;
   title: string;
+  /** Author of an UNLOCKED app — gets the edit-in-place prompt. */
   canEdit: boolean;
+  /** The app is locked (agents can't update_app it) — everyone gets the copy prompt. */
+  locked: boolean;
+  /** Author or admin — can lift the lock from the ⋮ menu. */
+  canUnlock: boolean;
   onCopied: () => void;
 }) {
   const url = `${location.origin}/apps/${id}`;
@@ -847,7 +887,9 @@ function EditDialog({
       `Read it with get_app("${id}"), then update_app("${id}", …) in place (same link).\n\n` +
       `Changes I want:\n`
     : `Make my own copy of the Setoku app${named} at ${url}\n` +
-      `Read it with get_app("${id}"), then publish_app a new one with my changes (a new link — I can't edit someone else's in place).\n\n` +
+      `Read it with get_app("${id}"), then publish_app a new one with my changes (a new link — ` +
+      (locked ? "it's locked, so it can't be edited in place" : "I can't edit someone else's in place") +
+      `).\n\n` +
       `Changes I want:\n`;
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>
@@ -860,7 +902,9 @@ function EditDialog({
           <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
             {canEdit
               ? "Apps are edited by your agent, not a form. Paste this prompt into your Setoku-connected agent, fill in the changes you want, and it'll update this app in place — same link."
-              : "You didn't create this app, so you can't edit it in place. Paste this into your Setoku-connected agent to build your own copy with your changes (it gets a new link)."}
+              : locked
+                ? `This app is locked, so agents can’t edit it in place.${canUnlock ? " Unlock it from the ⋮ menu to edit it, or paste" : " Paste"} this into your Setoku-connected agent to build your own copy with your changes (it gets a new link).`
+                : "You didn't create this app, so you can't edit it in place. Paste this into your Setoku-connected agent to build your own copy with your changes (it gets a new link)."}
           </AlertDialog.Description>
           <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
             {prompt}

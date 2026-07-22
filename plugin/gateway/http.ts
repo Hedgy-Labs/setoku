@@ -1005,6 +1005,8 @@ function appProvenance(
     createdBy: meta.createdBy,
     createdAt: meta.createdAt,
     archivedAt: meta.archivedAt,
+    lockedAt: meta.lockedAt,
+    lockedBy: meta.lockedBy,
     updatedAt: newestComputedAt(panels),
     panels: (meta.panels ?? []).map((p) => {
       const r = byKey.get(p.key);
@@ -2003,6 +2005,29 @@ const httpServer = http.createServer(async (req, res) => {
             const ok = store.archivePublished(id);
             store.audit(session.identity, "unpublish_app", { id, ok });
             return json(200, { ok, flash: "Archived — its link no longer works." });
+          }
+
+          // Lock / unlock — author-or-admin, same gate as archive/visibility.
+          // A locked app rejects ALL agent mutations (update_app/unpublish_app),
+          // the author's sessions included; human web actions stay open. This is
+          // the only place the lock changes — no MCP tool can set or clear it.
+          if (api === "set_locked") {
+            const body = (await readBody(req)) as { id?: string; locked?: boolean } | undefined;
+            const id = (body?.id ?? "").trim();
+            if (typeof body?.locked !== "boolean") return json(400, { ok: false, error: "locked must be true or false" });
+            if (!mayMutateApp(id)) return;
+            const ok = store.setAppLocked(id, body.locked, session.identity);
+            store.audit(session.identity, body.locked ? "app_locked" : "app_unlocked", { id, ok });
+            return json(200, {
+              ok,
+              flash: ok
+                ? body.locked
+                  ? "Locked — agents can't edit or archive it until it's unlocked."
+                  : "Unlocked — agents can edit it again."
+                : body.locked
+                  ? "Already locked."
+                  : "Already unlocked.",
+            });
           }
 
           // Rename (title only) — author-or-admin, same gate as archive/visibility.

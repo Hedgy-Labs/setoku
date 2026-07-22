@@ -1706,7 +1706,8 @@ server.registerTool(
       "Updates an app you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
       "(new template), `panels` (REPLACES the whole panel set), `params` (REPLACES all inputs), and/or `refreshSeconds`. " +
       "Changing `panels` or `params` re-validates and dry-runs every panel against the new params. " +
-      "Only the app's AUTHOR can edit it. " +
+      "Only the app's AUTHOR can edit it, and a LOCKED app rejects all edits (the author or an admin " +
+      "locks/unlocks from the web UI) — copy a locked app with get_app → publish_app instead. " +
       "Note: changing `panels` or `params` on an app that's currently public reverts it to team-only — an admin " +
       "must re-approve it for the public link, since the data it exposes changed. " +
       "Pass a `message` describing WHAT changed — it shows in the app's version history and the team's activity " +
@@ -1732,6 +1733,15 @@ server.registerTool(
       return errorText(`No active app "${id}" (archived or unknown). Call list_apps.`);
     if (meta.createdBy !== user)
       return errorText(`Only the author (${meta.createdBy}) can edit this app. Publish your own with publish_app.`);
+    // The lock is a human gate (I9-flavored): a locked app can't be changed by
+    // ANY agent session — the author included — until an author/admin unlocks it
+    // from the app's ⋮ menu in the web UI. Forking stays open.
+    if (meta.lockedAt)
+      return errorText(
+        `"${meta.title}" is locked${meta.lockedBy ? ` (by ${meta.lockedBy})` : ""} — agent edits are disabled. ` +
+          "Ask the author or an admin to unlock it from the app's ⋮ menu in the web UI, or make your own copy: " +
+          `get_app("${tid}") then publish_app a new app.`,
+      );
     const newTitle = title?.trim() || undefined; // whitespace-only title is a no-op, not a change
     if (newTitle === undefined && html === undefined && panels === undefined && params === undefined && refreshSeconds === undefined)
       return errorText("Nothing to update — pass a non-empty title, or html / panels / params / refreshSeconds.");
@@ -1863,8 +1873,9 @@ server.registerTool(
       for (const r of active) {
         const n = r.panels?.length ?? 0;
         const kind = n ? `${n} panel${n === 1 ? "" : "s"}` : "static";
+        const tags = [r.visibility, kind, ...(r.lockedAt ? ["locked"] : [])].join(", ");
         lines.push(
-          `- ${r.title} [${r.visibility}, ${kind}] — ${publishUrl(r.id, r.visibility)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`,
+          `- ${r.title} [${tags}] — ${publishUrl(r.id, r.visibility)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`,
         );
       }
     } else {
@@ -1904,6 +1915,12 @@ server.registerTool(
         (dash.refreshSeconds ? ` · refresh ${dash.refreshSeconds}s` : ""),
       "",
     ];
+    if (dash.lockedAt)
+      lines.push(
+        `⚠ LOCKED${dash.lockedBy ? ` by ${dash.lockedBy}` : ""} — update_app / unpublish_app will be rejected. ` +
+          "To change it, ask the author or an admin to unlock it in the web UI; or publish_app your own copy from this template.",
+        "",
+      );
     // Params first — update_app REPLACES the whole param set, so a round-trip
     // must carry them back VERBATIM. Emit them as the exact `params` arg JSON
     // (labels, options, min/max/maxLength and all) rather than a lossy human
@@ -1967,7 +1984,17 @@ server.registerTool(
     inputSchema: { id: z.string().describe("The app id from publish_app / list_apps") },
   },
   async ({ id }) => {
-    const ok = store.archivePublished(id.trim());
+    const tid = id.trim();
+    // A locked app is frozen against ALL agent mutations — archiving included
+    // (it kills the link, which is worse than an edit). Unlock is a human
+    // (author/admin) action in the web UI.
+    const meta = store.getPublishedMeta(tid);
+    if (meta && !meta.archivedAt && meta.lockedAt)
+      return errorText(
+        `"${meta.title}" is locked${meta.lockedBy ? ` (by ${meta.lockedBy})` : ""} — it can't be archived by an agent. ` +
+          "Ask the author or an admin to unlock it from the app's ⋮ menu in the web UI.",
+      );
+    const ok = store.archivePublished(tid);
     store.audit(user, "unpublish_app", { id, ok });
     return ok
       ? text(`Archived ${id} — its link no longer works.`)
