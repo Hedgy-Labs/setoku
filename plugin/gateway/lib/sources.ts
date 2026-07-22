@@ -34,10 +34,10 @@ export const CORE_LAKE_TABLES = ["ingest_heartbeats", "pg_mirror_runs"] as const
 export const CORE_DIRECT_GRANT_TABLES = ["ingest_heartbeats"] as const;
 
 export const LAKE_SOURCES: LakeSource[] = [
-  { table: "logs_vercel", source: "Vercel logs", ts: "ts", blurb: "Vercel platform logs — HTTP requests, build & runtime errors, status codes, latency (level=error/fatal are problems)" },
-  { table: "logs_render", source: "Render logs", ts: "ts", blurb: "Render service logs — app stdout/stderr, deploy & runtime errors", connector: "render-poller" },
-  { table: "slack_messages", source: "Slack", ts: "event_ts", blurb: "Slack message archive — team chat history", connector: "slack-listener" },
-  { table: "app_events", source: "First-party events", ts: "ts", blurb: "First-party product / analytics events emitted by the app" },
+  { table: "logs_vercel", source: "Vercel", ts: "ts", blurb: "HTTP requests, build errors, runtime errors, status codes, latency (level=error/fatal are problems)" },
+  { table: "logs_render", source: "Render", ts: "ts", blurb: "app stdout/stderr, deploy errors, runtime errors", connector: "render-poller" },
+  { table: "slack_messages", source: "Slack", ts: "event_ts", blurb: "Slack message archive — channel messages, thread replies", connector: "slack-listener" },
+  { table: "app_events", source: "First-party events", ts: "ts", blurb: "First-party analytics emitted by the app — product events, business events" },
   { table: "mercury_accounts", source: "Mercury · accounts", ts: "snapshot_ts", blurb: "Bank account balances over time — cash on hand, runway (finance)", connector: "mercury-poller" },
   { table: "mercury_transactions", source: "Mercury · transactions", ts: "ingested_at", blurb: "Bank transactions — spend, vendor/payroll payments, income (finance, runway, burn)", connector: "mercury-poller" },
   { table: "mercury_events", source: "Mercury · webhooks", ts: "received_at", blurb: "Mercury webhook events" },
@@ -65,7 +65,7 @@ export function familyOf(label: string): string {
 }
 
 /** Stable slug for a family — the unit source_denies stores and the admin API
- *  speaks ("Vercel logs" → "vercel_logs"). */
+ *  speaks ("First-party events" → "first_party_events"). */
 export function familySlug(family: string): string {
   return family
     .toLowerCase()
