@@ -12,3 +12,6 @@ backups/
 
 # box deploy target (per-machine, never committed/on-box)
 deploy/target.local
+
+# per-machine multi-box deploy convenience (box addresses)
+deploy/deploy-all.local.sh
