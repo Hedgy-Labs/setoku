@@ -166,6 +166,13 @@ export interface PublishedReport {
   createdAt: string;
   /** Soft-delete timestamp. Archived reports 404 everywhere but are kept. */
   archivedAt: string | null;
+  /** Lock timestamp. A locked app rejects ALL agent mutations (update_app /
+   *  unpublish_app) — including the author's — until the author or an admin
+   *  unlocks it from the web UI. Viewing and copying (get_app → publish_app a
+   *  new app) stay open. Human (author/admin) web actions are not blocked. */
+  lockedAt: string | null;
+  /** Who locked it (for the "locked by …" affordance). */
+  lockedBy: string | null;
 }
 
 export type PublishedMeta = Omit<PublishedReport, "body">;
@@ -483,6 +490,10 @@ export class KnowledgeStore {
     this.ensureColumn("published", "panels", "TEXT");
     this.ensureColumn("published", "params", "TEXT");
     this.ensureColumn("published", "refresh_seconds", "INTEGER");
+    // App locking: a locked app rejects agent edits (author included) until an
+    // author/admin unlocks it from the web UI (a human surface — I9).
+    this.ensureColumn("published", "locked_at", "TEXT");
+    this.ensureColumn("published", "locked_by", "TEXT");
     // Every app now renders through the runtime shell, so the format column is
     // effectively always 'app'. Boxes that published before the Dashboards→Apps
     // rename hold format='dashboard'; backfill those to 'app' (a no-op on a fresh
@@ -1391,7 +1402,7 @@ export class KnowledgeStore {
   getPublished(id: string): PublishedReport | null {
     const row = this.db
       .query(
-        "SELECT id, title, format, body, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+        "SELECT id, title, format, body, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt, locked_at AS lockedAt, locked_by AS lockedBy FROM published WHERE id = ?",
       )
       .get(id) as (Omit<PublishedReport, "panels" | "params"> & { panels: string | null; params: string | null }) | null;
     return row ? { ...row, panels: parsePanels(row.panels), params: parseParams(row.params) } : null;
@@ -1402,7 +1413,7 @@ export class KnowledgeStore {
   getPublishedMeta(id: string): PublishedMeta | null {
     const row = this.db
       .query(
-        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published WHERE id = ?",
+        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt, locked_at AS lockedAt, locked_by AS lockedBy FROM published WHERE id = ?",
       )
       .get(id) as (Omit<PublishedMeta, "panels" | "params"> & { panels: string | null; params: string | null }) | null;
     return row ? { ...row, panels: parsePanels(row.panels), params: parseParams(row.params) } : null;
@@ -1412,7 +1423,7 @@ export class KnowledgeStore {
   listPublished(): PublishedMeta[] {
     const rows = this.db
       .query(
-        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt FROM published ORDER BY created_at DESC",
+        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt, locked_at AS lockedAt, locked_by AS lockedBy FROM published ORDER BY created_at DESC",
       )
       .all() as unknown as (Omit<PublishedMeta, "panels" | "params"> & { panels: string | null; params: string | null })[];
     return rows.map((r) => ({ ...r, panels: parsePanels(r.panels), params: parseParams(r.params) }));
@@ -1575,6 +1586,22 @@ export class KnowledgeStore {
       .query("SELECT MAX(computed_at) AS t FROM app_cache WHERE app_id = ? AND error IS NULL")
       .get(id) as { t: string | null } | null;
     return row?.t ?? null;
+  }
+
+  /** Lock or unlock a published app. A locked app rejects agent edits
+   *  (update_app / unpublish_app) until unlocked; locking/unlocking is an
+   *  author-or-admin web action (enforced upstream). Returns false for an
+   *  unknown/archived row or a no-op (already in the requested state). */
+  setAppLocked(id: string, locked: boolean, by: string): boolean {
+    return locked
+      ? this.db.run(
+          "UPDATE published SET locked_at = ?, locked_by = ? WHERE id = ? AND archived_at IS NULL AND locked_at IS NULL",
+          [new Date().toISOString(), by, id],
+        ).changes > 0
+      : this.db.run(
+          "UPDATE published SET locked_at = NULL, locked_by = NULL WHERE id = ? AND archived_at IS NULL AND locked_at IS NOT NULL",
+          [id],
+        ).changes > 0;
   }
 
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or

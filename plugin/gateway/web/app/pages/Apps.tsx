@@ -21,6 +21,8 @@ export function Apps() {
   const isAdmin = me?.role === "admin";
   const { data, loading, error, reload } = useApi<PublishedMeta[]>(() => api.apps(), []);
   const [archiving, setArchiving] = useState<PublishedMeta | null>(null);
+  // App whose lock confirm is open (null = none). Unlock is a direct action.
+  const [locking, setLocking] = useState<PublishedMeta | null>(null);
   // App whose visibility picker is open (null = none).
   const [visApp, setVisApp] = useState<PublishedMeta | null>(null);
   const [newOpen, setNewOpen] = useState(false);
@@ -86,6 +88,14 @@ export function Apps() {
                     </MenuItem>,
                   );
                   items.push(
+                    <MenuItem
+                      key="lock"
+                      onSelect={() => (r.lockedAt ? void act(() => api.setLocked(r.id, false)) : setLocking(r))}
+                    >
+                      {r.lockedAt ? "Unlock" : "Lock…"}
+                    </MenuItem>,
+                  );
+                  items.push(
                     <MenuItem key="arch" danger onSelect={() => setArchiving(r)}>
                       Archive
                     </MenuItem>,
@@ -110,6 +120,11 @@ export function Apps() {
                       // fragment now (issue #62), so the old format-based split is gone.
                       <Badge tone="idle">static</Badge>
                     )}
+                    {r.lockedAt ? (
+                      <span title={`Locked${r.lockedBy ? ` by ${r.lockedBy}` : ""} — agents can’t edit or archive it.`}>
+                        <Badge tone="idle">locked</Badge>
+                      </span>
+                    ) : null}
                     <VisibilityBadge visibility={r.visibility} canManage={canManage} onOpen={() => setVisApp(r)} />
                     <Menu label={`Actions for ${r.title}`}>{items}</Menu>
                   </div>
@@ -158,6 +173,19 @@ export function Apps() {
           if (a) void act(() => api.archive(a.id));
         }}
         onClose={() => setArchiving(null)}
+      />
+      <Confirm
+        open={!!locking}
+        title="Lock this app?"
+        body={`Agents won’t be able to edit or archive "${locking?.title}" until it’s unlocked — anyone can still view it or copy it into a new app. The author or an admin can unlock it anytime.`}
+        confirmLabel="Lock"
+        defaultAction
+        onConfirm={() => {
+          const a = locking;
+          setLocking(null);
+          if (a) void act(() => api.setLocked(a.id, true));
+        }}
+        onClose={() => setLocking(null)}
       />
       <VisibilityDialog
         open={!!visApp}

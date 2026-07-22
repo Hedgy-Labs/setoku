@@ -1377,4 +1377,61 @@ describe("live apps (end-to-end render path)", () => {
     expect(frame).toContain("window.__SETOKU__");
     expect(frame).toContain("window.Setoku"); // tested chart helpers present
   }, 20_000);
+
+  it("locking an app freezes agent edits (author included) until an author/admin unlocks it", async () => {
+    const alice = await connect("tok-alice");
+    const pub = await call(alice, "publish_app", { title: "Freezable", html: "<div id=x></div>" });
+    const id = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
+    await alice.close();
+
+    const boss = await session("boss", "s3cret-pass");
+    const member = await session("viewer", "viewer-pass");
+    const setLocked = (s: { cookie: string; csrf: string }, locked: boolean) =>
+      fetch(`${BASE}/admin/api/set_locked`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: s.cookie, "x-csrf-token": s.csrf },
+        body: JSON.stringify({ id, locked }),
+      });
+
+    // a member who isn't the author cannot lock it
+    expect((await setLocked(member, true)).status).toBe(403);
+
+    // an admin can; a second lock is a no-op
+    const r1 = (await (await setLocked(boss, true)).json()) as { ok: boolean };
+    expect(r1.ok).toBe(true);
+    const r2 = (await (await setLocked(boss, true)).json()) as { ok: boolean; flash: string };
+    expect(r2.ok).toBe(false);
+    expect(r2.flash).toContain("Already locked");
+
+    // the lock is visible to the SPA (app_data) with who set it
+    const dd = (await (
+      await fetch(`${BASE}/admin/api/app_data?id=${id}`, { headers: { cookie: boss.cookie } })
+    ).json()) as { lockedAt: string | null; lockedBy: string | null };
+    expect(dd.lockedAt).toBeTruthy();
+    expect(dd.lockedBy).toBe("boss");
+
+    // EVERY agent mutation is rejected — the author's update, and archival
+    const alice2 = await connect("tok-alice");
+    const upd = await call(alice2, "update_app", { id, title: "nope" });
+    expect(upd.isError).toBe(true);
+    expect(upd.text.toLowerCase()).toContain("locked");
+    const arch = await call(alice2, "unpublish_app", { id });
+    expect(arch.isError).toBe(true);
+    expect(arch.text.toLowerCase()).toContain("locked");
+    // reads stay open, and announce the lock so the agent forks instead
+    const got = await call(alice2, "get_app", { id });
+    expect(got.isError).toBe(false);
+    expect(got.text).toContain("LOCKED");
+    const list = await call(alice2, "list_apps", {});
+    expect(list.text).toContain("locked");
+    await alice2.close();
+
+    // unlock (admin) → the author can edit again
+    const r3 = (await (await setLocked(boss, false)).json()) as { ok: boolean };
+    expect(r3.ok).toBe(true);
+    const alice3 = await connect("tok-alice");
+    const upd2 = await call(alice3, "update_app", { id, title: "editable again" });
+    expect(upd2.isError).toBe(false);
+    await alice3.close();
+  }, 20_000);
 });
