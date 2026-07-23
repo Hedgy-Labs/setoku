@@ -7,3 +7,12 @@
 export const IS_DEMO =
   typeof window !== "undefined" &&
   (window as { __SETOKU_DEMO__?: boolean }).__SETOKU_DEMO__ === true;
+
+/** On a demo box, the path-authed MCP endpoint (`/mcp/<demo token>`) and the
+ *  connector name, injected by the gateway so the banner can show connect
+ *  instructions. Null off a demo box (or if no demo token is provisioned). */
+export const DEMO_MCP: { path: string; connector: string } | null =
+  typeof window !== "undefined"
+    ? ((window as { __SETOKU_DEMO_MCP__?: { path: string; connector: string } })
+        .__SETOKU_DEMO_MCP__ ?? null)
+    : null;
