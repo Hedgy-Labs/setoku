@@ -45,6 +45,7 @@ import {
   type PublishedReport,
 } from "./lib/store";
 import { newestComputedAt, renderApp, type RenderedPanel } from "./lib/apps";
+import { emitAppChanged, subscribeAppEvents } from "./lib/app-events";
 import { mirroredTables, mirrorAsOf, referencedBizTables } from "./lib/mirror";
 import { APP_RUNTIME } from "./lib/app-runtime";
 import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
@@ -117,7 +118,7 @@ const VIEWER_READ_APIS = new Set([
   // doc names, SQL, and identities), matching the admin-only Audit tab.
   "session", "pending", "rejected", "knowledge", "knowledge_view",
   "sources", "source_series", "egress", "team",
-  "published", "app_data", "app_history", "app_state",
+  "published", "app_data", "app_history", "app_state", "app_events",
 ]);
 
 // The live lake-probe endpoints (sources / source_series / egress) each fan out
@@ -1871,11 +1872,15 @@ const httpServer = http.createServer(async (req, res) => {
           prov.mirrorAsOf = await appMirrorAsOf(meta);
           // Last-editor stamp for the header (#58) — the newest version's author +
           // time, shown once an app has actually been edited (versions > 1).
+          // latestSeq is the MONOTONIC change stamp the viewer's live-refresh
+          // watcher compares (versions is a pruned COUNT that pins at the
+          // retention cap, so it can NOT detect changes on a heavily-edited app).
           const edit = store.latestAppEdit(id);
           if (edit) {
             prov.editedBy = edit.editor;
             prov.editedAt = edit.ts;
             prov.versions = edit.versions;
+            prov.latestSeq = edit.seq;
           }
           // Skip anonymous demo-viewer reads (see the frame handler) — no
           // crawler-driven growth of the append-only audit log.
@@ -1895,6 +1900,74 @@ const httpServer = http.createServer(async (req, res) => {
           const revs = store.listAppHistory(id);
           const current = revs.length ? revs[0].seq : 0; // newest seq === live state
           return json(200, revs.map((r) => ({ ...r, current: r.seq === current })));
+        }
+
+        // Live edit-refresh (SSE): a long-lived stream that pushes one small
+        // event whenever this app's content changes (update_app / restore /
+        // rename), so a browser watching the app reloads its frame while an
+        // agent iterates — no hand-refresh. The event carries NO content (just
+        // the change kind); the client refetches through the normal session-
+        // gated render path, so this opens no new read surface. Same team-tier
+        // gate as app_data/app_history (the actor check above).
+        //
+        // Known limits, on purpose: (1) no replay — events have no id: and a
+        // reconnect gets no backlog, so the CLIENT must refetch on reconnect
+        // (the SPA does, keyed on latestSeq); (2) auth is checked at connect
+        // only — a logout/removal doesn't sever an open stream, which is
+        // acceptable because the stream carries only {kind} nudges and every
+        // refetch it triggers re-authenticates.
+        if (api === "app_events" && req.method === "GET") {
+          const url = new URL(req.url ?? "", "http://x");
+          const id = url.searchParams.get("id") ?? "";
+          const meta = store.getPublishedMeta(id);
+          if (!meta || meta.archivedAt) return json(404, { ok: false, error: "app not found or archived" });
+          // Claim a subscription slot BEFORE committing to a 200 event-stream.
+          // At the cap this must be a non-200: EventSource treats a 200 stream
+          // that ends as a transient error and reconnects every `retry` ms —
+          // 200 capped clients would hammer a box that is by definition already
+          // saturated. A 503 fails the connection permanently; the view simply
+          // isn't live (its normal auto-refresh interval still applies). An
+          // anonymous demo viewer draws from its own smaller pool so it can't
+          // starve signed-in sessions (see app-events.ts).
+          const unsub = subscribeAppEvents(id, (kind) => res.write(`data: ${JSON.stringify({ kind })}\n\n`), {
+            session: session != null,
+          });
+          if (!unsub) return json(503, { ok: false, error: "live-update stream limit reached" });
+          // Wire the cleanup BEFORE any write: if writeHead/write throws (a
+          // socket torn down mid-flight), the catch below releases the slot —
+          // a claimed subscription must never outlive its response. unsub is
+          // idempotent, so a later 'close' firing too is harmless.
+          // The heartbeat runs on a bare timer (no request handler above it to
+          // catch), so a write to a just-died socket must not become an
+          // uncaught exception — the 'close' handler does the actual cleanup.
+          const ping = setInterval(() => {
+            try {
+              res.write(": ping\n\n");
+            } catch {
+              /* dying socket — 'close' cleans up */
+            }
+          }, 25_000);
+          ping.unref?.();
+          res.on("close", () => {
+            clearInterval(ping);
+            unsub();
+          });
+          try {
+            const headers: Record<string, string> = {
+              "content-type": "text/event-stream",
+              "cache-control": "no-store",
+              "referrer-policy": "no-referrer",
+            };
+            if (renewedCookie) headers["set-cookie"] = renewedCookie;
+            res.writeHead(200, headers);
+            // Reconnect hint for EventSource (it auto-reconnects across box restarts).
+            res.write("retry: 3000\n\n");
+          } catch (e) {
+            clearInterval(ping);
+            unsub();
+            throw e;
+          }
+          return;
         }
 
         // ---- app state (per-app private datastore) ----
@@ -2040,6 +2113,7 @@ const httpServer = http.createServer(async (req, res) => {
             if (!mayMutateApp(id)) return;
             const ok = store.updatePublished(id, { title }, { editor: session.identity });
             store.audit(session.identity, "rename_app", { id, ok });
+            if (ok) emitAppChanged(id, "renamed"); // other open viewers pick up the new title
             return json(200, { ok, title, flash: "Renamed." });
           }
 
@@ -2100,6 +2174,7 @@ const httpServer = http.createServer(async (req, res) => {
               }
             }
             store.audit(session.identity, "revert_app", { id, seq, reverted, brokenPanels: !!panelWarning });
+            emitAppChanged(id, "restored"); // other open viewers reload the restored content
             return json(200, {
               ok: true,
               flash:

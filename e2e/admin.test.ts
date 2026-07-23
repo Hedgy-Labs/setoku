@@ -17,7 +17,7 @@ import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { KnowledgeStore } from "../plugin/gateway/lib/store";
 import { hashPassword } from "../plugin/gateway/lib/accounts";
-import { spawnGateway, waitHealthy, ROOT } from "../test/lib/gateway";
+import { spawnGateway, waitHealthy, connect as gwConnect, call, ROOT } from "../test/lib/gateway";
 
 const CHROME = (
   process.env.SETOKU_E2E_CHROME
@@ -41,6 +41,9 @@ const BASE = `http://localhost:${PORT}`;
 let proc: Subprocess | undefined;
 let browser: Browser;
 let tmp = "";
+// Kept at module scope so the SSE-reconnect test can restart the gateway with
+// the identical environment (same store, same port — a simulated deploy).
+let gwEnv: Record<string, string> = {};
 
 describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
   beforeAll(async () => {
@@ -68,7 +71,7 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
     fs.writeFileSync(tokensFile, JSON.stringify({ tok_alice: "alice@co.test" }));
 
     // 3. boot the real gateway against it
-    proc = spawnGateway({
+    gwEnv = {
       SETOKU_PROJECT_DIR: tmp,
       SETOKU_DB_PATH: dbPath,
       SETOKU_TOKENS: "tok_boss=boss",
@@ -76,7 +79,8 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
       SETOKU_HTTP_PORT: String(PORT),
       SETOKU_PUBLIC_URL: BASE,
       SETOKU_COOKIE_INSECURE: "1", // http://localhost — browsers drop Secure cookies
-    });
+    };
+    proc = spawnGateway(gwEnv);
     await waitHealthy(BASE);
 
     // 4. launch the system Chrome
@@ -193,4 +197,71 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
     expect(await page.locator('button[aria-label="Menu"]').isVisible()).toBe(false);
     await page.context().close();
   }, 20_000);
+
+  it("an open app view live-refreshes when the agent updates it (SSE), and history shows the model", async () => {
+    // The agent publishes a STATIC app (no panels — the e2e box has no lake),
+    // self-reporting its model.
+    const c = await gwConnect(BASE, "tok_boss", "e2e-live");
+    const pub = await call(c, "publish_app", { title: "Live e2e", html: '<div id="marker">LIVE-V1</div>', model: "claude-fable-5" });
+    expect(pub.isError).toBeFalsy();
+    const id = pub.text.match(/update_app\("([^"]+)"/)?.[1] ?? "";
+    expect(id).not.toBe("");
+
+    // A human watches it in the browser — initial content rendered in the frame.
+    // NOT networkidle: the app view holds the SSE stream open by design, so the
+    // network never idles on this page.
+    const { page, errors } = await open({ user: "boss", pass: "s3cret-pass" });
+    await page.goto(`${BASE}/apps/${id}`, { waitUntil: "load" });
+    const marker = page.frameLocator("iframe").locator("#marker");
+    await marker.waitFor({ timeout: 10_000 });
+    expect(await marker.innerText()).toBe("LIVE-V1");
+
+    // The agent edits it. NO reload/navigation in the browser — the SSE nudge
+    // must remount the frame with the new content and toast.
+    const upd = await call(c, "update_app", { id, html: '<div id="marker">LIVE-V2</div>', message: "Swapped the marker", model: "claude-fable-5" });
+    expect(upd.isError).toBeFalsy();
+    await page.waitForSelector("text=Updated to the latest version.", { timeout: 10_000 });
+    await page
+      .frameLocator("iframe")
+      .locator('#marker:has-text("LIVE-V2")')
+      .waitFor({ timeout: 10_000 });
+
+    // The version drawer (⋮ → Version history) attributes both versions to the model.
+    await page.getByRole("button", { name: "App actions" }).click();
+    await page.click('[role="menuitem"]:has-text("Version history")');
+    await page.waitForSelector("text=Version 2");
+    const drawer = page.locator('[role="dialog"][aria-label="Version history"]');
+    expect(await drawer.locator("text=claude-fable-5").count()).toBe(2); // v1 publish + v2 edit
+    expect(await drawer.locator("text=Swapped the marker").isVisible()).toBe(true);
+    expect(errors).toEqual([]);
+    await page.context().close();
+  }, 30_000);
+
+  it("catches up after a box restart — an edit during the disconnect still lands", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "e2e-reconnect");
+    const pub = await call(c, "publish_app", { title: "Reconnect e2e", html: '<div id="marker">RC-V1</div>', model: "claude-fable-5" });
+    expect(pub.isError).toBeFalsy();
+    const id = pub.text.match(/update_app\("([^"]+)"/)?.[1] ?? "";
+
+    const { page, errors } = await open({ user: "boss", pass: "s3cret-pass" });
+    await page.goto(`${BASE}/apps/${id}`, { waitUntil: "load" });
+    await page.frameLocator("iframe").locator('#marker:has-text("RC-V1")').waitFor({ timeout: 10_000 });
+
+    // Simulate a deploy: kill the gateway (the open SSE stream drops)…
+    proc!.kill();
+    await proc!.exited;
+    // …boot it again on the same store (sessions persist, so no re-login)…
+    proc = spawnGateway(gwEnv);
+    await waitHealthy(BASE);
+    // …and edit IMMEDIATELY, racing the browser's ~3s reconnect — so this edit
+    // often lands while the stream is still down. The reconnect catch-up (the
+    // onopen refetch + version watcher) must surface it whichever side wins.
+    const c2 = await gwConnect(BASE, "tok_boss", "e2e-reconnect2");
+    const upd = await call(c2, "update_app", { id, html: '<div id="marker">RC-V2</div>', model: "claude-fable-5" });
+    expect(upd.isError).toBeFalsy();
+
+    await page.frameLocator("iframe").locator('#marker:has-text("RC-V2")').waitFor({ timeout: 20_000 });
+    expect(errors).toEqual([]);
+    await page.context().close();
+  }, 45_000);
 });

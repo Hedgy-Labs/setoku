@@ -236,6 +236,10 @@ export interface AppData {
   editedBy?: string;
   editedAt?: string;
   versions?: number;
+  /** Newest revision seq — the MONOTONIC change stamp the live-refresh watcher
+   *  compares. `versions` is a pruned count (pins at the retention cap), so it
+   *  can't serve that purpose. */
+  latestSeq?: number;
   panels: PanelProvenance[];
 }
 
@@ -246,6 +250,9 @@ export interface AppRevision {
   seq: number;
   editor: string;
   note: string | null;
+  /** Self-reported model id of the agent that made this version (e.g.
+   *  "claude-fable-5"); null for human web edits and older rows. */
+  model: string | null;
   ts: string;
   title: string;
   hasPanels: boolean;

@@ -163,12 +163,29 @@ export function AppView() {
     [reloadFrame],
   );
 
+  // Live edit-refresh plumbing (see the SSE effect below): whether the stream
+  // has errored since it last connected, and the newest revision SEQ we
+  // baselined — the watcher only reacts when this advances. seq, NEVER the
+  // version count: the count is pruned to MAX_APP_REVISIONS server-side, so on
+  // a heavily-edited app it pins at the cap and would stop detecting changes.
+  const esHadError = useRef(false);
+  const seenSeq = useRef<number | null>(null);
+  // One-shot downgrade for the NEXT watcher firing: "renamed" (metadata-only —
+  // update the chrome, don't remount the frame or toast) or "self" (this tab
+  // initiated the change and already gave feedback — remount without the
+  // redundant toast). Cleared when consumed, on navigation, and by a content
+  // event outranking a pending rename.
+  const suppress = useRef<null | "renamed" | "self">(null);
+
   // Reset per-app state on navigation (one AppView instance is reused across
   // /apps/:id). reloadFrame bumps the nonce so a late echo from the PREVIOUS
   // app's frame can't match the new one, and clears any lingering force.
   useEffect(() => {
     touched.current = new Set();
     lastRefresh.current = 0; // a fresh app's first Refresh click must not be debounced
+    esHadError.current = false;
+    seenSeq.current = null; // re-baseline on the next app's first metadata load
+    suppress.current = null;
     setParamVals({});
     setEchoed({});
     reloadFrame({ clearLive: true });
@@ -317,6 +334,69 @@ export function AppView() {
     return () => window.removeEventListener("message", onMessage);
   }, [id, onParamChange]);
 
+  // Live edit-refresh: the box pushes one SSE event when this app's content
+  // changes (an agent's update_app, a restore, a rename), so someone iterating
+  // with an agent while watching the browser sees the new version land without
+  // hand-reloading. The event is only a nudge — it refetches METADATA; the
+  // version-count watcher below is what actually remounts the frame, so a nudge
+  // that changed nothing (an idempotent re-run) never flickers the view. On
+  // reconnect after an error (a box restart — rsync deploys do this constantly)
+  // the stream has no backlog, so we refetch once to CATCH UP on anything
+  // published while disconnected; the watcher again decides if it was real.
+  useEffect(() => {
+    const es = new EventSource(`/admin/api/app_events?id=${encodeURIComponent(id)}`);
+    es.onmessage = (e) => {
+      // The event carries only the change KIND. A rename is metadata-only: the
+      // refetch updates the title in the chrome, and the watcher below is told
+      // not to remount the frame (its content didn't change) or toast. A
+      // content event cancels a still-pending rename downgrade — content wins.
+      let kind = "";
+      try {
+        kind = String((JSON.parse(String(e.data)) as { kind?: string }).kind ?? "");
+      } catch {
+        /* malformed event — treat as a plain nudge */
+      }
+      if (kind === "renamed") {
+        if (suppress.current == null) suppress.current = "renamed";
+      } else if (suppress.current === "renamed") {
+        suppress.current = null;
+      }
+      reload();
+    };
+    es.onerror = () => {
+      esHadError.current = true;
+    };
+    es.onopen = () => {
+      if (!esHadError.current) return; // initial connect — nothing missed
+      esHadError.current = false;
+      reload();
+    };
+    return () => es.close();
+  }, [id, reload]);
+
+  // The change watcher: the app's newest revision seq (from app_data) advanced
+  // under us — via an SSE nudge, a reconnect catch-up, or any other metadata
+  // refetch. Baselined on the first load per app (no toast on open); reset on
+  // navigation by the id effect above so one app's seq can't trip the next
+  // app's watcher. The one-shot `suppress` downgrade (set by the SSE handler
+  // and by this tab's own rename/restore flows) keeps a metadata-only rename
+  // from remounting the frame and a self-initiated change from double-toasting;
+  // the toast id lets rapid agent iteration refresh ONE toast instead of
+  // stacking a new one per edit.
+  useEffect(() => {
+    const v = fresh?.latestSeq ?? null; // fresh: guards against the PREVIOUS app's metadata
+    if (v == null) return;
+    const prev = seenSeq.current;
+    seenSeq.current = v;
+    if (prev == null || v <= prev) return;
+    const s = suppress.current;
+    suppress.current = null;
+    setHistoryNonce((n) => n + 1); // history drawer, if open
+    if (s === "renamed") return; // title already refreshed via metadata; content untouched
+    reloadFrame({ clearLive: true }); // the content itself
+    if (s !== "self") toast("Updated to the latest version.", { id: "app-live-refresh" });
+  }, [fresh?.latestSeq, reloadFrame]);
+
   // Auto-refresh on the app's interval — a plain cache-bounded frame reload (no
   // force). reloadFrame is stable, so param changes don't tear down the timer; a
   // manual refresh (manualTick) DOES restart it, so an auto tick can't supersede an
@@ -383,6 +463,10 @@ export function AppView() {
     if (!next || next === data?.title) return;
     try {
       await api.rename(id, next);
+      // Metadata-only change: the watcher must not remount the frame or toast
+      // "Updated…" over our own "Renamed." (same downgrade the SSE `renamed`
+      // event applies for every other viewer).
+      if (suppress.current == null) suppress.current = "renamed";
       reload();
       toast("Renamed.");
     } catch (e) {
@@ -400,17 +484,18 @@ export function AppView() {
     }
   };
 
-  // Restore an earlier version. On success: refetch metadata + the history list,
-  // and reload the frame (author/admin bypasses the cache) so the iframe shows
-  // the restored content immediately. The panel stays open so you can see the
-  // new "Current" version land.
+  // Restore an earlier version. On success: refetch metadata and let the seq
+  // watcher do the single remount + history refresh (marked "self" so it
+  // doesn't stack an "Updated…" toast over the restore's own flash). The
+  // server re-seeded the panel cache during the revert, so the watcher's
+  // cache-bounded frame reload serves fresh rows without a force. A no-op
+  // restore (target == live) appends no revision — nothing remounts, correctly.
   const doRevert = async (seq: number) => {
     setRevertRev(null);
     try {
       const r = await api.revertApp(id, seq);
+      suppress.current = "self";
       reload();
-      reloadFrame({ force: canForce, clearLive: true });
-      setHistoryNonce((n) => n + 1);
       toast(r.flash ?? `Restored version ${seq}.`);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Restore failed.");
@@ -756,6 +841,9 @@ function HistoryPanel({
                     </div>
                     <p className="mt-0.5 truncate text-xs text-stone-500">
                       {r.editor}
+                      {/* Which model authored this version (agent-reported on
+                          publish_app/update_app; absent on human web edits). */}
+                      {r.model ? ` · ${r.model}` : ""}
                       {r.ts ? ` · ${relTime(r.ts)}` : ""}
                     </p>
                     {r.note ? <p className="mt-0.5 text-xs italic text-stone-400">{r.note}</p> : null}

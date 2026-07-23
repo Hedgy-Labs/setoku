@@ -37,6 +37,7 @@ import {
   visibleDocs as accessVisibleDocs,
 } from "./lib/access";
 import { notifyActivity } from "./lib/notify";
+import { emitAppChanged } from "./lib/app-events";
 import { VERSION } from "./lib/version";
 
 /**
@@ -1332,6 +1333,17 @@ const MAX_REPORT_BYTES = 2_000_000; // ~2 MB of template HTML; keep it self-cont
 // A one-line changelog note for an update, shown in version history and the
 // activity notification (issue #63). A sentence, not a document.
 const MAX_UPDATE_MESSAGE_CHARS = 500;
+// Self-reported model id on publish/update (version-history attribution). Model
+// ids are short slugs; anything longer is garbage, so truncate rather than
+// reject — attribution metadata must never block a publish.
+const MAX_MODEL_CHARS = 100;
+const modelOf = (model: string | undefined): string | null =>
+  model?.trim().slice(0, MAX_MODEL_CHARS) || null;
+// Shared inputSchema entry so publish_app and update_app describe it identically.
+const MODEL_INPUT = z
+  .string()
+  .optional()
+  .describe('The model id you are running as, for the version history\'s "who made this" attribution (e.g. "claude-fable-5"). Pass it if you know it.');
 
 // Where a published app lives. SETOKU_PUBLIC_URL is the box's public origin
 // (also used by the installer links); without it we return the path and tell the
@@ -1511,6 +1523,8 @@ const APP_GUIDE = [
   "An app splits PRESENTATION (an HTML template you author) from DATA (named panels — saved",
   "read-only queries the box re-runs live and injects). Validate every panel's SQL with run_query",
   "FIRST, then publish_app; edit later with update_app (same link).",
+  "On BOTH calls, pass `model` — the model id you are running as (e.g. \"claude-fable-5\") — so the",
+  "app's version history shows which model made each version.",
   "",
   "## Editing an existing app — get_app FIRST, don't rebuild",
   "To change an app you (or anyone) already published, call get_app(id): it returns the EXACT current",
@@ -1637,9 +1651,10 @@ server.registerTool(
         .number()
         .optional()
         .describe(`How often the box re-runs panels (default ${DEFAULT_REFRESH_SECONDS}, ${MIN_REFRESH_SECONDS}–${MAX_REFRESH_SECONDS})`),
+      model: MODEL_INPUT,
     },
   },
-  async ({ title, html, panels, params, refreshSeconds }) => {
+  async ({ title, html, panels, params, refreshSeconds, model }) => {
     const bytes = Buffer.byteLength(html, "utf8");
     if (bytes > MAX_REPORT_BYTES)
       return errorText(
@@ -1663,6 +1678,7 @@ server.registerTool(
 
     const id = mintShareId();
     const refresh = clampRefresh(refreshSeconds, normalized.length > 0);
+    const modelName = modelOf(model);
     store.createPublished({
       id,
       title: title.trim() || "Untitled app",
@@ -1671,10 +1687,11 @@ server.registerTool(
       params: declaredParams.length ? declaredParams : null,
       refreshSeconds: refresh,
       createdBy: user,
+      model: modelName,
     });
     for (const s of seeds)
       store.putPanelCache(id, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, truncated: s.truncated, error: null });
-    store.audit(user, "publish_app", { id, title, bytes, panels: normalized.length });
+    store.audit(user, "publish_app", { id, title, bytes, panels: normalized.length, model: modelName });
     // Announce it to the team channel (issue #63) — detached and best-effort, so
     // a slow/absent webhook never delays the publish response.
     void notifyActivity(projectDir, {
@@ -1724,9 +1741,10 @@ server.registerTool(
         .string()
         .optional()
         .describe('A short note on WHAT changed, shown in version history and the activity notification (e.g. "Added a weekly revenue panel").'),
+      model: MODEL_INPUT,
     },
   },
-  async ({ id, title, html, panels, params, refreshSeconds, message }) => {
+  async ({ id, title, html, panels, params, refreshSeconds, message, model }) => {
     const tid = id.trim();
     const meta = store.getPublishedMeta(tid);
     if (!meta || meta.archivedAt)
@@ -1794,6 +1812,7 @@ server.registerTool(
     if (refreshSeconds !== undefined) refresh = clampRefresh(refreshSeconds, willHavePanels);
     else if (panelsChanged) refresh = willHavePanels ? (meta.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) : null;
 
+    const modelName = modelOf(model);
     const ok = store.updatePublished(tid, {
       title: newTitle,
       body: html,
@@ -1805,7 +1824,7 @@ server.registerTool(
       panels: panelsChanged ? normalized : undefined,
       params: paramsChanged ? (params as AppParam[]) : undefined,
       refreshSeconds: refresh,
-    }, { editor: user, note });
+    }, { editor: user, note, model: modelName });
     if (!ok) return errorText(`Update failed — no active app "${id}".`);
     // Re-seed the cache for the re-derived panels (updatePublished cleared the old rows).
     if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, truncated: s.truncated, error: null });
@@ -1821,7 +1840,11 @@ server.registerTool(
       id: tid,
       changed: [newTitle !== undefined && "title", html !== undefined && "html", panelsChanged && "panels", paramsChanged && "params", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
       reverted,
+      model: modelName,
     });
+    // Nudge any browser currently viewing this app to refetch (SSE live-refresh)
+    // — the iterate-in-agent / watch-in-browser loop needs no hand-reload.
+    emitAppChanged(tid, "updated");
     // Announce it to the team channel (issue #63). The changed-facet vocabulary
     // matches the version-history drawer (content/data/inputs) so the note and
     // the UI read the same way. Detached + best-effort — never blocks the reply.
