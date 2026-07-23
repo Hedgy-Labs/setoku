@@ -95,9 +95,10 @@ describe("history diff + last-editor", () => {
     expect(hist[2].changes.sort()).toEqual(["content", "data", "title"]);
   });
 
-  it("latestAppEdit reports the newest editor + version count", () => {
+  it("latestAppEdit reports the newest seq + editor + version count", () => {
     const store = new KnowledgeStore(dbPath);
     const e = store.latestAppEdit("diffapp");
+    expect(e?.seq).toBe(3);
     expect(e?.editor).toBe("carol");
     expect(e?.versions).toBe(3);
     expect(store.latestAppEdit("nope")).toBeNull();
@@ -118,6 +119,15 @@ describe("retention", () => {
     // The oldest surviving version is seq 22; earlier ones were pruned.
     expect(revs[revs.length - 1].seq).toBe(22);
     expect(store.getAppRevision("capapp", 1)).toBeNull();
+    // The viewer's live-refresh watcher keys on latestAppEdit().seq, which must
+    // keep ADVANCING past the prune cap — the version COUNT pins at 100 here,
+    // which is exactly why the watcher must never compare counts.
+    const edit = store.latestAppEdit("capapp");
+    expect(edit?.seq).toBe(121);
+    expect(edit?.versions).toBe(100);
+    store.updatePublished("capapp", { body: "b121" }, { editor: "alice" });
+    expect(store.latestAppEdit("capapp")?.seq).toBe(122); // still moving
+    expect(store.latestAppEdit("capapp")?.versions).toBe(100); // still pinned
   });
 });
 
@@ -131,6 +141,22 @@ describe("update message (issue #63)", () => {
     expect(revs[0].note).toBe("Added the revenue panel");
     // v1 (the original publish) carries no note.
     expect(revs[revs.length - 1].note).toBeNull();
+  });
+});
+
+describe("model attribution", () => {
+  it("records the agent's self-reported model per version; human edits stay null", () => {
+    const store = new KnowledgeStore(dbPath);
+    store.createPublished({ id: "modelapp", title: "M", body: "b0", refreshSeconds: 60, createdBy: "alice", model: "claude-fable-5" });
+    // An agent edit under a different model — each version keeps its own.
+    store.updatePublished("modelapp", { body: "b1" }, { editor: "alice", model: "claude-opus-4-8" });
+    // A human web edit (rename/restore path) passes no model.
+    store.updatePublished("modelapp", { title: "M2" }, { editor: "bob" });
+    const revs = store.listAppHistory("modelapp"); // newest first: 3, 2, 1
+    expect(revs.map((r) => r.model)).toEqual([null, "claude-opus-4-8", "claude-fable-5"]);
+    // The full snapshot carries it too (the drawer's list and a restore agree).
+    expect(store.getAppRevision("modelapp", 1)?.model).toBe("claude-fable-5");
+    expect(store.getAppRevision("modelapp", 3)?.model).toBeNull();
   });
 });
 

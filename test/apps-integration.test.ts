@@ -267,6 +267,151 @@ describe("update_app — change message lands in version history (issue #63)", (
   });
 });
 
+describe("model attribution — publish/update carry the agent's model into history", () => {
+  it("threads `model` from publish_app and update_app into app_history", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf(
+      (await call(c, "publish_app", { title: "Models", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM], model: "claude-fable-5" })).text,
+    );
+    const r = await call(c, "update_app", { id, html: "<div id=kpi>v2</div>", model: "claude-opus-4-8" });
+    expect(r.isError).toBeFalsy();
+
+    const { cookie } = await login();
+    const hist = await (await fetch(`${BASE}/admin/api/app_history?id=${id}`, { headers: { cookie } })).json();
+    // Newest first: the edit's model, then the original publish's.
+    expect(hist[0].model).toBe("claude-opus-4-8");
+    expect(hist[hist.length - 1].model).toBe("claude-fable-5");
+    // app_data carries the monotonic change stamp the live-refresh watcher
+    // keys on (the newest revision seq — NOT the prunable version count).
+    const data = await (await fetch(`${BASE}/admin/api/app_data?id=${id}`, { headers: { cookie } })).json();
+    expect(data.latestSeq).toBe(2);
+    expect(data.versions).toBe(2);
+  });
+
+  it("an update without `model` records null (older clients keep working)", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "NoModel", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    await call(c, "update_app", { id, title: "NoModel2" });
+    const { cookie } = await login();
+    const hist = await (await fetch(`${BASE}/admin/api/app_history?id=${id}`, { headers: { cookie } })).json();
+    expect(hist[0].model).toBeNull();
+  });
+});
+
+describe("app_events — SSE nudge while an agent iterates", () => {
+  /** Open one SSE stream and accumulate whatever arrives in the background. */
+  async function openStream(id: string, cookie: string) {
+    const res = await fetch(`${BASE}/admin/api/app_events?id=${encodeURIComponent(id)}`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/event-stream");
+    const reader = res.body!.getReader();
+    const state = { buf: "" };
+    const pump = (async () => {
+      const dec = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        state.buf += dec.decode(value, { stream: true });
+      }
+    })();
+    return {
+      state,
+      /** Wait until the buffer holds `needle` (or time out and let the expect fail). */
+      async waitFor(needle: string, ms = 5000): Promise<void> {
+        const deadline = Date.now() + ms;
+        while (!state.buf.includes(needle) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+      },
+      async close(): Promise<void> {
+        await reader.cancel().catch(() => {});
+        await pump.catch(() => {});
+      },
+    };
+  }
+
+  it("pushes updated/renamed/restored events, to every open stream", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "Live", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const { cookie, csrf } = await login();
+    const post = (api: string, body: Record<string, unknown>) =>
+      fetch(`${BASE}/admin/api/${api}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-csrf-token": csrf, cookie },
+        body: JSON.stringify(body),
+      });
+
+    // Two viewers watch the same app — BOTH must get every nudge (fan-out).
+    const s1 = await openStream(id, cookie);
+    const s2 = await openStream(id, cookie);
+    // The stream opens with the EventSource reconnect hint.
+    await s1.waitFor("retry:");
+    expect(s1.state.buf).toContain("retry:");
+
+    // 1. agent edit → "updated"
+    await call(c, "update_app", { id, html: "<div id=kpi>v2</div>" });
+    await s1.waitFor('"updated"');
+    await s2.waitFor('"updated"');
+    expect(s1.state.buf).toContain('data: {"kind":"updated"}');
+    expect(s2.state.buf).toContain('data: {"kind":"updated"}');
+
+    // 2. human rename → "renamed"
+    expect((await (await post("rename", { id, title: "Live v2" })).json()).ok).toBe(true);
+    await s1.waitFor('"renamed"');
+    expect(s1.state.buf).toContain('data: {"kind":"renamed"}');
+
+    // 3. human restore of v1 → "restored"
+    expect((await (await post("revert", { id, seq: 1 })).json()).ok).toBe(true);
+    await s1.waitFor('"restored"');
+    expect(s1.state.buf).toContain('data: {"kind":"restored"}');
+    await s2.waitFor('"restored"'); // s2 reads independently — wait on ITS buffer too
+    expect(s2.state.buf).toContain('data: {"kind":"renamed"}');
+    expect(s2.state.buf).toContain('data: {"kind":"restored"}');
+
+    await s1.close();
+    await s2.close();
+  }, 20_000);
+
+  it("an emit after a stream disconnects neither breaks the mutation nor the survivors", async () => {
+    // NOTE what this does and doesn't prove: it exercises the emit-with-a-dead-
+    // subscriber path over real HTTP (the mutation must succeed and the live
+    // stream must still be nudged), but it CANNOT observe the spawned gateway's
+    // internal subscriber count — the unsubscribe bookkeeping itself is covered
+    // at the unit layer (test/app-events.test.ts).
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "Churn", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const { cookie } = await login();
+    const gone = await openStream(id, cookie);
+    const kept = await openStream(id, cookie);
+    await gone.close(); // browser tab closed
+    await new Promise((r) => setTimeout(r, 100)); // let the close propagate
+    const r = await call(c, "update_app", { id, html: "<div id=kpi>after-close</div>" });
+    expect(r.isError).toBeFalsy();
+    await kept.waitFor('"updated"');
+    expect(kept.state.buf).toContain('data: {"kind":"updated"}');
+    await kept.close();
+  }, 15_000);
+
+  it("gates the stream: no session → 401; unknown app → 404 (no held stream)", async () => {
+    const anon = await fetch(`${BASE}/admin/api/app_events?id=whatever`);
+    expect(anon.status).toBe(401);
+    const { cookie } = await login();
+    const missing = await fetch(`${BASE}/admin/api/app_events?id=nope`, { headers: { cookie } });
+    expect(missing.status).toBe(404);
+  });
+
+  it("archived apps don't stream (parity with app_data)", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "Bye", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const { cookie, csrf } = await login();
+    await fetch(`${BASE}/admin/api/archive`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-csrf-token": csrf, cookie },
+      body: JSON.stringify({ id }),
+    });
+    const res = await fetch(`${BASE}/admin/api/app_events?id=${id}`, { headers: { cookie } });
+    expect(res.status).toBe(404);
+  });
+});
+
 describe("public /frame — fresh-execution budget bounds prod load", () => {
   it("serves cache-only (soft error) once an app's budget is spent on distinct params", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");

@@ -191,6 +191,10 @@ export interface AppRevisionMeta {
   /** Human note for non-linear versions ("Restored version 3"); null on a
    *  normal edit. */
   note: string | null;
+  /** Self-reported model id of the agent that produced this version (e.g.
+   *  "claude-fable-5"); null for human web edits and pre-feature rows. Trust
+   *  accordingly — it's attribution metadata, not an authenticated claim. */
+  model: string | null;
   ts: string;
   title: string;
   /** Whether this version carried live panels (a data app vs a static report). */
@@ -519,8 +523,11 @@ export class KnowledgeStore {
       refresh_seconds INTEGER,
       editor TEXT NOT NULL,
       note TEXT,
+      model TEXT,
       ts TEXT NOT NULL
     )`);
+    // Boxes whose app_revisions predates the model column (agent attribution).
+    this.ensureColumn("app_revisions", "model", "TEXT");
     // UNIQUE enforces the "one row per (app, seq)" invariant that "newest seq ==
     // live state" rests on (safe: the table is new, so no pre-existing dupes).
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS app_revisions_app ON app_revisions (app_id, seq)");
@@ -1264,6 +1271,8 @@ export class KnowledgeStore {
     refreshSeconds?: number | null;
     visibility?: ReportVisibility;
     createdBy: string;
+    /** Self-reported model id of the publishing agent (version-history attribution). */
+    model?: string | null;
   }): void {
     const panels = rec.panels && rec.panels.length ? JSON.stringify(rec.panels) : null;
     const params = rec.params && rec.params.length ? JSON.stringify(rec.params) : null;
@@ -1287,14 +1296,14 @@ export class KnowledgeStore {
       ],
     );
     // v1 of the version history — the original publish, attributed to the author.
-    this.snapshotAppVersion(rec.id, rec.createdBy, createdAt);
+    this.snapshotAppVersion(rec.id, rec.createdBy, createdAt, null, rec.model);
   }
 
   /** Append the app's CURRENT `published` row as its next version. Reads the
    *  stored row straight back (already-serialized panels/params) so a snapshot
    *  is byte-identical to what a revert would restore, with no re-serialization
    *  drift. Called on create, every content edit, and revert. */
-  private snapshotAppVersion(id: string, editor: string, ts: string, note?: string | null): void {
+  private snapshotAppVersion(id: string, editor: string, ts: string, note?: string | null, model?: string | null): void {
     const cols = "title, format, body, panels, params, refresh_seconds AS rs";
     type Row = { title: string; format: string; body: string; panels: string | null; params: string | null; rs: number | null };
     const row = this.db.query(`SELECT ${cols} FROM published WHERE id = ?`).get(id) as Row | null;
@@ -1320,8 +1329,8 @@ export class KnowledgeStore {
     const seq =
       ((this.db.query("SELECT MAX(seq) AS m FROM app_revisions WHERE app_id = ?").get(id) as { m: number | null }).m ?? 0) + 1;
     this.db.run(
-      "INSERT INTO app_revisions (app_id, seq, title, format, body, panels, params, refresh_seconds, editor, note, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [id, seq, row.title, row.format, row.body, row.panels, row.params, row.rs, editor, note ?? null, ts],
+      "INSERT INTO app_revisions (app_id, seq, title, format, body, panels, params, refresh_seconds, editor, note, model, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [id, seq, row.title, row.format, row.body, row.panels, row.params, row.rs, editor, note ?? null, model ?? null, ts],
     );
     // Bound history growth: keep the newest MAX_APP_REVISIONS, prune older seqs.
     // Gaps at the bottom are fine — reverting to a pruned version just 404s. Only
@@ -1345,7 +1354,7 @@ export class KnowledgeStore {
   listAppHistory(id: string): (AppRevisionMeta & { changes: string[] })[] {
     const rows = this.db
       .query(
-        `SELECT r.seq AS seq, r.editor AS editor, r.note AS note, r.ts AS ts, r.title AS title,
+        `SELECT r.seq AS seq, r.editor AS editor, r.note AS note, r.model AS model, r.ts AS ts, r.title AS title,
                 (r.panels IS NOT NULL) AS hasPanels,
                 (r.title IS NOT p.title) AS titleChanged,
                 (r.body IS NOT p.body) AS bodyChanged,
@@ -1356,7 +1365,7 @@ export class KnowledgeStore {
          WHERE r.app_id = ? ORDER BY r.seq DESC`,
       )
       .all(id) as {
-      seq: number; editor: string; note: string | null; ts: string; title: string; hasPanels: number;
+      seq: number; editor: string; note: string | null; model: string | null; ts: string; title: string; hasPanels: number;
       titleChanged: number; bodyChanged: number; panelsChanged: number; paramsChanged: number; refreshChanged: number;
     }[];
     return rows.map((r) => {
@@ -1366,20 +1375,23 @@ export class KnowledgeStore {
       if (r.panelsChanged) changes.push("data");
       if (r.paramsChanged) changes.push("inputs");
       if (r.refreshChanged) changes.push("refresh");
-      return { seq: r.seq, editor: r.editor, note: r.note, ts: r.ts, title: r.title, hasPanels: !!r.hasPanels, changes };
+      return { seq: r.seq, editor: r.editor, note: r.note, model: r.model, ts: r.ts, title: r.title, hasPanels: !!r.hasPanels, changes };
     });
   }
 
-  /** The newest version's editor + timestamp and the total version count — for
-   *  the header's "edited by X · Ns ago" (shown only once an app has been edited,
-   *  i.e. versions > 1). Null for an app with no history. */
-  latestAppEdit(id: string): { editor: string; ts: string; versions: number } | null {
+  /** The newest version's seq + editor + timestamp and the total version count —
+   *  for the header's "edited by X · Ns ago" (shown only once an app has been
+   *  edited, i.e. versions > 1). `seq` is the MONOTONIC change stamp: `versions`
+   *  is a row COUNT that pins at MAX_APP_REVISIONS once pruning starts, so any
+   *  "did it change?" comparison must use seq, never versions (the viewer's
+   *  live-refresh watcher relies on this). Null for an app with no history. */
+  latestAppEdit(id: string): { seq: number; editor: string; ts: string; versions: number } | null {
     return (
       (this.db
         .query(
-          "SELECT editor, ts, (SELECT COUNT(*) FROM app_revisions WHERE app_id = ?) AS versions FROM app_revisions WHERE app_id = ? ORDER BY seq DESC LIMIT 1",
+          "SELECT seq, editor, ts, (SELECT COUNT(*) FROM app_revisions WHERE app_id = ?) AS versions FROM app_revisions WHERE app_id = ? ORDER BY seq DESC LIMIT 1",
         )
-        .get(id, id) as { editor: string; ts: string; versions: number } | null) ?? null
+        .get(id, id) as { seq: number; editor: string; ts: string; versions: number } | null) ?? null
     );
   }
 
@@ -1388,7 +1400,7 @@ export class KnowledgeStore {
   getAppRevision(id: string, seq: number): AppRevision | null {
     const row = this.db
       .query(
-        "SELECT seq, editor, note, ts, title, format, body, panels, params, refresh_seconds AS refreshSeconds FROM app_revisions WHERE app_id = ? AND seq = ?",
+        "SELECT seq, editor, note, model, ts, title, format, body, panels, params, refresh_seconds AS refreshSeconds FROM app_revisions WHERE app_id = ? AND seq = ?",
       )
       .get(id, seq) as
       | (Omit<AppRevision, "panels" | "params" | "hasPanels"> & { panels: string | null; params: string | null })
@@ -1525,10 +1537,11 @@ export class KnowledgeStore {
       params?: AppParam[];
       refreshSeconds?: number | null;
     },
-    // Who is editing (for the version-history attribution), and an optional note
-    // for non-linear versions (a revert records "Restored version N"). A
+    // Who is editing (for the version-history attribution), an optional note
+    // for non-linear versions (a revert records "Restored version N"), and the
+    // editing agent's self-reported model id (null for human web edits). A
     // content change appends a new version snapshot.
-    by: { editor: string; note?: string | null },
+    by: { editor: string; note?: string | null; model?: string | null },
   ): boolean {
     const sets: string[] = [];
     const vals: (string | number | null)[] = [];
@@ -1560,7 +1573,7 @@ export class KnowledgeStore {
     if (changed && fields.panels !== undefined)
       this.db.run("DELETE FROM app_cache WHERE app_id = ?", [id]);
     // Record the resulting state as a new version (append-only history, #58).
-    if (changed) this.snapshotAppVersion(id, by.editor, new Date().toISOString(), by.note);
+    if (changed) this.snapshotAppVersion(id, by.editor, new Date().toISOString(), by.note, by.model);
     return changed;
   }
 
