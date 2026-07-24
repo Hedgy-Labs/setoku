@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The apex marketing site (setoku.com) — a static file_server block, separate
+# from the gateway Caddyfile at the repo root (that one proxies to server:8787;
+# this one serves site/ off disk and never touches the gateway).
+#
+# Install on the box as /opt/setoku/caddy.d/setoku-com.caddy. The caddy.d dir is
+# bind-mounted at /etc/caddy/conf.d, and the mount is inode-pinned: editing the
+# file in place and reloading does nothing. Force-recreate caddy to pick it up:
+#
+#   scp deploy/caddy.d/setoku-com.caddy <box>:/opt/setoku/caddy.d/
+#   ssh <box> 'cd /opt/setoku && docker compose up -d --force-recreate caddy'
+#
+# Site CONTENT is separate and needs none of that — `bun run deploy:site` rsyncs
+# site/ into the bind-mounted dir and it serves immediately.
+
+setoku.com {
+	encode gzip
+	root * /etc/caddy/conf.d/site
+
+	# Agents fetch these cross-origin (an OpenAPI spec is useless if the fetch is
+	# blocked by CORS). Everything under these paths is public documentation for
+	# an open-source project, so `*` costs nothing.
+	header /openapi.json Access-Control-Allow-Origin *
+	header /llms.txt Access-Control-Allow-Origin *
+	header /api/* Access-Control-Allow-Origin *
+
+	# /developers without the trailing slash, rewritten rather than redirected so
+	# the canonical URL in the page's <link rel=canonical> is the one that serves.
+	@developers path /developers
+	rewrite @developers /developers/index.html
+
+	# NOTE: deliberately NO `try_files {path} {path}/ /index.html` here.
+	# That SPA-style fallback answered *every* unknown path with 200 + the
+	# homepage HTML, so a crawler probing /openapi.json or /llms.txt got a
+	# 200 that wasn't the document it asked for — worse than a clean 404, and it
+	# made the whole site look like it had a broken API surface. This site is a
+	# handful of static documents with no client-side router; missing means 404.
+	file_server
+}
+
+www.setoku.com {
+	redir https://setoku.com{uri} permanent
+}

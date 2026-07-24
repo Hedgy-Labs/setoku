@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Setoku developer documentation · MCP server, API reference, OpenAPI spec</title>
+    <meta
+      name="description"
+      content="Developer documentation for Setoku, the open-source self-hosted MCP knowledge server: the MCP tool surface, HTTP API reference, OpenAPI spec, authentication, and quickstart."
+    />
+    <link rel="canonical" href="https://setoku.com/developers" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Setoku" />
+    <meta property="og:title" content="Setoku developer documentation" />
+    <meta
+      property="og:description"
+      content="The MCP tool surface, HTTP API reference, OpenAPI spec, authentication, and quickstart for Setoku, the open-source self-hosted MCP knowledge server."
+    />
+    <meta property="og:url" content="https://setoku.com/developers" />
+    <meta property="og:image" content="https://setoku.com/assets/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/assets/manpage.css" />
+    <!-- machine-readable entry points, so an agent never has to scrape this page -->
+    <link
+      rel="alternate"
+      type="application/json"
+      href="https://setoku.com/openapi.json"
+      title="Setoku OpenAPI specification"
+    />
+    <link
+      rel="alternate"
+      type="application/json"
+      href="https://setoku.com/api/index.json"
+      title="Setoku catalog API"
+    />
+    <link
+      rel="alternate"
+      type="text/plain"
+      href="https://setoku.com/llms.txt"
+      title="Setoku llms.txt"
+    />
+    <!-- Same @ids as the homepage graph, so this page's entities link to those
+         rather than declaring a second, competing copy of the product. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "TechArticle",
+            "@id": "https://setoku.com/developers#doc",
+            "url": "https://setoku.com/developers",
+            "name": "Setoku developer documentation",
+            "headline": "Setoku developer documentation: MCP server, API reference, OpenAPI spec",
+            "description": "The MCP tool surface, HTTP API reference, OpenAPI specification, authentication model, and quickstart for Setoku, the open-source self-hosted MCP knowledge server.",
+            "proficiencyLevel": "Beginner",
+            "inLanguage": "en",
+            "about": { "@id": "https://setoku.com/#software" },
+            "author": { "@id": "https://setoku.com/#org" },
+            "publisher": { "@id": "https://setoku.com/#org" },
+            "hasPart": [
+              {
+                "@type": "WebAPI",
+                "@id": "https://setoku.com/#api",
+                "name": "Setoku Gateway API",
+                "description": "The HTTP surface every self-hosted Setoku box exposes: the MCP endpoint, health, published apps, and the installer.",
+                "documentation": "https://setoku.com/developers#api",
+                "termsOfService": "https://github.com/Hedgy-Labs/setoku/blob/main/LICENSE",
+                "provider": { "@id": "https://setoku.com/#org" }
+              }
+            ]
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://setoku.com/#software",
+            "name": "Setoku",
+            "applicationCategory": "DeveloperApplication",
+            "operatingSystem": "Linux",
+            "url": "https://setoku.com/",
+            "sameAs": ["https://github.com/Hedgy-Labs/setoku"]
+          },
+          {
+            "@type": "Organization",
+            "@id": "https://setoku.com/#org",
+            "name": "Hedgy Labs",
+            "url": "https://www.hedgy.works",
+            "sameAs": ["https://github.com/Hedgy-Labs"]
+          }
+        ]
+      }
+    </script>
+  </head>
+  <body>
+    <div class="runline top">
+      <span><a href="/">SETOKU</a></span>
+      <span class="mid">Developer Manual</span>
+      <span
+        ><a
+          href="https://github.com/Hedgy-Labs/setoku"
+          target="_blank"
+          rel="noopener"
+          >GITHUB</a
+        ></span
+      >
+    </div>
+
+    <main id="top">
+      <section>
+        <h2 class="man">NAME</h2>
+        <div class="body">
+          <!-- the page's h1 — see the note on the homepage's NAME line -->
+          <h1 class="nameline">
+            <b>setoku-developers</b> &mdash; build against Setoku, the
+            self-hosted MCP knowledge server
+          </h1>
+        </div>
+      </section>
+
+      <section id="synopsis">
+        <h2 class="man">SYNOPSIS</h2>
+        <div class="body">
+          <p>
+            Setoku is an open-source MCP server you run on your own box. It
+            gives an AI agent a read-only, audited path into your data plus the
+            curated context to use it correctly. This page is the developer
+            reference: the API, the tools, the auth model, and how to get a box
+            of your own.
+          </p>
+<pre class="block"><span class="c"># the whole API surface, from a real running box</span>
+curl https://demo.setoku.com/healthz
+curl https://setoku.com/openapi.json
+
+<span class="c"># product metadata, for agents that would rather fetch than scrape</span>
+curl https://setoku.com/api/index.json
+curl https://setoku.com/api/tools.json</pre>
+        </div>
+      </section>
+
+      <section id="resources">
+        <h2 class="man">RESOURCES</h2>
+        <div class="body">
+          <dl class="kv">
+            <dt>
+              Setoku OpenAPI specification<span class="t">OpenAPI 3.1</span>
+            </dt>
+            <dd>
+              The gateway HTTP API: the MCP endpoint, health, published apps,
+              and the installer.
+              <a href="/openapi.json">/openapi.json</a>, mirrored at
+              <a href="/api/openapi.json">/api/openapi.json</a>.
+            </dd>
+            <dt>Setoku catalog API<span class="t">JSON</span></dt>
+            <dd>
+              Version, install commands, links, and how to reach the MCP
+              endpoint: <a href="/api/index.json">/api/index.json</a>. The tool
+              surface is at <a href="/api/tools.json">/api/tools.json</a> and
+              the source list at
+              <a href="/api/connectors.json">/api/connectors.json</a>. All three
+              are generated from the source tree, so they track the release.
+            </dd>
+            <dt>Setoku llms.txt<span class="t">text</span></dt>
+            <dd>
+              The same map in prose, for agents reading rather than parsing:
+              <a href="/llms.txt">/llms.txt</a>.
+            </dd>
+            <dt>Setoku source<span class="t">Apache-2.0</span></dt>
+            <dd>
+              The full server, the setup skills, and the deploy scripts:
+              <a
+                href="https://github.com/Hedgy-Labs/setoku"
+                target="_blank"
+                rel="noopener"
+                >github.com/Hedgy-Labs/setoku ↗</a
+              >
+            </dd>
+          </dl>
+        </div>
+      </section>
+
+      <section id="api">
+        <h2 class="man">API</h2>
+        <div class="body">
+          <p>
+            <b>The API is your box, not ours.</b> Setoku is single-tenant on
+            purpose: there is no hosted Setoku service and no multi-tenant API
+            at setoku.com. You run the server, and your data and your context
+            stay on hardware you control. So every endpoint below is one
+            <i>your</i> deployment serves. The public demo box,
+            <span class="cmd">demo.setoku.com</span>, is a real one you can call
+            right now.
+          </p>
+          <p>
+            The primary interface is <b>MCP over Streamable HTTP</b>. The REST
+            endpoints are the credential-free surface around it: box health, and
+            apps an agent published.
+          </p>
+          <dl class="kv">
+            <dt>POST /mcp<span class="t">bearer token</span></dt>
+            <dd>
+              The Model Context Protocol endpoint. Point any MCP client at it.
+              The server is stateless per request: identity binds from the
+              token, and which tools get registered depends on that identity’s
+              role. Clients whose connector dialog takes only a URL can use
+              <span class="cmd">/mcp/&lt;token&gt;</span> instead.
+            </dd>
+            <dt>GET /healthz<span class="t">public</span></dt>
+            <dd>
+              Knowledge-store size, disk usage, dependency pings, and mirror
+              freshness. 503 when a dependency is down or the data disk is 90%
+              full. Cached about 5 seconds, so polling it amplifies nothing.
+            </dd>
+            <dt>GET /p/&lt;id&gt;<span class="t">public apps</span></dt>
+            <dd>
+              An app an agent built and published. Credential-free only for apps
+              an admin has explicitly made public.
+              <span class="cmd">/p/&lt;id&gt;/data</span> returns freshness
+              metadata and never re-runs a query;
+              <span class="cmd">/p/&lt;id&gt;/state</span> is the app’s own
+              sandboxed key/value store, which can never reach a business
+              source.
+            </dd>
+            <dt>GET /i/&lt;token&gt;<span class="t">installer</span></dt>
+            <dd>
+              A shell script that configures an MCP client for this box,
+              personalized to the token. For
+              <span class="cmd">curl -fsSL … | sh</span>.
+            </dd>
+          </dl>
+          <p class="dim">
+            Full request and response schemas:
+            <a href="/openapi.json">/openapi.json</a>.
+          </p>
+        </div>
+      </section>
+
+      <section id="tools">
+        <h2 class="man">TOOLS</h2>
+        <div class="body">
+          <p>
+            Setoku’s MCP tools come in five groups, and carry one rule: look up
+            what the data means before you touch it. The live list, with the
+            role each tool needs, is at
+            <a href="/api/tools.json">/api/tools.json</a>.
+          </p>
+          <dl class="kv">
+            <dt>
+              Context<span class="t"
+                >find_context · list_entities · describe_entity · get_metric</span
+              >
+            </dt>
+            <dd>
+              Read what the data means first: canonical metric definitions,
+              entity docs, and the gotchas that make a naive query wrong.
+              <span class="cmd">find_context</span> is documented as “always
+              call FIRST.”
+            </dd>
+            <dt>
+              Propose<span class="t"
+                >report_correction · list_corrections</span
+              >
+            </dt>
+            <dd>
+              An agent can propose a change to what Setoku knows. It lands as
+              pending. A person accepts it on the admin page, outside the agent
+              loop.
+            </dd>
+            <dt>
+              Data<span class="t">list_sources · get_schema · run_query</span>
+            </dt>
+            <dd>
+              Read-only SQL against the box’s ClickHouse lake and the
+              <span class="cmd">biz.*</span> mirror of your database. Row caps,
+              statement timeouts, an append-only audit log.
+            </dd>
+            <dt>
+              Apps<span class="t"
+                >app_guide · publish_app · update_app · list_apps · get_app ·
+                unpublish_app</span
+              >
+            </dt>
+            <dd>
+              Turn an answer into a small web app on live data, published at a
+              link the team can open.
+            </dd>
+            <dt>
+              Curate<span class="t">upsert_context · resolve_correction</span>
+            </dt>
+            <dd>
+              Commit curated knowledge. Registered <i>only</i> on a curator
+              token, which cannot read the lake. See
+              <a href="#membrane">MEMBRANE</a>.
+            </dd>
+          </dl>
+        </div>
+      </section>
+
+      <section id="auth">
+        <h2 class="man">AUTHENTICATION</h2>
+        <div class="body">
+          <p>
+            Setoku authenticates with a <b>per-person bearer token</b>. Send it
+            as <span class="cmd">Authorization: Bearer &lt;token&gt;</span>, or
+            as a path segment (<span class="cmd">/mcp/&lt;token&gt;</span>) for
+            MCP connector dialogs that accept only a URL and have nowhere to put
+            a header.
+          </p>
+          <p>
+            Each person gets their own, minted from the box’s web console and
+            revocable there, so you revoke one person instead of rotating the
+            team’s. <b>Treat the whole URL as a credential</b>, like a database
+            connection string.
+          </p>
+          <p>
+            <b>On OAuth 2.0.</b> Setoku does not implement OAuth 2.0 or
+            OpenID Connect today, and does not publish authorization-server
+            metadata, because there is no authorization server behind it. This
+            is a deliberate, documented decision rather than an oversight: for a
+            small self-hosted deployment, one credential model is less to get
+            wrong than two, and the blast radius of the current token is bounded
+            (read-only, propose-only, one-click rotation). When OAuth does land
+            it will <i>replace</i> the bearer path rather than sit beside it. The
+            full engineering scope, including the resource-server and
+            authorization-server pieces the MCP spec requires, is written up in
+            <a
+              href="https://github.com/Hedgy-Labs/setoku/blob/main/docs/oauth-scoping.md"
+              target="_blank"
+              rel="noopener"
+              >docs/oauth-scoping.md ↗</a
+            >. If OAuth is a requirement for you, say so on the issue tracker:
+            that is the signal that moves it.
+          </p>
+        </div>
+      </section>
+
+      <section id="membrane">
+        <h2 class="man">MEMBRANE</h2>
+        <div class="body">
+          <p>
+            The load-bearing security design, and the thing most worth
+            understanding before you build against Setoku: <b>two identities,
+            one server, never on the same session.</b>
+          </p>
+          <dl class="kv">
+            <dt>Analyst<span class="t">reads the lake · proposes only</span></dt>
+            <dd>
+              May query your data, including untrusted bulk text like logs and
+              Slack. Holds <i>no</i> tool that commits curated knowledge. The
+              most it can do is
+              <span class="cmd">report_correction</span>, which lands as
+              pending.
+            </dd>
+            <dt>Curator<span class="t">commits knowledge · no lake read</span></dt>
+            <dd>
+              May commit curated knowledge, and <i>cannot</i> read the lake. So a
+              session that could be prompt-injected never holds the write tool,
+              and the session holding the write tool never reads the text that
+              would inject it.
+            </dd>
+          </dl>
+          <p>
+            Accepting pending knowledge into curated context is a human click on
+            the admin approval surface, outside the agent loop. No MCP tool
+            creates users, grants access, or commits knowledge on its own.
+            Read-only and per-source access are enforced by the database engine
+            through per-role grants, never by parsing SQL.
+          </p>
+        </div>
+      </section>
+
+      <section id="install">
+        <h2 class="man">INSTALL</h2>
+        <div class="body">
+          <p>
+            Setoku installs as a Claude Code plugin. Add it, then run onboarding
+            from the codebase you want Setoku to learn from:
+          </p>
+<pre class="block"><span class="c"># 1 · add the plugin (skills only)</span>
+<span class="cmd">/plugin</span> marketplace add Hedgy-Labs/setoku
+<span class="cmd">/plugin</span> install setoku@setoku
+
+<span class="c"># 2 · from your project directory</span>
+<span class="cmd">/setoku:onboard</span></pre>
+          <p>
+            Onboarding stands up the server, auths your client, wires your
+            database read-only, and generates the first knowledge from your
+            code. You stay in the loop for anything that touches your data.
+          </p>
+          <p>Or stand the server up by hand, on a fresh Ubuntu VPS:</p>
+<pre class="block">git clone https://github.com/Hedgy-Labs/setoku /opt/setoku
+cd /opt/setoku
+SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
+          <p>
+            That installs Docker, generates secrets, gets an HTTPS certificate,
+            and prints the connect command. A ~$5/mo VPS is fine for a personal
+            box; something like OVH’s VPS-2 is plenty for a team. No AI model
+            runs on the server, so there is no inference cost and no AI API key.
+          </p>
+        </div>
+      </section>
+
+      <section id="connect">
+        <h2 class="man">CONNECT AN AGENT</h2>
+        <div class="body">
+          <p>
+            Any MCP client works. In Claude, open Settings → Connectors → Add
+            custom connector and paste your box’s MCP URL. To try the API before
+            you have a box, use the public demo, which is read-only and whose
+            token is public on purpose:
+          </p>
+<pre class="block">https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0</pre>
+          <p>
+            It is wired to a synthetic dataset for a fictional pro sports club:
+            ticketing, sponsorship, concessions, payroll, broadcast rights. See
+            the <a href="/#demo">demo walkthrough</a> for questions worth asking
+            it.
+          </p>
+        </div>
+      </section>
+
+      <section id="connectors">
+        <h2 class="man">CONNECTORS</h2>
+        <div class="body">
+          <p>
+            Every source lands in a local ClickHouse lake. Your app database
+            connects read-only and is mirrored in on a cron; the rest is
+            ingested as it happens. Current list, generated from the source
+            tree: <a href="/api/connectors.json">/api/connectors.json</a>.
+          </p>
+          <p>
+            No connector for your source yet? The included setup skills give a
+            coding agent the patterns to wire one up itself, and
+            <span class="cmd">/setoku:connect</span> walks it end to end. If you
+            build a good one, send a pull request.
+          </p>
+        </div>
+      </section>
+
+      <section id="help">
+        <h2 class="man">SEE ALSO</h2>
+        <div class="body">
+          <ul class="man">
+            <li><a href="/">setoku.com</a> — what it is and why</li>
+            <li>
+              <a href="/openapi.json">/openapi.json</a> — the API, machine
+              readable
+            </li>
+            <li><a href="/llms.txt">/llms.txt</a> — the map, for agents</li>
+            <li>
+              <a
+                href="https://github.com/Hedgy-Labs/setoku"
+                target="_blank"
+                rel="noopener"
+                >github.com/Hedgy-Labs/setoku ↗</a
+              >
+              — source, issues, pull requests
+            </li>
+            <li>
+              <a href="mailto:hello@setoku.com">hello@setoku.com</a> — setup help
+            </li>
+          </ul>
+          <p class="foot-etym">
+            設 × 奥 · set (math) × oku (innermost) · Apache-2.0
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <div class="runline bot">
+      <span>Hedgy Labs</span>
+      <span class="mid">2026</span>
+      <span><a href="/">SETOKU</a></span>
+    </div>
+  </body>
+</html>

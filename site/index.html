@@ -26,385 +26,106 @@
     />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
-    <style>
-      :root {
-        --paper: #ffffff;
-        --paper-2: #f5f4f1;
-        --ink: #201f1a;
-        --ink-soft: #423f36;
-        --ink-faint: #6a675c;
-        --line: rgba(32, 31, 26, 0.16);
-        --line-soft: rgba(32, 31, 26, 0.08);
-        --sage: #4d7357;
-        --sage-d: #33543d;
-        --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas,
-          "Liberation Mono", monospace;
-        --w: 74ch;
+    <link rel="stylesheet" href="/assets/manpage.css" />
+    <!-- machine-readable entry points, so an agent never has to scrape this page -->
+    <link
+      rel="alternate"
+      type="application/json"
+      href="https://setoku.com/openapi.json"
+      title="Setoku OpenAPI specification"
+    />
+    <link
+      rel="alternate"
+      type="application/json"
+      href="https://setoku.com/api/index.json"
+      title="Setoku catalog API"
+    />
+    <link
+      rel="alternate"
+      type="text/plain"
+      href="https://setoku.com/llms.txt"
+      title="Setoku llms.txt"
+    />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "WebSite",
+            "@id": "https://setoku.com/#website",
+            "url": "https://setoku.com/",
+            "name": "Setoku",
+            "description": "Setoku is an open-source, self-hosted MCP server that gives your AI a read-only view of your company data, plus the context to use it correctly.",
+            "inLanguage": "en",
+            "publisher": { "@id": "https://setoku.com/#org" }
+          },
+          {
+            "@type": "Organization",
+            "@id": "https://setoku.com/#org",
+            "name": "Hedgy Labs",
+            "url": "https://www.hedgy.works",
+            "description": "The team behind Setoku.",
+            "sameAs": [
+              "https://github.com/Hedgy-Labs",
+              "https://github.com/Hedgy-Labs/setoku",
+              "https://www.hedgy.works"
+            ],
+            "contactPoint": {
+              "@type": "ContactPoint",
+              "contactType": "technical support",
+              "email": "hello@setoku.com",
+              "url": "https://setoku.com/developers",
+              "availableLanguage": "English"
+            }
+          },
+          {
+            "@type": "SoftwareApplication",
+            "@id": "https://setoku.com/#software",
+            "name": "Setoku",
+            "alternateName": "Setoku MCP knowledge server",
+            "applicationCategory": "DeveloperApplication",
+            "applicationSubCategory": "MCP server",
+            "operatingSystem": "Linux",
+            "url": "https://setoku.com/",
+            "description": "Setoku is a small self-hosted MCP knowledge server plus Claude Code skills for hooking up your data. It gives your AI a read-only, audited way to query your data and remembers what that data means — the metric definitions and the gotchas — so it answers the way your business actually computes things. No AI model runs on the server.",
+            "license": "https://www.apache.org/licenses/LICENSE-2.0",
+            "downloadUrl": "https://github.com/Hedgy-Labs/setoku",
+            "codeRepository": "https://github.com/Hedgy-Labs/setoku",
+            "softwareHelp": "https://setoku.com/developers",
+            "installUrl": "https://setoku.com/developers#install",
+            "programmingLanguage": "TypeScript",
+            "isAccessibleForFree": true,
+            "offers": {
+              "@type": "Offer",
+              "price": "0",
+              "priceCurrency": "USD",
+              "description": "Open source under Apache-2.0. Self-hosted, so the only cost is the VPS you run it on."
+            },
+            "featureList": [
+              "MCP server over Streamable HTTP for any MCP client",
+              "Curated business context: metric definitions, entity docs, and gotchas",
+              "Read-only, audited SQL against a ClickHouse lake and a read-only mirror of your database",
+              "Publish live dashboards and apps to a shareable link",
+              "Human approval for every change to curated knowledge"
+            ],
+            "sameAs": ["https://github.com/Hedgy-Labs/setoku"],
+            "author": { "@id": "https://setoku.com/#org" },
+            "publisher": { "@id": "https://setoku.com/#org" }
+          },
+          {
+            "@type": "TechArticle",
+            "@id": "https://setoku.com/developers#doc",
+            "url": "https://setoku.com/developers",
+            "name": "Setoku developer documentation",
+            "headline": "Setoku developer documentation: MCP server, API reference, OpenAPI spec",
+            "description": "The MCP tool surface, HTTP API reference, OpenAPI specification, authentication model, and quickstart for Setoku.",
+            "about": { "@id": "https://setoku.com/#software" },
+            "isPartOf": { "@id": "https://setoku.com/#website" },
+            "author": { "@id": "https://setoku.com/#org" }
+          }
+        ]
       }
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-      }
-      html {
-        -webkit-font-smoothing: antialiased;
-        text-rendering: optimizeLegibility;
-        scroll-behavior: smooth;
-      }
-      body {
-        background: var(--paper);
-        color: var(--ink);
-        font-family: var(--mono);
-        font-size: 15.5px;
-        line-height: 1.75;
-        padding: 0 20px 80px;
-      }
-      a {
-        color: var(--sage-d);
-        text-decoration: none;
-        border-bottom: 1px solid rgba(51, 84, 61, 0.35);
-      }
-      a:hover {
-        background: var(--paper-2);
-        border-bottom-color: var(--sage-d);
-      }
-      ::selection {
-        background: var(--sage);
-        color: var(--paper);
-      }
-
-      /* running man header/footer */
-      .runline {
-        /* font-size stays at the body size here so 74ch matches main's
-           column exactly; the smaller text is set on the children */
-        max-width: var(--w);
-        margin: 0 auto;
-        display: flex;
-        justify-content: space-between;
-        gap: 12px;
-        letter-spacing: 0.02em;
-        color: var(--ink-faint);
-        white-space: nowrap;
-        overflow: hidden;
-      }
-      .runline > span {
-        font-size: 12.5px;
-      }
-      .runline a {
-        color: inherit;
-        border-bottom: none;
-      }
-      .runline a:hover {
-        text-decoration: underline;
-      }
-      .runline .mid {
-        flex: 1;
-        text-align: center;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .runline.top {
-        padding: 16px 0 8px;
-        border-bottom: 1px solid var(--line-soft);
-      }
-      .runline.bot {
-        padding: 14px 0;
-        margin-top: 40px;
-        border-top: 1px solid var(--line-soft);
-      }
-      @media (max-width: 620px) {
-        .runline .mid {
-          display: none;
-        }
-      }
-
-      main {
-        max-width: var(--w);
-        margin: 0 auto;
-        position: relative;
-      }
-
-      /* section headers, man-page style */
-      h2.man {
-        font-size: 15.5px;
-        font-weight: 700;
-        letter-spacing: 0.08em;
-        color: var(--ink);
-        margin: 46px 0 6px;
-        scroll-margin-top: 60px;
-      }
-      section {
-        padding-left: 0;
-      }
-      .body {
-        padding-left: 5ch;
-      }
-      @media (max-width: 560px) {
-        .body {
-          padding-left: 2.5ch;
-        }
-      }
-      p {
-        color: var(--ink-soft);
-        margin: 12px 0;
-        max-width: 66ch;
-      }
-      b,
-      strong {
-        color: var(--ink);
-        font-weight: 700;
-      }
-      .dim {
-        color: var(--ink-faint);
-      }
-      .cmd {
-        color: var(--sage-d);
-        font-weight: 600;
-      }
-
-      /* NAME line + rotator */
-      .nameline {
-        color: var(--ink);
-        margin-top: 8px;
-      }
-      .rotator {
-        display: inline-block;
-        color: var(--sage-d);
-        border-bottom: 1px solid rgba(51, 84, 61, 0.4);
-      }
-
-      pre.block {
-        background: var(--paper-2);
-        border: 1px solid var(--line);
-        border-radius: 4px;
-        padding: 14px 16px;
-        overflow-x: auto;
-        margin: 14px 0;
-        line-height: 1.7;
-        color: var(--ink);
-      }
-      pre.block .c {
-        color: var(--ink-faint);
-      }
-      pre.block .cmd {
-        color: var(--sage-d);
-      }
-
-      .kv {
-        margin: 16px 0;
-      }
-      .kv dt {
-        color: var(--ink);
-        font-weight: 700;
-      }
-      .kv dt .t {
-        color: var(--ink-faint);
-        font-weight: 400;
-        margin-left: 1ch;
-      }
-      .kv dd {
-        color: var(--ink-soft);
-        margin: 2px 0 14px 4ch;
-        max-width: 62ch;
-      }
-
-      ul.man {
-        list-style: none;
-        margin: 12px 0;
-      }
-      ul.man li {
-        color: var(--ink-soft);
-        padding-left: 3ch;
-        position: relative;
-        margin: 6px 0;
-        max-width: 64ch;
-      }
-      ul.man li::before {
-        content: "•";
-        position: absolute;
-        left: 0.6ch;
-        color: var(--ink-faint);
-      }
-
-      /* clover: centered above NAME, a title plate */
-      pre.fig {
-        width: max-content;
-        margin: 38px auto -8px;
-        color: var(--sage-d);
-        font-size: 11px;
-        line-height: 1.15;
-        white-space: pre;
-        user-select: none;
-        transform-origin: 50% 100%; /* sway pivots at the stem base */
-        position: relative; /* anchors the wind marks */
-      }
-      pre.fig .wind {
-        position: absolute;
-        opacity: 0;
-        color: var(--ink-faint);
-        pointer-events: none;
-      }
-      @media (prefers-reduced-motion: no-preference) {
-        pre.fig.sway {
-          animation: fig-sway 2.8s ease-in-out;
-        }
-        pre.fig.poke {
-          animation: fig-poke 0.9s ease-out;
-        }
-        pre.fig .row {
-          opacity: 0;
-          animation: fig-grow 0.5s ease-out forwards;
-        }
-        pre.fig.sway .wind {
-          animation: wind-drift 1.6s ease-out;
-        }
-        pre.fig.sway .wind:nth-of-type(2) {
-          animation-delay: 0.25s;
-        }
-        pre.fig.sway .wind:nth-of-type(3) {
-          animation-delay: 0.5s;
-        }
-      }
-      @keyframes wind-drift {
-        0% {
-          opacity: 0;
-          transform: translateX(-1.5ch);
-        }
-        30% {
-          opacity: 0.7;
-        }
-        100% {
-          opacity: 0;
-          transform: translateX(3ch);
-        }
-      }
-      @keyframes fig-poke {
-        0%,
-        100% {
-          transform: rotate(0deg);
-        }
-        15% {
-          transform: rotate(1.8deg);
-        }
-        40% {
-          transform: rotate(-1.2deg);
-        }
-        65% {
-          transform: rotate(0.7deg);
-        }
-        85% {
-          transform: rotate(-0.3deg);
-        }
-      }
-      @keyframes fig-sway {
-        0%,
-        100% {
-          transform: rotate(0deg);
-        }
-        35% {
-          transform: rotate(1.4deg);
-        }
-        70% {
-          transform: rotate(-0.6deg);
-        }
-      }
-      @keyframes fig-grow {
-        to {
-          opacity: 1;
-        }
-      }
-
-      /* ascii art wrapper */
-      .ascii-wrap {
-        overflow-x: auto;
-        margin: 16px 0;
-      }
-      pre.ascii {
-        line-height: 1.2; /* box-drawing verticals must touch; >1.2 leaves gaps */
-        font-size: 13px;
-        color: var(--ink);
-        white-space: pre;
-        min-width: min-content;
-        letter-spacing: 0;
-      }
-      pre.ascii .lbl {
-        color: var(--sage-d);
-      }
-      pre.ascii .an {
-        color: var(--ink-faint);
-      }
-
-      /* examples */
-      .ex {
-        margin: 18px 0;
-      }
-      .ex .q {
-        color: var(--ink);
-      }
-      .ex .q::before {
-        content: "Q  ";
-        color: var(--sage-d);
-        font-weight: 600;
-      }
-      .ex .a {
-        color: var(--ink-soft);
-        padding-left: 0;
-        margin-top: 2px;
-        max-width: 64ch;
-      }
-      .ex .a::before {
-        content: "A  ";
-        color: var(--sage-d);
-        font-weight: 600;
-      }
-      .ex .a .big {
-        color: var(--ink);
-        font-weight: 700;
-      }
-
-      /* ascii chart */
-      pre.chart {
-        line-height: 1.5;
-        font-size: 12.5px;
-        color: var(--ink);
-        white-space: pre;
-        margin: 8px 0 4px 3ch;
-        overflow-x: auto;
-      }
-      pre.chart .bar {
-        color: var(--sage);
-      }
-      pre.chart .num {
-        color: var(--ink);
-      }
-
-      details {
-        margin: 14px 0;
-        max-width: 66ch;
-      }
-      summary {
-        cursor: pointer;
-        color: var(--sage-d);
-      }
-      details p {
-        margin-top: 8px;
-      }
-
-      .mark {
-        width: 15px;
-        height: 15px;
-        display: inline-block;
-        vertical-align: -2px;
-        color: var(--ink);
-        margin-right: 2px;
-      }
-      .foot-etym {
-        color: var(--ink-faint);
-        font-size: 12.5px;
-        text-align: center;
-        margin-top: 26px;
-      }
-    </style>
+    </script>
   </head>
   <body>
     <svg width="0" height="0" style="position: absolute" aria-hidden="true">
@@ -430,7 +151,8 @@
       >
       <span class="mid">User Manual</span>
       <span
-        ><a
+        ><a href="/developers">DEVELOPERS</a> ·
+        <a
           href="https://github.com/Hedgy-Labs/setoku"
           target="_blank"
           rel="noopener"
@@ -460,14 +182,17 @@
       <section>
         <h2 class="man">NAME</h2>
         <div class="body">
-          <p class="nameline">
+          <!-- the page's h1: a man page's NAME line is its title, so this is
+               both the semantically correct heading and the one a crawler or a
+               screen reader wants. Styled to body size, so it stays a NAME line. -->
+          <h1 class="nameline">
             <b>setoku</b> &mdash; make any AI fluent in your
             <span
               class="rotator"
               data-words="company data,family data,personal data"
               >company data</span
             >
-          </p>
+          </h1>
         </div>
       </section>
 
@@ -945,6 +670,11 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
               >
             </li>
             <li><a href="#demo">DEMO</a> — try it on real-ish data</li>
+            <li>
+              <a href="/developers">setoku.com/developers</a> — API reference,
+              the MCP tool surface, and the
+              <a href="/openapi.json">OpenAPI spec</a>
+            </li>
             <li>
               <a href="mailto:hello@setoku.com">hello@setoku.com</a> — setup help
             </li>
