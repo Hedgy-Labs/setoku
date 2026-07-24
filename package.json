@@ -19,6 +19,7 @@
     "build:admin-js": "bun plugin/gateway/web/build-admin.ts",
     "build:admin": "bun run build:admin-css && bun run build:admin-js",
     "dev:admin": "bun plugin/gateway/web/dev.ts",
+    "build:site": "bun scripts/build-site-api.ts",
     "deploy": "bash scripts/deploy.sh",
     "deploy:demo": "bash scripts/deploy-demo.sh",
     "deploy:site": "bash scripts/deploy-site.sh",

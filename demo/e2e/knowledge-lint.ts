@@ -16,9 +16,10 @@ import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 
+import { DEMO_MCP_URL as DEMO_MCP_URL_DEFAULT } from "../connector";
+
 const datasetDir = process.argv[2] ?? "demo/bulldogs";
-const mcpUrl = process.argv[3] ?? process.env.DEMO_MCP_URL ??
-  "https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0";
+const mcpUrl = process.argv[3] ?? process.env.DEMO_MCP_URL ?? DEMO_MCP_URL_DEFAULT;
 
 // value sanity heuristics keyed on the OUTPUT column name (model-free).
 const HEURISTICS: { match: RegExp; bad: (n: number) => boolean; why: string }[] = [

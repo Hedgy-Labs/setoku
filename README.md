@@ -25,7 +25,7 @@ There's a public demo wired to a synthetic dataset for a fictional pro sports cl
 
 1. In **Claude.ai** (or any MCP client), open **Settings → Connectors → Add custom connector** and paste this as the server URL. The token rides in the URL: the link is the key, like a database connection string. This demo's is public on purpose; on your own box, each person gets their own, revocable from the web console.
    ```
-   https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0
+   https://demo.setoku.com/mcp/85315b4240ff6ded111072f950ac6f14167d920fdb765144
    ```
 2. Ask in plain language. Setoku feeds your AI the curated definitions first (comps are free, `scanned` = attended, money is in cents), so it computes the number the way the business actually does instead of guessing from column names. Try:
    - _"How many unique fans do we have?"_ → **71,204**, deduped by normalized email with internal/test accounts excluded, not the raw 92,118 a naive `COUNT(*)` returns.
@@ -35,7 +35,7 @@ There's a public demo wired to a synthetic dataset for a fictional pro sports cl
    - _"What's our total merchandise revenue?"_ → it **flags** that most merch is sold via Fanatics, not in this data, instead of returning a wrong total.
 3. Try an app. Ask Claude to build a dashboard on the same data, then publish it to a link. Two live examples, running on the demo data right now:
    - [Sponsorship pricing table](https://demo.setoku.com/p/7e38381ced6517329947b14d): inventory and rates for sponsorship placements.
-   - [Fan lifetime value](https://demo.setoku.com/p/b059da830dcb3e70437d5dea): segment fans by spend across tickets, merch, and concessions.
+   - [Bulldogs attendance forecast](https://demo.setoku.com/p/a7a1240ae0bc202c5eefa1cc): projected gate for upcoming home games.
 
 Full walkthrough, the web approval surface, and the data model: [`demo/README.md`](./demo/README.md).
 

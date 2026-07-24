@@ -1,0 +1,12 @@
+# Setoku — https://setoku.com
+# Everything here is public documentation for an open-source project. Crawl it.
+
+User-agent: *
+Allow: /
+
+Sitemap: https://setoku.com/sitemap.xml
+
+# Machine-readable entry points, for agents that would rather fetch than scrape:
+#   https://setoku.com/llms.txt          product + developer resources, in prose
+#   https://setoku.com/openapi.json      OpenAPI 3.1 for the Setoku gateway API
+#   https://setoku.com/api/index.json    catalog root

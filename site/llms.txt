@@ -1,0 +1,37 @@
+# Setoku
+
+> Setoku is an open-source, self-hosted MCP (Model Context Protocol) knowledge server. It gives any AI agent a read-only, audited view of your company’s data plus the curated context needed to use it correctly: the metric definitions, the gotchas, the reasons a naive query is wrong.
+
+Setoku is single-tenant on purpose. There is no hosted Setoku service and no multi-tenant API: you run it on a box you own (one small VPS), and your data and your context stay there. That is the point of the product, not a gap in it. So the API described below is the API that *your* deployment exposes, not one hosted at setoku.com.
+
+The primary interface is MCP over Streamable HTTP at `/mcp` on your box. Any MCP client can use it: Claude, Claude Code, Codex, or your own. Authentication is a per-person bearer token, revocable from the box’s web console. No AI model runs on the server, so there is no inference cost and no AI API key.
+
+Two identities share one server and never overlap. An **analyst** token may query the data lake but holds no tool that commits knowledge. A **curator** token may commit knowledge but cannot read the lake. Accepting proposed knowledge is a human click on the admin page, outside the agent loop, so a prompt-injected session cannot rewrite what Setoku knows.
+
+## Setoku developer resources
+
+- [Setoku developer portal](https://setoku.com/developers): API reference, authentication, the MCP tool surface, quickstart, and the security model.
+- [Setoku OpenAPI specification](https://setoku.com/openapi.json): OpenAPI 3.1 for the Setoku gateway HTTP API, covering the MCP endpoint, health, published apps, and the installer. Mirrored at [/api/openapi.json](https://setoku.com/api/openapi.json).
+- [Setoku catalog API](https://setoku.com/api/index.json): machine-readable product metadata — version, install commands, links, and how to reach the MCP endpoint.
+- [Setoku MCP tool catalog](https://setoku.com/api/tools.json): every MCP tool, with the role each one requires.
+- [Setoku connector catalog](https://setoku.com/api/connectors.json): the data sources Setoku ingests.
+- [Setoku source repository](https://github.com/Hedgy-Labs/setoku): Apache-2.0, the full server, skills, and deploy scripts.
+
+## Try Setoku without installing it
+
+- [Setoku public demo](https://setoku.com/#demo): a live box wired to a synthetic pro-sports-club dataset (ticketing, sponsorship, concessions, payroll, broadcast rights). Add `https://demo.setoku.com/mcp/85315b4240ff6ded111072f950ac6f14167d920fdb765144` as a custom MCP connector. The token is public on purpose and read-only.
+- [Setoku demo app: sponsorship pricing](https://demo.setoku.com/p/7e38381ced6517329947b14d): an app an agent built and published, running on live demo data.
+- [Setoku demo app: Bulldogs attendance forecast](https://demo.setoku.com/p/a7a1240ae0bc202c5eefa1cc): the same, projecting gate for upcoming home games.
+- [Setoku demo box health](https://demo.setoku.com/healthz): a real, credential-free REST endpoint you can call right now to see the shape of the API.
+
+## Install Setoku
+
+- [Setoku quickstart](https://setoku.com/#quickstart): add the Claude Code plugin (`/plugin marketplace add Hedgy-Labs/setoku`), then run `/setoku:onboard` from your project directory.
+- [Setoku manual server setup](https://setoku.com/developers#install): clone the repo onto a fresh Ubuntu VPS and run `deploy/bootstrap.sh`.
+
+## Optional
+
+- [Setoku architecture](https://setoku.com/#architecture): how the gateway, the ClickHouse lake, and the knowledge store fit together on one box.
+- [Setoku security model](https://setoku.com/#security): what the token is, why reads are governed by database roles rather than by parsing SQL, and why writes pass through a person.
+- [Setoku issue tracker](https://github.com/Hedgy-Labs/setoku/issues): bugs and feature requests.
+- Contact: hello@setoku.com

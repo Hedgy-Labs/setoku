@@ -33,6 +33,7 @@ echo "→ rsync code to ${SSH}:${DIR}  (dirs WITHOUT trailing slashes — a slas
 # changed — each is inode-pinned, so a rsynced change only reaches the running
 # container on a force-recreate (see the per-config blocks after the rsync).
 caddy_before="$(ssh "$SSH" "sha256sum ${DIR}/Caddyfile 2>/dev/null | cut -d' ' -f1" || true)"
+caddyd_before="$(ssh "$SSH" "cat ${DIR}/caddy.d/*.caddy 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
 vector_before="$(ssh "$SSH" "sha256sum ${DIR}/deploy/vector/vector.yaml 2>/dev/null | cut -d' ' -f1" || true)"
 chcfg_before="$(ssh "$SSH" "cat ${DIR}/deploy/clickhouse/*.xml 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
 rsync -az \
@@ -53,6 +54,35 @@ caddy_after="$(ssh "$SSH" "sha256sum ${DIR}/Caddyfile | cut -d' ' -f1")"
 if [ "$caddy_before" != "$caddy_after" ]; then
   echo "→ Caddyfile changed — force-recreate caddy (edge, brief blip)"
   ssh "$SSH" "cd ${DIR} && docker compose up -d --force-recreate --no-deps caddy"
+fi
+
+# Repo-managed conf.d site blocks (deploy/caddy.d/*.caddy) — INSTALL them, don't
+# just ship them. The rsync above lands them at ${DIR}/deploy/caddy.d/, but
+# docker-compose bind-mounts ${DIR}/caddy.d, so without this copy an edited block
+# reaches the box and is never read: the deploy exits 0 while caddy keeps serving
+# the old config forever.
+#
+# Copy, never rsync --delete: caddy.d also holds BOX-LOCAL blocks that are
+# deliberately not in the repo (e.g. the demo subdomain), and wiping those would
+# take the demo offline.
+#
+# Unlike the single-file Caddyfile mount, caddy.d is a DIRECTORY mount, so the
+# container sees new file contents immediately and a graceful `caddy reload`
+# suffices — no force-recreate, no edge blip for the other vhosts. Validate first
+# so a syntax error fails the deploy instead of leaving caddy running old config
+# with a confusing error.
+if ls deploy/caddy.d/*.caddy >/dev/null 2>&1; then
+  ssh "$SSH" "mkdir -p ${DIR}/caddy.d && cp ${DIR}/deploy/caddy.d/*.caddy ${DIR}/caddy.d/"
+  caddyd_after="$(ssh "$SSH" "cat ${DIR}/caddy.d/*.caddy 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
+  if [ "$caddyd_before" != "$caddyd_after" ]; then
+    echo "→ caddy.d site blocks changed — validate + graceful reload (no blip)"
+    ssh "$SSH" "cd ${DIR} && docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null" || {
+      echo "✗ caddy config invalid after installing deploy/caddy.d/*.caddy — NOT reloading."
+      echo "  The box is still serving the previous config. Fix the block and re-deploy."
+      exit 1
+    }
+    ssh "$SSH" "cd ${DIR} && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile"
+  fi
 fi
 
 # Vector's pipeline config is bind-mounted the same way — a rsynced change (e.g. a
