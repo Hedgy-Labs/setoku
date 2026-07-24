@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Setoku · no such page</title>
+    <meta name="robots" content="noindex" />
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/assets/manpage.css" />
+  </head>
+  <body>
+    <!-- The HTML half of the 404. Anything that did not ask for text/html gets
+         a JSON error instead, with a code and a hint: see the handle_errors
+         block in deploy/caddy.d/setoku-com.caddy. -->
+    <div class="runline top">
+      <span><a href="/">SETOKU</a></span>
+      <span class="mid">Not Found</span>
+      <span>404</span>
+    </div>
+
+    <main id="top">
+      <section>
+        <h2 class="man">NAME</h2>
+        <div class="body">
+          <h1 class="nameline">
+            <b>404</b> &mdash; there’s no Setoku page at that address
+          </h1>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="man">DESCRIPTION</h2>
+        <div class="body">
+          <p>
+            setoku.com is a handful of static documents: the product page, the
+            developer manual, and the machine-readable files agents fetch. It has
+            no client-side router, so an unknown path is simply missing rather
+            than something that will resolve in a moment.
+          </p>
+          <p class="dim">
+            Looking for the API? It isn’t here. Setoku is self-hosted and
+            single-tenant, so the API runs on your own box, not on this domain.
+          </p>
+        </div>
+      </section>
+
+      <section>
+        <h2 class="man">SEE ALSO</h2>
+        <div class="body">
+          <ul class="man">
+            <li><a href="/">setoku.com</a> — what Setoku is, and a live demo</li>
+            <li>
+              <a href="/docs">setoku.com/docs</a> — API reference and
+              the MCP tool surface
+            </li>
+            <li>
+              <a href="/api/index.json">/api/index.json</a> — everything this
+              site publishes, in one JSON document
+            </li>
+            <li>
+              <a href="mailto:hello@setoku.com">hello@setoku.com</a> — if
+              something here should have existed
+            </li>
+          </ul>
+        </div>
+      </section>
+    </main>
+
+    <div class="runline bot">
+      <span>Hedgy Labs</span>
+      <span class="mid">2026</span>
+      <span><a href="/">SETOKU</a></span>
+    </div>
+  </body>
+</html>

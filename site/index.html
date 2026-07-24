@@ -46,6 +46,12 @@
       href="https://setoku.com/llms.txt"
       title="Setoku llms.txt"
     />
+    <link
+      rel="alternate"
+      type="text/markdown"
+      href="https://setoku.com/index.md"
+      title="Setoku homepage in markdown"
+    />
     <script type="application/ld+json">
       {
         "@context": "https://schema.org",
@@ -74,7 +80,7 @@
               "@type": "ContactPoint",
               "contactType": "technical support",
               "email": "hello@setoku.com",
-              "url": "https://setoku.com/developers",
+              "url": "https://setoku.com/docs",
               "availableLanguage": "English"
             }
           },
@@ -91,8 +97,8 @@
             "license": "https://www.apache.org/licenses/LICENSE-2.0",
             "downloadUrl": "https://github.com/Hedgy-Labs/setoku",
             "codeRepository": "https://github.com/Hedgy-Labs/setoku",
-            "softwareHelp": "https://setoku.com/developers",
-            "installUrl": "https://setoku.com/developers#install",
+            "softwareHelp": "https://setoku.com/docs",
+            "installUrl": "https://setoku.com/docs#install",
             "programmingLanguage": "TypeScript",
             "isAccessibleForFree": true,
             "offers": {
@@ -114,10 +120,10 @@
           },
           {
             "@type": "TechArticle",
-            "@id": "https://setoku.com/developers#doc",
-            "url": "https://setoku.com/developers",
-            "name": "Setoku developer documentation",
-            "headline": "Setoku developer documentation: MCP server, API reference, OpenAPI spec",
+            "@id": "https://setoku.com/docs#doc",
+            "url": "https://setoku.com/docs",
+            "name": "Setoku API reference",
+            "headline": "Setoku API reference: MCP tool surface, HTTP API, OpenAPI spec",
             "description": "The MCP tool surface, HTTP API reference, OpenAPI specification, authentication model, and quickstart for Setoku.",
             "about": { "@id": "https://setoku.com/#software" },
             "isPartOf": { "@id": "https://setoku.com/#website" },
@@ -151,7 +157,9 @@
       >
       <span class="mid">User Manual</span>
       <span
-        ><a href="/developers">DEVELOPERS</a> ·
+        ><!-- "API", not "DEVELOPERS": this whole page is for developers, so that
+             label said nothing. The linked page is the API reference. -->
+        <a href="/docs">API</a> ·
         <a
           href="https://github.com/Hedgy-Labs/setoku"
           target="_blank"
@@ -671,7 +679,7 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
             </li>
             <li><a href="#demo">DEMO</a> — try it on real-ish data</li>
             <li>
-              <a href="/developers">setoku.com/developers</a> — API reference,
+              <a href="/docs">setoku.com/docs</a> — API reference,
               the MCP tool surface, and the
               <a href="/openapi.json">OpenAPI spec</a>
             </li>

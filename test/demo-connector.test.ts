@@ -27,7 +27,7 @@ const PROSE = [
   "README.md",
   "demo/README.md",
   "site/index.html",
-  "site/developers/index.html",
+  "site/docs/index.html",
   "site/llms.txt",
   "site/api/index.json",
 ];

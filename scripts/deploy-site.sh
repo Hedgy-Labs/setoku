@@ -33,7 +33,7 @@ echo "→ rebuild site API artifacts"
 bun scripts/build-site-api.ts
 
 # Whole directory, so new documents (llms.txt, robots.txt, sitemap.xml,
-# openapi.json, api/, developers/) ship without editing this list every time.
+# openapi.json, api/, docs/) ship without editing this list every time.
 echo "→ rsync site/ to ${SSH}:${SITE_DIR}"
 rsync -az --delete --exclude='.DS_Store' site/ "${SSH}:${SITE_DIR}/"
 
@@ -49,12 +49,39 @@ curl -s --max-time 12 "https://${DOMAIN}/" | grep -o '<title>[^<]*</title>' \
 echo "→ verify the agent-facing surface …"
 surface_bad=0
 for p in /llms.txt /robots.txt /sitemap.xml /openapi.json /api/index.json \
-         /api/tools.json /api/connectors.json /developers /nonsense-404-probe; do
+         /api/tools.json /api/connectors.json /docs \
+         /.well-known/mcp.json /.well-known/agent-card.json \
+         /.well-known/agent-skills/index.json /nonsense-404-probe; do
   read -r code type < <(curl -s -o /dev/null --max-time 12 \
     -w '%{http_code} %{content_type}\n' "https://${DOMAIN}${p}")
   want=200; [ "$p" = /nonsense-404-probe ] && want=404
   mark=" "; if [ "$code" != "$want" ]; then mark="!"; surface_bad=$((surface_bad + 1)); fi
-  printf '   %s %-24s %s  %s\n' "$mark" "$p" "$code" "$type"
+  printf '   %s %-38s %s  %s\n' "$mark" "$p" "$code" "$type"
+done
+
+# The parts of the surface that depend on the CADDY BLOCK, not just on a file
+# being rsynced: markdown content type, ?mode=agent, and JSON errors. These are
+# the ones that silently regress, because the file is right there on disk and
+# only the header is wrong — and a client deciding whether we serve markdown
+# looks at the header. A mismatch here means the box is running an older
+# deploy/caddy.d/setoku-com.caddy: run `bun run deploy` to install and reload it.
+for probe in "/index.md|200|text/markdown|" "/docs.md|200|text/markdown|" \
+             "/?mode=agent|200|text/markdown|" "/docs?mode=agent|200|text/markdown|" \
+             "/api/nonsense-404-probe.json|404|application/json|" \
+             "/nonsense-404-probe|404|text/html|text/html"; do
+  # The last field is an Accept header. Plain curl sends `*/*`, which always
+  # lands in the JSON branch of handle_errors — so without it, the branded HTML
+  # 404 was never exercised and a missing 404.html shipped green.
+  IFS='|' read -r p want_code want_type accept <<<"$probe"
+  read -r code type < <(curl -s -o /dev/null --max-time 12 \
+    ${accept:+-H "Accept: ${accept}"} \
+    -w '%{http_code} %{content_type}\n' "https://${DOMAIN}${p}")
+  mark=" "
+  case "$code:$type" in
+    "$want_code":"$want_type"*) ;;
+    *) mark="!"; surface_bad=$((surface_bad + 1)) ;;
+  esac
+  printf '   %s %-38s %s  %s\n' "$mark" "$p" "$code" "$type"
 done
 if [ "$surface_bad" -ne 0 ]; then
   echo

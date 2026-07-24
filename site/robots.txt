@@ -8,5 +8,10 @@ Sitemap: https://setoku.com/sitemap.xml
 
 # Machine-readable entry points, for agents that would rather fetch than scrape:
 #   https://setoku.com/llms.txt          product + developer resources, in prose
+#   https://setoku.com/index.md          the homepage as markdown (/docs.md too)
+#   https://setoku.com/?mode=agent       the same twin, for clients that pass a flag
 #   https://setoku.com/openapi.json      OpenAPI 3.1 for the Setoku gateway API
 #   https://setoku.com/api/index.json    catalog root
+#   https://setoku.com/.well-known/mcp.json                 the MCP endpoint + auth
+#   https://setoku.com/.well-known/agent-card.json          what Setoku is for
+#   https://setoku.com/.well-known/agent-skills/index.json  the shipped skills

@@ -1,0 +1,288 @@
+{
+  "protocolVersion": "0.3.0",
+  "name": "Setoku",
+  "description": "Setoku makes an AI agent fluent in one company's data. It serves the company's curated context (metric definitions, gotchas, which table to trust) and a governed read-only query path into their warehouse, so an agent can answer business questions correctly and publish live views of the result. Self-hosted and single-tenant: the agent you are talking to runs on the operator's own box.",
+  "version": "0.21.0",
+  "provider": {
+    "organization": "Hedgy Labs",
+    "url": "https://setoku.com"
+  },
+  "documentationUrl": "https://setoku.com/docs",
+  "iconUrl": "https://setoku.com/assets/setoku-mark.svg",
+  "url": "https://demo.setoku.com/mcp/85315b4240ff6ded111072f950ac6f14167d920fdb765144",
+  "preferredTransport": "MCP-STREAMABLE-HTTP",
+  "additionalInterfaces": [
+    {
+      "transport": "MCP-STREAMABLE-HTTP",
+      "url": "https://demo.setoku.com/mcp/85315b4240ff6ded111072f950ac6f14167d920fdb765144"
+    },
+    {
+      "transport": "MCP-STREAMABLE-HTTP",
+      "url": "https://{host}/mcp"
+    }
+  ],
+  "transportNote": "This card describes an MCP server, not an A2A agent. `url` speaks JSON-RPC 2.0 over MCP Streamable HTTP (protocol revision 2025-06-18) and implements no A2A method: initialize an MCP session against it rather than sending A2A tasks. The URL shown is the public demo box — for a real deployment, substitute your own host.",
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "defaultInputModes": [
+    "application/json",
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "application/json",
+    "text/plain",
+    "text/html"
+  ],
+  "securitySchemes": {
+    "bearerToken": {
+      "type": "http",
+      "scheme": "bearer",
+      "description": "Per-person connector token, revocable from the box's console. The public demo token above is read-only and intentionally published."
+    }
+  },
+  "security": [
+    {
+      "bearerToken": []
+    }
+  ],
+  "whenToUse": {
+    "summary": "Reach for Setoku when the answer lives in a specific company's own data and depends on that company's definitions.",
+    "use_when": [
+      "A question is about one company's own operations — revenue, churn, pipeline, usage, spend, deploys, support load — and the data sits in their database, Slack, GitHub, email, or bank.",
+      "You need the company's definition of a term before you can answer: what counts as an active customer, which refunds are excluded, which table is the one people actually trust.",
+      "A naive query would be wrong in a way only an insider knows (soft-deleted rows, a test tenant, a migration that split a table) and you want that caveat before you run SQL.",
+      "Someone wants a live, shareable view of that data — a dashboard or small app on a link their non-technical teammates can open, refreshing against real data rather than a pasted screenshot.",
+      "You want your answer, and the reasoning behind it, to be auditable later: every query and every knowledge change is logged on the owner's own box."
+    ],
+    "do_not_use_when": [
+      "The question is general knowledge, or about public data — Setoku only knows the data its operator connected.",
+      "You need to write to the business database. Every data path is read-only, by database role; there is no write tool and no escape hatch.",
+      "You are looking for a hosted, multi-tenant API to sign up for. There is none: Setoku is single-tenant and self-hosted, and the endpoint you call is the operator's own box.",
+      "You want a model to run server-side. Setoku runs no inference; your own agent does the thinking."
+    ],
+    "how_to_call": [
+      "Connect to the box's MCP endpoint (Streamable HTTP) at `https://<their-box>/mcp` with the person's bearer token, or paste `https://<their-box>/mcp/<token>` into a connector dialog that has no header field.",
+      "Call find_context FIRST, every time. It returns the curated notes for the question, including which tables to trust and which to avoid.",
+      "Then get_schema, then run_query. Reading context before querying is the difference between a right answer and a plausible one.",
+      "Found something the context got wrong? Call report_correction. It lands as a proposal for a human to accept — an agent session can never commit knowledge by itself."
+    ]
+  },
+  "skills": [
+    {
+      "id": "setoku:compact-knowledge",
+      "name": "compact-knowledge",
+      "description": "Periodically tidy the Setoku knowledge store in a curator session — merge duplicate facts, resolve contradictions, tighten verbose docs, and flag stale knowledge. Use when the user asks to compact / clean up / dedupe / tidy knowledge, or when /admin/knowledge shows merge / contradiction / verbose flags.",
+      "tags": [
+        "setoku",
+        "mcp",
+        "company-data",
+        "compact-knowledge"
+      ],
+      "examples": [
+        "/setoku:compact-knowledge"
+      ]
+    },
+    {
+      "id": "setoku:connect",
+      "name": "connect",
+      "description": "Connect a data source to Setoku end-to-end — ensure a box exists, wire the source up (read-only), verify the agent actually understands the data, and write what it learns back as knowledge. Use when the user says \"connect <source>\", \"hook up <source>\", \"add a data source\", \"set up Setoku\", or \"/setoku:connect\".",
+      "tags": [
+        "setoku",
+        "mcp",
+        "company-data",
+        "connect"
+      ],
+      "examples": [
+        "/setoku:connect"
+      ]
+    },
+    {
+      "id": "setoku:curate",
+      "name": "curate",
+      "description": "Review pending Setoku knowledge candidates and promote, edit, or reject them — conversationally, no git or dev skills required. Use when the user asks to curate/review setoku knowledge, or when list_entities reports pending corrections.",
+      "tags": [
+        "setoku",
+        "mcp",
+        "company-data",
+        "curate"
+      ],
+      "examples": [
+        "/setoku:curate"
+      ]
+    },
+    {
+      "id": "setoku:eval",
+      "name": "eval",
+      "description": "Run the Setoku golden-question eval for this repository and report a scorecard. Use when the user asks to eval/test setoku answer quality, or after significant context-artifact changes.",
+      "tags": [
+        "setoku",
+        "mcp",
+        "company-data",
+        "eval"
+      ],
+      "examples": [
+        "/setoku:eval"
+      ]
+    },
+    {
+      "id": "setoku:generate",
+      "name": "generate",
+      "description": "Generate or refresh Setoku's business-context knowledge by reading this repository's code — ORM schemas, business logic, migrations, existing docs — and saving it to the knowledge store (commits directly on a curator connector, or proposes for human approval on the everyday analyst connector — no SSH needed). Use when the user asks to generate/update/refresh business context, when setoku tools report an empty knowledge store, or when schema drift is detected.",
+      "tags": [
+        "setoku",
+        "mcp",
+        "company-data",
+        "generate"
+      ],
+      "examples": [
+        "/setoku:generate"
+      ]
+    },
+    {
+      "id": "setoku:onboard",
+      "name": "onboard",
+      "description": "First-run setup for Setoku in a repo — connect the business database, generate context from the code, and answer a first question end-to-end. Use when the user says \"set up setoku\" or \"onboard\", or when setoku tools report missing config. (Thin wrapper over /setoku:connect.)",
+      "tags": [
+        "setoku",
+        "mcp",
+        "company-data",
+        "onboard"
+      ],
+      "examples": [
+        "/setoku:onboard"
+      ]
+    },
+    {
+      "id": "setoku:answer",
+      "name": "answer",
+      "description": "Answer a question about the operator's own business data: retrieve the curated context for it (find_context), read the schema, then run a governed read-only query.",
+      "tags": [
+        "setoku",
+        "mcp",
+        "analytics",
+        "sql",
+        "company-data"
+      ],
+      "examples": [
+        "What did we bill last month, using our definition of billed revenue?",
+        "Which accounts churned in Q2, excluding the test tenant?"
+      ]
+    },
+    {
+      "id": "setoku:publish-app",
+      "name": "publish-app",
+      "description": "Build a small live app or dashboard over that data and publish it to a link the whole team can open, refreshing against real data.",
+      "tags": [
+        "setoku",
+        "mcp",
+        "dashboard",
+        "app",
+        "sharing"
+      ],
+      "examples": [
+        "Turn that into a dashboard the sales team can watch."
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "name": "find_context",
+      "description": "Find business context (verified + unverified)",
+      "role": "analyst"
+    },
+    {
+      "name": "list_entities",
+      "description": "List documented business entities",
+      "role": "analyst"
+    },
+    {
+      "name": "describe_entity",
+      "description": "Full context doc for one entity",
+      "role": "analyst"
+    },
+    {
+      "name": "get_metric",
+      "description": "Canonical metric definition",
+      "role": "analyst"
+    },
+    {
+      "name": "report_correction",
+      "description": "Record a context correction / clarification",
+      "role": "analyst"
+    },
+    {
+      "name": "list_corrections",
+      "description": "List pending knowledge corrections",
+      "role": "analyst"
+    },
+    {
+      "name": "resolve_correction",
+      "description": "Resolve a pending correction (curator)",
+      "role": "curator"
+    },
+    {
+      "name": "upsert_context",
+      "description": "Create or update a knowledge doc (generate/curate workflows)",
+      "role": "curator"
+    },
+    {
+      "name": "draft_correction",
+      "description": "Attach a drafted doc-edit to a pending correction (auto-draft)",
+      "role": "janitor"
+    },
+    {
+      "name": "reject_correction",
+      "description": "Auto-reject a pending correction (janitor, reject-only)",
+      "role": "janitor"
+    },
+    {
+      "name": "list_sources",
+      "description": "List connected data sources (capabilities)",
+      "role": "analyst"
+    },
+    {
+      "name": "get_schema",
+      "description": "Queryable schema (biz.* mirror + lake, permission-scoped)",
+      "role": "analyst"
+    },
+    {
+      "name": "run_query",
+      "description": "Run a read-only SQL query (capped + audited)",
+      "role": "analyst"
+    },
+    {
+      "name": "app_guide",
+      "description": "How to build a Setoku app (read before publish_app / update_app)",
+      "role": "analyst"
+    },
+    {
+      "name": "publish_app",
+      "description": "Publish a live app to the box (team-shareable URL)",
+      "role": "analyst"
+    },
+    {
+      "name": "update_app",
+      "description": "Edit an app you published (in place, same link)",
+      "role": "analyst"
+    },
+    {
+      "name": "list_apps",
+      "description": "List apps published to the box",
+      "role": "analyst"
+    },
+    {
+      "name": "get_app",
+      "description": "Inspect an app — its full template + panels (how it's built)",
+      "role": "analyst"
+    },
+    {
+      "name": "unpublish_app",
+      "description": "Archive a published app",
+      "role": "analyst"
+    }
+  ],
+  "note": "Generated by scripts/build-site-api.ts from the Setoku source tree — do not edit by hand."
+}

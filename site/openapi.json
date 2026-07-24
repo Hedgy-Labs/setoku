@@ -11,13 +11,13 @@
     },
     "contact": {
       "name": "Setoku",
-      "url": "https://setoku.com/developers",
+      "url": "https://setoku.com/docs",
       "email": "hello@setoku.com"
     }
   },
   "externalDocs": {
-    "description": "Setoku developer documentation",
-    "url": "https://setoku.com/developers"
+    "description": "Setoku API reference",
+    "url": "https://setoku.com/docs"
   },
   "servers": [
     {
@@ -58,7 +58,7 @@
       "bearerToken": {
         "type": "http",
         "scheme": "bearer",
-        "description": "A per-person connector token. Send it as `Authorization: Bearer <token>`, or as a path segment (`/mcp/<token>`) for MCP clients whose connector dialog has no header field. The token identifies one person and is revocable from the box's web console. Treat the whole URL as a credential, like a database connection string.\n\nOAuth 2.0 is scoped but deliberately not shipped; see https://setoku.com/developers#auth."
+        "description": "A per-person connector token. Send it as `Authorization: Bearer <token>`, or as a path segment (`/mcp/<token>`) for MCP clients whose connector dialog has no header field. The token identifies one person and is revocable from the box's web console. Treat the whole URL as a credential, like a database connection string.\n\nOAuth 2.0 is scoped but deliberately not shipped; see https://setoku.com/docs#auth."
       }
     },
     "schemas": {
