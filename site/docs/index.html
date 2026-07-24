@@ -3,20 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Setoku developer documentation · MCP server, API reference, OpenAPI spec</title>
+    <title>Setoku API reference · MCP server, HTTP API, OpenAPI spec</title>
     <meta
       name="description"
       content="Developer documentation for Setoku, the open-source self-hosted MCP knowledge server: the MCP tool surface, HTTP API reference, OpenAPI spec, authentication, and quickstart."
     />
-    <link rel="canonical" href="https://setoku.com/developers" />
+    <link rel="canonical" href="https://setoku.com/docs" />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Setoku" />
-    <meta property="og:title" content="Setoku developer documentation" />
+    <meta property="og:title" content="Setoku API reference" />
     <meta
       property="og:description"
       content="The MCP tool surface, HTTP API reference, OpenAPI spec, authentication, and quickstart for Setoku, the open-source self-hosted MCP knowledge server."
     />
-    <meta property="og:url" content="https://setoku.com/developers" />
+    <meta property="og:url" content="https://setoku.com/docs" />
     <meta property="og:image" content="https://setoku.com/assets/og.png" />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
@@ -40,6 +40,12 @@
       href="https://setoku.com/llms.txt"
       title="Setoku llms.txt"
     />
+    <link
+      rel="alternate"
+      type="text/markdown"
+      href="https://setoku.com/docs.md"
+      title="Setoku API reference in markdown"
+    />
     <!-- Same @ids as the homepage graph, so this page's entities link to those
          rather than declaring a second, competing copy of the product. -->
     <script type="application/ld+json">
@@ -48,10 +54,10 @@
         "@graph": [
           {
             "@type": "TechArticle",
-            "@id": "https://setoku.com/developers#doc",
-            "url": "https://setoku.com/developers",
-            "name": "Setoku developer documentation",
-            "headline": "Setoku developer documentation: MCP server, API reference, OpenAPI spec",
+            "@id": "https://setoku.com/docs#doc",
+            "url": "https://setoku.com/docs",
+            "name": "Setoku API reference",
+            "headline": "Setoku API reference: MCP tool surface, HTTP API, OpenAPI spec",
             "description": "The MCP tool surface, HTTP API reference, OpenAPI specification, authentication model, and quickstart for Setoku, the open-source self-hosted MCP knowledge server.",
             "proficiencyLevel": "Beginner",
             "inLanguage": "en",
@@ -64,7 +70,7 @@
                 "@id": "https://setoku.com/#api",
                 "name": "Setoku Gateway API",
                 "description": "The HTTP surface every self-hosted Setoku box exposes: the MCP endpoint, health, published apps, and the installer.",
-                "documentation": "https://setoku.com/developers#api",
+                "documentation": "https://setoku.com/docs#api",
                 "termsOfService": "https://github.com/Hedgy-Labs/setoku/blob/main/LICENSE",
                 "provider": { "@id": "https://setoku.com/#org" }
               }
@@ -93,7 +99,7 @@
   <body>
     <div class="runline top">
       <span><a href="/">SETOKU</a></span>
-      <span class="mid">Developer Manual</span>
+      <span class="mid">API Reference</span>
       <span
         ><a
           href="https://github.com/Hedgy-Labs/setoku"
@@ -110,8 +116,7 @@
         <div class="body">
           <!-- the page's h1 — see the note on the homepage's NAME line -->
           <h1 class="nameline">
-            <b>setoku-developers</b> &mdash; build against Setoku, the
-            self-hosted MCP knowledge server
+            <b>setoku-api</b> &mdash; the Setoku HTTP and MCP API reference
           </h1>
         </div>
       </section>
@@ -122,9 +127,9 @@
           <p>
             Setoku is an open-source MCP server you run on your own box. It
             gives an AI agent a read-only, audited path into your data plus the
-            curated context to use it correctly. This page is the developer
-            reference: the API, the tools, the auth model, and how to get a box
-            of your own.
+            curated context to use it correctly. This page is the reference:
+            the API, the MCP tools, the auth model, and how to get a box of your
+            own. The homepage is the tour.
           </p>
 <pre class="block"><span class="c"># the whole API surface, from a real running box</span>
 curl https://demo.setoku.com/healthz

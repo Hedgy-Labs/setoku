@@ -25,17 +25,83 @@ setoku.com {
 	encode gzip
 	root * /etc/caddy/conf.d/site
 
-	# Agents fetch these cross-origin (an OpenAPI spec is useless if the fetch is
-	# blocked by CORS). Everything under these paths is public documentation for
-	# an open-source project, so `*` costs nothing.
-	header /openapi.json Access-Control-Allow-Origin *
-	header /llms.txt Access-Control-Allow-Origin *
-	header /api/* Access-Control-Allow-Origin *
+	# Agents fetch this site cross-origin (an OpenAPI spec is useless if the fetch
+	# is blocked by CORS). One unmatched rule rather than a list of paths: every
+	# document here is public documentation for an open-source project, so `*`
+	# costs nothing — and the per-path version left each newly published file
+	# uncovered until someone remembered to extend it, which is how /sitemap.xml
+	# (the file that ENUMERATES the discovery documents) ended up with no CORS
+	# header at all.
+	header Access-Control-Allow-Origin *
 
-	# /developers without the trailing slash, rewritten rather than redirected so
+	# The markdown twins (/index.md, /docs.md). Go's mime table has no entry
+	# for .md, so without this the file_server sniffs and serves them as
+	# text/plain — and a client deciding whether it got markdown looks at the
+	# content type, not the extension.
+	@md path *.md
+	header @md Content-Type "text/markdown; charset=utf-8"
+
+	# /docs without the trailing slash, rewritten rather than redirected so
 	# the canonical URL in the page's <link rel=canonical> is the one that serves.
-	@developers path /developers
-	rewrite @developers /developers/index.html
+	@docs path /docs
+	rewrite @docs /docs/index.html
+
+	# ?mode=agent — hand an agent the markdown twin of the page it asked for,
+	# instead of a page of marketing HTML it has to strip tags out of. Scoped to
+	# the two pages that HAVE a twin: `/openapi.json?mode=agent` must keep
+	# answering with JSON, so this cannot be a site-wide rule.
+	#
+	# The Content-Type is set INSIDE the handle, not by the @md matcher above:
+	# `header` runs before `rewrite` in Caddy's directive order, so at that point
+	# the path is still `/` and a path matcher on *.md would miss.
+	@agent_home expression {query.mode} == "agent" && path("/", "/index.html")
+	handle @agent_home {
+		header Content-Type "text/markdown; charset=utf-8"
+		rewrite * /index.md
+		file_server
+	}
+	# `/docs/index.html` is in the list because the @docs rewrite above has already
+	# fired by the time this matcher is evaluated (`rewrite` sorts before
+	# `handle`), so the path is no longer the one the client asked for.
+	@agent_docs expression {query.mode} == "agent" && path("/docs", "/docs/", "/docs/index.html")
+	handle @agent_docs {
+		header Content-Type "text/markdown; charset=utf-8"
+		rewrite * /docs.md
+		file_server
+	}
+
+	# Errors are JSON unless a browser asked for HTML. Nothing here is an API in
+	# the write sense, but agents probe this host with fetch(), and an HTML error
+	# page is unparseable to them: they get a 404 they cannot distinguish from a
+	# malformed document. Codes and hints, not prose.
+	handle_errors {
+		@browser header_regexp Accept text/html
+		handle @browser {
+			rewrite * /404.html
+			file_server
+		}
+		# The bodies interpolate no request data. {path} would read better, but it
+		# is not JSON-escaped by Caddy, so a request for /%22 would emit a body
+		# that no longer parses — an unparseable error is the exact thing this
+		# block exists to stop.
+		#
+		# Two bodies rather than one templated by `map`: map's outputs come back
+		# empty inside handle_errors (verified against caddy:2), and a JSON error
+		# whose `code` field is silently blank is worse than a duplicated string.
+		@notfound expression {err.status_code} == 404
+		handle @notfound {
+			header Content-Type "application/json; charset=utf-8"
+			header Access-Control-Allow-Origin *
+			respond `{"ok":false,"error":{"code":"not_found","status":404,"message":"No document at that path on setoku.com.","hint":"setoku.com serves the documentation, the OpenAPI spec, and the discovery files. The Setoku API itself runs on your own box, not here: see https://setoku.com/docs. Everything this site publishes is listed at https://setoku.com/api/index.json.","docs":"https://setoku.com/docs","index":"https://setoku.com/api/index.json"}}
+` 404
+		}
+		handle {
+			header Content-Type "application/json; charset=utf-8"
+			header Access-Control-Allow-Origin *
+			respond `{"ok":false,"error":{"code":"request_failed","status":{err.status_code},"message":"That request failed on setoku.com.","hint":"Retry; if it persists, this is a bug in the site, not in your client. Report it at https://github.com/Hedgy-Labs/setoku/issues or mail hello@setoku.com.","docs":"https://setoku.com/docs","index":"https://setoku.com/api/index.json"}}
+` {err.status_code}
+		}
+	}
 
 	# NOTE: deliberately NO `try_files {path} {path}/ /index.html` here.
 	# That SPA-style fallback answered *every* unknown path with 200 + the

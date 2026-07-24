@@ -1,5 +1,4 @@
 {
-  "$schema": "https://setoku.com/api/index.json",
   "name": "Setoku",
   "tagline": "Make any AI fluent in your company data.",
   "description": "Governed agentic BI on your Claude subscription. Setoku gives Claude a verified business-context layer (derived from your codebase) plus read-only, audited access to your database — so it answers business questions accurately instead of guessing from column names.",
@@ -9,15 +8,37 @@
   "hosted_service": false,
   "links": {
     "homepage": "https://setoku.com/",
-    "developers": "https://setoku.com/developers",
+    "homepage_markdown": "https://setoku.com/index.md",
+    "docs": "https://setoku.com/docs",
+    "docs_markdown": "https://setoku.com/docs.md",
     "openapi": "https://setoku.com/openapi.json",
     "llms_txt": "https://setoku.com/llms.txt",
     "tools": "https://setoku.com/api/tools.json",
     "connectors": "https://setoku.com/api/connectors.json",
+    "mcp_manifest": "https://setoku.com/.well-known/mcp.json",
+    "agent_card": "https://setoku.com/.well-known/agent-card.json",
+    "agent_skills": "https://setoku.com/.well-known/agent-skills/index.json",
     "repository": "https://github.com/Hedgy-Labs/setoku",
     "issues": "https://github.com/Hedgy-Labs/setoku/issues",
     "contact": "mailto:hello@setoku.com"
   },
+  "publishes": [
+    "https://setoku.com/",
+    "https://setoku.com/.well-known/agent-card.json",
+    "https://setoku.com/.well-known/agent-skills/index.json",
+    "https://setoku.com/.well-known/mcp.json",
+    "https://setoku.com/api/connectors.json",
+    "https://setoku.com/api/index.json",
+    "https://setoku.com/api/openapi.json",
+    "https://setoku.com/api/tools.json",
+    "https://setoku.com/docs",
+    "https://setoku.com/docs.md",
+    "https://setoku.com/index.md",
+    "https://setoku.com/llms.txt",
+    "https://setoku.com/openapi.json",
+    "https://setoku.com/robots.txt",
+    "https://setoku.com/sitemap.xml"
+  ],
   "mcp": {
     "transport": "streamable-http",
     "path": "/mcp",
@@ -29,7 +50,7 @@
         "url-path"
       ],
       "oauth2": false,
-      "note": "Per-person, revocable connector tokens. OAuth 2.0 is scoped but not shipped; see https://setoku.com/developers#auth."
+      "note": "Per-person, revocable connector tokens. OAuth 2.0 is scoped but not shipped; see https://setoku.com/docs#auth."
     },
     "public_demo": {
       "url": "https://demo.setoku.com/mcp/85315b4240ff6ded111072f950ac6f14167d920fdb765144",

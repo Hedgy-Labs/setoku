@@ -8,11 +8,43 @@ The primary interface is MCP over Streamable HTTP at `/mcp` on your box. Any MCP
 
 Two identities share one server and never overlap. An **analyst** token may query the data lake but holds no tool that commits knowledge. A **curator** token may commit knowledge but cannot read the lake. Accepting proposed knowledge is a human click on the admin page, outside the agent loop, so a prompt-injected session cannot rewrite what Setoku knows.
 
+## When to use Setoku
+
+Reach for Setoku when the answer lives in a specific company’s own data and depends on that company’s definitions.
+
+Use it when:
+
+- A question is about one company’s own operations — revenue, churn, pipeline, usage, spend, deploys, support load — and the data sits in their database, Slack, GitHub, email, or bank.
+- You need the company’s definition of a term before you can answer: what counts as an active customer, which refunds are excluded, which table is the one people actually trust.
+- A naive query would be wrong in a way only an insider knows (soft-deleted rows, a test tenant, a migration that split a table) and you want that caveat before you run SQL.
+- Someone wants a live, shareable view of that data — a dashboard or small app on a link their non-technical teammates can open, refreshing against real data rather than a pasted screenshot.
+- You want your answer, and the reasoning behind it, to be auditable later: every query and every knowledge change is logged on the owner’s own box.
+
+Do not use it when:
+
+- The question is general knowledge, or about public data — Setoku only knows the data its operator connected.
+- You need to write to the business database. Every data path is read-only, by database role; there is no write tool and no escape hatch.
+- You are looking for a hosted, multi-tenant API to sign up for. There is none: Setoku is single-tenant and self-hosted, and the endpoint you call is the operator’s own box.
+- You want a model to run server-side. Setoku runs no inference; your own agent does the thinking.
+
+How an agent should call it:
+
+1. Connect to the box’s MCP endpoint (Streamable HTTP) at `https://<their-box>/mcp` with the person’s bearer token, or paste `https://<their-box>/mcp/<token>` into a connector dialog that has no header field.
+2. Call find_context FIRST, every time. It returns the curated notes for the question, including which tables to trust and which to avoid.
+3. Then get_schema, then run_query. Reading context before querying is the difference between a right answer and a plausible one.
+4. Found something the context got wrong? Call report_correction. It lands as a proposal for a human to accept — an agent session can never commit knowledge by itself.
+
+The same guidance, machine-readable, is in [/.well-known/mcp.json](https://setoku.com/.well-known/mcp.json), [/.well-known/agent-card.json](https://setoku.com/.well-known/agent-card.json), and [/.well-known/agent-skills/index.json](https://setoku.com/.well-known/agent-skills/index.json).
+
 ## Setoku developer resources
 
-- [Setoku developer portal](https://setoku.com/developers): API reference, authentication, the MCP tool surface, quickstart, and the security model.
+- [Setoku API reference](https://setoku.com/docs): the HTTP API, authentication, the MCP tool surface, quickstart, and the security model. Markdown twin: [/docs.md](https://setoku.com/docs.md).
+- [Setoku homepage in markdown](https://setoku.com/index.md): the whole product page as one canonical markdown document, no HTML to parse. Both content pages — this one and /docs — also answer `?mode=agent` with their markdown twin; the JSON documents below answer as themselves.
+- [Setoku MCP manifest](https://setoku.com/.well-known/mcp.json): where the MCP server is, which transport it speaks, and how to authenticate.
+- [Setoku agent card](https://setoku.com/.well-known/agent-card.json): what Setoku is for, its skills, and the endpoint to call.
+- [Setoku agent skills index](https://setoku.com/.well-known/agent-skills/index.json): the shipped skills, each with a name and a description.
 - [Setoku OpenAPI specification](https://setoku.com/openapi.json): OpenAPI 3.1 for the Setoku gateway HTTP API, covering the MCP endpoint, health, published apps, and the installer. Mirrored at [/api/openapi.json](https://setoku.com/api/openapi.json).
-- [Setoku catalog API](https://setoku.com/api/index.json): machine-readable product metadata — version, install commands, links, and how to reach the MCP endpoint.
+- [Setoku catalog API](https://setoku.com/api/index.json): machine-readable product metadata — version, install commands, every document this site publishes, and how to reach the MCP endpoint.
 - [Setoku MCP tool catalog](https://setoku.com/api/tools.json): every MCP tool, with the role each one requires.
 - [Setoku connector catalog](https://setoku.com/api/connectors.json): the data sources Setoku ingests.
 - [Setoku source repository](https://github.com/Hedgy-Labs/setoku): Apache-2.0, the full server, skills, and deploy scripts.
@@ -20,14 +52,23 @@ Two identities share one server and never overlap. An **analyst** token may quer
 ## Try Setoku without installing it
 
 - [Setoku public demo](https://setoku.com/#demo): a live box wired to a synthetic pro-sports-club dataset (ticketing, sponsorship, concessions, payroll, broadcast rights). Add `https://demo.setoku.com/mcp/85315b4240ff6ded111072f950ac6f14167d920fdb765144` as a custom MCP connector. The token is public on purpose and read-only.
-- [Setoku demo app: sponsorship pricing](https://demo.setoku.com/p/7e38381ced6517329947b14d): an app an agent built and published, running on live demo data.
-- [Setoku demo app: Bulldogs attendance forecast](https://demo.setoku.com/p/a7a1240ae0bc202c5eefa1cc): the same, projecting gate for upcoming home games.
+- [Setoku demo app: Sponsorship pricing table](https://demo.setoku.com/p/7e38381ced6517329947b14d): inventory and rates for sponsorship placements, built and published by an agent on live demo data.
+- [Setoku demo app: Bulldogs attendance forecast](https://demo.setoku.com/p/a7a1240ae0bc202c5eefa1cc): projected gate for upcoming home games, built and published by an agent on live demo data.
 - [Setoku demo box health](https://demo.setoku.com/healthz): a real, credential-free REST endpoint you can call right now to see the shape of the API.
 
 ## Install Setoku
 
 - [Setoku quickstart](https://setoku.com/#quickstart): add the Claude Code plugin (`/plugin marketplace add Hedgy-Labs/setoku`), then run `/setoku:onboard` from your project directory.
-- [Setoku manual server setup](https://setoku.com/developers#install): clone the repo onto a fresh Ubuntu VPS and run `deploy/bootstrap.sh`.
+- [Setoku manual server setup](https://setoku.com/docs#install): clone the repo onto a fresh Ubuntu VPS and run `deploy/bootstrap.sh`.
+
+## Setoku skills
+
+- `/setoku:compact-knowledge`: Periodically tidy the Setoku knowledge store in a curator session — merge duplicate facts, resolve contradictions, tighten verbose docs, and flag stale knowledge. Use when the user asks to compact / clean up / dedupe / tidy knowledge, or when /admin/knowledge shows merge / contradiction / verbose flags.
+- `/setoku:connect`: Connect a data source to Setoku end-to-end — ensure a box exists, wire the source up (read-only), verify the agent actually understands the data, and write what it learns back as knowledge. Use when the user says "connect \<source>", "hook up \<source>", "add a data source", "set up Setoku", or "/setoku:connect".
+- `/setoku:curate`: Review pending Setoku knowledge candidates and promote, edit, or reject them — conversationally, no git or dev skills required. Use when the user asks to curate/review setoku knowledge, or when list_entities reports pending corrections.
+- `/setoku:eval`: Run the Setoku golden-question eval for this repository and report a scorecard. Use when the user asks to eval/test setoku answer quality, or after significant context-artifact changes.
+- `/setoku:generate`: Generate or refresh Setoku’s business-context knowledge by reading this repository’s code — ORM schemas, business logic, migrations, existing docs — and saving it to the knowledge store (commits directly on a curator connector, or proposes for human approval on the everyday analyst connector — no SSH needed). Use when the user asks to generate/update/refresh business context, when setoku tools report an empty knowledge store, or when schema drift is detected.
+- `/setoku:onboard`: First-run setup for Setoku in a repo — connect the business database, generate context from the code, and answer a first question end-to-end. Use when the user says "set up setoku" or "onboard", or when setoku tools report missing config. (Thin wrapper over /setoku:connect.)
 
 ## Optional
 

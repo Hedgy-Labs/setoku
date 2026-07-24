@@ -175,7 +175,7 @@ describe("the OpenAPI spec is well formed", () => {
 });
 
 describe("discovery files point at documents that exist", () => {
-  /** https://setoku.com/x -> site/x, with /developers served as a directory. */
+  /** https://setoku.com/x -> site/x, with /docs served as a directory. */
   const localPath = (url: string): string | null => {
     const m = url.match(/^https:\/\/setoku\.com(\/[^#?]*)/);
     if (!m) return null;
@@ -190,7 +190,7 @@ describe("discovery files point at documents that exist", () => {
     for (const [, url] of txt.matchAll(/\((https:\/\/setoku\.com[^)]*)\)/g)) {
       const p = localPath(url);
       if (!p) continue;
-      // /developers is served by a rewrite to its index.html
+      // /docs is served by a rewrite to its index.html
       const candidates = [p, `${p}/index.html`];
       if (!candidates.some((c) => existsSync(ROOT + c))) missing.push(url);
     }
@@ -218,14 +218,14 @@ describe("discovery files point at documents that exist", () => {
   });
 
   test("both pages share one stylesheet, so they cannot drift apart", async () => {
-    for (const p of ["site/index.html", "site/developers/index.html"]) {
+    for (const p of ["site/index.html", "site/docs/index.html"]) {
       expect(await readText(p)).toContain('href="/assets/manpage.css"');
     }
     expect(existsSync(ROOT + "site/assets/manpage.css")).toBe(true);
   });
 
-  test("the developer portal is reachable from the homepage", async () => {
-    expect(await readText("site/index.html")).toContain('href="/developers"');
+  test("the API reference is reachable from the homepage", async () => {
+    expect(await readText("site/index.html")).toContain('href="/docs"');
   });
 });
 
@@ -250,7 +250,7 @@ describe("hand-written pages agree with the generated catalog", () => {
     return names;
   }
 
-  test("/developers names only tools that actually exist", async () => {
+  test("/docs names only tools that actually exist", async () => {
     // The portal's tool list is prose — it can't import tools.json. So assert the
     // one direction that matters for a reader: every name it advertises is real.
     // It previously listed 17 of 19 and omitted the janitor role entirely, three
@@ -258,15 +258,15 @@ describe("hand-written pages agree with the generated catalog", () => {
     const published = new Set<string>(
       (await readJson("site/api/tools.json")).tools.map((t: { name: string }) => t.name),
     );
-    const bogus = [...(await proseToolNames("site/developers/index.html"))].filter(
+    const bogus = [...(await proseToolNames("site/docs/index.html"))].filter(
       (n) => !published.has(n),
     );
     expect(bogus).toEqual([]);
   });
 
-  test("/developers accounts for every tool and role", async () => {
+  test("/docs accounts for every tool and role", async () => {
     const catalog = await readJson("site/api/tools.json");
-    const html = await readText("site/developers/index.html");
+    const html = await readText("site/docs/index.html");
     const missing = catalog.tools
       .map((t: { name: string }) => t.name)
       .filter((n: string) => !html.includes(n));
@@ -289,8 +289,203 @@ describe("hand-written pages agree with the generated catalog", () => {
   });
 });
 
+describe("the agent-facing surface an agent probes for", () => {
+  // Everything in this block is a document agents fetch by CONVENTION rather
+  // than by following a link: the well-known paths, the markdown twins, and the
+  // ?mode=agent view. Nothing on the site links to most of them, so a rename or
+  // a Caddy edit can quietly unpublish one without a single broken link.
+  const CADDY = "deploy/caddy.d/setoku-com.caddy";
+
+  test("the well-known discovery files exist and are self-describing", async () => {
+    const card = await readJson("site/.well-known/agent-card.json");
+    expect(card.name).toBe("Setoku");
+    expect(card.description).toContain("Setoku");
+    expect(card.skills.length).toBeGreaterThan(2);
+    for (const s of card.skills) {
+      expect(s.name).toBeString();
+      expect(s.description.length).toBeGreaterThan(20);
+    }
+
+    const skills = await readJson("site/.well-known/agent-skills/index.json");
+    expect(skills.skills.length).toBeGreaterThan(2);
+    for (const s of skills.skills) {
+      expect(s.name).toBeString();
+      expect(s.description.length).toBeGreaterThan(20);
+    }
+
+    const mcp = await readJson("site/.well-known/mcp.json");
+    expect(mcp.remotes.some((r: { type: string }) => r.type === "streamable-http")).toBe(true);
+    expect(mcp.auth.oauth2).toBe(false);
+  });
+
+  test("the skill index publishes exactly the skills we ship", async () => {
+    const glob = new Bun.Glob("*/SKILL.md");
+    const dirs: string[] = [];
+    for await (const f of glob.scan({ cwd: ROOT + "plugin/skills" })) dirs.push(f.split("/")[0]);
+    const published = (await readJson("site/.well-known/agent-skills/index.json")).skills.map(
+      (s: { name: string }) => s.name,
+    );
+    expect(published.sort()).toEqual(dirs.sort());
+  });
+
+  test("every discovery file says WHEN to use Setoku, not just what it is", async () => {
+    // The one thing marketing copy never states outright, and the thing an agent
+    // most needs in order to decide whether to reach for us at all.
+    for (const p of [
+      "site/.well-known/agent-card.json",
+      "site/.well-known/mcp.json",
+      "site/.well-known/agent-skills/index.json",
+    ]) {
+      const doc = await readJson(p);
+      const when = doc.whenToUse ?? doc.when_to_use;
+      expect({ file: p, hasGuidance: !!when }).toEqual({ file: p, hasGuidance: true });
+      expect(when.use_when.length).toBeGreaterThan(2);
+      expect(when.do_not_use_when.length).toBeGreaterThan(2);
+      expect(when.how_to_call.join(" ")).toContain("find_context");
+    }
+    // The prose pages state the same rule in the same words, so an agent that
+    // reads llms.txt and an agent that reads the markdown twin get one answer.
+    for (const p of ["site/llms.txt", "site/index.md", "site/docs.md"]) {
+      expect(await readText(p)).toContain("Reach for Setoku when the answer lives in");
+    }
+  });
+
+  test("the markdown twins are markdown, and lead with a heading", async () => {
+    for (const p of ["site/index.md", "site/docs.md"]) {
+      const body = await readText(p);
+      expect({ page: p, first: body.split("\n")[0] }).toEqual({
+        page: p,
+        first: p.endsWith("index.md") ? "# Setoku" : "# Setoku API reference",
+      });
+      expect(body).not.toContain("<html");
+      // Straight apostrophes are a site-copy smell (CLAUDE.md), and these pages
+      // are generated, so a regression here is a generator bug, not a typo.
+      expect(body).not.toMatch(/[A-Za-z]'[A-Za-z]/);
+    }
+  });
+
+  test("angle-bracket placeholders survive being rendered", async () => {
+    // `<their-box>` outside a code span is a raw-HTML tag in CommonMark, and
+    // every renderer swallows it: `https://<their-box>/mcp/<token>` displayed as
+    // `https:///mcp/`, silently deleting the host and the token out of the one
+    // instruction these pages most need to get right. Either escape it or put it
+    // in backticks — this checks the rendered result rather than the technique.
+    for (const p of ["site/index.md", "site/docs.md", "site/llms.txt"]) {
+      const swallowed: string[] = [];
+      // strip fenced/indented code and code spans: inside them `<` is literal
+      const text = (await readText(p))
+        .split("\n")
+        .filter((l) => !l.startsWith("    "))
+        .join("\n")
+        .replace(/`[^`]*`/g, "");
+      // `\<` is a CommonMark backslash escape and renders as a literal `<`.
+      for (const [, m] of text.matchAll(/(?:^|[^\\])(<[A-Za-z][A-Za-z0-9-]*>)/g)) {
+        swallowed.push(m);
+      }
+      expect({ page: p, swallowed }).toEqual({ page: p, swallowed: [] });
+    }
+  });
+
+  test("the box's error shape is documented as the spec declares it", async () => {
+    // /docs.md used to promise a structured {code, message, hint} envelope
+    // from every endpoint. The gateway returns {ok:false, error:"<string>"} —
+    // which is what the openapi.json emitted by this same generator says — so
+    // the published docs contradicted the published spec in one build, and an
+    // integrator branching on `error.code` matched nothing forever.
+    const spec = await readJson("site/openapi.json");
+    expect(spec.components.schemas.Error.properties.error.type).toBe("string");
+    const md = await readText("site/docs.md");
+    expect(md).toContain('{ "ok": false, "error": "app not found or archived" }');
+  });
+
+  test("/docs.md describes the membrane the way app.ts implements it", async () => {
+    // Only the curator/janitor tools are registration-gated; the analyst surface
+    // is registered on EVERY session and the lake block is a call-time refusal.
+    // Publishing "the tools of the others are never registered" made a false
+    // statement about I2 on a public URL — the exact thing tools() throws to
+    // prevent — and told a curator session that find_context was unavailable.
+    const md = await readText("site/docs.md");
+    expect(md).toContain("registered on every session");
+    expect(md).toContain("refuses lake queries");
+    expect(md).not.toContain("The tools of the others are not merely refused");
+  });
+
+  test("both HTML pages advertise their markdown twin", async () => {
+    for (const [html, md] of [
+      ["site/index.html", "https://setoku.com/index.md"],
+      ["site/docs/index.html", "https://setoku.com/docs.md"],
+    ]) {
+      const head = await readText(html);
+      expect(head).toContain('type="text/markdown"');
+      expect(head).toContain(md);
+    }
+  });
+
+  test("Caddy actually serves that surface (the files alone are not enough)", async () => {
+    // These behaviours were verified against caddy:2 locally; this pins the
+    // directives so an edit to the vhost cannot silently drop one. Without the
+    // Content-Type line, .md files go out as text/plain and a client checking
+    // the header concludes we do not serve markdown at all.
+    const conf = await readText(CADDY);
+    expect(conf).toContain('header @md Content-Type "text/markdown; charset=utf-8"');
+    expect(conf).toContain('{query.mode} == "agent"');
+    expect(conf).toContain("rewrite * /index.md");
+    expect(conf).toContain("rewrite * /docs.md");
+    expect(conf).toContain("handle_errors");
+    expect(conf).toContain('"code":"not_found"');
+    // Unmatched, so a newly published document is covered the day it lands. The
+    // per-path list this replaced had already missed /sitemap.xml — the file
+    // that enumerates the discovery documents for a browser-based agent.
+    expect(conf).toMatch(/^\theader Access-Control-Allow-Origin \*$/m);
+    // The HTML branch of the 404 has to have something to serve.
+    expect(conf).toContain("rewrite * /404.html");
+    expect(existsSync(ROOT + "site/404.html")).toBe(true);
+  });
+
+  test("api/index.json really does list everything the site publishes", async () => {
+    // Both 404 surfaces (the JSON body in the vhost and site/404.html) send
+    // readers to this file as the complete index, so "complete" has to be true:
+    // the five discovery documents were added to the build without reaching it,
+    // and an agent following that hint concluded we ship no MCP manifest at all.
+    const published: string[] = (await readJson("site/api/index.json")).publishes;
+    const artifacts = (await buildArtifacts()).map(
+      ([p]) => `https://setoku.com${p.slice("site".length)}`,
+    );
+    const missing = artifacts.filter((u) => !published.includes(u));
+    expect({ missing, hint: "add it to `publishes` in scripts/build-site-api.ts" }).toEqual({
+      missing: [],
+      hint: "add it to `publishes` in scripts/build-site-api.ts",
+    });
+    // …and the other direction: nothing listed that we do not actually serve.
+    const phantom = published.filter((u) => {
+      const p = u.replace("https://setoku.com", "site");
+      return !existsSync(ROOT + (p === "site/" ? "site/index.html" : p)) &&
+        !existsSync(ROOT + `${p}/index.html`);
+    });
+    expect(phantom).toEqual([]);
+  });
+
+  test("the JSON error body in the Caddy config is valid JSON with a code and a hint", async () => {
+    const conf = await readText(CADDY);
+    const bodies = [...conf.matchAll(/respond `([\s\S]*?)`\s/g)].map((m) => m[1]);
+    expect(bodies.length).toBeGreaterThan(1);
+    for (const raw of bodies) {
+      // {err.status_code} is a Caddy placeholder; substitute a number so the
+      // rest can be parsed. A body that only *looks* like JSON is the exact
+      // failure this catches — agents cannot parse an HTML error page, and they
+      // cannot parse a malformed one either.
+      const doc = JSON.parse(raw.replace(/\{err\.status_code\}/g, "500"));
+      expect(doc.ok).toBe(false);
+      expect(doc.error.code).toBeString();
+      expect(doc.error.message).toBeString();
+      expect(doc.error.hint.length).toBeGreaterThan(20);
+      expect(doc.error.docs).toStartWith("https://setoku.com");
+    }
+  });
+});
+
 describe("pages carry the structure crawlers and screen readers need", () => {
-  const PAGES = ["site/index.html", "site/developers/index.html"];
+  const PAGES = ["site/index.html", "site/docs/index.html"];
 
   test("each page has exactly one h1", async () => {
     for (const p of PAGES) {
@@ -338,7 +533,7 @@ describe("pages carry the structure crawlers and screen readers need", () => {
       );
     };
     const home = await idsFor("site/index.html");
-    const devs = await idsFor("site/developers/index.html");
+    const devs = await idsFor("site/docs/index.html");
     for (const shared of ["https://setoku.com/#software", "https://setoku.com/#org"]) {
       expect(home.has(shared)).toBe(true);
       expect(devs.has(shared)).toBe(true);
