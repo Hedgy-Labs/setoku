@@ -32,7 +32,7 @@
       "note": "Per-person, revocable connector tokens. OAuth 2.0 is scoped but not shipped; see https://setoku.com/developers#auth."
     },
     "public_demo": {
-      "url": "https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0",
+      "url": "https://demo.setoku.com/mcp/85315b4240ff6ded111072f950ac6f14167d920fdb765144",
       "description": "A live, credential-free demo box wired to a synthetic pro-sports-club dataset. The token is public on purpose. Read-only."
     }
   },

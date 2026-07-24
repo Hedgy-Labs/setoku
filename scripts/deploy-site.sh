@@ -56,4 +56,21 @@ for p in /llms.txt /robots.txt /sitemap.xml /openapi.json /api/index.json \
   printf '   %s %-24s %s  %s\n' "$mark" "$p" "$code" "$type"
 done
 
+# The demo connector we advertise is a live credential on another box, so it can
+# rot without anything in this repo changing — that is exactly how the previously
+# published token went dead while every page kept serving it. Probe it for real.
+echo "→ verify the advertised demo connector still authenticates …"
+DEMO_URL=$(bun -e 'import { DEMO_MCP_URL } from "./demo/connector"; console.log(DEMO_MCP_URL)')
+demo_probe=$(curl -s --max-time 20 -X POST "$DEMO_URL" \
+  -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy-verify","version":"0"}}}' || true)
+if printf '%s' "$demo_probe" | grep -q '"serverInfo"'; then
+  echo "   ✓ demo connector authenticates ($(printf '%s' "$demo_probe" | grep -o '"version":"[^"]*"' | head -1))"
+else
+  echo "   ✗ DEMO CONNECTOR IS DEAD — the URL published on setoku.com does not work:"
+  echo "     $(printf '%s' "$demo_probe" | head -c 200)"
+  echo "     Fix DEMO_TOKEN in demo/connector.ts, then re-run this deploy."
+  exit 1
+fi
+
 echo "✓ site deployed."

@@ -19,6 +19,8 @@
 // Usage:  bun run build:site
 import { mkdirSync } from "node:fs";
 
+import { DEMO_MCP_URL } from "../demo/connector";
+
 const ROOT = new URL("..", import.meta.url).pathname;
 const SITE = "https://setoku.com";
 const REPO = "https://github.com/Hedgy-Labs/setoku";
@@ -433,7 +435,7 @@ const index = {
         `see ${SITE}/developers#auth.`,
     },
     public_demo: {
-      url: "https://demo.setoku.com/mcp/fdb6bb54d746ba8e00d698ff2183228b682b8272bfef78e0",
+      url: DEMO_MCP_URL,
       description:
         "A live, credential-free demo box wired to a synthetic pro-sports-club dataset. " +
         "The token is public on purpose. Read-only.",
