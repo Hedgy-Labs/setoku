@@ -106,6 +106,21 @@ const ADMIN_JS_VER = Bun.hash(ADMIN_JS).toString(36);
 // window global). Nothing here grants write capability (the membrane, I2/I9).
 const DEMO = process.env.SETOKU_DEMO === "1" || process.env.SETOKU_DEMO === "true";
 
+// On a demo box, the banner also shows how to connect an agent — the MCP tools
+// ARE the demo, so the path-authed URL (/mcp/<token>) goes right in the shell.
+// The token is the first SETOKU_TOKENS entry: on a demo box that's the boot
+// script's deliberately-public analyst credential over synthetic data (read +
+// propose only — no write capability to leak, I2/I9). Gated on DEMO so a real
+// box never exposes a token this way.
+const DEMO_MCP = ((): { path: string; connector: string } | null => {
+  if (!DEMO) return null;
+  const first = (process.env.SETOKU_TOKENS ?? "").split(",")[0] ?? "";
+  const eq = first.indexOf("=");
+  const token = eq > 0 ? first.slice(0, eq).trim() : "";
+  if (!token) return null;
+  return { path: `/mcp/${token}`, connector: connectorName(projectDir) };
+})();
+
 // The capability-less pseudo-session an anonymous demo viewer runs as: identity
 // "public" (the audit actor the /p/<id> surface already uses), role "viewer" —
 // a role NO write path recognizes — and an empty CSRF token, so it can only read.
@@ -172,7 +187,7 @@ const ADMIN_SHELL = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 </head>
 <body class="min-h-screen bg-stone-50 font-sans text-stone-900 antialiased">
 <div id="root"></div>
-${DEMO ? `<script>window.__SETOKU_DEMO__=true;</script>\n` : ""}<script type="module" src="/admin/app.js?v=${ADMIN_JS_VER}"></script>
+${DEMO ? `<script>window.__SETOKU_DEMO__=true;${DEMO_MCP ? `window.__SETOKU_DEMO_MCP__=${JSON.stringify(DEMO_MCP)};` : ""}</script>\n` : ""}<script type="module" src="/admin/app.js?v=${ADMIN_JS_VER}"></script>
 </body></html>`;
 
 // The app's top-level route sections (see web/app/App.tsx). Used by the root
