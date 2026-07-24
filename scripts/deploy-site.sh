@@ -47,30 +47,66 @@ curl -s --max-time 12 "https://${DOMAIN}/" | grep -o '<title>[^<]*</title>' \
 # /nonsense-404-probe means the box still has the old `try_files … /index.html`
 # block — install deploy/caddy.d/setoku-com.caddy and force-recreate caddy.
 echo "→ verify the agent-facing surface …"
+surface_bad=0
 for p in /llms.txt /robots.txt /sitemap.xml /openapi.json /api/index.json \
          /api/tools.json /api/connectors.json /developers /nonsense-404-probe; do
   read -r code type < <(curl -s -o /dev/null --max-time 12 \
     -w '%{http_code} %{content_type}\n' "https://${DOMAIN}${p}")
   want=200; [ "$p" = /nonsense-404-probe ] && want=404
-  mark=" "; [ "$code" = "$want" ] || mark="!"
+  mark=" "; if [ "$code" != "$want" ]; then mark="!"; surface_bad=$((surface_bad + 1)); fi
   printf '   %s %-24s %s  %s\n' "$mark" "$p" "$code" "$type"
 done
+if [ "$surface_bad" -ne 0 ]; then
+  echo
+  echo "   ✗ ${surface_bad} path(s) wrong — the published surface is NOT correct."
+  echo "     A 200 for /nonsense-404-probe means the box still has the old"
+  echo "     \`try_files … /index.html\` fallback, so every agent probing"
+  echo "     /openapi.json gets HTML. Install deploy/caddy.d/setoku-com.caddy"
+  echo "     (\`bun run deploy\` now ships and reloads it), then re-run."
+  exit 1
+fi
 
-# The demo connector we advertise is a live credential on another box, so it can
-# rot without anything in this repo changing — that is exactly how the previously
-# published token went dead while every page kept serving it. Probe it for real.
-echo "→ verify the advertised demo connector still authenticates …"
+# The demo links we advertise live on a DIFFERENT box, so they can rot without
+# anything in this repo changing — that is how the previously published token went
+# dead while every page kept serving it. Probe them for real.
+#
+# These WARN rather than exit non-zero, deliberately: the demo box being down (or
+# unreachable from here) says nothing about whether setoku.com deployed correctly,
+# and blocking a marketing-copy fix on an unrelated box's health trades a small
+# problem for a bigger one. A dead credential and a rebooting box also look
+# identical from here, so a hard failure would send you to rotate a token that was
+# never broken. The surface check above is the one that gates the deploy.
+echo "→ check the demo links we advertise (warn-only — different box) …"
+demo_warn=0
 DEMO_URL=$(bun -e 'import { DEMO_MCP_URL } from "./demo/connector"; console.log(DEMO_MCP_URL)')
 demo_probe=$(curl -s --max-time 20 -X POST "$DEMO_URL" \
   -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deploy-verify","version":"0"}}}' || true)
 if printf '%s' "$demo_probe" | grep -q '"serverInfo"'; then
   echo "   ✓ demo connector authenticates ($(printf '%s' "$demo_probe" | grep -o '"version":"[^"]*"' | head -1))"
+elif printf '%s' "$demo_probe" | grep -q 'token'; then
+  demo_warn=1
+  echo "   ! demo connector REJECTED the published token — it has probably been"
+  echo "     rotated on the box. Update DEMO_TOKEN in demo/connector.ts."
+  echo "     (setoku.com itself deployed fine.)"
 else
-  echo "   ✗ DEMO CONNECTOR IS DEAD — the URL published on setoku.com does not work:"
-  echo "     $(printf '%s' "$demo_probe" | head -c 200)"
-  echo "     Fix DEMO_TOKEN in demo/connector.ts, then re-run this deploy."
-  exit 1
+  demo_warn=1
+  echo "   ! demo box did not answer (down, redeploying, or unreachable from here)."
+  echo "     Not treating this as a deploy failure. Re-check later:"
+  echo "     curl -sS -X POST \"\$(bun -e 'import {DEMO_MCP_URL} from \"./demo/connector\"; console.log(DEMO_MCP_URL)')\""
 fi
+
+# The published app links rot the same way — an admin flipping an app from public
+# back to team turns an advertised /p/<id> into a 404 with nothing in git changing.
+for id in $(bun -e 'import { DEMO_PUBLIC_APPS } from "./demo/connector"; console.log(DEMO_PUBLIC_APPS.map(a => a.id).join(" "))'); do
+  code=$(curl -s -o /dev/null --max-time 12 -w '%{http_code}' "https://demo.setoku.com/p/${id}" || true)
+  if [ "$code" = "200" ]; then
+    printf '   ✓ demo app /p/%s\n' "${id:0:12}…"
+  else
+    demo_warn=1
+    printf '   ! demo app /p/%s returned %s — advertised on setoku.com but not public.\n' "${id:0:12}…" "$code"
+  fi
+done
+[ "$demo_warn" -ne 0 ] && echo "   (demo warnings above do not block the deploy)"
 
 echo "✓ site deployed."

@@ -46,19 +46,36 @@ async function tools(): Promise<
   { name: string; title: string; role: string; readOnly: boolean }[]
 > {
   const src = await read("plugin/gateway/app.ts");
-  const blockRange = (open: string, close: string): [number, number] | null => {
+  // THROW rather than degrade. These markers are only comments, so a refactor can
+  // rename one without any test or typecheck noticing — and a null range used to
+  // mean "no gate matched", i.e. every curator/janitor tool silently republished
+  // as `analyst`. That would put a false statement of the membrane (I2) on a
+  // public URL, which is worse than a failed build.
+  const blockRange = (open: string, close: string): [number, number] => {
     const a = src.indexOf(open);
     const b = src.indexOf(close);
-    return a < 0 || b < 0 ? null : [a, b];
+    if (a < 0 || b < 0 || b < a) {
+      throw new Error(
+        `build-site-api: cannot locate the capability block ${open} … ${close} in ` +
+          `plugin/gateway/app.ts. Role gating is derived from those markers, so the ` +
+          `published tool catalog would misstate which role each tool needs (I2). ` +
+          `Restore the marker, or update blockRange() to match the new structure.`,
+      );
+    }
+    return [a, b];
   };
-  const gates: [string, [number, number] | null][] = [
+  const gates: [string, [number, number]][] = [
     ["curator", blockRange("if (canWrite) {", "} // end canWrite")],
     ["janitor", blockRange("if (canDraft) {", "} // end canDraft")],
     ["janitor", blockRange("if (canReject) {", "} // end canReject")],
   ];
 
   const out: { name: string; title: string; role: string; readOnly: boolean }[] = [];
-  const re = /server\.registerTool\(\s*"([a-z_]+)"/g;
+  // Tool names are conventionally lower_snake_case, but the regex must not be
+  // NARROWER than what registerTool accepts: a name with a digit (get_metric_v2)
+  // silently vanished from the catalog, and the test reused this same pattern so
+  // it compared two equally-truncated lists and passed.
+  const re = /server\.registerTool\(\s*"([^"]+)"/g;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src))) {
     const at = m.index;
@@ -76,24 +93,50 @@ async function tools(): Promise<
   return out;
 }
 
-/** Connectors, keyed off the lake schemas that actually exist in ingest/. */
+/**
+ * Connectors, keyed off the lake schemas that actually exist in ingest/.
+ *
+ * The prose (name, blurb) is human-written — a schema file can't tell you that
+ * Gmail is per-mailbox OAuth. What IS derived is membership, in BOTH directions:
+ * an entry with no matching schema is dropped, and a schema matching no entry is
+ * a hard error. Without that second direction this was a hardcoded array wearing
+ * a derivation costume: adding ingest/schemas/090_stripe_charges.sql would have
+ * changed nothing, and /developers tells agents this file "tracks the release".
+ */
+const CONNECTOR_CATALOG: { id: string; name: string; data: string; match: RegExp }[] = [
+  { id: "postgres", name: "PostgreSQL", data: "your app database, mirrored read-only into biz.*", match: /pg_mirror/ },
+  { id: "github", name: "GitHub", data: "issues, pull requests, commits, comments", match: /github_/ },
+  { id: "vercel", name: "Vercel", data: "deploys and logs", match: /logs_vercel/ },
+  { id: "render", name: "Render", data: "deploys and logs", match: /logs_render/ },
+  { id: "slack", name: "Slack", data: "messages", match: /slack_messages/ },
+  { id: "mercury", name: "Mercury", data: "accounts and transactions", match: /mercury_/ },
+  { id: "monarch", name: "Monarch", data: "accounts, transactions, net worth, budgets, holdings", match: /monarch_/ },
+  { id: "gmail", name: "Gmail", data: "messages, per-mailbox OAuth", match: /gmail_messages/ },
+];
+
+/** Lake plumbing, not a data source — these schemas intentionally have no entry. */
+const NON_CONNECTOR_SCHEMAS = /(ingest_raw|app_events|ingest_heartbeats)/;
+
 async function connectors(): Promise<{ id: string; name: string; data: string }[]> {
   const glob = new Bun.Glob("*.sql");
-  const schemas = new Set<string>();
-  for await (const f of glob.scan({ cwd: ROOT + "ingest/schemas" })) schemas.add(f);
-  const has = (frag: string) => [...schemas].some((s) => s.includes(frag));
+  const schemas: string[] = [];
+  for await (const f of glob.scan({ cwd: ROOT + "ingest/schemas" })) schemas.push(f);
 
-  const all: { id: string; name: string; data: string; when: boolean }[] = [
-    { id: "postgres", name: "PostgreSQL", data: "your app database, mirrored read-only into biz.*", when: has("pg_mirror") },
-    { id: "github", name: "GitHub", data: "issues, pull requests, commits, comments", when: has("github_") },
-    { id: "vercel", name: "Vercel", data: "deploys and logs", when: has("logs_vercel") },
-    { id: "render", name: "Render", data: "deploys and logs", when: has("logs_render") },
-    { id: "slack", name: "Slack", data: "messages", when: has("slack_messages") },
-    { id: "mercury", name: "Mercury", data: "accounts and transactions", when: has("mercury_") },
-    { id: "monarch", name: "Monarch", data: "accounts, transactions, net worth, budgets, holdings", when: has("monarch_") },
-    { id: "gmail", name: "Gmail", data: "messages, per-mailbox OAuth", when: has("gmail_messages") },
-  ];
-  return all.filter((c) => c.when).map(({ when: _when, ...c }) => c);
+  const unclaimed = schemas.filter(
+    (s) => !NON_CONNECTOR_SCHEMAS.test(s) && !CONNECTOR_CATALOG.some((c) => c.match.test(s)),
+  );
+  if (unclaimed.length) {
+    throw new Error(
+      `build-site-api: ingest schema(s) with no connector-catalog entry: ${unclaimed.join(", ")}. ` +
+        `setoku.com/api/connectors.json is advertised as tracking the release, so a new source ` +
+        `must be described there. Add an entry to CONNECTOR_CATALOG (or, if this schema is lake ` +
+        `plumbing rather than a source, to NON_CONNECTOR_SCHEMAS).`,
+    );
+  }
+
+  return CONNECTOR_CATALOG.filter((c) => schemas.some((s) => c.match.test(s))).map(
+    ({ match: _match, ...c }) => c,
+  );
 }
 
 /* --------------------------------- OpenAPI -------------------------------- */
@@ -395,6 +438,16 @@ function openapi(toolNames: string[]) {
 
 /* --------------------------------- emit ----------------------------------- */
 
+/**
+ * Derive every artifact from the source tree, WITHOUT writing anything.
+ *
+ * Split out so test/site-api.test.ts can regenerate and diff against the
+ * committed files. The tests used to read the artifacts and spot-check a few
+ * fields, which meant a stale artifact passed: only the names were compared to
+ * app.ts, so an edited title, a moved capability block, or a new connector all
+ * shipped stale while the suite stayed green.
+ */
+export async function buildArtifacts(): Promise<[string, unknown][]> {
 const toolList = await tools();
 const connectorList = await connectors();
 const spec = openapi(toolList.map((t) => t.name));
@@ -492,10 +545,21 @@ const out: [string, unknown][] = [
     },
   ],
 ];
-
-mkdirSync(ROOT + "site/api", { recursive: true });
-for (const [p, body] of out) {
-  await Bun.write(ROOT + p, JSON.stringify(body, null, 2) + "\n");
-  console.log(`  ${p}`);
+  return out;
 }
-console.log(`✓ site API built — v${VERSION}, ${toolList.length} tools, ${connectorList.length} connectors`);
+
+/** Exactly how an artifact is serialized on disk — shared so the drift test
+ *  compares bytes rather than re-guessing the formatting. */
+export const serialize = (body: unknown): string => JSON.stringify(body, null, 2) + "\n";
+
+if (import.meta.main) {
+  const out = await buildArtifacts();
+  mkdirSync(ROOT + "site/api", { recursive: true });
+  for (const [p, body] of out) {
+    await Bun.write(ROOT + p, serialize(body));
+    console.log(`  ${p}`);
+  }
+  const toolCount = (await tools()).length;
+  const connectorCount = (await connectors()).length;
+  console.log(`✓ site API built — v${VERSION}, ${toolCount} tools, ${connectorCount} connectors`);
+}

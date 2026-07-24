@@ -237,10 +237,11 @@ curl https://setoku.com/api/tools.json</pre>
         <h2 class="man">TOOLS</h2>
         <div class="body">
           <p>
-            Setoku’s MCP tools come in five groups, and carry one rule: look up
-            what the data means before you touch it. The live list, with the
-            role each tool needs, is at
-            <a href="/api/tools.json">/api/tools.json</a>.
+            Setoku’s MCP tools carry one rule: look up what the data means
+            before you touch it. The authoritative list, with the role each tool
+            needs, is generated from the source at
+            <a href="/api/tools.json">/api/tools.json</a> — the groups below are
+            a reading guide to it, not a second source of truth.
           </p>
           <dl class="kv">
             <dt>
@@ -289,6 +290,16 @@ curl https://setoku.com/api/tools.json</pre>
               Commit curated knowledge. Registered <i>only</i> on a curator
               token, which cannot read the lake. See
               <a href="#membrane">MEMBRANE</a>.
+            </dd>
+            <dt>
+              Janitor<span class="t">draft_correction · reject_correction</span>
+            </dt>
+            <dd>
+              Registered only on a janitor token, used by the automated curation
+              pass. It can attach a <i>draft</i> edit to a pending correction, or
+              auto-reject one, and nothing else — both grant zero authority, so
+              the drafting agent reads untrusted pending content while holding no
+              tool that commits anything.
             </dd>
           </dl>
         </div>

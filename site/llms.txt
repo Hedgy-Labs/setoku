@@ -21,7 +21,7 @@ Two identities share one server and never overlap. An **analyst** token may quer
 
 - [Setoku public demo](https://setoku.com/#demo): a live box wired to a synthetic pro-sports-club dataset (ticketing, sponsorship, concessions, payroll, broadcast rights). Add `https://demo.setoku.com/mcp/85315b4240ff6ded111072f950ac6f14167d920fdb765144` as a custom MCP connector. The token is public on purpose and read-only.
 - [Setoku demo app: sponsorship pricing](https://demo.setoku.com/p/7e38381ced6517329947b14d): an app an agent built and published, running on live demo data.
-- [Setoku demo app: fan lifetime value](https://demo.setoku.com/p/b059da830dcb3e70437d5dea): the same, segmenting fans by spend.
+- [Setoku demo app: Bulldogs attendance forecast](https://demo.setoku.com/p/a7a1240ae0bc202c5eefa1cc): the same, projecting gate for upcoming home games.
 - [Setoku demo box health](https://demo.setoku.com/healthz): a real, credential-free REST endpoint you can call right now to see the shape of the API.
 
 ## Install Setoku

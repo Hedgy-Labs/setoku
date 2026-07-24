@@ -35,7 +35,7 @@ There's a public demo wired to a synthetic dataset for a fictional pro sports cl
    - _"What's our total merchandise revenue?"_ → it **flags** that most merch is sold via Fanatics, not in this data, instead of returning a wrong total.
 3. Try an app. Ask Claude to build a dashboard on the same data, then publish it to a link. Two live examples, running on the demo data right now:
    - [Sponsorship pricing table](https://demo.setoku.com/p/7e38381ced6517329947b14d): inventory and rates for sponsorship placements.
-   - [Fan lifetime value](https://demo.setoku.com/p/b059da830dcb3e70437d5dea): segment fans by spend across tickets, merch, and concessions.
+   - [Bulldogs attendance forecast](https://demo.setoku.com/p/a7a1240ae0bc202c5eefa1cc): projected gate for upcoming home games.
 
 Full walkthrough, the web approval surface, and the data model: [`demo/README.md`](./demo/README.md).
 

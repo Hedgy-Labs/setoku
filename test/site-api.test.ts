@@ -11,21 +11,50 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 
+import { buildArtifacts, serialize } from "../scripts/build-site-api";
+
 const ROOT = new URL("..", import.meta.url).pathname;
 const readJson = (p: string) => Bun.file(ROOT + p).json();
 const readText = (p: string) => Bun.file(ROOT + p).text();
 
-/** Tool names, straight out of the gateway — the source of truth. */
-async function sourceToolNames(): Promise<string[]> {
-  const src = await readText("plugin/gateway/app.ts");
-  return [...src.matchAll(/server\.registerTool\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
-}
-
 describe("site API artifacts track the source", () => {
+  // THE test. Everything else here is a readable assertion about a specific
+  // property; this one is the actual guarantee, because it regenerates every
+  // artifact from the source tree and diffs it against what is committed (and
+  // therefore what gets published). An earlier version of this suite read the
+  // committed files and spot-checked fields, which could not tell a correct
+  // artifact from a stale one: only tool NAMES were compared to app.ts, so an
+  // edited title, a moved capability block, or a new connector shipped stale
+  // while the suite stayed green.
+  test("committed artifacts are exactly what the generator produces now", async () => {
+    const stale: string[] = [];
+    for (const [p, body] of await buildArtifacts()) {
+      const committed = await Bun.file(ROOT + p).text().catch(() => "");
+      if (committed !== serialize(body)) stale.push(p);
+    }
+    expect({
+      stale,
+      hint: "run `bun run build:site` and commit the result",
+    }).toEqual({ stale: [], hint: "run `bun run build:site` and commit the result" });
+  });
+
   test("tools.json lists exactly the tools the gateway registers", async () => {
-    const published = await readJson("site/api/tools.json");
-    const names = published.tools.map((t: { name: string }) => t.name);
-    expect(names).toEqual(await sourceToolNames());
+    // Independent of the generator's own regex: parse app.ts a different way so a
+    // bug in the generator's extraction can't hide behind an identical bug here.
+    const src = await readText("plugin/gateway/app.ts");
+    const fromSource = src
+      .split("\n")
+      .map((l) => l.match(/^\s*"([a-z_0-9]+)",\s*$/))
+      .filter((m, i, _a): m is RegExpMatchArray => {
+        if (!m) return false;
+        const lines = src.split("\n");
+        return (lines[i - 1] ?? "").includes("server.registerTool(");
+      })
+      .map((m) => m[1]);
+    const published = (await readJson("site/api/tools.json")).tools.map(
+      (t: { name: string }) => t.name,
+    );
+    expect(published).toEqual(fromSource);
   });
 
   test("every published tool declares a real role", async () => {
@@ -34,15 +63,33 @@ describe("site API artifacts track the source", () => {
     for (const t of published.tools) expect(roles).toContain(t.role);
   });
 
-  test("the membrane is described accurately (I2)", async () => {
+  test("the membrane is described accurately, checked against app.ts (I2)", async () => {
     // upsert_context / resolve_correction commit curated knowledge and are
     // registered only behind `if (canWrite)`. Publishing them as analyst-callable
-    // would misdescribe the one security property people most need to trust.
+    // would misdescribe the one security property people most need to trust — so
+    // this reads the GATING OUT OF THE SOURCE, not out of the artifact it is
+    // supposed to be validating.
+    const src = await readText("plugin/gateway/app.ts");
+    const within = (name: string, open: string, close: string): boolean => {
+      const a = src.indexOf(open);
+      const b = src.indexOf(close);
+      const at = src.indexOf(`server.registerTool(\n  "${name}"`);
+      expect({ marker: open, found: a >= 0 && b > a }).toEqual({ marker: open, found: true });
+      expect({ tool: name, registered: at >= 0 }).toEqual({ tool: name, registered: true });
+      return at > a && at < b;
+    };
+    expect(within("upsert_context", "if (canWrite) {", "} // end canWrite")).toBe(true);
+    expect(within("resolve_correction", "if (canWrite) {", "} // end canWrite")).toBe(true);
+    expect(within("draft_correction", "if (canDraft) {", "} // end canDraft")).toBe(true);
+    expect(within("reject_correction", "if (canReject) {", "} // end canReject")).toBe(true);
+    // …and that the published roles agree with that.
     const published = await readJson("site/api/tools.json");
     const role = (n: string) =>
       published.tools.find((t: { name: string }) => t.name === n)?.role;
     expect(role("upsert_context")).toBe("curator");
     expect(role("resolve_correction")).toBe("curator");
+    expect(role("draft_correction")).toBe("janitor");
+    expect(role("reject_correction")).toBe("janitor");
     expect(role("report_correction")).toBe("analyst");
     expect(role("run_query")).toBe("analyst");
   });
@@ -58,6 +105,25 @@ describe("site API artifacts track the source", () => {
     expect(await readJson("site/api/openapi.json")).toEqual(
       await readJson("site/openapi.json"),
     );
+  });
+
+  test("every ingest schema is represented in the connector catalog", async () => {
+    // The generator throws on an unclaimed schema; assert that here too so the
+    // failure surfaces in the test suite rather than only at deploy time.
+    const glob = new Bun.Glob("*.sql");
+    const schemas: string[] = [];
+    for await (const f of glob.scan({ cwd: ROOT + "ingest/schemas" })) schemas.push(f);
+    expect(schemas.length).toBeGreaterThan(0);
+    const published = (await readJson("site/api/connectors.json")).connectors;
+    expect(published.length).toBeGreaterThan(0);
+    // buildArtifacts() would have thrown on an unclaimed schema, and the
+    // regenerate-and-diff test above calls it, so reaching here means coverage
+    // held. This asserts the catalog is non-trivially populated.
+    for (const c of published) {
+      expect(c.id).toBeString();
+      expect(c.name).toBeString();
+      expect(c.data).toBeString();
+    }
   });
 });
 
@@ -160,6 +226,66 @@ describe("discovery files point at documents that exist", () => {
 
   test("the developer portal is reachable from the homepage", async () => {
     expect(await readText("site/index.html")).toContain('href="/developers"');
+  });
+});
+
+describe("hand-written pages agree with the generated catalog", () => {
+  /**
+   * Tool names advertised in a page's `<span class="t">a · b</span>` subtitle
+   * runs. `.t` is a general-purpose subtitle (the SECURITY section uses it for
+   * "per-person · revocable"), so match only lower_snake_case identifiers —
+   * every registered tool name contains an underscore, ordinary prose does not.
+   */
+  const TOOL_NAME = /^[a-z][a-z0-9]*(_[a-z0-9]+)+$/;
+
+  async function proseToolNames(p: string): Promise<Set<string>> {
+    const html = await readText(p);
+    const names = new Set<string>();
+    for (const [, run] of html.matchAll(/<span class="t">([^<]*)<\/span>/g)) {
+      for (const part of run.split("·")) {
+        const n = part.trim();
+        if (TOOL_NAME.test(n)) names.add(n);
+      }
+    }
+    return names;
+  }
+
+  test("/developers names only tools that actually exist", async () => {
+    // The portal's tool list is prose — it can't import tools.json. So assert the
+    // one direction that matters for a reader: every name it advertises is real.
+    // It previously listed 17 of 19 and omitted the janitor role entirely, three
+    // lines below a link to the JSON that said otherwise.
+    const published = new Set<string>(
+      (await readJson("site/api/tools.json")).tools.map((t: { name: string }) => t.name),
+    );
+    const bogus = [...(await proseToolNames("site/developers/index.html"))].filter(
+      (n) => !published.has(n),
+    );
+    expect(bogus).toEqual([]);
+  });
+
+  test("/developers accounts for every tool and role", async () => {
+    const catalog = await readJson("site/api/tools.json");
+    const html = await readText("site/developers/index.html");
+    const missing = catalog.tools
+      .map((t: { name: string }) => t.name)
+      .filter((n: string) => !html.includes(n));
+    expect(missing).toEqual([]);
+    // A role the page never mentions is a role a reader never learns about — and
+    // the roles ARE the membrane.
+    for (const role of Object.keys(catalog.roles)) {
+      expect(html.toLowerCase()).toContain(role);
+    }
+  });
+
+  test("the homepage names only tools that actually exist", async () => {
+    const published = new Set<string>(
+      (await readJson("site/api/tools.json")).tools.map((t: { name: string }) => t.name),
+    );
+    const bogus = [...(await proseToolNames("site/index.html"))].filter(
+      (n) => !published.has(n),
+    );
+    expect(bogus).toEqual([]);
   });
 });
 

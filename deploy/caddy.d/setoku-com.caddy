@@ -4,15 +4,22 @@
 # from the gateway Caddyfile at the repo root (that one proxies to server:8787;
 # this one serves site/ off disk and never touches the gateway).
 #
-# Install on the box as /opt/setoku/caddy.d/setoku-com.caddy. The caddy.d dir is
-# bind-mounted at /etc/caddy/conf.d, and the mount is inode-pinned: editing the
-# file in place and reloading does nothing. Force-recreate caddy to pick it up:
+# `bun run deploy` INSTALLS this: it rsyncs the repo, copies deploy/caddy.d/*.caddy
+# into the box's /opt/setoku/caddy.d (the dir docker-compose bind-mounts at
+# /etc/caddy/conf.d), validates, and gracefully reloads caddy when the contents
+# changed. Do NOT scp it by hand — a hand-copied file is exactly the kind of
+# out-of-band state that drifts.
 #
-#   scp deploy/caddy.d/setoku-com.caddy <box>:/opt/setoku/caddy.d/
-#   ssh <box> 'cd /opt/setoku && docker compose up -d --force-recreate caddy'
+# caddy.d is a DIRECTORY mount, so the container sees changed contents right away
+# and `caddy reload` is enough — no force-recreate, so the other vhosts on this
+# edge never blip. (The inode-pinning problem that does require a recreate is
+# specific to the single-FILE ./Caddyfile mount.)
 #
-# Site CONTENT is separate and needs none of that — `bun run deploy:site` rsyncs
-# site/ into the bind-mounted dir and it serves immediately.
+# The deploy copies rather than mirrors, because caddy.d also holds box-local
+# blocks that are deliberately not in the repo (e.g. the demo subdomain).
+#
+# Site CONTENT is separate — `bun run deploy:site` rsyncs site/ into the
+# bind-mounted dir and it serves immediately.
 
 setoku.com {
 	encode gzip

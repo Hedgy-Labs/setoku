@@ -34,3 +34,30 @@ export const DEMO_MCP_URL = `https://${DEMO_HOST}/mcp/${DEMO_TOKEN}`;
 
 /** Base URL of the demo box (published apps, /healthz). */
 export const DEMO_BASE_URL = `https://${DEMO_HOST}`;
+
+/**
+ * Published demo apps we link to from setoku.com. These rot exactly like the
+ * token did, but through a different mechanism: an admin flipping an app from
+ * `public` back to `team` turns an advertised `/p/<id>` into a 404 with nothing
+ * in this repo changing. That already happened once — the "Fan LTV" app was
+ * advertised on the homepage, in the README, and in llms.txt while returning 404,
+ * because its visibility had been flipped to team.
+ *
+ * Only genuinely public apps belong here; `/apps/<id>` (team) links are
+ * login-gated and are NOT public URLs. deploy:site probes each of these.
+ */
+export const DEMO_PUBLIC_APPS: { id: string; title: string; blurb: string }[] = [
+  {
+    id: "7e38381ced6517329947b14d",
+    title: "Sponsorship pricing table",
+    blurb: "inventory and rates for sponsorship placements",
+  },
+  {
+    id: "a7a1240ae0bc202c5eefa1cc",
+    title: "Bulldogs attendance forecast",
+    blurb: "projected gate for upcoming home games",
+  },
+];
+
+/** Public URL of a published demo app. */
+export const demoAppUrl = (id: string): string => `${DEMO_BASE_URL}/p/${id}`;
