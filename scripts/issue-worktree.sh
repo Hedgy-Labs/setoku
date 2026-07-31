@@ -80,6 +80,18 @@ echo ""
 # First, clean up any prunable worktrees
 git worktree prune
 
+# New branches should start from the repo's default branch (usually main),
+# not whatever checkout this script happens to be run from.
+DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+[ -z "$DEFAULT_BRANCH" ] && DEFAULT_BRANCH="main"
+echo "🔄 Fetching origin/$DEFAULT_BRANCH..."
+git fetch origin "$DEFAULT_BRANCH" --quiet 2>/dev/null || true
+if git show-ref --verify --quiet "refs/remotes/origin/$DEFAULT_BRANCH"; then
+    BASE_REF="origin/$DEFAULT_BRANCH"
+else
+    BASE_REF="$DEFAULT_BRANCH"
+fi
+
 # Get absolute path for worktree location
 PARENT_DIR="$(cd .. && pwd)"
 ABSOLUTE_WORKTREE_DIR="$PARENT_DIR/$WORKTREE_NAME"
@@ -96,7 +108,7 @@ if [ -d "$ABSOLUTE_WORKTREE_DIR" ]; then
         if git show-ref --verify --quiet refs/heads/$BRANCH_NAME; then
             git worktree add "$ABSOLUTE_WORKTREE_DIR" "$BRANCH_NAME"
         else
-            git worktree add "$ABSOLUTE_WORKTREE_DIR" -b "$BRANCH_NAME"
+            git worktree add "$ABSOLUTE_WORKTREE_DIR" -b "$BRANCH_NAME" "$BASE_REF"
         fi
     fi
 else
@@ -116,8 +128,8 @@ else
         echo "Using remote branch origin/$BRANCH_NAME..."
         git worktree add "$ABSOLUTE_WORKTREE_DIR" "origin/$BRANCH_NAME" -b "$BRANCH_NAME"
     else
-        echo "Creating new branch $BRANCH_NAME..."
-        git worktree add "$ABSOLUTE_WORKTREE_DIR" -b "$BRANCH_NAME"
+        echo "Creating new branch $BRANCH_NAME (from $BASE_REF)..."
+        git worktree add "$ABSOLUTE_WORKTREE_DIR" -b "$BRANCH_NAME" "$BASE_REF"
     fi
 
     # Copy env files
