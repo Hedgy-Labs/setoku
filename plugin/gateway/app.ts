@@ -16,7 +16,7 @@ import {
 } from "./lib/config";
 import { runLakeQuery } from "./lib/lake";
 import { buildLinkGraph, docRef, matchByTokens, retrieve, selectGotchas, uncoveredTerms } from "./lib/search";
-import { EVENTS_TABLE, catalogDetail, catalogSummary, eventCatalog, structuralMatches, type StructuralTable } from "./lib/catalog";
+import { EMPTY_CATALOG, EVENTS_TABLE, catalogDetail, catalogSummary, eventCatalog, structuralMatches, type EventCatalog, type StructuralHit, type StructuralTable } from "./lib/catalog";
 import { combineSynonyms, synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
 import type { DerivedSynonyms } from "./lib/derived-synonyms";
@@ -122,6 +122,10 @@ const STRUCTURAL_TTL_MS = 10 * 60_000;
  *  the schema pointer and the refresh lands for the next call. A slow lake must
  *  never stall the first tool of every conversation. */
 const STRUCTURAL_WAIT_MS = 1_500;
+/** The same ceiling for the capability tools. They tolerate more latency than
+ *  find_context (they already make several lake round-trips), but "no catalog
+ *  line" beats "list_sources never returned" on a degraded lake. */
+const DISCOVERY_WAIT_MS = 4_000;
 const structuralCache = new Map<string, { at: number; tables: StructuralTable[] }>();
 
 /** Test hook — drop the cached structural index. */
@@ -276,21 +280,21 @@ async function scopedSchema(): Promise<{
 const eventsDenied = (): boolean =>
   deniedFamilies().has(familySlug(familyOf(LAKE_SOURCE_BY_TABLE.get(EVENTS_TABLE) ?? EVENTS_TABLE)));
 
-/** The derived event vocabulary for this session, or [] when it can't be had
- *  (curator membrane, denied family, no lake, cold-and-slow). */
-async function sessionEventCatalog(maxWaitMs?: number) {
-  if (denyLakeRead || eventsDenied()) return [];
+/** The derived event vocabulary for this session, or an empty catalog when it
+ *  can't be had (curator membrane, denied family, no lake, cold-and-slow). */
+async function sessionEventCatalog(maxWaitMs?: number): Promise<EventCatalog> {
+  if (denyLakeRead || eventsDenied()) return EMPTY_CATALOG;
   try {
     const config = requireConfig();
     const lake = resolveLakeUrl(projectDir, config);
-    if (!lake.ok) return [];
+    if (!lake.ok) return EMPTY_CATALOG;
     return await eventCatalog(
       lake.url,
       { statementTimeoutMs: config.statementTimeoutMs, maxWaitMs },
       lakeRoles(),
     );
   } catch {
-    return [];
+    return EMPTY_CATALOG;
   }
 }
 
@@ -304,9 +308,9 @@ async function sessionEventCatalog(maxWaitMs?: number) {
  * Scoped exactly like get_schema (roles + the denied-family belt), so it can
  * never name a table get_schema would hide. Curator sessions skip it (I2/I9).
  */
-async function structuralHint(terms: string[]): Promise<string[]> {
+async function structuralHint(terms: string[]): Promise<StructuralHit[]> {
   if (denyLakeRead || !terms.length) return [];
-  try {
+  const lookup = async (): Promise<StructuralHit[]> => {
     const config = requireConfig();
     const lakeRes = resolveLakeUrl(projectDir, config);
     if (!lakeRes.ok) return [];
@@ -324,13 +328,18 @@ async function structuralHint(terms: string[]): Promise<string[]> {
       }));
       structuralCache.set(key, { at: Date.now(), tables });
     }
-    const events = await sessionEventCatalog(STRUCTURAL_WAIT_MS);
-    return structuralMatches(terms, tables, events).map(
-      (h) => `- "${h.term}" appears in: ${h.matches.join("; ")}`,
-    );
-  } catch {
-    return []; // lake down / not configured — the coverage line stands alone
-  }
+    const cat = await sessionEventCatalog();
+    return structuralMatches(terms, tables, cat.events);
+  };
+  // ONE ceiling over the WHOLE lookup. The schema round-trip inside it is
+  // otherwise uncapped (statementTimeoutMs + the fetch grace, ~20s by default),
+  // and this runs inside the tool documented as "ALWAYS call FIRST" — a
+  // degraded lake would stall the opening move of every conversation. Losing
+  // the pointer is cheap; the refresh still lands for the next call.
+  return Promise.race([
+    lookup().catch(() => []),
+    new Promise<StructuralHit[]>((r) => setTimeout(() => r([]), STRUCTURAL_WAIT_MS)),
+  ]);
 }
 
 /** On an unknown-column failure, surface the referenced tables' real columns
@@ -444,25 +453,31 @@ server.registerTool(
       [...top.map((t) => t.doc), ...linked.map((l) => l.doc), ...selectedGotchas],
       question,
     );
-    if (uncovered.length) {
-      const pointers = await structuralHint(uncovered);
-      out.push(
+    // The POINTER is the value, so report only terms the queryable surface can
+    // actually place. A term in neither the docs nor the schema ("churned",
+    // "july") is a vocabulary mismatch, not a gap — printing those on every
+    // question is the over-reporting that teaches the reader to skip the
+    // banner, and then the real "we have nothing on this" case is lost too.
+    // The one exception is a question that retrieved NOTHING, where having
+    // nothing to say IS the finding.
+    const hints = uncovered.length ? await structuralHint(uncovered) : [];
+    const coverage: string[] = [];
+    if (hints.length) {
+      coverage.push(
         "## Coverage check — read before trusting anything below",
-        `No curated context mentions: ${uncovered.join(", ")}. The docs below matched other terms in the question and may not answer it.`,
+        `No curated context mentions: ${hints.map((h) => h.term).join(", ")} — but the queryable surface does. Undocumented is not absent:`,
+        ...hints.map((h) => `- "${h.term}" appears in: ${h.matches.join("; ")}`),
+        "Query those directly (get_schema for the shape), and capture what you learn with report_correction.",
+        "",
       );
-      if (pointers.length) {
-        out.push(
-          "The queryable surface DOES have those terms — undocumented is not absent:",
-          ...pointers,
-          "Query them directly (get_schema for the shape), and capture what you learn with report_correction.",
-        );
-      } else {
-        out.push(
-          "Confirm against get_schema / list_sources before answering, and say what you had to assume.",
-        );
-      }
-      out.push("");
+    } else if (uncovered.length && !top.length) {
+      coverage.push(
+        "## Coverage check",
+        `Nothing curated matches: ${uncovered.join(", ")}. Confirm against get_schema / list_sources before answering, and say what you had to assume.`,
+        "",
+      );
     }
+    out.push(...coverage);
     if (selectedGotchas.length) {
       out.push("## Gotchas (read carefully — these prevent wrong answers)");
       for (const g of selectedGotchas) out.push(`- ${g.body || g.name}`);
@@ -484,9 +499,12 @@ server.registerTool(
       store.audit(user, "find_context", {
         question,
         results: 0,
+        uncovered: uncovered.length ? uncovered : undefined,
         ms: Date.now() - started,
       });
-      return text(NO_KNOWLEDGE_HINT);
+      // An empty store is where pointers matter MOST — dropping them here would
+      // hand the emptiest box the least help, having already paid for the lookup.
+      return text([NO_KNOWLEDGE_HINT, ...(coverage.length ? ["", ...coverage] : [])].join("\n"));
     }
     if (top.length === 0) {
       out.push(
@@ -1109,7 +1127,7 @@ server.registerTool(
             // Derive it, so capability discovery names real events instead of
             // leaving an opaque JSON column for the agent to guess at.
             const eventsLine = connected.some((s) => s.table === EVENTS_TABLE)
-              ? catalogSummary(await sessionEventCatalog())
+              ? catalogSummary(await sessionEventCatalog(DISCOVERY_WAIT_MS))
               : null;
             for (const s of connected) {
               const derived = s.table === EVENTS_TABLE && eventsLine ? ` — ${eventsLine}` : "";
@@ -1214,8 +1232,8 @@ server.registerTool(
         // discovery. When the events table is asked about, follow its columns
         // with the vocabulary derived from the rows themselves.
         const events = schema.some((t) => t.database === "setoku" && t.table === EVENTS_TABLE)
-          ? await sessionEventCatalog()
-          : [];
+          ? await sessionEventCatalog(DISCOVERY_WAIT_MS)
+          : EMPTY_CATALOG;
         for (const t of schema) {
           const key = sortKeys.get(`${t.database}.${t.table}`);
           lines.push(`# ${t.database}.${t.table}${key ? ` (ORDER BY ${key})` : ""}`);

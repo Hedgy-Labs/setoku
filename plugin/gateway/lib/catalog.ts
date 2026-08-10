@@ -13,8 +13,7 @@
  * So we derive the vocabulary FROM the data (I8-clean — an aggregate query, no
  * inference) and fold it into the tools that answer "what can I query":
  * `list_sources` (one line) and `get_schema` (the detail view). The same
- * catalog, plus the column names, backs find_context's coverage check — the
- * structural fallback for a question the knowledge store has nothing on.
+ * catalog, plus the column names, backs find_context's coverage check.
  *
  * Cached per (lake, active roles). Roles are part of the key because the engine
  * filters by them: a session denied the events family gets an error, caches its
@@ -26,32 +25,61 @@ import { stemToken, tokenize } from "./search";
 /** One `event_name` an app actually emits, with what its payload carries. */
 export interface EventKind {
   name: string;
+  /** Distinct event_ids — app_events is a ReplacingMergeTree fed by an
+   *  at-least-once client, so a plain count() over-reports retried deliveries
+   *  until parts merge. */
   count: number;
   /** Earliest / latest event time seen (lake timestamps, "YYYY-MM-DD hh:mm:ss"). */
   firstTs: string;
   lastTs: string;
   /** Distinct actors — 0 when the producer never sets one. */
   actors: number;
-  /** Property keys, sampled from recent rows of this event (never exhaustive). */
+  /** Property keys, sampled from rows of this event (never exhaustive). */
   keys: string[];
 }
+
+/** The derived vocabulary plus the totals needed to describe it honestly. */
+export interface EventCatalog {
+  /** The most frequent kinds, capped at MAX_KINDS. */
+  events: EventKind[];
+  /** Distinct event_name values in the table — the TRUE count, which exceeds
+   *  `events.length` when the catalog is truncated. */
+  kinds: number;
+  /** True when `events` is a top-N slice rather than the whole vocabulary. */
+  truncated: boolean;
+}
+
+export const EMPTY_CATALOG: EventCatalog = {
+  events: [],
+  kinds: 0,
+  truncated: false,
+};
 
 /** The lake table this catalog describes (the first-party events sink). */
 export const EVENTS_TABLE = "app_events";
 /** How many property keys we keep per event kind — enough to recognize the
  *  shape, short enough that a chatty payload can't dominate the tool output. */
 const MAX_KEYS = 12;
-/** Event kinds per catalog. A product with more than this has bigger discovery
- *  problems than one tool line; the count line still reports the true total. */
+/** Event kinds per catalog. More than this and `truncated` says so, rather than
+ *  the slice quietly passing for the whole vocabulary. */
 const MAX_KINDS = 40;
+/** Producer-controlled strings (event names, property keys) are rendered into
+ *  agent-facing text, so they are length-capped and stripped of control
+ *  characters — a newline in an event name would otherwise let whoever holds an
+ *  ingest token inject headings into gateway-authored guidance. */
+const MAX_NAME_CHARS = 64;
+const MAX_KEY_CHARS = 40;
 
 const TTL_MS = 10 * 60_000;
 interface Entry {
   at: number;
-  events: EventKind[];
+  catalog: EventCatalog;
+  /** Did the last refresh actually reach the lake? A failed refresh keeps the
+   *  previous vocabulary rather than blanking it (see refresh). */
+  ok: boolean;
 }
 const cache = new Map<string, Entry>();
-const inflight = new Map<string, Promise<EventKind[]>>();
+const inflight = new Map<string, Promise<EventCatalog>>();
 
 const keyFor = (lakeUrl: string, roles: string[] | null): string =>
   `${lakeUrl}|${(roles ?? []).join(",")}`;
@@ -62,25 +90,38 @@ export function clearCatalogCache(): void {
   inflight.clear();
 }
 
+/** Test hook — age every entry past its TTL, so the next read revalidates
+ *  without waiting ten real minutes. Keeps the ENTRIES (unlike clear), which is
+ *  the point: it exercises the refresh-over-existing-data path. */
+export function expireCatalogCache(): void {
+  for (const e of cache.values()) e.at = 0;
+}
+
+/** Strip control characters and cap length — applied to every producer-supplied
+ *  string before it can reach a tool result. */
+function clean(s: string, max: number): string {
+  const flat = s.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
 /**
- * The event vocabulary in the lake, most frequent first. `[]` when the table is
- * absent, empty, denied to this session, or the lake is unreachable — every
- * caller treats the catalog as a bonus, never a precondition, so a degraded
- * lake costs detail and never an error.
+ * The event vocabulary in the lake, most frequent first. EMPTY_CATALOG when the
+ * table is absent, empty, denied to this session, or the lake is unreachable —
+ * every caller treats the catalog as a bonus, never a precondition, so a
+ * degraded lake costs detail and never an error.
  *
- * `maxWaitMs` bounds how long a COLD read may block: find_context passes one so
- * a slow lake can never stall the tool that is documented as "always call
- * first" (it degrades to the coverage line without the schema pointer, and the
- * refresh lands for the next call).
+ * `maxWaitMs` bounds how long a COLD read may block. Callers on a latency-
+ * sensitive path pass one so a slow lake can never stall the tool (they degrade
+ * to no catalog, and the refresh lands for the next call).
  */
 export async function eventCatalog(
   lakeUrl: string,
   opts: { statementTimeoutMs: number; maxWaitMs?: number },
   roles: string[] | null = null,
-): Promise<EventKind[]> {
+): Promise<EventCatalog> {
   const key = keyFor(lakeUrl, roles);
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < TTL_MS) return hit.events;
+  if (hit && Date.now() - hit.at < TTL_MS) return hit.catalog;
 
   let pending = inflight.get(key);
   if (!pending) {
@@ -91,12 +132,12 @@ export async function eventCatalog(
     );
     inflight.set(key, pending);
   }
-  if (hit) return hit.events; // stale-while-revalidate: serve it, refresh lands next
+  if (hit) return hit.catalog; // stale-while-revalidate: serve it, refresh lands next
   if (opts.maxWaitMs == null) return pending;
   return Promise.race([
     pending,
-    new Promise<EventKind[]>((resolve) =>
-      setTimeout(() => resolve([]), opts.maxWaitMs),
+    new Promise<EventCatalog>((resolve) =>
+      setTimeout(() => resolve(EMPTY_CATALOG), opts.maxWaitMs),
     ),
   ]);
 }
@@ -106,20 +147,24 @@ async function refresh(
   statementTimeoutMs: number,
   roles: string[] | null,
   key: string,
-): Promise<EventKind[]> {
-  let events: EventKind[] = [];
+): Promise<EventCatalog> {
+  const prior = cache.get(key);
+  let catalog: EventCatalog | null = null;
   try {
-    // groupArray(N) samples at most N rows per group, so the key scan stays
-    // cheap on a large table — property keys are advertised as sampled, not
-    // exhaustive, precisely because of this bound. Malformed JSON yields [].
+    // JSONExtractKeys runs on the groupArray SAMPLE (arrayMap over ≤10 collected
+    // strings per kind), never per row — parsing every payload in the table just
+    // to learn its key names would make this aggregate cost O(rows) JSON parses.
+    // kinds_total is a scalar subquery over a LowCardinality column: cheap, and
+    // the only way the summary can say "40 of 120" instead of implying 40 is all.
     const res = await runLakeQuery(
       lakeUrl,
       `SELECT event_name AS name,
-              count() AS n,
+              uniqExact(event_id) AS n,
               toString(min(ts)) AS first_ts,
               toString(max(ts)) AS last_ts,
               uniqExact(actor) AS actors,
-              arrayDistinct(arrayFlatten(groupArray(25)(JSONExtractKeys(properties)))) AS keys
+              arrayDistinct(arrayFlatten(arrayMap(p -> JSONExtractKeys(p), groupArray(10)(properties)))) AS keys,
+              (SELECT uniqExact(event_name) FROM setoku.${EVENTS_TABLE}) AS kinds_total
        FROM setoku.${EVENTS_TABLE}
        GROUP BY event_name
        ORDER BY n DESC
@@ -128,38 +173,61 @@ async function refresh(
       {},
       roles,
     );
-    events = (res.rows as Array<Record<string, unknown>>).map((r) => ({
-      name: String(r.name ?? ""),
+    const rows = res.rows as Array<Record<string, unknown>>;
+    const events: EventKind[] = rows.map((r) => ({
+      name: clean(String(r.name ?? ""), MAX_NAME_CHARS),
       count: Number(r.n ?? 0),
       firstTs: String(r.first_ts ?? ""),
       lastTs: String(r.last_ts ?? ""),
       actors: Number(r.actors ?? 0),
-      keys: (Array.isArray(r.keys) ? r.keys.map(String) : [])
+      keys: (Array.isArray(r.keys)
+        ? r.keys.map((k) => clean(String(k), MAX_KEY_CHARS))
+        : []
+      )
+        .filter(Boolean)
         .sort()
         .slice(0, MAX_KEYS),
     }));
+    const kinds = Math.max(Number(rows[0]?.kinds_total ?? 0), events.length);
+    catalog = { events, kinds, truncated: kinds > events.length };
   } catch {
-    /* table absent / denied / lake down — negative-cache for a TTL so a broken
-       lake isn't re-probed on every discovery call */
+    /* table absent / denied / lake down — `catalog` stays null, handled below */
   }
-  cache.set(key, { at: Date.now(), events });
-  return events;
+  // A FAILED refresh must not blank a good catalog: a transient blip would
+  // otherwise make get_schema/list_sources report "no events" for a full TTL —
+  // the exact wrong answer this whole file exists to prevent. Keep the previous
+  // vocabulary and retry at the next TTL. (Access changes can't leak through
+  // this: the cache key carries the session's roles, so a newly-denied identity
+  // has a different key and starts empty.)
+  const entry: Entry = catalog
+    ? { at: Date.now(), catalog, ok: true }
+    : { at: Date.now(), catalog: prior?.catalog ?? EMPTY_CATALOG, ok: false };
+  cache.set(key, entry);
+  return entry.catalog;
 }
 
 /** Date part of a lake timestamp ("2026-07-03 12:00:00.000" → "2026-07-03"). */
 const day = (ts: string): string => ts.slice(0, 10);
+
+const plural = (n: number, word: string): string =>
+  `${n} ${word}${n === 1 ? "" : "s"}`;
 
 /**
  * The one-line catalog for `list_sources` — appended to the events blurb so the
  * capability list names the actual events instead of the generic category.
  * Null when nothing has been emitted yet (the blurb stands alone).
  */
-export function catalogSummary(
-  events: EventKind[],
-  maxKinds = 4,
-): string | null {
+export function catalogSummary(cat: EventCatalog, maxKinds = 4): string | null {
+  const { events } = cat;
   if (!events.length) return null;
-  const total = events.reduce((a, e) => a + e.count, 0);
+  const shown = events
+    .slice(0, maxKinds)
+    .map((e) =>
+      e.keys.length ? `${e.name} (${e.keys.slice(0, 4).join(", ")})` : e.name,
+    )
+    .join(", ");
+  const more =
+    events.length > maxKinds ? `, +${events.length - maxKinds} more` : "";
   const first =
     events
       .map((e) => e.firstTs)
@@ -171,33 +239,33 @@ export function catalogSummary(
       .filter(Boolean)
       .sort()
       .at(-1) ?? "";
-  const shown = events
-    .slice(0, maxKinds)
-    .map((e) =>
-      e.keys.length ? `${e.name} (${e.keys.slice(0, 4).join(", ")})` : e.name,
-    )
-    .join(", ");
-  const more =
-    events.length > maxKinds ? `, +${events.length - maxKinds} more` : "";
   const span = first && last ? `, ${day(first)} → ${day(last)}` : "";
-  return `emits ${shown}${more} — ${events.length} event kind${events.length === 1 ? "" : "s"}, ${total} events${span}`;
+  // Counts are only ever claimed for what was actually measured: when the
+  // vocabulary is truncated, the event total covers the shown kinds alone.
+  const sum = events.reduce((a, e) => a + e.count, 0);
+  const totals = cat.truncated
+    ? `${events.length} of ${cat.kinds} event kinds (${plural(sum, "event")} in those)`
+    : `${plural(cat.kinds, "event kind")}, ${plural(sum, "event")}`;
+  return `emits ${shown}${more} — ${totals}${span}`;
 }
 
 /**
  * The `get_schema` detail block — what the `properties String` column actually
  * contains, per event. Empty when there is no catalog to show.
  */
-export function catalogDetail(events: EventKind[]): string[] {
-  if (!events.length) return [];
+export function catalogDetail(cat: EventCatalog): string[] {
+  if (!cat.events.length) return [];
   const out = [
-    `event_name values (derived from the data; property keys sampled, not exhaustive):`,
+    cat.truncated
+      ? `event_name values — top ${cat.events.length} of ${cat.kinds} (derived from the data; property keys sampled, not exhaustive):`
+      : `event_name values (derived from the data; property keys sampled, not exhaustive):`,
   ];
-  for (const e of events) {
+  for (const e of cat.events) {
     const span =
       e.firstTs && e.lastTs ? `${day(e.firstTs)} → ${day(e.lastTs)}` : "";
     const bits = [
-      `${e.count} event${e.count === 1 ? "" : "s"}`,
-      e.actors ? `${e.actors} actor${e.actors === 1 ? "" : "s"}` : "",
+      plural(e.count, "event"),
+      e.actors ? plural(e.actors, "actor") : "",
       span,
     ].filter(Boolean);
     out.push(
@@ -210,9 +278,9 @@ export function catalogDetail(events: EventKind[]): string[] {
 
 /* ------------------------- structural term matching ------------------------ */
 
-/** Does a query term name this identifier token? Exact, plural-insensitive
- *  (the shared stem), or a ≥4-char prefix — so "views" reaches `page_viewed`
- *  and `SeatView` without "pay" reaching "payload". */
+/** Does a query term name this identifier token? Exact, plural-insensitive (the
+ *  shared stem), or a ≥4-char prefix — so "views" reaches `page_viewed` and
+ *  `SeatView` without "pay" reaching "payload". */
 function termMatchesToken(term: string, token: string): boolean {
   const a = stemToken(term);
   const b = stemToken(token);

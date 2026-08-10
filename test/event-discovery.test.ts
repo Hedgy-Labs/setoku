@@ -45,6 +45,7 @@ beforeAll(async () => {
             last_ts: "2026-07-02 11:00:00.000",
             actors: 5,
             keys: ["admin", "path", "route"],
+            kinds_total: 2,
           },
           {
             name: "order_placed",
@@ -53,6 +54,7 @@ beforeAll(async () => {
             last_ts: "2026-07-01 12:30:00.000",
             actors: 2,
             keys: ["order_id"],
+            kinds_total: 2,
           },
         ],
       };
@@ -152,7 +154,7 @@ describe("find_context coverage check", () => {
     expect(r.text).toContain("Coverage check");
     expect(r.text).toContain("No curated context mentions: pageviews");
     // undocumented is not absent — the pointer is the whole point
-    expect(r.text).toContain("undocumented is not absent");
+    expect(r.text).toContain("Undocumented is not absent");
     expect(r.text).toContain("setoku.app_events event_name='page_viewed'");
     await c.close();
   });
@@ -167,14 +169,27 @@ describe("find_context coverage check", () => {
     await c.close();
   });
 
-  it("a curator gets the coverage line but no lake-derived pointer (I2/I9)", async () => {
+  it("a curator never gets a lake-derived pointer (I2/I9)", async () => {
     const c = await connect("tok-curator");
     const r = await call(c, "find_context", { question: "any pageviews yet?" });
     expect(r.isError).toBe(false);
-    expect(r.text).toContain("No curated context mentions: pageviews");
-    // the membrane holds: a write-capable session never reads the lake
+    // the membrane holds: a write-capable session reads no lake, so nothing
+    // derived from it can appear — with or without a coverage banner
     expect(r.text).not.toContain("setoku.app_events");
-    expect(r.text).toContain("Confirm against get_schema");
+    expect(r.text).not.toContain("page_viewed");
+    await c.close();
+  });
+
+  it("says nothing when the uncovered word is nowhere in the data either", async () => {
+    const c = await connect("tok-analyst");
+    // "churned" is in no doc AND no table/column/event — a vocabulary mismatch,
+    // not a gap. Warning here on every such question is what trains the reader
+    // to skip the banner.
+    const r = await call(c, "find_context", {
+      question: "how much revenue churned?",
+    });
+    expect(r.isError).toBe(false);
+    expect(r.text).not.toContain("Coverage check");
     await c.close();
   });
 });
