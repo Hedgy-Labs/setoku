@@ -35,6 +35,17 @@ export function embeddingsEnabled(): boolean {
   return process.env.SETOKU_EMBEDDINGS !== "0";
 }
 
+/**
+ * Docs per onnxruntime inference call. Deliberately small: the runtime's arena
+ * allocator grows to a batch's peak working set and never gives it back, so the
+ * batch size sets the gateway's steady-state RSS floor for the life of the
+ * process. Measured on a 500-doc embed (1200-char docs): batch 64 ratchets RSS
+ * to ~1.7GB and holds it; batch 8 peaks at ~420MB. The cost is ~14% wall-clock
+ * on a full rebuild, which nobody waits on — the index build is background and
+ * vectors persist, so restarts only re-embed changed docs.
+ */
+const EMBED_BATCH_SIZE = 8;
+
 let cached: Promise<Embedder | null> | null = null;
 
 /** The process-wide embedder, or null if disabled/unavailable. Memoized. */
@@ -63,7 +74,7 @@ async function init(): Promise<Embedder | null> {
       dim,
       async embedDocs(texts) {
         const out: number[][] = [];
-        for await (const batch of model.embed(texts, 64))
+        for await (const batch of model.embed(texts, EMBED_BATCH_SIZE))
           for (const v of batch) out.push(Array.from(v as ArrayLike<number>));
         return out;
       },
