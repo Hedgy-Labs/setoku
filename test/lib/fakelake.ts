@@ -33,7 +33,7 @@ export type LakeResponse =
   | null
   | undefined;
 
-export type LakeHandler = (sql: string, call: LakeCall) => LakeResponse;
+export type LakeHandler = (sql: string, call: LakeCall) => LakeResponse | Promise<LakeResponse>;
 
 export interface FakeLake {
   /** Feed this to SETOKU_LAKE_URL (path = the default database, like prod). */
@@ -75,7 +75,9 @@ export function startFakeLake(handler?: LakeHandler): FakeLake {
         roles: url.searchParams.getAll("role"),
       };
       calls.push(call);
-      const out = h(sql, call) ?? { rows: [{ ok: 1 }] };
+      // handlers may be async — a test that needs a SLOW lake (wait-cap /
+      // timeout behavior) has no other way to hold the response open
+      const out = (await h(sql, call)) ?? { rows: [{ ok: 1 }] };
       if ("status" in out && "body" in out) {
         return new Response(out.body, { status: out.status });
       }
