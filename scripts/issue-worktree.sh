@@ -66,10 +66,16 @@ else
     fi
     BRANCH_NAME="experiment/${TITLE_SLUG}"
 fi
-# Derive worktree prefix from the current repo name (works in any repo)
-REPO_NAME="$(basename "$(git rev-parse --show-toplevel)")"
+# Derive the worktree prefix from the MAIN checkout, not the current one — running
+# `is` from inside a worktree must not compound names (hedgy-gh-1-...-gh-2-...).
+GIT_COMMON_DIR="$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)"
+if [ -n "$GIT_COMMON_DIR" ]; then
+    MAIN_ROOT="$(dirname "$GIT_COMMON_DIR")"
+else
+    MAIN_ROOT="$(git rev-parse --show-toplevel)"
+fi
+REPO_NAME="$(basename "$MAIN_ROOT")"
 WORKTREE_NAME="${REPO_NAME}-${BRANCH_NAME//\//-}"
-WORKTREE_DIR="../$WORKTREE_NAME"
 
 if [ "$MODE" = "issue" ]; then
     echo "✅ Found: $ISSUE_TITLE"
@@ -92,30 +98,51 @@ else
     BASE_REF="$DEFAULT_BRANCH"
 fi
 
-# Get absolute path for worktree location
-PARENT_DIR="$(cd .. && pwd)"
+# Get absolute path for worktree location (sibling of the main checkout)
+PARENT_DIR="$(dirname "$MAIN_ROOT")"
 ABSOLUTE_WORKTREE_DIR="$PARENT_DIR/$WORKTREE_NAME"
+
+# Exact-match lookups against `git worktree list --porcelain` — substring greps
+# false-positive on nested/prefixed worktree paths.
+_iw_worktree_registered() {
+    git worktree list --porcelain | awk -v want="worktree $1" '$0 == want { found = 1 } END { exit !found }'
+}
+_iw_worktree_for_branch() {
+    git worktree list --porcelain | awk -v ref="branch refs/heads/$1" '
+        /^worktree /{ path = substr($0, 10) }
+        $0 == ref    { print path; exit }'
+}
+
+# A branch can only be checked out in one worktree. If it already lives somewhere
+# else (e.g. created under an older, compounded name), reuse that instead of failing.
+EXISTING_WORKTREE="$(_iw_worktree_for_branch "$BRANCH_NAME")"
+if [ -n "$EXISTING_WORKTREE" ] && [ "$EXISTING_WORKTREE" != "$ABSOLUTE_WORKTREE_DIR" ]; then
+    echo "🔁 Branch $BRANCH_NAME is already checked out at:"
+    echo "   $EXISTING_WORKTREE"
+    echo "   Using that worktree."
+    ABSOLUTE_WORKTREE_DIR="$EXISTING_WORKTREE"
+fi
 
 # Check if worktree already exists
 if [ -d "$ABSOLUTE_WORKTREE_DIR" ]; then
     echo "🔄 Worktree directory already exists at $ABSOLUTE_WORKTREE_DIR"
 
     # Check if it's registered as a worktree
-    if ! git worktree list | grep -q "$ABSOLUTE_WORKTREE_DIR"; then
+    if ! _iw_worktree_registered "$ABSOLUTE_WORKTREE_DIR"; then
         echo "Directory exists but not registered as worktree, adding it..."
         # Remove the directory and re-add as worktree
         rm -rf "$ABSOLUTE_WORKTREE_DIR"
         if git show-ref --verify --quiet refs/heads/$BRANCH_NAME; then
-            git worktree add "$ABSOLUTE_WORKTREE_DIR" "$BRANCH_NAME"
+            git worktree add "$ABSOLUTE_WORKTREE_DIR" "$BRANCH_NAME" || $BAIL 1
         else
-            git worktree add "$ABSOLUTE_WORKTREE_DIR" -b "$BRANCH_NAME" "$BASE_REF"
+            git worktree add "$ABSOLUTE_WORKTREE_DIR" -b "$BRANCH_NAME" "$BASE_REF" || $BAIL 1
         fi
     fi
 else
     echo "🌳 Creating worktree..."
 
     # Check if worktree is registered but directory is missing
-    if git worktree list | grep -q "$ABSOLUTE_WORKTREE_DIR"; then
+    if _iw_worktree_registered "$ABSOLUTE_WORKTREE_DIR"; then
         echo "Removing stale worktree registration..."
         git worktree remove "$ABSOLUTE_WORKTREE_DIR" --force 2>/dev/null || true
     fi
@@ -123,17 +150,17 @@ else
     # Check if branch already exists (local or remote)
     if git show-ref --verify --quiet refs/heads/$BRANCH_NAME; then
         echo "Using existing local branch $BRANCH_NAME..."
-        git worktree add "$ABSOLUTE_WORKTREE_DIR" "$BRANCH_NAME"
+        git worktree add "$ABSOLUTE_WORKTREE_DIR" "$BRANCH_NAME" || $BAIL 1
     elif git ls-remote --heads origin $BRANCH_NAME | grep -q .; then
         echo "Using remote branch origin/$BRANCH_NAME..."
-        git worktree add "$ABSOLUTE_WORKTREE_DIR" "origin/$BRANCH_NAME" -b "$BRANCH_NAME"
+        git worktree add "$ABSOLUTE_WORKTREE_DIR" "origin/$BRANCH_NAME" -b "$BRANCH_NAME" || $BAIL 1
     else
         echo "Creating new branch $BRANCH_NAME (from $BASE_REF)..."
-        git worktree add "$ABSOLUTE_WORKTREE_DIR" -b "$BRANCH_NAME" "$BASE_REF"
+        git worktree add "$ABSOLUTE_WORKTREE_DIR" -b "$BRANCH_NAME" "$BASE_REF" || $BAIL 1
     fi
 
-    # Copy env files
-    cp .env* "$ABSOLUTE_WORKTREE_DIR/" 2>/dev/null || true
+    # Copy env files from the main checkout
+    cp "$MAIN_ROOT"/.env* "$ABSOLUTE_WORKTREE_DIR/" 2>/dev/null || true
 fi
 
 # Auto-approve direnv and dotenv BEFORE changing directory
