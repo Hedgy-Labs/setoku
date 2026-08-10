@@ -30,7 +30,7 @@ import http from "node:http";
 import path from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 
-import { buildServer, type TokenRole } from "./app";
+import { buildServer, warmDiscoveryCaches, type TokenRole } from "./app";
 import { EmbedIndex } from "./lib/embed-index";
 import { DerivedSynonyms } from "./lib/derived-synonyms";
 import { loadConfig, resolveProjectDir, connectorName } from "./lib/config";
@@ -2604,6 +2604,10 @@ httpServer.listen(PORT, () => {
   console.error(
     `setoku gateway (http) listening on :${PORT} — ${tokens.size} token(s), project ${projectDir}`,
   );
+  // Warm the discovery caches (schema + derived event catalog). find_context's
+  // structural lookup is time-bounded, so a cold cache costs the pointer on the
+  // FIRST question after a deploy — the one most likely to be orienting.
+  void warmDiscoveryCaches(projectDir);
   // Announce a new deployed version once the box is actually serving it (issue
   // #63). Detached + best-effort; a no-op unless a notify webhook is configured.
   if (versionChanged) {

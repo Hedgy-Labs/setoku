@@ -57,6 +57,70 @@ export function queryTokens(question: string): string[] {
   return [...new Set(tokenize(question).filter((t) => !STOP.has(t)))];
 }
 
+/** Words that are ABOUT asking rather than about the business — dropped from
+ *  the coverage check ONLY (never from scoring, so retrieval behavior and the
+ *  eval baseline don't move). Two families: asking-words ("show me any data")
+ *  and time-words ("last month"), because a coverage warning is only worth
+ *  printing for a word that names a THING in the business. Over-reporting is
+ *  the failure mode that kills the signal — a warning on every well-covered
+ *  question trains the reader to skip it. */
+const META_STOP = new Set([
+  // the tool / the data itself
+  "setoku", "data", "database", "table", "tables", "column", "columns",
+  "query", "sql", "report", "dashboard",
+  // question scaffolding
+  "any", "some", "show", "list", "get", "give", "tell", "find", "look", "see",
+  "know", "need", "want", "make", "made", "did", "was", "were", "been",
+  "being", "can", "could", "would", "should", "there", "here", "from",
+  "about", "into", "over", "than", "then", "them", "they", "you", "your",
+  "me", "my", "us", "it", "its", "please", "yet", "still", "just", "actually",
+  "really",
+  // time words — a grain, never a subject
+  "now", "today", "yesterday", "hour", "hours", "day", "days", "week",
+  "weeks", "month", "months", "quarter", "year", "years", "date", "time",
+  "last", "latest", "recent", "recently", "current", "currently", "ago",
+  "since", "before", "after", "during", "between", "ever", "never",
+]);
+
+/** How many uncovered terms are worth naming. Past a handful the question was
+ *  simply phrased in words the store doesn't use, and the list stops informing. */
+const MAX_UNCOVERED = 6;
+
+/** Crude singular stem: a trailing "s" dropped from a word long enough that the
+ *  plural isn't the whole word ("views" → "view", "gross" stays). Used by the
+ *  coverage check and by catalog term-matching — never by scoring, which stays
+ *  exact so retrieval and the eval baseline are unchanged. */
+export function stemToken(t: string): string {
+  return t.length >= 5 && t.endsWith("s") && !t.endsWith("ss") ? t.slice(0, -1) : t;
+}
+
+/**
+ * The domain terms in a question that NONE of the given docs mention — the
+ * honest measure of whether retrieval actually covered what was asked.
+ *
+ * Retrieval always returns its top-k, so a question the store knows nothing
+ * about still comes back looking answered: docs that matched one incidental
+ * word, formatted exactly like a real hit. This is the signal that says
+ * otherwise. Plural-tolerant (a doc about "order" covers a question about
+ * "orders") but never synonym-expanded — a synonym match is a guess, and a
+ * false "we do cover that" is the one error this check must not make.
+ */
+export function uncoveredTerms(docs: ScorableDoc[], question: string): string[] {
+  const terms = queryTokens(question).filter((t) => !META_STOP.has(t));
+  if (!terms.length) return [];
+  const seen = new Set<string>();
+  for (const d of docs) {
+    const keywords = Array.isArray(d.meta.keywords)
+      ? d.meta.keywords.join(" ")
+      : String(d.meta.keywords ?? "");
+    for (const t of tokenize(
+      `${d.name} ${keywords} ${d.meta.summary ?? ""} ${d.meta.question ?? ""} ${d.meta.table ?? ""} ${d.body}`,
+    ))
+      seen.add(stemToken(t));
+  }
+  return terms.filter((t) => !seen.has(stemToken(t))).slice(0, MAX_UNCOVERED);
+}
+
 export interface ScoreOpts {
   /** Semantic-neighbor lookup (e.g. synonymsOf). When set, a query token with NO
    *  exact field hit falls back to its best-scoring neighbor, discounted. Pure
