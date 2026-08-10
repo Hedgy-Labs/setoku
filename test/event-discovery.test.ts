@@ -120,6 +120,24 @@ afterAll(async () => {
   if (tmpRepo) fs.rmSync(tmpRepo, { recursive: true, force: true });
 });
 
+describe("boot warm", () => {
+  it("fills the discovery caches before the first question arrives", async () => {
+    // find_context's structural lookup is time-bounded, so a COLD cache costs
+    // the pointer on the first question after a deploy. Verified on a real box
+    // before this warm existed: first call no pointer, every call after it had
+    // one. The gateway must pay that cost at boot, not the first user.
+    for (let i = 0; i < 40 && !lake.calls.some((c) => c.sql.includes("JSONExtractKeys")); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    expect(lake.calls.some((c) => c.sql.includes("JSONExtractKeys"))).toBe(true);
+    expect(lake.calls.some((c) => c.sql.includes("system.columns"))).toBe(true);
+    // warmed unrestricted: a session WITH source denies has a different cache
+    // key and still probes for itself, so this can't widen anyone's access
+    const warm = lake.calls.filter((c) => c.sql.includes("system.columns"));
+    expect(warm[0].roles).toEqual([]);
+  });
+});
+
 describe("derived event catalog", () => {
   it("get_schema names the events actually emitted, not just `properties String`", async () => {
     const c = await connect("tok-analyst");

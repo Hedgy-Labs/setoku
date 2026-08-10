@@ -128,9 +128,61 @@ const STRUCTURAL_WAIT_MS = 1_500;
 const DISCOVERY_WAIT_MS = 4_000;
 const structuralCache = new Map<string, { at: number; tables: StructuralTable[] }>();
 
+/** The queryable-schema probe. One definition, shared by the per-session
+ *  scopedSchema and the boot-time warm below, so the two can't drift. */
+const SCHEMA_COLUMNS_SQL =
+  "SELECT database, table, name, type FROM system.columns " +
+  "WHERE database IN ('biz','setoku') " +
+  "AND (database, table) NOT IN (('setoku','ingest_heartbeats'), ('setoku','pg_mirror_runs')) " +
+  "ORDER BY database, table, position";
+
 /** Test hook — drop the cached structural index. */
 export function clearStructuralCache(): void {
   structuralCache.clear();
+}
+
+/**
+ * Fill the discovery caches in the background at boot.
+ *
+ * find_context's structural lookup is bounded (STRUCTURAL_WAIT_MS) so a slow
+ * lake can't stall the opening tool of a conversation — which means a COLD
+ * cache silently costs the pointer. Verified on a real box: the first question
+ * after a deploy got no pointer, every one after it did. That first question is
+ * exactly when an agent is most likely to be orienting, so warm the caches once
+ * the box starts serving rather than making the first user pay for it.
+ *
+ * Unrestricted roles only (key `<lake>|`): a session with source denies has a
+ * different cache key and still probes for itself, so this can never widen what
+ * a restricted identity sees. Best-effort — a failure here costs one cold call.
+ */
+export async function warmDiscoveryCaches(projectDir: string): Promise<void> {
+  try {
+    const res = loadConfig(projectDir);
+    if (!res.ok) return;
+    const config = res.config;
+    const lake = resolveLakeUrl(projectDir, config);
+    if (!lake.ok) return;
+    const qopts = { rowCap: 200_000, statementTimeoutMs: config.statementTimeoutMs };
+    await Promise.all([
+      eventCatalog(lake.url, { statementTimeoutMs: config.statementTimeoutMs }, null),
+      (async () => {
+        const cols = await runLakeQuery(lake.url, SCHEMA_COLUMNS_SQL, qopts, {}, null);
+        const byTable = new Map<string, StructuralTable>();
+        for (const r of cols.rows as Array<Record<string, unknown>>) {
+          const key = `${r.database}.${r.table}`;
+          let t = byTable.get(key);
+          if (!t) {
+            t = { database: String(r.database), table: String(r.table), columns: [] };
+            byTable.set(key, t);
+          }
+          t.columns.push(String(r.name));
+        }
+        structuralCache.set(`${lake.url}|`, { at: Date.now(), tables: [...byTable.values()] });
+      })(),
+    ]);
+  } catch {
+    /* best effort — the first find_context just pays for it instead */
+  }
 }
 
 export function buildServer({
@@ -243,16 +295,7 @@ async function scopedSchema(): Promise<{
   // exceed a small row cap and silently drop trailing tables' columns — cap high.
   const qopts = { rowCap: 200_000, statementTimeoutMs: config.statementTimeoutMs };
   const roles = lakeRoles();
-  const res = await runLakeQuery(
-    lakeRes.url,
-    "SELECT database, table, name, type FROM system.columns " +
-      "WHERE database IN ('biz','setoku') " +
-      "AND (database, table) NOT IN (('setoku','ingest_heartbeats'), ('setoku','pg_mirror_runs')) " +
-      "ORDER BY database, table, position",
-    qopts,
-    {},
-    roles,
-  );
+  const res = await runLakeQuery(lakeRes.url, SCHEMA_COLUMNS_SQL, qopts, {}, roles);
   const byTable = new Map<string, SchemaTbl>();
   for (const r of res.rows as Array<Record<string, unknown>>) {
     const key = `${r.database}.${r.table}`;
