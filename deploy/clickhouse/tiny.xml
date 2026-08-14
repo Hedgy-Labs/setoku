@@ -1,0 +1,31 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Setoku ClickHouse preset: TINY (boxes under ~3.3 GB reported RAM).
+     `small` is tuned for 4-8 GB and hands ClickHouse 0.7×RAM. Below ~3.3 GB
+     that ratio claims memory the rest of the stack has already committed: the
+     gateway alone holds ~570 MB (the embedding runtime, not elastic), vector
+     peaks ~350 MB, and caddy + postgres + the pollers add ~300 MB.
+
+     So: halve the memory ceiling and the merge concurrency, and keep exactly
+     `small`'s knob set rather than inventing new ones.
+
+     Status, honestly: derived from measured peaks on the 4 GB box, NOT yet
+     soaked on a real 3 GB box the way `small` was (AC 2.3, 24 h seed-scale
+     with zero OOM kills). Treat the first 3 GB deployment as that soak. -->
+<clickhouse>
+    <!-- 0.5, not small's 0.7: on ~2.9 GB usable that's a ~1.45 GB ceiling,
+         which leaves room for the ~1.2 GB the rest of the stack needs. -->
+    <max_server_memory_usage_to_ram_ratio>0.5</max_server_memory_usage_to_ram_ratio>
+    <background_pool_size>2</background_pool_size>
+    <!-- must stay below background_pool_size or the startup sanity check
+         refuses to boot — the same rule small.xml calls out for its 4 slots -->
+    <merge_tree>
+        <number_of_free_entries_in_pool_to_execute_mutation>1</number_of_free_entries_in_pool_to_execute_mutation>
+        <number_of_free_entries_in_pool_to_lower_max_size_of_merge>1</number_of_free_entries_in_pool_to_lower_max_size_of_merge>
+        <number_of_free_entries_in_pool_to_execute_optimize_entire_partition>1</number_of_free_entries_in_pool_to_execute_optimize_entire_partition>
+    </merge_tree>
+    <background_schedule_pool_size>2</background_schedule_pool_size>
+    <background_buffer_flush_schedule_pool_size>2</background_buffer_flush_schedule_pool_size>
+    <mark_cache_size>134217728</mark_cache_size><!-- 128 MiB (small: 256 MiB) -->
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <max_concurrent_queries>8</max_concurrent_queries>
+</clickhouse>
