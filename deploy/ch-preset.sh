@@ -40,6 +40,10 @@ ch_preset_for_ram_mb() {
 ch_host_ram_mb() { free -m 2>/dev/null | awk '/^Mem:/{print $2}'; }
 
 # Executed directly (not sourced): print the preset for the given size, or this box's.
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+# BASH_SOURCE is unset when this file arrives on stdin (`bash -s < ch-preset.sh`,
+# how a remote apply feeds it over ssh), and callers run under `set -u` — so the
+# :- default is load-bearing, not defensive noise. Unset means "not a direct
+# run": define the functions and let the caller invoke them.
+if [ "${BASH_SOURCE[0]:-}" = "$0" ]; then
   ch_preset_for_ram_mb "${1:-$(ch_host_ram_mb)}"
 fi
