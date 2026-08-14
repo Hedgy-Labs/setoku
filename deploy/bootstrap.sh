@@ -14,8 +14,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source deploy/dc.sh # docker compose v2/v1 shim
+source deploy/ch-preset.sh # ch_preset_for_ram_mb: sizing from RAM, not guesswork
 
 log() { echo "[bootstrap] $*"; }
+
+RAM_MB="$(ch_host_ram_mb)"
 
 # 1. Docker -----------------------------------------------------------------
 if ! command -v docker >/dev/null; then
@@ -25,7 +28,39 @@ if ! command -v docker >/dev/null; then
   log "Docker installed. If the next step can't reach the daemon, log out/in once (group change) and re-run."
 fi
 
-# 2. Firewall (defense in depth; only Caddy's 80/443 + SSH) -----------------
+# 2. Swap (a cushion, not headroom) -----------------------------------------
+# A small box runs with no slack at exactly one moment: a rebuild on the box,
+# where an image build has to fit alongside the whole running stack. 2 GB of
+# swap turns that spike from an OOM kill into a slow minute. Boxes with real
+# headroom (≥ 8 GB) don't need it and don't get it.
+FSTYPE="$(findmnt -no FSTYPE / 2>/dev/null || echo unknown)"
+DISK_FREE_GB="$(df -BG --output=avail / 2>/dev/null | tail -n1 | tr -dc '0-9')"
+if [ -n "$(swapon --show 2>/dev/null)" ]; then
+  : # already has swap (a provider-supplied partition counts) — leave it alone
+elif [ "${RAM_MB:-0}" -ge 8000 ]; then
+  : # enough headroom that the build spike fits in RAM
+elif [ "$FSTYPE" != "ext4" ] && [ "$FSTYPE" != "xfs" ]; then
+  log "no swap, but / is $FSTYPE — swapfiles need filesystem-specific setup there; skipping"
+elif [ "${DISK_FREE_GB:-0}" -lt 8 ]; then
+  log "no swap, but only ${DISK_FREE_GB}G free on / — skipping (a swapfile needs room to spare)"
+else
+  log "no swap on a ${RAM_MB} MB box → creating a 2G /swapfile…"
+  # dd, not fallocate: swapon rejects a file with unwritten extents on ext4.
+  sudo dd if=/dev/zero of=/swapfile bs=1M count=2048 status=none
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile >/dev/null
+  sudo swapon /swapfile
+  grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+fi
+# Emergency cushion, not a routine paging target: the default swappiness of 60
+# pages out ClickHouse's and the gateway's anon pages just to grow page cache,
+# which is the wrong trade when the gateway is answering a tool call.
+if [ "$(cat /proc/sys/vm/swappiness 2>/dev/null || echo 10)" != "10" ]; then
+  echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-setoku-swap.conf >/dev/null
+  sudo sysctl -q -p /etc/sysctl.d/99-setoku-swap.conf
+fi
+
+# 3. Firewall (defense in depth; only Caddy's 80/443 + SSH) -----------------
 if command -v ufw >/dev/null; then
   log "firewall: allowing 22/80/443…"
   sudo ufw allow 22/tcp >/dev/null
@@ -35,8 +70,10 @@ if command -v ufw >/dev/null; then
   sudo ufw --force enable >/dev/null
 fi
 
-# 3. .env (generated once; secrets randomized) ------------------------------
+# 4. .env (generated once; secrets randomized) ------------------------------
 if [ ! -f .env ]; then
+  CH_PRESET="$(ch_preset_for_ram_mb "$RAM_MB")"
+  log "clickhouse preset: $CH_PRESET (${RAM_MB} MB box)"
   DOMAIN="${1:-}"
   if [ -z "$DOMAIN" ]; then
     IP="$(curl -fsS4 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')"
@@ -46,7 +83,7 @@ if [ ! -f .env ]; then
   gen() { openssl rand -hex 24; }
   umask 077
   # No SETOKU_TOKENS here: agent connectors are provisioned in the gateway's DB
-  # (step 5 creates the operator's), so they're rotatable/revocable at runtime.
+  # (step 6 creates the operator's), so they're rotatable/revocable at runtime.
   cat > .env <<EOF
 SETOKU_DOMAIN=$DOMAIN
 COMPOSE_PROFILES=lake,ingest
@@ -55,7 +92,7 @@ POSTGRES_PASSWORD=$(gen)
 CLICKHOUSE_USER=setoku
 CLICKHOUSE_PASSWORD=$(gen)
 CLICKHOUSE_RO_PASSWORD=$(gen)
-SETOKU_CH_PRESET=small
+SETOKU_CH_PRESET=$CH_PRESET
 SETOKU_HEALTHZ_PING=vector=http://vector:8686/health
 EOF
   # Second isolated stack on the same box (testing): persist the stack name and
@@ -72,10 +109,19 @@ EOF
   log "wrote .env (add SETOKU_DATABASE_URL if you want run_query against a business DB)"
 else
   log ".env exists — keeping it"
+  # Never silently reconfigure a box that's already running. Do say something if
+  # its RAM no longer matches the preset it was bootstrapped with (resized VPS,
+  # or a .env copied over from a bigger box).
+  WANT_PRESET="$(ch_preset_for_ram_mb "$RAM_MB")"
+  HAVE_PRESET="$(sed -n 's/^SETOKU_CH_PRESET=//p' .env | head -n1)"
+  if [ -n "$HAVE_PRESET" ] && [ "$HAVE_PRESET" != "$WANT_PRESET" ]; then
+    log "note: a ${RAM_MB} MB box would pick '$WANT_PRESET', .env says '$HAVE_PRESET'"
+    log "      (to switch: edit .env, then 'docker compose up -d --force-recreate clickhouse')"
+  fi
 fi
 set -a; source .env; set +a
 
-# 4. Bring up the stack -----------------------------------------------------
+# 5. Bring up the stack -----------------------------------------------------
 # Prefer the prebuilt gateway image (published by CI) — the box PULLS instead of
 # running bun install + baking the embed model on a small VPS. Fall back to an
 # on-box build only if the image can't be pulled (private/unpublished tag, air-gap).
@@ -89,7 +135,7 @@ else
 fi
 log "stack healthy."
 
-# 5. The operator: ONE person = your /admin login AND your agent connector ---
+# 6. The operator: ONE person = your /admin login AND your agent connector ---
 # (same identity for both — users and connectors are 1:1)
 ADMIN_LOGIN_MSG=""
 MCP_TOKEN=""
@@ -124,7 +170,7 @@ else
   fi
 fi
 
-# 6. Report -----------------------------------------------------------------
+# 7. Report -----------------------------------------------------------------
 # Legacy fallback: an old .env may still carry env-pinned SETOKU_TOKENS.
 [ -z "$MCP_TOKEN" ] && MCP_TOKEN="$(printf '%s' "${SETOKU_TOKENS:-}" | cut -d= -f1)"
 # Give this box a distinct connector name so a second box (a demo, another

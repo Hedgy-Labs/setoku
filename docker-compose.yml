@@ -162,7 +162,8 @@ services:
       CLICKHOUSE_DB: setoku
     volumes:
       - ch_data:/var/lib/clickhouse
-      # memory/concurrency preset: small (4–8 GB boxes) | roomy (24 GB prototype)
+      # memory/concurrency preset, picked from RAM by deploy/ch-preset.sh:
+      # tiny (under ~3.3 GB) | small (4–8 GB boxes) | roomy (12 GB and up)
       - ./deploy/clickhouse/${SETOKU_CH_PRESET:-small}.xml:/etc/clickhouse-server/config.d/zz-setoku-preset.xml:ro
       # rolling TTL on ClickHouse's own telemetry tables (system.*_log) so they
       # can't outgrow the lake — see deploy/clickhouse/system-logs.xml
