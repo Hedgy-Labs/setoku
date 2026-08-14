@@ -92,6 +92,31 @@ describe("ch-preset.sh", () => {
     }
   });
 
+  it("is safe to source from stdin under set -u", async () => {
+    // Regression: the direct-run guard read BASH_SOURCE[0], which is UNSET when
+    // the file arrives on stdin — the shape a remote apply uses to run the real
+    // bootstrap logic over ssh (`ssh box 'bash -s' < script`). Under the
+    // `set -euo pipefail` every caller here uses, that aborted the script.
+    const proc = Bun.spawn({
+      cmd: ["bash", "-s"],
+      stdin: new Blob([
+        `set -euo pipefail\n${fs.readFileSync(SCRIPT, "utf8")}\nch_preset_for_ram_mb 2900\n`,
+      ]),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [out, err, code] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    expect(err.trim()).toBe("");
+    expect(code).toBe(0);
+    // Exactly one line: arriving on stdin must NOT also trigger the direct-run
+    // branch, or a sourcing caller gets a stray preset on stdout.
+    expect(out.trim()).toBe("tiny");
+  });
+
   it("keeps tiny's merge-pool entries under its background_pool_size", () => {
     // ClickHouse's startup sanity check refuses to boot if a
     // number_of_free_entries_in_pool_to_* value is >= background_pool_size, so
