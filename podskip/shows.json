@@ -1,0 +1,14 @@
+{
+  "shows": [
+    {
+      "id": "pod-save-america",
+      "title": "Pod Save America",
+      "feed": "https://feeds.simplecast.com/dxZsm5kX"
+    },
+    {
+      "id": "the-daily",
+      "title": "The Daily",
+      "feed": "https://feeds.simplecast.com/54nAGcIl"
+    }
+  ]
+}

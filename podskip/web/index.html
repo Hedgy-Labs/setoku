@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PodSkip</title>
+<meta name="theme-color" content="#1c1917">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+<header class="top">
+  <h1>PodSkip</h1>
+  <span id="keys-warning" class="warn" hidden></span>
+</header>
+<main id="main"><p class="muted">Loading shows…</p></main>
+
+<div id="player" class="player" hidden>
+  <div class="p-title-row">
+    <img id="p-art" class="p-art" alt="" hidden>
+    <div class="p-titles">
+      <div id="p-episode" class="p-episode"></div>
+      <div id="p-meta" class="p-meta"></div>
+    </div>
+  </div>
+  <div class="seek-wrap">
+    <div id="seek" class="seek">
+      <div id="seek-fill" class="seek-fill"></div>
+      <div id="seek-ads"></div>
+    </div>
+    <div class="times"><span id="t-cur">0:00</span><span id="t-dur">–:––</span></div>
+  </div>
+  <div class="controls">
+    <button id="btn-back" class="ctl" aria-label="Back 15 seconds">↺15</button>
+    <button id="btn-play" class="ctl ctl-play" aria-label="Play/Pause">▶</button>
+    <button id="btn-fwd" class="ctl" aria-label="Forward 30 seconds">30↻</button>
+    <button id="btn-rate" class="ctl ctl-rate" aria-label="Playback speed">1×</button>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<audio id="audio" preload="metadata"></audio>
+<script src="/app.js"></script>
+</body>
+</html>
