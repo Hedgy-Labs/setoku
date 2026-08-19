@@ -987,25 +987,61 @@ const spendFreshRun = (appId: string, now: number): boolean => freshRuns.spend(a
 
 // Brute-force brake on the shared-password gate (issue #112). One shared secret
 // guards a public link, so the attempt RATE is what stands between a guesser and
-// the app — argon2id already makes each try expensive, this caps how many they
-// get. Keyed per APP (not per client: the box sits behind Caddy, so a client key
-// would come from a spoofable forwarded header, and per-app is the bound that
-// actually protects the secret). The cost of that choice is that a hammer can
-// make legitimate viewers wait ~20s for a retry slot — an acceptable trade for a
-// view-only gate, and one that can't lock anyone out permanently.
+// the app; argon2id makes each try expensive, this caps how many they get.
+//
+// Keyed per (app, CLIENT), not per app. A per-app bucket looked like the tighter
+// bound, but it hands anyone a denial of service: POST /p/<id>/unlock is a
+// CORS-simple request, so a script anywhere can hold one app's bucket empty
+// indefinitely and nobody with the right password ever gets in. Per client, a
+// flood only locks out the flooder. The client is the LAST X-Forwarded-For hop
+// (the one Caddy itself appended, so not viewer-supplied); the total work an app
+// can be made to do is bounded separately, by the concurrency gate below, which
+// is a queue rather than a lockout.
+//
 // A token is spent per attempt and REFUNDED on a match, so the brake only ever
-// bites guessing: forty people opening one link with the right password in the
-// same minute never hit it, while a wrong-password run is cut to ~3/min.
+// bites guessing: a link opened by a whole channel with the right password never
+// touches it, while a wrong-password run is cut to ~3/min per client.
 const UNLOCK_BURST = 10; // ten quick misses (a typo run, a password-manager retry)
 const UNLOCK_PER_SEC = 1 / 20; // then ~3/min sustained
 const unlockAttempts = tokenBucket(UNLOCK_BURST, UNLOCK_PER_SEC);
 
+/** Who is asking, for rate-limiting only. Caddy appends the peer it saw to
+ *  X-Forwarded-For, so the LAST entry is ours to trust; earlier ones are
+ *  viewer-supplied. Falls back to the socket for direct (dev/test) connections. */
+function unlockClient(req: http.IncomingMessage): string {
+  const hops = String(req.headers["x-forwarded-for"] ?? "")
+    .split(",")
+    .map((h) => h.trim())
+    .filter(Boolean);
+  return hops.at(-1) || req.socket.remoteAddress || "unknown";
+}
+
+// The unlock path is anonymous and floodable, and the audit table has no
+// retention, so writing a row per rejected attempt is a disk-growth hole on a
+// small box. Keep the signal, drop the volume: one row per app per minute per
+// event, carrying how many attempts it stands for.
+const UNLOCK_AUDIT_WINDOW_MS = 60_000;
+const unlockAudits = new Map<string, { last: number; suppressed: number }>();
+function auditUnlockFailure(action: "app_unlock_failed" | "app_unlock_throttled", id: string, now: number): void {
+  const key = `${action}:${id}`;
+  const w = unlockAudits.get(key);
+  if (w && now - w.last < UNLOCK_AUDIT_WINDOW_MS) {
+    w.suppressed++;
+    return;
+  }
+  store.audit("public", action, { id, ...(w?.suppressed ? { alsoInLastWindow: w.suppressed } : {}) });
+  unlockAudits.set(key, { last: now, suppressed: 0 });
+  if (unlockAudits.size > 512)
+    for (const [k, v] of unlockAudits) if (now - v.last > 5 * UNLOCK_AUDIT_WINDOW_MS) unlockAudits.delete(k);
+}
+
 // One argon2id verification holds ~64MB while it runs, so on a deliberately
 // small box a BURST of simultaneous attempts is a memory spike, not just CPU.
-// The bucket above caps the rate of GUESSES; this caps the memory peak, for
-// honest viewers included — so it QUEUES rather than refusing (a verify takes
-// ~100ms; a full queue drains in about a second). Only past the queue depth do
-// we shed load, which is the point where something is hammering us anyway.
+// The bucket above caps the rate of GUESSES per client; this caps the memory
+// peak for the whole box, honest viewers included — so it QUEUES rather than
+// refusing (a verify takes ~100ms; a full queue drains in about a second). Only
+// past the queue depth do we shed, and shedding clears the instant the flood
+// pauses, so unlike an emptied per-app bucket it can't hold anyone out.
 const MAX_CONCURRENT_UNLOCKS = 2;
 const MAX_QUEUED_UNLOCKS = 24;
 let unlocksInFlight = 0;
@@ -1477,7 +1513,17 @@ const httpServer = http.createServer(async (req, res) => {
       // granted, never a session or a tool (I9) — and it is checked HERE, ahead
       // of every sub-path, so /frame, /data and /state are as closed as the shell.
       // Everything below this block is reached only by an unlocked viewer.
-      const gatePath = `/p/${encodeURIComponent(id)}/unlock`;
+      // Carry the viewer's `?p.<name>=` selection through the gate so unlocking
+      // returns them to the link they were sent, not to the defaults. Rebuilt
+      // from the parsed params, so nothing viewer-supplied reaches the header raw.
+      const viewerQuery = ((): string => {
+        const q = new URLSearchParams();
+        for (const [k, v] of Object.entries(parseFrameParams(req.url))) q.set(`p.${k}`, v);
+        const str = q.toString();
+        return str ? `?${str}` : "";
+      })();
+      const appPath = `/p/${encodeURIComponent(id)}${viewerQuery}`;
+      const gatePath = `/p/${encodeURIComponent(id)}/unlock${viewerQuery}`;
       const gatePage = (status: number, error?: string): void => {
         res.writeHead(status, {
           "content-type": "text/html; charset=utf-8",
@@ -1493,36 +1539,44 @@ const httpServer = http.createServer(async (req, res) => {
       if (sub === "unlock") {
         // The one sub-path a locked viewer may reach. POST-only: the password
         // must never ride in a URL (referrer, history, proxy logs).
-        if (!meta.hasPassword || req.method !== "POST") return notFound();
-        if (!unlockAttempts.spend(id, Date.now())) {
-          store.audit("public", "app_unlock_throttled", { id });
+        if (req.method !== "POST") return notFound();
+        // The password came off while they sat on the gate: send them to the app
+        // they were trying to open, not to a bare "not found".
+        if (!meta.hasPassword) {
+          res.writeHead(302, { location: appPath, "cache-control": "no-store", "referrer-policy": "no-referrer" });
+          res.end();
+          return;
+        }
+        const client = `${id}|${unlockClient(req)}`;
+        if (!unlockAttempts.spend(client, Date.now())) {
+          auditUnlockFailure("app_unlock_throttled", id, Date.now());
           return gatePage(429, "Too many attempts on this link. Wait a moment and try again.");
         }
         let supplied = "";
         try {
           supplied = parseUnlockForm(await readTextBody(req, 4096));
         } catch {
-          unlockAttempts.refund(id);
+          unlockAttempts.refund(client);
           return gatePage(400, "Couldn’t read that. Try again.");
         }
         const slot = await withUnlockSlot(() => verifyPassword(supplied, store.appPasswordHash(id)));
         if (!slot) {
-          unlockAttempts.refund(id); // never verified — don't charge for our own backlog
+          unlockAttempts.refund(client); // never verified — don't charge for our own backlog
           return gatePage(429, "Busy checking other attempts. Try again in a moment.");
         }
         if (!slot.value) {
-          store.audit("public", "app_unlock_failed", { id });
+          auditUnlockFailure("app_unlock_failed", id, Date.now());
           return gatePage(401, "That password didn’t work.");
         }
         // A correct password isn't what the brake is for — hand the token back so
         // a link shared with a whole channel doesn't throttle its own audience.
-        unlockAttempts.refund(id);
+        unlockAttempts.refund(client);
         const token = mintAppAccessToken();
         store.grantAppAccess(token, id, Date.now() + APP_ACCESS_TTL_MS);
         store.audit("public", "app_unlocked", { id });
         // PRG: redirect to the app itself so a reload doesn't re-post the form.
         res.writeHead(302, {
-          location: `/p/${encodeURIComponent(id)}`,
+          location: appPath,
           "set-cookie": appAccessSetCookie(id, token),
           "cache-control": "no-store",
           "referrer-policy": "no-referrer",

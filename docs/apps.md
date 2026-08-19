@@ -192,12 +192,19 @@ the plaintext never touches disk or a log).
 - The grant is **server-side, not a signed cookie**, so changing or clearing the
   password (or pulling the app back to team-only, or archiving it) revokes every
   outstanding one on the next request.
-- Attempts are rate-limited per app (10 burst, then ~3/min) on top of argon2id's
-  own cost, and no more than 2 verifications run at once (each argon2id pass
-  holds ~64MB — on a small box a simultaneous burst is a memory spike, not just
-  CPU). The rate limit is per *app*, not per client: the box sits behind Caddy,
-  so a client key would come from a spoofable header. The cost is that a hammer
-  can make real viewers wait ~20s for a slot — acceptable for a view-only gate.
+- Attempts are rate-limited per (app, **client**), 10 burst then ~3/min, on top
+  of argon2id's own cost, and a token is refunded on a correct password, so the
+  brake only bites guessing. Per client, not per app: `POST /p/<id>/unlock` is a
+  CORS-simple request, so a per-app bucket could be held empty from anywhere and
+  nobody with the right password would ever get in. The client is the last
+  `X-Forwarded-For` hop (the one Caddy appended, so not viewer-supplied). The
+  total work one app can be made to do is bounded instead by a concurrency gate:
+  at most 2 verifications at once (each argon2id pass holds ~64MB, a memory
+  spike on a small box), a short queue behind it, load shed past that. Shedding
+  clears the moment the flood pauses, so it can't hold anyone out.
+- Rejected attempts are audited at most once per app per minute, carrying how
+  many they stand for: the audit table has no retention and this path is
+  anonymous and floodable.
 - Protected pages are served `Cache-Control: no-store`.
 
 **It is a viewing gate, not an identity.** There is no account, no per-person

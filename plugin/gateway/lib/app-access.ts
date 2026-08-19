@@ -35,12 +35,20 @@ const COOKIE = "setoku_app";
 // (browsers drop Secure cookies on http://localhost, which would loop the gate).
 const secureAttr = (): string => (process.env.SETOKU_COOKIE_INSECURE === "1" ? "" : " Secure;");
 
-/** Read the unlock grant for the app being served from a Cookie header. */
+/** Read the unlock grant for the app being served from a Cookie header. A value
+ *  that doesn't decode (a corrupted or planted `setoku_app=%`) reads as NO grant:
+ *  decodeURIComponent throws on a bad escape, and letting that escape would 500
+ *  every request for the app with no way to clear the cookie from the page. */
 export function appAccessCookie(cookieHeader: string | undefined): string | undefined {
   if (!cookieHeader) return undefined;
   for (const part of cookieHeader.split(";")) {
     const [k, ...v] = part.trim().split("=");
-    if (k === COOKIE) return decodeURIComponent(v.join("="));
+    if (k !== COOKIE) continue;
+    try {
+      return decodeURIComponent(v.join("="));
+    } catch {
+      return undefined;
+    }
   }
   return undefined;
 }

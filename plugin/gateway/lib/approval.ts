@@ -138,12 +138,18 @@ export class SessionStore {
 
 const COOKIE = "setoku_session";
 
-/** Read the session id from a Cookie header. */
+/** Read the session id from a Cookie header. An undecodable value reads as no
+ *  cookie (fails closed to signed-out) rather than throwing out of the request. */
 export function sessionIdFromCookie(cookieHeader: string | undefined): string | undefined {
   if (!cookieHeader) return undefined;
   for (const part of cookieHeader.split(";")) {
     const [k, ...v] = part.trim().split("=");
-    if (k === COOKIE) return decodeURIComponent(v.join("="));
+    if (k !== COOKIE) continue;
+    try {
+      return decodeURIComponent(v.join("="));
+    } catch {
+      return undefined;
+    }
   }
   return undefined;
 }

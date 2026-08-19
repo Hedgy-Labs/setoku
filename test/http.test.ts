@@ -1136,6 +1136,16 @@ describe("live apps (end-to-end render path)", () => {
     const body = (await r.json()) as { csrf: string };
     return { cookie: setCookie.split(";")[0], csrf: body.csrf };
   }
+  // Post a password to an app's unlock gate. `client` rides in X-Forwarded-For,
+  // which is where the rate limiter reads the caller from (in production Caddy
+  // appends the real peer as the last hop).
+  const unlock = (appId: string, password: string, client = "198.51.100.1", query = ""): Promise<Response> =>
+    fetch(`${BASE}/p/${appId}/unlock${query}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", "x-forwarded-for": client },
+      body: new URLSearchParams({ password }).toString(),
+      redirect: "manual",
+    });
   const countIn = (html: string): number | null => {
     // count(*) can come back as a quoted string (ClickHouse serializes UInt64
     // as a JSON string) — accept either.
@@ -1293,13 +1303,6 @@ describe("live apps (end-to-end render path)", () => {
   }, 20_000);
 
   it("password-protects a public link: the gate stands in front of every /p path and a changed password revokes it", async () => {
-    const unlock = (appId: string, password: string): Promise<Response> =>
-      fetch(`${BASE}/p/${appId}/unlock`, {
-        method: "POST",
-        headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ password }).toString(),
-        redirect: "manual",
-      });
     const publishApp = async (title: string): Promise<string> => {
       const alice = await connect("tok-alice");
       const pub = await call(alice, "publish_app", {
@@ -1382,6 +1385,13 @@ describe("live apps (end-to-end render path)", () => {
     const regrant = await unlock(id, "another-secret");
     expect(regrant.status).toBe(302);
 
+    // 7a. A flood from one client must not lock the link for everyone else: the
+    //     brake is keyed per (app, client) and a correct password refunds its
+    //     token, so a wrong-password run from one address never spends another's.
+    for (let i = 0; i < 12; i++) await unlock(id, `wrong-${i}`, "203.0.113.9");
+    expect((await unlock(id, "wrong-again", "203.0.113.9")).status).toBe(429); // that client is out
+    expect((await unlock(id, "another-secret", "198.51.100.4")).status).toBe(302); // everyone else is fine
+
     // 7b. A live tab whose grant just died must be pushed back to the prompt, not
     //     shown raw JSON: the frame answers with a beacon the shell listens for.
     const deadFrame = await fetch(`${BASE}/p/${id}/frame`, { headers: { cookie: jar } });
@@ -1433,6 +1443,24 @@ describe("live apps (end-to-end render path)", () => {
     // A non-string password is a caller bug, not "take the gate off".
     const bogus = await share({ id, visibility: "public", password: 12345678 });
     expect(bogus.status).toBe(400);
+
+    // Unlocking returns the viewer to the link they were SENT (its `?p.` values
+    // ride through the gate), not to the app's defaults.
+    expect((await share({ id, visibility: "public", password: "long-enough-secret" })).status).toBe(200);
+    const gated = await fetch(`${BASE}/p/${id}?p.region=west`);
+    expect(await gated.text()).toContain(`action="/p/${id}/unlock?p.region=west"`);
+    const returned = await unlock(id, "long-enough-secret", "198.51.100.7", "?p.region=west");
+    expect(returned.headers.get("location")).toBe(`/p/${id}?p.region=west`);
+
+    // If the password comes off while someone sits on the gate, submitting it
+    // lands them on the app rather than a bare "not found".
+    expect((await share({ id, visibility: "public", password: null })).status).toBe(200);
+    const late = await unlock(id, "long-enough-secret", "198.51.100.8");
+    expect(late.status).toBe(302);
+    expect(late.headers.get("location")).toBe(`/p/${id}`);
+
+    expect((await share({ id, visibility: "public", password: "long-enough-secret" })).status).toBe(200);
+    expect((await share({ id, visibility: "team" })).status).toBe(200);
 
     // Re-publishing must NOT silently drop the gate the link had last time.
     const back = await share({ id, visibility: "public" });
