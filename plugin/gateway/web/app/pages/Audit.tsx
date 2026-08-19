@@ -10,7 +10,7 @@ export function Audit() {
   return (
     <>
       <Heading title="Audit log">
-        Who did what on this box — sign-ins, agent tool calls, approvals, team and app changes.
+        Who did what on this box: sign-ins, agent tool calls, approvals, team and app changes.
         Append-only; newest first.
       </Heading>
       {loading ? (

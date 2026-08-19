@@ -59,7 +59,7 @@ Once your AI can read and _understand_ the data, the natural next step is buildi
 
 - **Backed by live data, read-only.** Apps query through the exact same governed path as everything else — row caps, audit, a SELECT-only engine role. An app never gets write access to your sources.
 - **Their own private state.** Each app keeps its own state — todos, poll tallies, notes, annotations — in a sandbox that belongs to the _app_, not your database. So an app can be genuinely interactive (and a prompt-injected one still can't touch your data; worst case it messes up its own notes). The useful trick: tag a business row by its id to mark it "reviewed" or attach a note, an overlay on top of read-only data without ever writing the source.
-- **Shareable by link.** A team link is login-gated; an admin can flip one public for a credential-free URL. The page runs in a locked-down, no-network sandbox, so a published app can't phone home.
+- **Shareable by link.** A team link is login-gated; an admin can flip one public for a credential-free URL, optionally behind a shared password. The page runs in a locked-down, no-network sandbox, so a published app can't phone home.
 
 ## Why we built it
 

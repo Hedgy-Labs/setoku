@@ -78,13 +78,13 @@ export function Review() {
     <>
       <Heading title="Knowledge">
         Knowledge your agents proposed, waiting on a human. Each proposal is shown as a finished,
-        ready-to-approve change — approving commits it to curated knowledge, and that click is the only
+        ready-to-approve change. Approving commits it to curated knowledge, and that click is the only
         path in: agents can only propose.
       </Heading>
       <KnowledgeTabs pending={data?.length} />
       {!mayApprove ? (
         <div className="mb-4 rounded-lg border border-stone-300 bg-stone-100 px-3 py-2 text-sm text-stone-600">
-          You are signed in as a <b className="text-stone-800">member</b> — viewing only. Ask an admin to
+          You are signed in as a <b className="text-stone-800">member</b>, so you’re viewing only. Ask an admin to
           approve.
         </div>
       ) : null}
@@ -156,7 +156,7 @@ function ReviewCard({
       <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 p-3">
         <div className="mb-2 flex items-center justify-between">
           <div className="text-xs font-medium uppercase tracking-wide text-stone-500">
-            {hasServerDraft || c.kind === "gotcha" ? "Drafted change — commits on approve" : "No draft yet"}
+            {hasServerDraft || c.kind === "gotcha" ? "Drafted change (commits on approve)" : "No draft yet"}
             {c.draftedBy ? <span className="ml-1 font-normal normal-case text-stone-400">by {c.draftedBy}</span> : null}
           </div>
           {mayApprove && !editing ? (

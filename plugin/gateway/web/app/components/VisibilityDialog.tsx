@@ -2,47 +2,117 @@
 import { AlertDialog } from "@base-ui-components/react/alert-dialog";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../cn";
+import { MIN_PASSWORD_LENGTH } from "../types";
 
 type Vis = "team" | "public";
 
-/** A Google-Docs-style visibility picker: one dialog, opened from the badge in
- *  either state, listing Team and Public with the current one marked. The radio
- *  is a LOCAL selection — nothing changes until Save (so a mis-click can't expose
- *  an app), and Save is focused on open so Enter submits. Promoting to Public is
- *  admin-only (I9): the Public row is disabled for non-admins. */
+/**
+ * The sharing picker. Two questions, in the order a person thinks about them:
+ * WHO can open it (Team or Public, the same two words the app's badge shows),
+ * and then, only once it's public, whether a password stands in front of the
+ * link. That mirrors the data model
+ * (visibility + an optional password) instead of flattening it into three
+ * look-alike rows, and it keeps both audience rows the same height so the dialog
+ * doesn't lurch when you pick one.
+ *
+ * Everything is a LOCAL edit until Save (so a mis-click can't expose an app),
+ * and Save is focused on open so Enter submits. Exposing an app is admin-only
+ * (I9), as is taking a password back OFF a live link; adding or changing one
+ * only narrows access, so the app's author can do that themselves.
+ */
 export function VisibilityDialog({
   open,
   visibility,
+  hasPassword,
   canMakePublic,
   onSubmit,
   onClose,
 }: {
   open: boolean;
   visibility: Vis;
-  /** Admin — may choose Public. */
+  /** A password is stored: guarding the link while public, dormant while team. */
+  hasPassword: boolean;
+  /** Admin: may expose an app, and may take a password back off a public one. */
   canMakePublic: boolean;
-  /** Called with the chosen value ONLY when it differs from the current one. */
-  onSubmit: (next: Vis) => void;
+  /** Called with the chosen visibility and the password change, only when
+   *  something actually differs: `undefined` leaves any stored password alone,
+   *  a string sets it, null removes it. */
+  onSubmit: (next: Vis, password?: string | null) => void;
   onClose: () => void;
 }) {
-  const [sel, setSel] = useState<Vis>(visibility);
-  // Reset the pending selection to the live value each time the dialog opens.
+  const [vis, setVis] = useState<Vis>(visibility);
+  const [locked, setLocked] = useState(hasPassword);
+  // Replacing a password that already exists is a deliberate act, so the field
+  // stays out of the way behind "Change" until it's asked for. Without this the
+  // common case (password set, not changing it) shows an empty box that has to
+  // explain itself with "leave blank to keep the current one".
+  const [changing, setChanging] = useState(false);
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  // Reset the pending edit to the live state each time the dialog opens.
   useEffect(() => {
-    if (open) setSel(visibility);
-  }, [open, visibility]);
+    if (open) {
+      setVis(visibility);
+      setLocked(hasPassword);
+      setChanging(false);
+      setPw("");
+      setError(null);
+    }
+  }, [open, visibility, hasPassword]);
   const saveRef = useRef<HTMLButtonElement>(null);
-  const submit = (): void => (sel === visibility ? onClose() : onSubmit(sel));
 
-  const Option = ({ value, label, desc, disabled }: { value: Vis; label: string; desc: string; disabled?: boolean }) => {
-    const checked = sel === value;
-    const current = visibility === value;
+  /** Back to what the app actually is. Leaving Public hides this whole section,
+   *  so anything half-done in it (a field opened by "Change", a typed password,
+   *  an unticked box) must not survive the detour and reappear on the way back:
+   *  a pending "remove the password" that outlives a trip through Team is a
+   *  fail-open surprise, and a still-open field is just stale. */
+  const resetPassword = (): void => {
+    setLocked(hasPassword);
+    setChanging(false);
+    setPw("");
+  };
+
+  const isPublic = visibility === "public";
+  // The field is shown when there's no password to keep, or when they asked to
+  // replace the one there is.
+  const showField = locked && (!hasPassword || changing);
+  // A non-admin may not publish an app, and may not unlock one that is already
+  // out there. Adding a password to their own live link is theirs to do.
+  const mayPublish = canMakePublic || isPublic;
+  const mayUnlock = canMakePublic || !hasPassword;
+
+  const submit = (): void => {
+    // The password only means anything on a link. A team app keeps any stored
+    // one dormant, so a later re-publish can't silently drop the gate.
+    const wantsLock = vis === "public" ? locked : hasPassword;
+    // Each message says the ONE thing that's wrong; it lands where the helper
+    // line was, right under the field, so nothing shifts and nothing repeats.
+    if (wantsLock && !pw && !hasPassword) {
+      setError("Enter a password.");
+      return;
+    }
+    if (pw && pw.length < MIN_PASSWORD_LENGTH) {
+      setError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
+      return;
+    }
+    const password = wantsLock ? pw || undefined : hasPassword ? null : undefined;
+    if (vis === visibility && password === undefined) return onClose(); // nothing changed
+    onSubmit(vis, password);
+  };
+
+  const Audience = ({ value, label, desc, disabled, note }: { value: Vis; label: string; desc: string; disabled?: boolean; note?: string }) => {
+    const checked = vis === value;
     return (
       <button
         type="button"
         role="radio"
         aria-checked={checked}
         disabled={disabled}
-        onClick={() => setSel(value)}
+        onClick={() => {
+          setVis(value);
+          if (value !== "public") resetPassword();
+          setError(null);
+        }}
         className={cn(
           "flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition",
           checked ? "border-stone-400 bg-stone-50" : "border-stone-200 hover:bg-stone-50",
@@ -60,12 +130,9 @@ export function VisibilityDialog({
         <span className="min-w-0">
           <span className="flex items-center gap-2 text-sm font-medium text-stone-900">
             {label}
-            {current ? <span className="text-xs font-normal text-stone-400">Current</span> : null}
+            {visibility === value ? <span className="text-xs font-normal text-stone-400">Current</span> : null}
           </span>
-          <span className="mt-0.5 block text-xs text-stone-500">
-            {desc}
-            {disabled ? " Only an admin can make an app public." : ""}
-          </span>
+          <span className="mt-0.5 block text-xs text-stone-500">{disabled && note ? note : desc}</span>
         </span>
       </button>
     );
@@ -78,9 +145,8 @@ export function VisibilityDialog({
         <AlertDialog.Popup
           className="fixed left-1/2 top-1/2 z-50 w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-stone-200 bg-white p-5 shadow-xl"
           // Focus Save on open, and let Enter submit from ANYWHERE in the dialog
-          // (radio, Save, or dead space) — not just when Save has focus. Enter on
-          // Cancel still cancels; preventDefault stops Enter from also re-clicking a
-          // focused radio.
+          // (radio, field, Save, or dead space). Enter on Cancel still cancels;
+          // preventDefault stops Enter from also re-clicking a focused radio.
           initialFocus={saveRef}
           onKeyDown={(e) => {
             if (e.key !== "Enter") return;
@@ -91,16 +157,101 @@ export function VisibilityDialog({
         >
           <AlertDialog.Title className="text-base font-semibold text-stone-900">Who can see this?</AlertDialog.Title>
           <AlertDialog.Description className="sr-only">Choose who can open this app, then Save.</AlertDialog.Description>
-          <div role="radiogroup" aria-label="Visibility" className="mt-3 space-y-2">
-            <Option value="team" label="Team" desc="Anyone signed in to the box can open it." />
-            <Option
+          <div role="radiogroup" aria-label="Who can see this" className="mt-3 space-y-2">
+            {/* Labels are the same two words the app's badge shows ("team" /
+                "public"); the audience each one means is the description. */}
+            <Audience value="team" label="Team" desc="Anyone signed in to this box." />
+            <Audience
               value="public"
               label="Public"
-              desc="Anyone with the link can open it, no sign-in."
-              disabled={!canMakePublic}
+              desc="Anyone with the link, no sign-in."
+              disabled={!mayPublish}
+              note="Anyone with the link. Only an admin can make an app public."
             />
           </div>
-          <div className="mt-4 flex justify-end gap-2">
+
+          {/* The password rides on the LINK, so it only appears once the link is
+              the audience. A hairline rather than another nested card: one box
+              inside the dialog is enough. */}
+          {vis === "public" ? (
+            // pl matches the audience rows' inner offset (1px border + px-3), so
+            // the checkbox lands in the same column as the radios above it.
+            <div className="mt-4 border-t border-stone-200 pt-4 pl-[13px]">
+              {/* "Change" sits right after the words it acts on. Pushed to the
+                  far edge it binds to nothing, and lands directly over
+                  Cancel/Save, where it reads as a third dialog action. */}
+              <div className="flex items-center gap-3">
+                <label className={cn("flex items-center gap-2.5 text-sm text-stone-900", !mayUnlock && "opacity-60")}>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 shrink-0 accent-stone-800"
+                    checked={locked}
+                    disabled={!mayUnlock}
+                    onChange={(e) => {
+                      setLocked(e.target.checked);
+                      setChanging(false);
+                      setPw("");
+                      setError(null);
+                    }}
+                  />
+                  Require a password
+                </label>
+                {/* Stone, not the usual link blue: gateway chrome carries no
+                    accent of its own (that belongs to the user's apps). */}
+                {locked && hasPassword && !changing ? (
+                  <button
+                    type="button"
+                    onClick={() => setChanging(true)}
+                    className="shrink-0 text-xs font-medium text-stone-500 underline decoration-stone-300 underline-offset-2 hover:text-stone-800 hover:decoration-stone-500"
+                  >
+                    Change
+                  </button>
+                ) : null}
+              </div>
+              {showField ? (
+                // Flush left with the checkbox: one left edge for the section,
+                // rather than a field straddling the label column and the card edge.
+                <div className="mt-2.5">
+                  <input
+                    className={cn("input", error && "border-red-400 focus:border-red-500 focus:ring-red-500/20")}
+                    type="password"
+                    value={pw}
+                    autoComplete="new-password"
+                    aria-invalid={!!error}
+                    aria-describedby="app-password-hint"
+                    onChange={(e) => {
+                      setPw(e.target.value);
+                      setError(null);
+                    }}
+                    autoFocus={changing}
+                    placeholder={`${hasPassword ? "new " : ""}password (${MIN_PASSWORD_LENGTH}+ characters)`}
+                  />
+                  {/* One slot: the hint becomes the error, so a rejected save
+                      corrects the line you were just reading instead of adding a
+                      third one further down the dialog. */}
+                  <p
+                    id="app-password-hint"
+                    role={error ? "alert" : undefined}
+                    className={cn("mt-1.5 text-xs", error ? "text-red-700" : "text-stone-500")}
+                  >
+                    {error
+                      ? error
+                      : hasPassword
+                        ? "Anyone who already unlocked the link has to enter it again."
+                        : "One password for everyone with the link. Share it separately from the link itself."}
+                  </p>
+                </div>
+              ) : !mayUnlock ? (
+                <p className="mt-1.5 text-xs text-stone-500">Only an admin can take the password off a live link.</p>
+              ) : null}
+            </div>
+          ) : null}
+          {/* A team app can still hold a stored password (kept dormant so a later
+              re-publish can't come back wide open). We don't narrate that here:
+              picking Public shows "Require a password" already checked, which is
+              the same fact stated by the control that acts on it. */}
+
+          <div className="mt-5 flex justify-end gap-2">
             <AlertDialog.Close data-role="cancel" className="btn btn-ghost">
               Cancel
             </AlertDialog.Close>

@@ -170,6 +170,10 @@ export interface PublishedMeta {
   panels: AppPanel[] | null;
   refreshSeconds: number | null;
   visibility: ReportVisibility;
+  /** A shared password is stored for this app. On a public app it guards the
+   *  link (the link alone isn't enough); on a team app it's dormant — kept so a
+   *  later re-publish can't silently drop the gate the link had before. */
+  hasPassword: boolean;
   createdBy: string;
   createdAt: string;
   archivedAt: string | null;
@@ -220,6 +224,9 @@ export interface AppData {
   title: string;
   format: "html" | "app";
   visibility: ReportVisibility;
+  /** A shared password is stored for this app — guarding the link while public,
+   *  dormant while team-only. */
+  hasPassword: boolean;
   refreshSeconds: number | null;
   params: AppParam[];
   createdBy: string;

@@ -111,7 +111,7 @@ export function Layout() {
         onClose={() => setPwOpen(false)}
         onChanged={() => {
           setPwOpen(false);
-          toast("Password changed — your other sessions were signed out.");
+          toast("Password changed. Your other sessions were signed out.");
         }}
       />
     </>

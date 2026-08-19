@@ -1136,6 +1136,16 @@ describe("live apps (end-to-end render path)", () => {
     const body = (await r.json()) as { csrf: string };
     return { cookie: setCookie.split(";")[0], csrf: body.csrf };
   }
+  // Post a password to an app's unlock gate. `client` rides in X-Forwarded-For,
+  // which is where the rate limiter reads the caller from (in production Caddy
+  // appends the real peer as the last hop).
+  const unlock = (appId: string, password: string, client = "198.51.100.1", query = ""): Promise<Response> =>
+    fetch(`${BASE}/p/${appId}/unlock${query}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", "x-forwarded-for": client },
+      body: new URLSearchParams({ password }).toString(),
+      redirect: "manual",
+    });
   const countIn = (html: string): number | null => {
     // count(*) can come back as a quoted string (ClickHouse serializes UInt64
     // as a JSON string) — accept either.
@@ -1290,6 +1300,173 @@ describe("live apps (end-to-end render path)", () => {
     });
     expect(okp.status).toBe(200);
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200);
+  }, 20_000);
+
+  it("password-protects a public link: the gate stands in front of every /p path and a changed password revokes it", async () => {
+    const publishApp = async (title: string): Promise<string> => {
+      const alice = await connect("tok-alice");
+      const pub = await call(alice, "publish_app", {
+        title,
+        html: '<div id="n"></div><script>document.getElementById("n").textContent=window.__SETOKU__.panels.paid.rows[0].n</script>',
+        panels: [{ key: "paid", sql: "SELECT count(*) AS n FROM biz.orders WHERE status = 'paid'" }],
+      });
+      await alice.close();
+      const appId = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
+      expect(appId).toBeTruthy();
+      return appId;
+    };
+
+    const id = await publishApp("Board numbers");
+    const boss = await session("boss", "s3cret-pass");
+    const share = (body: unknown, who = boss): Promise<Response> =>
+      fetch(`${BASE}/admin/api/set_visibility`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: who.cookie, "x-csrf-token": who.csrf },
+        body: JSON.stringify(body),
+      });
+
+    // Publishing publicly AND setting the password is ONE call, so the link is
+    // never briefly live-and-open on the way to protected.
+    expect((await share({ id, visibility: "public", password: "correct-horse" })).status).toBe(200);
+
+    // 1. The link serves the gate, not the app.
+    const gate = await fetch(`${BASE}/p/${id}`);
+    expect(gate.status).toBe(200);
+    const gateHtml = await gate.text();
+    expect(gateHtml).toContain("password-protected");
+    expect(gateHtml).not.toContain("<iframe"); // no app content leaks with the prompt
+    expect(gate.headers.get("cache-control")).toBe("no-store");
+
+    // 2. Every sub-path is closed too — the gate isn't just on the shell.
+    for (const sub of ["frame", "data", "state"])
+      expect((await fetch(`${BASE}/p/${id}/${sub}`)).status).toBe(401);
+    const blindWrite = await fetch(`${BASE}/p/${id}/state`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ op: "set", scope: "app", key: "k", value: 1 }),
+    });
+    expect(blindWrite.status).toBe(401);
+
+    // 3. A wrong password opens nothing and mints no cookie.
+    const bad = await unlock(id, "not-the-password");
+    expect(bad.status).toBe(401);
+    expect(bad.headers.get("set-cookie")).toBeNull();
+
+    // 4. The right one mints a grant scoped to THIS app's path.
+    const good = await unlock(id, "correct-horse");
+    expect(good.status).toBe(302);
+    expect(good.headers.get("location")).toBe(`/p/${id}`);
+    const setCookie = good.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain(`Path=/p/${id}`);
+    const jar = setCookie.split(";")[0];
+
+    // 5. With the grant, the real app serves — and never sits in a cache.
+    const opened = await (await fetch(`${BASE}/p/${id}`, { headers: { cookie: jar } })).text();
+    expect(opened).toContain("<iframe");
+    // …and the shell's own polls carry the grant (the credential-free default
+    // would 401 its /data and /state calls behind the gate).
+    expect(opened).toContain('"creds":"same-origin"');
+    expect((await fetch(`${BASE}/p/${id}/data`, { headers: { cookie: jar } })).status).toBe(200);
+    const frame = await fetch(`${BASE}/p/${id}/frame`, { headers: { cookie: jar } });
+    expect(frame.status).toBe(200);
+    expect(await frame.text()).toContain("window.__SETOKU__");
+    expect(frame.headers.get("cache-control")).toBe("no-store");
+
+    // 6. A grant is bound to one app server-side — it can't open a different one.
+    const other = await publishApp("Other protected app");
+    expect((await share({ id: other, visibility: "public", password: "correct-horse" })).status).toBe(200);
+    expect((await fetch(`${BASE}/p/${other}/frame`, { headers: { cookie: jar } })).status).toBe(401);
+
+    // 7. Changing the password revokes every outstanding grant immediately.
+    expect((await share({ id, visibility: "public", password: "another-secret" })).status).toBe(200);
+    expect((await fetch(`${BASE}/p/${id}/frame`, { headers: { cookie: jar } })).status).toBe(401);
+    expect((await unlock(id, "correct-horse")).status).toBe(401); // the old word is dead
+    const regrant = await unlock(id, "another-secret");
+    expect(regrant.status).toBe(302);
+
+    // 7a. A flood from one client must not lock the link for everyone else: the
+    //     brake is keyed per (app, client) and a correct password refunds its
+    //     token, so a wrong-password run from one address never spends another's.
+    for (let i = 0; i < 12; i++) await unlock(id, `wrong-${i}`, "203.0.113.9");
+    expect((await unlock(id, "wrong-again", "203.0.113.9")).status).toBe(429); // that client is out
+    expect((await unlock(id, "another-secret", "198.51.100.4")).status).toBe(302); // everyone else is fine
+
+    // 7b. A live tab whose grant just died must be pushed back to the prompt, not
+    //     shown raw JSON: the frame answers with a beacon the shell listens for.
+    const deadFrame = await fetch(`${BASE}/p/${id}/frame`, { headers: { cookie: jar } });
+    expect(deadFrame.status).toBe(401);
+    expect(deadFrame.headers.get("content-type")).toContain("text/html");
+    expect(await deadFrame.text()).toContain("__setoku_locked");
+    expect(deadFrame.headers.get("set-cookie")).toContain("Max-Age=0"); // and the dead cookie is dropped
+    // …but a request that carried NO cookie must not be told to clear one (any
+    // third-party page can trigger that request).
+    expect((await fetch(`${BASE}/p/${id}/data`)).headers.get("set-cookie")).toBeNull();
+
+    // 8. Removing the password widens the link, so it takes the admin bar a
+    //    promotion takes — an author/member can't do it, an admin can.
+    const viewer = await session("viewer", "viewer-pass");
+    expect((await share({ id, visibility: "public", password: null }, viewer)).status).toBe(403);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200); // still gated
+    expect(await (await fetch(`${BASE}/p/${id}`)).text()).toContain("password-protected");
+    expect((await share({ id, visibility: "public", password: null })).status).toBe(200);
+    const open = await (await fetch(`${BASE}/p/${id}`)).text();
+    expect(open).toContain("<iframe"); // open again, no cookie
+    expect(open).toContain('"creds":"omit"'); // and back to sending nothing
+  }, 30_000);
+
+  it("keeps a password across a public → team → public round trip, and rejects a too-short one", async () => {
+    const alice = await connect("tok-alice");
+    const pub = await call(alice, "publish_app", {
+      title: "Round trip",
+      html: "<div></div>",
+      panels: [{ key: "p", sql: "SELECT count(*) AS n FROM biz.orders" }],
+    });
+    const id = (pub.text.match(/\/apps\/([0-9a-f]+)/) ?? [])[1];
+    await alice.close();
+    const boss = await session("boss", "s3cret-pass");
+    const share = (body: unknown): Promise<Response> =>
+      fetch(`${BASE}/admin/api/set_visibility`, {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: boss.cookie, "x-csrf-token": boss.csrf },
+        body: JSON.stringify(body),
+      });
+
+    // A password shorter than an account password is refused.
+    const short = await share({ id, visibility: "public", password: "short" });
+    expect(short.status).toBe(400);
+
+    expect((await share({ id, visibility: "public", password: "long-enough-secret" })).status).toBe(200);
+    expect((await share({ id, visibility: "team" })).status).toBe(200);
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // team-only: no public surface at all
+
+    // A non-string password is a caller bug, not "take the gate off".
+    const bogus = await share({ id, visibility: "public", password: 12345678 });
+    expect(bogus.status).toBe(400);
+
+    // Unlocking returns the viewer to the link they were SENT (its `?p.` values
+    // ride through the gate), not to the app's defaults.
+    expect((await share({ id, visibility: "public", password: "long-enough-secret" })).status).toBe(200);
+    const gated = await fetch(`${BASE}/p/${id}?p.region=west`);
+    expect(await gated.text()).toContain(`action="/p/${id}/unlock?p.region=west"`);
+    const returned = await unlock(id, "long-enough-secret", "198.51.100.7", "?p.region=west");
+    expect(returned.headers.get("location")).toBe(`/p/${id}?p.region=west`);
+
+    // If the password comes off while someone sits on the gate, submitting it
+    // lands them on the app rather than a bare "not found".
+    expect((await share({ id, visibility: "public", password: null })).status).toBe(200);
+    const late = await unlock(id, "long-enough-secret", "198.51.100.8");
+    expect(late.status).toBe(302);
+    expect(late.headers.get("location")).toBe(`/p/${id}`);
+
+    expect((await share({ id, visibility: "public", password: "long-enough-secret" })).status).toBe(200);
+    expect((await share({ id, visibility: "team" })).status).toBe(200);
+
+    // Re-publishing must NOT silently drop the gate the link had last time.
+    const back = await share({ id, visibility: "public" });
+    expect(back.status).toBe(200);
+    expect((await back.json() as { flash: string }).flash).toContain("password");
+    expect(await (await fetch(`${BASE}/p/${id}`)).text()).toContain("password-protected");
   }, 20_000);
 
   it("clamps an absurd refresh, strips SQL from the list, and 404s /data for a panel-less app", async () => {

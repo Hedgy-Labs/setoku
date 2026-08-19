@@ -18,7 +18,7 @@ export function ForcePasswordChange() {
         </h1>
         <p className="mb-5 text-sm leading-relaxed text-stone-600">
           The password you signed in with was set by an admin. Choose your own to
-          continue — the shared one stops working, everywhere.
+          continue. The shared one stops working, everywhere.
         </p>
         {/* the just-verified login password rides along silently — the user
             shouldn't retype the temp password they entered seconds ago */}

@@ -78,6 +78,25 @@ await (async () => {
     relatesTo: "net_revenue",
   });
   store.addCorrection({ user: "bob@hedgy.co", kind: "metric", fact: "Define 'activation' as first completed intro within 14 days of signup." });
+  // Two published apps so the Apps surface (and the sharing dialog) is clickable
+  // locally. Panel-less on purpose — dev has no lake, and a static fragment
+  // renders the same shell/frame every app uses.
+  const card = (h: string, p: string): string =>
+    `<div style="font:15px/1.5 system-ui;padding:2rem"><h2 style="margin:0 0 .4rem">${h}</h2><p style="color:#57534e">${p}</p></div>`;
+  store.createPublished({
+    id: "devteamapp0000000000000000000001",
+    title: "Weekly rollup",
+    body: card("Weekly rollup", "A team-only app — signed-in viewers only."),
+    createdBy: USER,
+  });
+  store.createPublished({
+    id: "devpublicapp00000000000000000002",
+    title: "Board snapshot",
+    body: card("Board snapshot", "A public app behind a shared password."),
+    createdBy: USER,
+  });
+  store.setReportVisibility("devpublicapp00000000000000000002", "public");
+  store.setAppPassword("devpublicapp00000000000000000002", await hashPassword("board-preview"));
 })();
 store.db.close();
 
@@ -118,6 +137,7 @@ for (let i = 0; i < 50; i++) {
 
 console.log(`\n  Setoku admin (live) → ${BASE}/   (legacy /admin 301s here)`);
 console.log(`  login:  ${USER} / ${PASS}   (also: viewer / viewer — a member, view-only)`);
+console.log(`  public app behind a password → ${BASE}/p/devpublicapp00000000000000000002   (password: board-preview)`);
 console.log(`  fresh throwaway data in ${dir}`);
 console.log(`  Ctrl-C to stop.\n`);
 const opener = process.platform === "darwin" ? "open" : "xdg-open";

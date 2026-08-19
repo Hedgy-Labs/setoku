@@ -58,11 +58,14 @@ published(
   params,          -- JSON: [{ name, type, default, … }]  declared interactive inputs (NULL for none)
   refresh_seconds, -- TTL for cached panel data (default 300, min 30)
   visibility,      -- 'team' (default) | 'public'  — promotion is a human action
+  password_hash,   -- argon2id; NULL = the public link alone opens it
   created_by, created_at, archived_at
 )
 
 app_cache(app_id, panel_key, columns, rows, row_count, computed_at, error)
   PRIMARY KEY (app_id, panel_key)   -- panel_key folds in the param variant; capped per app
+
+app_access(token, app_id, expires, created_at)   -- one live unlock of a protected link
 ```
 
 An app is `format='app'` whether or not it has data panels: a chart app has
@@ -118,6 +121,7 @@ Endpoints:
 | Surface | Shell | Frame (strict CSP) | Provenance JSON | State |
 | --- | --- | --- | --- | --- |
 | **Public** (`visibility=public`) | `GET /p/<id>` | `GET /p/<id>/frame` | `GET /p/<id>/data` — **no SQL** | `GET·POST /p/<id>/state` |
+| **Public + password** | same, behind the gate at `GET /p/<id>` → `POST /p/<id>/unlock` | | | |
 | **Team** (signed-in) | `/apps/<id>` (React) | `GET /admin/frame/<id>` | `GET /admin/api/app_data?id=` — **with SQL** | `GET·POST /admin/api/app_state` |
 
 - The **frame** document re-runs the panels (TTL-cached) and serves the template
@@ -165,6 +169,55 @@ unavailable") rather than hitting the DB. Charged per execution, so cached hits
 are free and a normal viewer never notices; an anonymous hammer streaming distinct
 `?p.<name>=` values can't amplify load against the lake. Authenticated
 Team app views are not rate-limited (the viewer is logged in and audited).
+
+## Password-protected public links
+
+A public link is credential-free by design — that is right for a channel, and
+wrong for a customer or a board. So an admin can put **one shared password** in
+front of a public app (`published.password_hash`, argon2id via `Bun.password`;
+the plaintext never touches disk or a log).
+
+- `GET /p/<id>` on a protected app serves a **gate page** instead of the shell: a
+  title, one password field, no JavaScript at all (its CSP has no `script-src`,
+  and `form-action 'self'`). The app's title is the only thing about it that
+  shows before the password.
+- The gate is checked **ahead of every sub-path**, so `/frame`, `/data` and
+  `/state` all 401 without a grant — the gate is not merely on the shell.
+- `POST /p/<id>/unlock` (form-encoded, POST only so the password never rides in
+  a URL) verifies and, on a match, mints an opaque grant in `app_access` bound to
+  that one app, handed back as an `HttpOnly`, path-scoped (`/p/<id>`),
+  `SameSite=Lax` cookie for 7 days. Lax, not Strict: these links are opened from
+  Slack and email, and a Strict cookie would be withheld on that navigation and
+  re-prompt every time.
+- The grant is **server-side, not a signed cookie**, so changing or clearing the
+  password (or pulling the app back to team-only, or archiving it) revokes every
+  outstanding one on the next request.
+- Attempts are rate-limited per (app, **client**), 10 burst then ~3/min, on top
+  of argon2id's own cost, and a token is refunded on a correct password, so the
+  brake only bites guessing. Per client, not per app: `POST /p/<id>/unlock` is a
+  CORS-simple request, so a per-app bucket could be held empty from anywhere and
+  nobody with the right password would ever get in. The client is the last
+  `X-Forwarded-For` hop (the one Caddy appended, so not viewer-supplied). The
+  total work one app can be made to do is bounded instead by a concurrency gate:
+  at most 2 verifications at once (each argon2id pass holds ~64MB, a memory
+  spike on a small box), a short queue behind it, load shed past that. Shedding
+  clears the moment the flood pauses, so it can't hold anyone out.
+- Rejected attempts are audited at most once per app per minute, carrying how
+  many they stand for: the audit table has no retention and this path is
+  anonymous and floodable.
+- Protected pages are served `Cache-Control: no-store`.
+
+**It is a viewing gate, not an identity.** There is no account, no per-person
+audit trail, and everyone with the link shares one word. Unlocking grants exactly
+what the open public link already granted — the rendered app — never a session,
+never a tool, never a write. It sits entirely outside the membrane and cannot
+grant authority (I9).
+
+Who may change it: **setting or changing** a password only narrows access, so the
+app's author may do it (as may an admin). **Removing** one widens the link to
+everyone who has it — the same exposure as promoting to public — so it takes the
+same admin bar. A password **survives** a `public → team → public` round trip on
+purpose: re-publishing must not silently drop the gate the link had last time.
 
 ## Viewer params — interactive apps
 

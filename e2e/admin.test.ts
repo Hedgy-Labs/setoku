@@ -154,7 +154,7 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
     await page.fill('input[type="email"]', "e2e-newhire@co.test");
     await page.click('button:has-text("Invite")');
     // the shown-once dialog: ONE ready-to-send message with connector + login
-    await page.waitForSelector("text=e2e-newhire@co.test — send them this");
+    await page.waitForSelector("text=e2e-newhire@co.test · send them this");
     const message = await page.locator("pre").innerText();
     expect(message).toContain("/mcp/"); // connector URL
     expect(message).toContain("Username: e2e-newhire@co.test");

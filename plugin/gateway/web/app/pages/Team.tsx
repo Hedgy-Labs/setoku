@@ -36,7 +36,7 @@ interface Creds {
 /** The read-only demo nudge shown when an anonymous viewer touches a management
  *  control — the controls are visible (to show the product's governance surface)
  *  but every action is inert until an admin signs in. */
-const RO_NUDGE = "This is a read-only demo — sign in to manage the team.";
+const RO_NUDGE = "This is a read-only demo. Sign in to manage the team.";
 
 export function Team() {
   const { me } = useAuth();
@@ -109,7 +109,7 @@ export function Team() {
             </Button>
           </form>
         ) : (
-          <p className="mt-1 text-xs text-stone-500">Viewing only — ask an admin to manage the team.</p>
+          <p className="mt-1 text-xs text-stone-500">Viewing only. Ask an admin to manage the team.</p>
         )}
       </div>
 
@@ -218,7 +218,7 @@ function PersonRow({
       <select
         className="input w-auto border-transparent bg-transparent py-1 text-sm text-stone-600 transition-colors hover:border-stone-300 hover:text-stone-900"
         aria-label={`role for ${p.identity}`}
-        title={isLastAdmin ? "Last admin — the server refuses demotion or removal" : undefined}
+        title={isLastAdmin ? "Last admin: the server refuses demotion or removal" : undefined}
         value={p.role}
         onChange={(e) => onApply(api.users("role", p.identity, e.target.value))}
       >
@@ -296,7 +296,7 @@ function PersonRow({
             body:
               `Remove ${p.identity}? Their login is deleted and their agent connector stops working immediately.` +
               (p.envBacked
-                ? " Their connector token is pinned in the box's .env, so it returns on restart — the server explains how to remove it for good."
+                ? " Their connector token is pinned in the box's .env, so it returns on restart; the server explains how to remove it for good."
                 : ""),
             confirmLabel: "Remove",
             run: () => api.users("delete", p.identity),
@@ -357,7 +357,7 @@ function handoffMessage(creds: Creds, self: boolean): string {
   const parts: string[] = [];
   if (creds.invite)
     parts.push(
-      "Connect your agent — pick ONE:\n" +
+      "Connect your agent (pick ONE):\n" +
         "• Claude.ai / Claude Desktop: add a custom connector (Settings → Connectors) with this URL:\n" +
         `  ${creds.invite.mcpUrl}/${creds.invite.token}\n` +
         `• Claude Code (terminal): curl -fsSL ${creds.invite.installerUrl} | sh`,
@@ -372,8 +372,8 @@ function handoffMessage(creds: Creds, self: boolean): string {
     parts.push('Once connected, just ask in plain language ("show me signups by week").');
   parts.push(
     self
-      ? "This is your standing password — save it now; it can't be shown again."
-      : "This message carries your access — don't forward it.",
+      ? "This is your standing password. Save it now; it can’t be shown again."
+      : "This message carries your access. Don’t forward it.",
   );
   return parts.join("\n\n");
 }
@@ -393,9 +393,9 @@ function CredentialsDialog({
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(message);
-      toast("Message copied — send it over a private channel.");
+      toast("Message copied. Send it over a private channel.");
     } catch {
-      toast("Couldn't reach the clipboard — select the message text and copy it.");
+      toast("Couldn’t reach the clipboard. Select the message text and copy it.");
     }
   };
   return (
@@ -406,10 +406,10 @@ function CredentialsDialog({
           {creds ? (
             <>
               <AlertDialog.Title className="text-base font-semibold text-stone-900">
-                {creds.identity} — {self ? "your new credentials" : "send them this"}
+                {creds.identity} · {self ? "your new credentials" : "send them this"}
               </AlertDialog.Title>
               <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
-                {self ? "" : "One message with everything they need. "}Shown once — it can’t be
+                {self ? "" : "One message with everything they need. "}Shown once, and it can’t be
                 retrieved after you close this; reset the agent connector or the password to issue
                 new ones.
               </AlertDialog.Description>

@@ -31,9 +31,11 @@ export function Apps() {
     try {
       await navigator.clipboard.writeText(appShareUrl(r));
       toast(
-        r.visibility === "public"
-          ? "Public link copied — anyone can open it, no login."
-          : "Link copied — recipients must sign in to the box to view.",
+        r.visibility !== "public"
+          ? "Link copied. Recipients must sign in to the box to view."
+          : r.hasPassword
+            ? "Public link copied. No login, but viewers still need the password."
+            : "Public link copied. Anyone can open it, no login.",
       );
     } catch {
       toast(appShareUrl(r));
@@ -58,8 +60,9 @@ export function Apps() {
       <Heading title="Apps" action={<Button onClick={() => setNewOpen(true)}>New app</Button>}>
         Dashboards, trackers, and internal tools your agent builds on your data. They run on{" "}
         <b className="text-stone-800">live data</b> and never write to your sources.{" "}
-        <b className="text-stone-800">Team</b> links work for anyone signed in here; the author or an
-        admin can make one <b className="text-stone-800">public</b> for a link that needs no login.
+        <b className="text-stone-800">Team</b> links work for anyone signed in here; an admin can make
+        one <b className="text-stone-800">public</b> for a link that needs no login — with a shared
+        password in front of it, if it shouldn’t be wide open.
       </Heading>
       {loading ? (
         <Loading />
@@ -121,11 +124,16 @@ export function Apps() {
                       <Badge tone="idle">static</Badge>
                     )}
                     {r.lockedAt ? (
-                      <span title={`Locked${r.lockedBy ? ` by ${r.lockedBy}` : ""} — agents can’t edit or archive it.`}>
+                      <span title={`Locked${r.lockedBy ? ` by ${r.lockedBy}` : ""}. Agents can’t edit or archive it.`}>
                         <Badge tone="idle">locked</Badge>
                       </span>
                     ) : null}
-                    <VisibilityBadge visibility={r.visibility} canManage={canManage} onOpen={() => setVisApp(r)} />
+                    <VisibilityBadge
+                      visibility={r.visibility}
+                      hasPassword={r.hasPassword}
+                      canManage={canManage}
+                      onOpen={() => setVisApp(r)}
+                    />
                     <Menu label={`Actions for ${r.title}`}>{items}</Menu>
                   </div>
                 );
@@ -164,7 +172,7 @@ export function Apps() {
       <Confirm
         open={!!archiving}
         title="Archive this app?"
-        body={`"${archiving?.title}" will stop working at its link (public and team). The record is kept — you can restore it from the Archived list.`}
+        body={`"${archiving?.title}" will stop working at its link (public and team). The record is kept, so you can restore it from the Archived list.`}
         confirmLabel="Archive"
         danger
         onConfirm={() => {
@@ -177,7 +185,7 @@ export function Apps() {
       <Confirm
         open={!!locking}
         title="Lock this app?"
-        body={`Agents won’t be able to edit or archive "${locking?.title}" until it’s unlocked — anyone can still view it or copy it into a new app. The author or an admin can unlock it anytime.`}
+        body={`Agents won’t be able to edit or archive "${locking?.title}" until it’s unlocked. Anyone can still view it or copy it into a new app, and the author or an admin can unlock it anytime.`}
         confirmLabel="Lock"
         defaultAction
         onConfirm={() => {
@@ -190,18 +198,19 @@ export function Apps() {
       <VisibilityDialog
         open={!!visApp}
         visibility={visApp?.visibility ?? "team"}
+        hasPassword={!!visApp?.hasPassword}
         canMakePublic={isAdmin}
-        onSubmit={(next) => {
+        onSubmit={(next, password) => {
           const a = visApp;
           setVisApp(null);
-          if (a) void act(() => api.setVisibility(a.id, next));
+          if (a) void act(() => api.setVisibility(a.id, next, password));
         }}
         onClose={() => setVisApp(null)}
       />
       <NewDialog
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        onCopied={() => toast("Prompt copied — paste it into your agent (describe the app you want).")}
+        onCopied={() => toast("Prompt copied. Paste it into your agent (describe the app you want).")}
       />
     </>
   );
@@ -212,7 +221,7 @@ export function Apps() {
 function NewDialog({ open, onClose, onCopied }: { open: boolean; onClose: () => void; onCopied: () => void }) {
   const prompt =
     `Build a new app on my Setoku (${location.origin}).\n` +
-    `Develop the queries with run_query (find_context / get_metric for curated metrics), then publish_app — give each panel a title + one-line description, and a template using the Setoku.bar/table/stat/line helpers.\n\n` +
+    `Develop the queries with run_query (find_context / get_metric for curated metrics), then publish_app. Give each panel a title + one-line description, and a template using the Setoku.bar/table/stat/line helpers.\n\n` +
     `What I want:\n`;
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>

@@ -201,6 +201,7 @@ export function AppView() {
     .join("&");
 
   const visibility = data?.visibility ?? "team";
+  const hasPassword = !!data?.hasPassword;
   const link = appShareUrl({ id, visibility });
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
@@ -442,7 +443,13 @@ export function AppView() {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(link);
-      toast(visibility === "public" ? "Public link copied — no login needed." : "Link copied.");
+      toast(
+        visibility !== "public"
+          ? "Link copied."
+          : hasPassword
+            ? "Public link copied. Viewers still need the password."
+            : "Public link copied. No login needed.",
+      );
     } catch {
       toast(link);
     }
@@ -560,12 +567,13 @@ export function AppView() {
         {data ? (
           <VisibilityBadge
             visibility={visibility}
+            hasPassword={hasPassword}
             canManage={active && (mine || isAdmin)}
             onOpen={() => setVisOpen(true)}
           />
         ) : null}
         {locked ? (
-          <span title={`Locked${data?.lockedBy ? ` by ${data.lockedBy}` : ""} — agents can’t edit or archive it.`}>
+          <span title={`Locked${data?.lockedBy ? ` by ${data.lockedBy}` : ""}. Agents can’t edit or archive it.`}>
             <Badge tone="idle">locked</Badge>
           </span>
         ) : null}
@@ -660,7 +668,7 @@ export function AppView() {
               doesn't flash on navigation. */}
           {!loading && (error || frameErr) ? (
             <div className="flex-none border-b border-amber-200 bg-amber-50 px-3 py-1.5 text-xs text-amber-800">
-              Couldn't load the latest data — showing the last view. Try refreshing.
+              Couldn’t load the latest data, so this is the last view. Try refreshing.
             </div>
           ) : null}
           <div className="relative min-h-0 w-full flex-1">
@@ -716,7 +724,7 @@ export function AppView() {
         title={`Restore version ${revertRev?.seq ?? ""}?`}
         body={
           revertRev && revertRev.changes.length
-            ? `The current app will be replaced with version ${revertRev.seq} — changing its ${changeSummary(revertRev.changes)}. The current version is kept in history, so you can undo this.`
+            ? `The current app will be replaced with version ${revertRev.seq}, changing its ${changeSummary(revertRev.changes)}. The current version is kept in history, so you can undo this.`
             : "The current app will be replaced with that version. The current version is kept in history, so you can undo this."
         }
         confirmLabel="Restore"
@@ -729,17 +737,18 @@ export function AppView() {
       <VisibilityDialog
         open={visOpen}
         visibility={visibility}
+        hasPassword={hasPassword}
         canMakePublic={isAdmin}
-        onSubmit={(next) => {
+        onSubmit={(next, password) => {
           setVisOpen(false);
-          void act(() => api.setVisibility(id, next));
+          void act(() => api.setVisibility(id, next, password));
         }}
         onClose={() => setVisOpen(false)}
       />
       <Confirm
         open={lockOpen}
         title="Lock this app?"
-        body={`Agents won’t be able to edit or archive "${data?.title ?? ""}" until it’s unlocked — anyone can still view it or copy it into a new app. You (or an admin) can unlock it from this menu anytime.`}
+        body={`Agents won’t be able to edit or archive "${data?.title ?? ""}" until it’s unlocked. Anyone can still view it or copy it into a new app, and you (or an admin) can unlock it from this menu anytime.`}
         confirmLabel="Lock"
         defaultAction
         onConfirm={() => {
@@ -756,12 +765,12 @@ export function AppView() {
         canEdit={mine && !locked}
         locked={locked}
         canUnlock={mine || isAdmin}
-        onCopied={() => toast("Prompt copied — paste it into your agent (with the changes you want).")}
+        onCopied={() => toast("Prompt copied. Paste it into your agent (with the changes you want).")}
       />
       <Confirm
         open={archiveOpen}
         title="Archive this app?"
-        body={`"${data?.title ?? ""}" will stop working at its link (public and team). The record is kept — you can restore it from the Apps list.`}
+        body={`"${data?.title ?? ""}" will stop working at its link (public and team). The record is kept, so you can restore it from the Apps list.`}
         confirmLabel="Archive"
         danger
         onConfirm={() => {
@@ -975,7 +984,7 @@ function EditDialog({
       `Read it with get_app("${id}"), then update_app("${id}", …) in place (same link).\n\n` +
       `Changes I want:\n`
     : `Make my own copy of the Setoku app${named} at ${url}\n` +
-      `Read it with get_app("${id}"), then publish_app a new one with my changes (a new link — ` +
+      `Read it with get_app("${id}"), then publish_app a new one with my changes (a new link, since ` +
       (locked ? "it's locked, so it can't be edited in place" : "I can't edit someone else's in place") +
       `).\n\n` +
       `Changes I want:\n`;
@@ -989,7 +998,7 @@ function EditDialog({
           </AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
             {canEdit
-              ? "Apps are edited by your agent, not a form. Paste this prompt into your Setoku-connected agent, fill in the changes you want, and it'll update this app in place — same link."
+              ? "Apps are edited by your agent, not a form. Paste this prompt into your Setoku-connected agent, fill in the changes you want, and it’ll update this app in place, at the same link."
               : locked
                 ? `This app is locked, so agents can’t edit it in place.${canUnlock ? " Unlock it from the ⋮ menu to edit it, or paste" : " Paste"} this into your Setoku-connected agent to build your own copy with your changes (it gets a new link).`
                 : "You didn't create this app, so you can't edit it in place. Paste this into your Setoku-connected agent to build your own copy with your changes (it gets a new link)."}
