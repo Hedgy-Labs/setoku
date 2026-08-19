@@ -42,6 +42,11 @@ export function VisibilityDialog({
 }) {
   const [vis, setVis] = useState<Vis>(visibility);
   const [locked, setLocked] = useState(hasPassword);
+  // Replacing a password that already exists is a deliberate act, so the field
+  // stays out of the way behind "Change" until it's asked for. Without this the
+  // common case (password set, not changing it) shows an empty box that has to
+  // explain itself with "leave blank to keep the current one".
+  const [changing, setChanging] = useState(false);
   const [pw, setPw] = useState("");
   const [error, setError] = useState<string | null>(null);
   // Reset the pending edit to the live state each time the dialog opens.
@@ -49,13 +54,28 @@ export function VisibilityDialog({
     if (open) {
       setVis(visibility);
       setLocked(hasPassword);
+      setChanging(false);
       setPw("");
       setError(null);
     }
   }, [open, visibility, hasPassword]);
   const saveRef = useRef<HTMLButtonElement>(null);
 
+  /** Back to what the app actually is. Leaving Public hides this whole section,
+   *  so anything half-done in it (a field opened by "Change", a typed password,
+   *  an unticked box) must not survive the detour and reappear on the way back:
+   *  a pending "remove the password" that outlives a trip through Team is a
+   *  fail-open surprise, and a still-open field is just stale. */
+  const resetPassword = (): void => {
+    setLocked(hasPassword);
+    setChanging(false);
+    setPw("");
+  };
+
   const isPublic = visibility === "public";
+  // The field is shown when there's no password to keep, or when they asked to
+  // replace the one there is.
+  const showField = locked && (!hasPassword || changing);
   // A non-admin may not publish an app, and may not unlock one that is already
   // out there. Adding a password to their own live link is theirs to do.
   const mayPublish = canMakePublic || isPublic;
@@ -90,6 +110,7 @@ export function VisibilityDialog({
         disabled={disabled}
         onClick={() => {
           setVis(value);
+          if (value !== "public") resetPassword();
           setError(null);
         }}
         className={cn(
@@ -156,21 +177,41 @@ export function VisibilityDialog({
             // pl matches the audience rows' inner offset (1px border + px-3), so
             // the checkbox lands in the same column as the radios above it.
             <div className="mt-4 border-t border-stone-200 pt-4 pl-[13px]">
-              <label className={cn("flex items-center gap-2.5 text-sm text-stone-900", !mayUnlock && "opacity-60")}>
-                <input
-                  type="checkbox"
-                  className="h-4 w-4 shrink-0 accent-stone-800"
-                  checked={locked}
-                  disabled={!mayUnlock}
-                  onChange={(e) => {
-                    setLocked(e.target.checked);
-                    setError(null);
-                  }}
-                />
-                Require a password
-              </label>
-              {locked ? (
-                <div className="mt-2.5 pl-[1.625rem]">
+              {/* "Change" sits right after the words it acts on. Pushed to the
+                  far edge it binds to nothing, and lands directly over
+                  Cancel/Save, where it reads as a third dialog action. */}
+              <div className="flex items-center gap-3">
+                <label className={cn("flex items-center gap-2.5 text-sm text-stone-900", !mayUnlock && "opacity-60")}>
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 shrink-0 accent-stone-800"
+                    checked={locked}
+                    disabled={!mayUnlock}
+                    onChange={(e) => {
+                      setLocked(e.target.checked);
+                      setChanging(false);
+                      setPw("");
+                      setError(null);
+                    }}
+                  />
+                  Require a password
+                </label>
+                {/* Stone, not the usual link blue: gateway chrome carries no
+                    accent of its own (that belongs to the user's apps). */}
+                {locked && hasPassword && !changing ? (
+                  <button
+                    type="button"
+                    onClick={() => setChanging(true)}
+                    className="shrink-0 text-xs font-medium text-stone-500 underline decoration-stone-300 underline-offset-2 hover:text-stone-800 hover:decoration-stone-500"
+                  >
+                    Change
+                  </button>
+                ) : null}
+              </div>
+              {showField ? (
+                // Flush left with the checkbox: one left edge for the section,
+                // rather than a field straddling the label column and the card edge.
+                <div className="mt-2.5">
                   <input
                     className={cn("input", error && "border-red-400 focus:border-red-500 focus:ring-red-500/20")}
                     type="password"
@@ -182,7 +223,8 @@ export function VisibilityDialog({
                       setPw(e.target.value);
                       setError(null);
                     }}
-                    placeholder={hasPassword ? "new password" : `password (${MIN_PASSWORD_LENGTH}+ characters)`}
+                    autoFocus={changing}
+                    placeholder={`${hasPassword ? "new " : ""}password (${MIN_PASSWORD_LENGTH}+ characters)`}
                   />
                   {/* One slot: the hint becomes the error, so a rejected save
                       corrects the line you were just reading instead of adding a
@@ -195,24 +237,19 @@ export function VisibilityDialog({
                     {error
                       ? error
                       : hasPassword
-                        ? "Leave blank to keep the password that’s set. Changing it re-prompts everyone who already unlocked the link."
+                        ? "Anyone who already unlocked the link has to enter it again."
                         : "One password for everyone with the link. Share it separately from the link itself."}
                   </p>
                 </div>
               ) : !mayUnlock ? (
-                <p className="mt-1.5 pl-[1.625rem] text-xs text-stone-500">
-                  Only an admin can take the password off a live link.
-                </p>
+                <p className="mt-1.5 text-xs text-stone-500">Only an admin can take the password off a live link.</p>
               ) : null}
             </div>
-          ) : hasPassword ? (
-            // A team app can still hold a password: it stays stored (dormant) so a
-            // later re-publish can't silently drop the gate. Say so here, or the
-            // one place it matters is the one place it's invisible.
-            <p className="mt-3 text-xs text-stone-500">
-              A password is saved for this app. It applies again if you share the link.
-            </p>
           ) : null}
+          {/* A team app can still hold a stored password (kept dormant so a later
+              re-publish can't come back wide open). We don't narrate that here:
+              picking Public shows "Require a password" already checked, which is
+              the same fact stated by the control that acts on it. */}
 
           <div className="mt-5 flex justify-end gap-2">
             <AlertDialog.Close data-role="cancel" className="btn btn-ghost">
