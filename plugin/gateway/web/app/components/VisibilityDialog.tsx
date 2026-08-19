@@ -8,8 +8,9 @@ type Vis = "team" | "public";
 
 /**
  * The sharing picker. Two questions, in the order a person thinks about them:
- * WHO can open it (the team, or anyone with the link), and then, only once it's
- * a link, whether a password stands in front of it. That mirrors the data model
+ * WHO can open it (Team or Public, the same two words the app's badge shows),
+ * and then, only once it's public, whether a password stands in front of the
+ * link. That mirrors the data model
  * (visibility + an optional password) instead of flattening it into three
  * look-alike rows, and it keeps both audience rows the same height so the dialog
  * doesn't lurch when you pick one.
@@ -64,12 +65,14 @@ export function VisibilityDialog({
     // The password only means anything on a link. A team app keeps any stored
     // one dormant, so a later re-publish can't silently drop the gate.
     const wantsLock = vis === "public" ? locked : hasPassword;
+    // Each message says the ONE thing that's wrong; it lands where the helper
+    // line was, right under the field, so nothing shifts and nothing repeats.
     if (wantsLock && !pw && !hasPassword) {
-      setError(`Set a password of at least ${MIN_PASSWORD_LENGTH} characters.`);
+      setError("Enter a password.");
       return;
     }
     if (pw && pw.length < MIN_PASSWORD_LENGTH) {
-      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+      setError(`Use at least ${MIN_PASSWORD_LENGTH} characters.`);
       return;
     }
     const password = wantsLock ? pw || undefined : hasPassword ? null : undefined;
@@ -134,13 +137,15 @@ export function VisibilityDialog({
           <AlertDialog.Title className="text-base font-semibold text-stone-900">Who can see this?</AlertDialog.Title>
           <AlertDialog.Description className="sr-only">Choose who can open this app, then Save.</AlertDialog.Description>
           <div role="radiogroup" aria-label="Who can see this" className="mt-3 space-y-2">
+            {/* Labels are the same two words the app's badge shows ("team" /
+                "public"); the audience each one means is the description. */}
             <Audience value="team" label="Team" desc="Anyone signed in to this box." />
             <Audience
               value="public"
-              label="Anyone with the link"
-              desc="No sign-in needed."
+              label="Public"
+              desc="Anyone with the link, no sign-in."
               disabled={!mayPublish}
-              note="No sign-in needed. Only an admin can share an app publicly."
+              note="Anyone with the link. Only an admin can make an app public."
             />
           </div>
 
@@ -148,7 +153,9 @@ export function VisibilityDialog({
               the audience. A hairline rather than another nested card: one box
               inside the dialog is enough. */}
           {vis === "public" ? (
-            <div className="mt-4 border-t border-stone-200 pt-4">
+            // pl matches the audience rows' inner offset (1px border + px-3), so
+            // the checkbox lands in the same column as the radios above it.
+            <div className="mt-4 border-t border-stone-200 pt-4 pl-[13px]">
               <label className={cn("flex items-center gap-2.5 text-sm text-stone-900", !mayUnlock && "opacity-60")}>
                 <input
                   type="checkbox"
@@ -165,20 +172,31 @@ export function VisibilityDialog({
               {locked ? (
                 <div className="mt-2.5 pl-[1.625rem]">
                   <input
-                    className="input"
+                    className={cn("input", error && "border-red-400 focus:border-red-500 focus:ring-red-500/20")}
                     type="password"
                     value={pw}
                     autoComplete="new-password"
+                    aria-invalid={!!error}
+                    aria-describedby="app-password-hint"
                     onChange={(e) => {
                       setPw(e.target.value);
                       setError(null);
                     }}
                     placeholder={hasPassword ? "new password" : `password (${MIN_PASSWORD_LENGTH}+ characters)`}
                   />
-                  <p className="mt-1.5 text-xs text-stone-500">
-                    {hasPassword
-                      ? "Leave blank to keep the password that’s set. Changing it re-prompts everyone who already unlocked the link."
-                      : "One password for everyone with the link. Share it separately from the link itself."}
+                  {/* One slot: the hint becomes the error, so a rejected save
+                      corrects the line you were just reading instead of adding a
+                      third one further down the dialog. */}
+                  <p
+                    id="app-password-hint"
+                    role={error ? "alert" : undefined}
+                    className={cn("mt-1.5 text-xs", error ? "text-red-700" : "text-stone-500")}
+                  >
+                    {error
+                      ? error
+                      : hasPassword
+                        ? "Leave blank to keep the password that’s set. Changing it re-prompts everyone who already unlocked the link."
+                        : "One password for everyone with the link. Share it separately from the link itself."}
                   </p>
                 </div>
               ) : !mayUnlock ? (
@@ -196,7 +214,6 @@ export function VisibilityDialog({
             </p>
           ) : null}
 
-          {error ? <p className="mt-3 text-xs text-red-700">{error}</p> : null}
           <div className="mt-5 flex justify-end gap-2">
             <AlertDialog.Close data-role="cancel" className="btn btn-ghost">
               Cancel
