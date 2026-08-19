@@ -31,9 +31,11 @@ export function Apps() {
     try {
       await navigator.clipboard.writeText(appShareUrl(r));
       toast(
-        r.visibility === "public"
-          ? "Public link copied — anyone can open it, no login."
-          : "Link copied — recipients must sign in to the box to view.",
+        r.visibility !== "public"
+          ? "Link copied — recipients must sign in to the box to view."
+          : r.hasPassword
+            ? "Public link copied — no login, but viewers still need the password."
+            : "Public link copied — anyone can open it, no login.",
       );
     } catch {
       toast(appShareUrl(r));
@@ -58,8 +60,9 @@ export function Apps() {
       <Heading title="Apps" action={<Button onClick={() => setNewOpen(true)}>New app</Button>}>
         Dashboards, trackers, and internal tools your agent builds on your data. They run on{" "}
         <b className="text-stone-800">live data</b> and never write to your sources.{" "}
-        <b className="text-stone-800">Team</b> links work for anyone signed in here; the author or an
-        admin can make one <b className="text-stone-800">public</b> for a link that needs no login.
+        <b className="text-stone-800">Team</b> links work for anyone signed in here; an admin can make
+        one <b className="text-stone-800">public</b> for a link that needs no login — with a shared
+        password in front of it, if it shouldn’t be wide open.
       </Heading>
       {loading ? (
         <Loading />

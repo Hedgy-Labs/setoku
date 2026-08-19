@@ -13,8 +13,9 @@ type Choice = "team" | "public" | "protected";
  *  state, listing Team / Anyone with the link / Anyone with the link and password,
  *  with the current one marked. The radio is a LOCAL selection — nothing changes
  *  until Save (so a mis-click can't expose an app), and Save is focused on open so
- *  Enter submits. Exposing an app publicly is admin-only (I9): both public rows
- *  are disabled for non-admins. */
+ *  Enter submits. Exposing an app publicly is admin-only (I9), as is taking a
+ *  password back off a public link — a non-admin author sees those rows locked,
+ *  each saying which rule locked it. */
 export function VisibilityDialog({
   open,
   visibility,
@@ -25,9 +26,10 @@ export function VisibilityDialog({
 }: {
   open: boolean;
   visibility: Vis;
-  /** A shared password already guards this app's public link. */
+  /** A shared password is stored — guarding the link while the app is public,
+   *  dormant while it's team-only. */
   hasPassword: boolean;
-  /** Admin — may choose either public option. */
+  /** Admin — may expose an app, and may take a password back off a public one. */
   canMakePublic: boolean;
   /** Called with the chosen visibility and the password change ONLY when
    *  something actually differs: `undefined` leaves any stored password alone,
@@ -71,7 +73,15 @@ export function VisibilityDialog({
     return onSubmit(sel === "public" ? "public" : "team", sel === "public" && hasPassword ? null : undefined);
   };
 
-  const Option = ({ value, label, desc, disabled, children }: { value: Choice; label: string; desc: string; disabled?: boolean; children?: React.ReactNode }) => {
+  // Who may pick what. EXPOSING an app is admin-only (I9), and so is taking a
+  // password back OFF a public link — both widen who can read it. TIGHTENING an
+  // app you already published (adding or changing its password) is yours to do,
+  // which is what the server allows; the dialog has to offer it or that path is
+  // unreachable. Each locked row says which rule locked it.
+  const isPublic = visibility === "public";
+  const openDenied = !canMakePublic && (!isPublic || current === "protected");
+  const protectDenied = !canMakePublic && !isPublic;
+  const Option = ({ value, label, desc, disabled, deniedNote, children }: { value: Choice; label: string; desc: string; disabled?: boolean; deniedNote?: string; children?: React.ReactNode }) => {
     const checked = sel === value;
     return (
       <div
@@ -111,7 +121,7 @@ export function VisibilityDialog({
             </span>
             <span className="mt-0.5 block text-xs text-stone-500">
               {desc}
-              {disabled ? " Only an admin can share an app publicly." : ""}
+              {disabled && deniedNote ? ` ${deniedNote}` : ""}
             </span>
           </span>
         </button>
@@ -146,13 +156,19 @@ export function VisibilityDialog({
               value="public"
               label="Anyone with the link"
               desc="No sign-in — the link is the only thing needed."
-              disabled={!canMakePublic}
+              disabled={openDenied}
+              deniedNote={
+                current === "protected"
+                  ? "Only an admin can take the password off a public link."
+                  : "Only an admin can share an app publicly."
+              }
             />
             <Option
               value="protected"
               label="Anyone with the link and password"
               desc="No sign-in, but they have to type a shared password first."
-              disabled={!canMakePublic}
+              disabled={protectDenied}
+              deniedNote="Only an admin can share an app publicly."
             >
               <div className="px-3 pb-3">
                 <input

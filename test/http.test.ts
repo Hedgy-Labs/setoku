@@ -1382,6 +1382,17 @@ describe("live apps (end-to-end render path)", () => {
     const regrant = await unlock(id, "another-secret");
     expect(regrant.status).toBe(302);
 
+    // 7b. A live tab whose grant just died must be pushed back to the prompt, not
+    //     shown raw JSON: the frame answers with a beacon the shell listens for.
+    const deadFrame = await fetch(`${BASE}/p/${id}/frame`, { headers: { cookie: jar } });
+    expect(deadFrame.status).toBe(401);
+    expect(deadFrame.headers.get("content-type")).toContain("text/html");
+    expect(await deadFrame.text()).toContain("__setoku_locked");
+    expect(deadFrame.headers.get("set-cookie")).toContain("Max-Age=0"); // and the dead cookie is dropped
+    // …but a request that carried NO cookie must not be told to clear one (any
+    // third-party page can trigger that request).
+    expect((await fetch(`${BASE}/p/${id}/data`)).headers.get("set-cookie")).toBeNull();
+
     // 8. Removing the password widens the link, so it takes the admin bar a
     //    promotion takes — an author/member can't do it, an admin can.
     const viewer = await session("viewer", "viewer-pass");
@@ -1418,6 +1429,10 @@ describe("live apps (end-to-end render path)", () => {
     expect((await share({ id, visibility: "public", password: "long-enough-secret" })).status).toBe(200);
     expect((await share({ id, visibility: "team" })).status).toBe(200);
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // team-only: no public surface at all
+
+    // A non-string password is a caller bug, not "take the gate off".
+    const bogus = await share({ id, visibility: "public", password: 12345678 });
+    expect(bogus.status).toBe(400);
 
     // Re-publishing must NOT silently drop the gate the link had last time.
     const back = await share({ id, visibility: "public" });

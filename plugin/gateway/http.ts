@@ -552,6 +552,10 @@ function parseDraft(raw: unknown): CorrectionDraft | undefined {
 function readTextBody(req: http.IncomingMessage, limit: number): Promise<string> {
   return new Promise((resolve, reject) => {
     if (Number(req.headers["content-length"] ?? 0) > limit) return reject(new Error("body too large"));
+    // Decode as UTF-8 across chunk boundaries — concatenating raw Buffers would
+    // mangle a multi-byte character split across TCP packets, and this body
+    // carries a password (a mangled one fails to verify, unreproducibly).
+    req.setEncoding("utf8");
     let data = "";
     let over = false;
     // Drop the overflow but keep DRAINING the stream rather than destroying the
@@ -948,27 +952,38 @@ const PUBLIC_FRESH_PER_SEC = 1; // sustained refill: ~60 fresh runs/min/app
  *  one gateway process) and self-pruning: a long-idle key refills to capacity and
  *  is then indistinguishable from a fresh one, so full buckets are dropped once
  *  the map grows — bounding it to recently-active keys rather than every id ever
- *  seen. Returns false when the bucket is empty. */
-function tokenBucket(capacity: number, perSec: number): (key: string, now: number) => boolean {
+ *  seen. `spend` returns false when the bucket is empty; `refund` hands a token
+ *  back for work that turned out not to need rationing. */
+function tokenBucket(
+  capacity: number,
+  perSec: number,
+): { spend: (key: string, now: number) => boolean; refund: (key: string) => void } {
   const buckets = new Map<string, { tokens: number; last: number }>();
   const refill = (b: { tokens: number; last: number }, now: number): number =>
     Math.min(capacity, b.tokens + ((now - b.last) / 1000) * perSec);
-  return (key: string, now: number): boolean => {
-    const b = buckets.get(key) ?? { tokens: capacity, last: now };
-    b.tokens = refill(b, now);
-    b.last = now;
-    const ok = b.tokens >= 1;
-    if (ok) b.tokens -= 1;
-    buckets.set(key, b);
-    if (buckets.size > 512)
-      for (const [k, v] of buckets) if (k !== key && refill(v, now) >= capacity) buckets.delete(k);
-    return ok;
+  return {
+    spend(key: string, now: number): boolean {
+      const b = buckets.get(key) ?? { tokens: capacity, last: now };
+      b.tokens = refill(b, now);
+      b.last = now;
+      const ok = b.tokens >= 1;
+      if (ok) b.tokens -= 1;
+      buckets.set(key, b);
+      if (buckets.size > 512)
+        for (const [k, v] of buckets) if (k !== key && refill(v, now) >= capacity) buckets.delete(k);
+      return ok;
+    },
+    refund(key: string): void {
+      const b = buckets.get(key);
+      if (b) b.tokens = Math.min(capacity, b.tokens + 1);
+    },
   };
 }
 
 /** Spend one token for a fresh (cache-miss) render of `appId` on the public
  *  surface. Returns false when the bucket is empty → caller renders cache-only. */
-const spendFreshRun = tokenBucket(PUBLIC_FRESH_BURST, PUBLIC_FRESH_PER_SEC);
+const freshRuns = tokenBucket(PUBLIC_FRESH_BURST, PUBLIC_FRESH_PER_SEC);
+const spendFreshRun = (appId: string, now: number): boolean => freshRuns.spend(appId, now);
 
 // Brute-force brake on the shared-password gate (issue #112). One shared secret
 // guards a public link, so the attempt RATE is what stands between a guesser and
@@ -978,17 +993,39 @@ const spendFreshRun = tokenBucket(PUBLIC_FRESH_BURST, PUBLIC_FRESH_PER_SEC);
 // actually protects the secret). The cost of that choice is that a hammer can
 // make legitimate viewers wait ~20s for a retry slot — an acceptable trade for a
 // view-only gate, and one that can't lock anyone out permanently.
-const UNLOCK_BURST = 10; // ten quick tries (a typo run, a password-manager retry)
+// A token is spent per attempt and REFUNDED on a match, so the brake only ever
+// bites guessing: forty people opening one link with the right password in the
+// same minute never hit it, while a wrong-password run is cut to ~3/min.
+const UNLOCK_BURST = 10; // ten quick misses (a typo run, a password-manager retry)
 const UNLOCK_PER_SEC = 1 / 20; // then ~3/min sustained
-const spendUnlockAttempt = tokenBucket(UNLOCK_BURST, UNLOCK_PER_SEC);
+const unlockAttempts = tokenBucket(UNLOCK_BURST, UNLOCK_PER_SEC);
 
 // One argon2id verification holds ~64MB while it runs, so on a deliberately
 // small box a BURST of simultaneous attempts is a memory spike, not just CPU.
-// The bucket above caps the rate; this caps the peak. Attempts are cheap and
-// fast (~100ms), so an honest viewer never sees this — and a hammer can't camp
-// on the slots, because the bucket cuts it to ~3/min long before that.
+// The bucket above caps the rate of GUESSES; this caps the memory peak, for
+// honest viewers included — so it QUEUES rather than refusing (a verify takes
+// ~100ms; a full queue drains in about a second). Only past the queue depth do
+// we shed load, which is the point where something is hammering us anyway.
 const MAX_CONCURRENT_UNLOCKS = 2;
+const MAX_QUEUED_UNLOCKS = 24;
 let unlocksInFlight = 0;
+const unlockQueue: (() => void)[] = [];
+
+/** Run one password verification under the concurrency cap. Returns null when
+ *  the queue is already full (caller sheds the request), never blocking forever. */
+async function withUnlockSlot<T>(fn: () => Promise<T>): Promise<{ value: T } | null> {
+  if (unlocksInFlight >= MAX_CONCURRENT_UNLOCKS) {
+    if (unlockQueue.length >= MAX_QUEUED_UNLOCKS) return null;
+    await new Promise<void>((resolve) => unlockQueue.push(resolve));
+  }
+  unlocksInFlight++;
+  try {
+    return { value: await fn() };
+  } finally {
+    unlocksInFlight--;
+    unlockQueue.shift()?.();
+  }
+}
 
 /** Escape a JSON string for safe inlining inside a <script> tag. */
 function jsonForScript(value: unknown): string {
@@ -1075,7 +1112,8 @@ function appProvenance(
     title: meta.title,
     format: meta.format,
     visibility: meta.visibility,
-    /** A public link additionally guarded by a shared password (issue #112). */
+    /** A shared password is stored for this app (issue #112) — guarding the
+     *  public link, or dormant while it's team-only. */
     hasPassword: meta.hasPassword,
     refreshSeconds: meta.refreshSeconds,
     params: meta.params ?? [],
@@ -1299,6 +1337,9 @@ function publicAppShell(opts: {
     if(e.source!==frame.contentWindow) return; // only OUR iframe
     // Resolved-param echo: reset each control to the value the server actually
     // used, so a rejected input snaps back to the default instead of lingering.
+    // The frame reports that our unlock lapsed (password changed, grant expired).
+    // Reload the top-level page: the server answers with the prompt.
+    if(m.__setoku_locked===true){ location.reload(); return; }
     if(m.__setoku_params_echo===true){ document.querySelectorAll('[data-pname]').forEach(function(el){
       var v=m.params&&m.params[el.getAttribute('data-pname')]; if(v!==undefined&&v!==null) el.value=v; }); return; }
     // Frame-driven param change (Setoku.setParam): re-run the panels bound to the
@@ -1344,7 +1385,10 @@ function publicAppShell(opts: {
   function reload(){ ldr.classList.add('on'); if(ldrT) clearTimeout(ldrT); ldrT=setTimeout(ldrOff, 25000);
     var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
   document.querySelectorAll('[data-pname]').forEach(function(el){ el.addEventListener('change', function(){ reload(); }); });
-  function refresh(){ fetch(CFG.data,{credentials:CFG.creds}).then(function(r){return r.json()}).then(function(d){
+  function refresh(){ fetch(CFG.data,{credentials:CFG.creds}).then(function(r){
+    // Same lapse, seen from the freshness poll — back to the prompt.
+    if(r.status===401){ location.reload(); return null; }
+    return r.ok?r.json():null; }).then(function(d){ if(!d) return;
     var secs=d.refreshSeconds||CFG.refresh;
     var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
     // Omit the "data updated …" clause when there's no successful data yet (null
@@ -1450,7 +1494,7 @@ const httpServer = http.createServer(async (req, res) => {
         // The one sub-path a locked viewer may reach. POST-only: the password
         // must never ride in a URL (referrer, history, proxy logs).
         if (!meta.hasPassword || req.method !== "POST") return notFound();
-        if (!spendUnlockAttempt(id, Date.now())) {
+        if (!unlockAttempts.spend(id, Date.now())) {
           store.audit("public", "app_unlock_throttled", { id });
           return gatePage(429, "Too many attempts on this link — wait a moment and try again.");
         }
@@ -1458,21 +1502,21 @@ const httpServer = http.createServer(async (req, res) => {
         try {
           supplied = parseUnlockForm(await readTextBody(req, 4096));
         } catch {
-          return gatePage(400, "Couldn't read that — try again.");
+          unlockAttempts.refund(id);
+          return gatePage(400, "Couldn’t read that — try again.");
         }
-        if (unlocksInFlight >= MAX_CONCURRENT_UNLOCKS)
+        const slot = await withUnlockSlot(() => verifyPassword(supplied, store.appPasswordHash(id)));
+        if (!slot) {
+          unlockAttempts.refund(id); // never verified — don't charge for our own backlog
           return gatePage(429, "Busy checking other attempts — try again in a moment.");
-        unlocksInFlight++;
-        let matched = false;
-        try {
-          matched = await verifyPassword(supplied, store.appPasswordHash(id));
-        } finally {
-          unlocksInFlight--;
         }
-        if (!matched) {
+        if (!slot.value) {
           store.audit("public", "app_unlock_failed", { id });
-          return gatePage(401, "That password didn't work.");
+          return gatePage(401, "That password didn’t work.");
         }
+        // A correct password isn't what the brake is for — hand the token back so
+        // a link shared with a whole channel doesn't throttle its own audience.
+        unlockAttempts.refund(id);
         const token = mintAppAccessToken();
         store.grantAppAccess(token, id, Date.now() + APP_ACCESS_TTL_MS);
         store.audit("public", "app_unlocked", { id });
@@ -1490,16 +1534,38 @@ const httpServer = http.createServer(async (req, res) => {
       if (!unlocked) {
         // A sub-resource (frame/data/state) without a grant is a hard 401 — the
         // shell is what prompts; these must never serve app content or accept a
-        // state write. Clear any cookie that got us here: it's expired or was
-        // revoked by a password change, and leaving it would keep the browser
-        // sending a dead grant.
+        // state write. Clear the grant cookie only if one was actually PRESENTED
+        // (it's expired or was revoked by a password change): clearing on every
+        // 401 would let any third-party page that merely references /p/<id>/data
+        // knock a viewer's cookie out from under them.
         if (sub) {
+          const stale = appAccessCookie(req.headers.cookie) ? { "set-cookie": appAccessClearCookie(id) } : {};
+          // The FRAME is loaded inside the shell's iframe, so a JSON 401 would just
+          // render as raw text in a live tab whose grant lapsed (or whose password
+          // an admin just changed). Serve a tiny beacon instead: the shell listens
+          // for it and reloads the page, landing the viewer back on the prompt.
+          if (sub === "frame") {
+            res.writeHead(401, {
+              "content-type": "text/html; charset=utf-8",
+              "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts`,
+              "cache-control": "no-store",
+              "x-content-type-options": "nosniff",
+              "referrer-policy": "no-referrer",
+              ...stale,
+            });
+            res.end(
+              `<!doctype html><meta charset="utf-8"><body style="font:14px system-ui;color:#78716c;padding:1rem">` +
+                `This app needs its password again.` +
+                `<script>try{parent.postMessage({__setoku_locked:true},'*')}catch(e){}</script></body>`,
+            );
+            return;
+          }
           res.writeHead(401, {
             "content-type": "application/json",
-            "set-cookie": appAccessClearCookie(id),
             "cache-control": "no-store",
             "x-content-type-options": "nosniff",
             "referrer-policy": "no-referrer",
+            ...stale,
           });
           res.end(JSON.stringify({ ok: false, error: "password required" }));
           return;
@@ -2393,7 +2459,10 @@ const httpServer = http.createServer(async (req, res) => {
               return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
             const changesPassword = body != null && "password" in body;
             // "" and null both mean REMOVE — a blank field is the natural way a
-            // client says "no password", not a zero-length one to enforce.
+            // client says "no password", not a zero-length one to enforce. Anything
+            // ELSE is a caller bug, and must not quietly read as "take the gate off".
+            if (changesPassword && body?.password != null && typeof body.password !== "string")
+              return json(400, { ok: false, error: "password must be a string, or null to remove it" });
             const password = typeof body?.password === "string" && body.password.length ? body.password : null;
             if (!mayMutateApp(id)) return;
             const before = store.getPublishedMeta(id);
