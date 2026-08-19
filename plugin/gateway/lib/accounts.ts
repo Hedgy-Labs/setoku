@@ -40,6 +40,23 @@ export async function hashPassword(plaintext: string): Promise<string> {
 }
 
 /**
+ * Verify a plaintext against an argon2id hash. A null/empty hash (no password
+ * set) still runs the dummy comparison before returning false, so timing does
+ * not reveal whether a secret exists at all. Used for the shared password on a
+ * protected public app (issue #112) — those have no username, so `authenticate`
+ * (which needs an account) does not fit.
+ */
+export async function verifyPassword(plaintext: string, hash: string | null | undefined): Promise<boolean> {
+  const real = !!hash;
+  try {
+    const matched = await Bun.password.verify(plaintext, hash || DUMMY_HASH);
+    return real && matched;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Verify a username+password against the store. Always runs a hash comparison
  * (even for an unknown user, against a dummy hash) so response time does not
  * reveal whether the username exists. Returns the account's role on success.

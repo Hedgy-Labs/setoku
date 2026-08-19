@@ -2088,7 +2088,10 @@ server.registerTool(
       for (const r of active) {
         const n = r.panels?.length ?? 0;
         const kind = n ? `${n} panel${n === 1 ? "" : "s"}` : "static";
-        const tags = [r.visibility, kind, ...(r.lockedAt ? ["locked"] : [])].join(", ");
+        // A public app may also carry a shared password (a human sets it in the
+        // web UI) — say so, or the link reads as wide open when it isn't.
+        const vis = r.visibility === "public" && r.hasPassword ? "public, password" : r.visibility;
+        const tags = [vis, kind, ...(r.lockedAt ? ["locked"] : [])].join(", ");
         lines.push(
           `- ${r.title} [${tags}] — ${publishUrl(r.id, r.visibility)}  (${r.createdBy}, ${r.createdAt.slice(0, 10)}, id ${r.id})`,
         );
@@ -2127,6 +2130,7 @@ server.registerTool(
     const lines: string[] = [
       `# ${dash.title} [${dash.format}] — ${publishUrl(dash.id, dash.visibility)}`,
       `by ${dash.createdBy} · ${dash.createdAt.slice(0, 16)} · visibility ${dash.visibility}` +
+        (dash.visibility === "public" && dash.hasPassword ? " (password-protected)" : "") +
         (dash.refreshSeconds ? ` · refresh ${dash.refreshSeconds}s` : ""),
       "",
     ];

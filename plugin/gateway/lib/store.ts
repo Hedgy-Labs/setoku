@@ -162,6 +162,12 @@ export interface PublishedReport {
   /** "team" = session-gated (default); "public" = served credential-free at
    *  /p/<id>. Promotion to public is a human (admin) action — never the agent. */
   visibility: ReportVisibility;
+  /** A public app may additionally require a shared password (issue #112) — the
+   *  link alone is then not enough. True when one is set; the argon2id hash never
+   *  rides in metadata (read it via appPasswordHash). The password SURVIVES a
+   *  public→team→public round trip on purpose: re-publishing must not silently
+   *  drop the gate that was on the link last time. */
+  hasPassword: boolean;
   createdBy: string;
   createdAt: string;
   /** Soft-delete timestamp. Archived reports 404 everywhere but are kept. */
@@ -221,6 +227,31 @@ export interface PanelCacheRow {
   /** Wall-clock ms of the query execution that produced this row (null on
    *  legacy rows written before durations were recorded). */
   durationMs: number | null;
+}
+
+/** The `published` columns every read of an app's metadata selects, aliased to
+ *  the PublishedMeta field names. One list so the three readers (single, meta,
+ *  list) can't drift — a new column is added here once. `password_hash` is
+ *  deliberately projected as a BOOLEAN: the hash itself never leaves the store
+ *  in metadata (the unlock path reads it explicitly via appPasswordHash). */
+const PUBLISHED_META_COLS =
+  "id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, " +
+  "password_hash IS NOT NULL AS hasPassword, created_by AS createdBy, created_at AS createdAt, " +
+  "archived_at AS archivedAt, locked_at AS lockedAt, locked_by AS lockedBy";
+
+/** A raw `published` row as the queries above return it: panels/params still
+ *  serialized, hasPassword still SQLite's 0/1. */
+type RawPublishedRow<T> = Omit<T, "panels" | "params" | "hasPassword"> & {
+  panels: string | null;
+  params: string | null;
+  hasPassword: number;
+};
+
+/** Normalize one raw row: JSON columns parsed, the 0/1 flag made a boolean. */
+function hydratePublished<T extends { panels: AppPanel[] | null; params: AppParam[] | null; hasPassword: boolean }>(
+  row: RawPublishedRow<T>,
+): T {
+  return { ...row, panels: parsePanels(row.panels), params: parseParams(row.params), hasPassword: !!row.hasPassword } as T;
 }
 
 /** Parse the stored panels JSON; tolerates null/garbage (legacy rows). */
@@ -498,6 +529,21 @@ export class KnowledgeStore {
     // author/admin unlocks it from the web UI (a human surface — I9).
     this.ensureColumn("published", "locked_at", "TEXT");
     this.ensureColumn("published", "locked_by", "TEXT");
+    // Optional shared password on a PUBLIC app (issue #112): argon2id, never the
+    // plaintext. NULL = the link alone opens it. Set only from the human web
+    // surface — no MCP tool reads or writes it.
+    this.ensureColumn("published", "password_hash", "TEXT");
+    // Unlock grants for password-protected public apps: an opaque token minted
+    // when a viewer types the right password, bound to ONE app and expiring on
+    // its own. Server-side (not a signed cookie) so changing/clearing the
+    // password revokes every outstanding grant immediately.
+    this.db.run(`CREATE TABLE IF NOT EXISTS app_access (
+      token TEXT PRIMARY KEY,
+      app_id TEXT NOT NULL,
+      expires INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    )`);
+    this.db.run("CREATE INDEX IF NOT EXISTS app_access_app ON app_access(app_id)");
     // Every app now renders through the runtime shell, so the format column is
     // effectively always 'app'. Boxes that published before the Dashboards→Apps
     // rename hold format='dashboard'; backfill those to 'app' (a no-op on a fresh
@@ -1413,44 +1459,42 @@ export class KnowledgeStore {
    *  rows too — the caller decides how to treat `archivedAt` (the viewer 404s). */
   getPublished(id: string): PublishedReport | null {
     const row = this.db
-      .query(
-        "SELECT id, title, format, body, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt, locked_at AS lockedAt, locked_by AS lockedBy FROM published WHERE id = ?",
-      )
-      .get(id) as (Omit<PublishedReport, "panels" | "params"> & { panels: string | null; params: string | null }) | null;
-    return row ? { ...row, panels: parsePanels(row.panels), params: parseParams(row.params) } : null;
+      .query(`SELECT ${PUBLISHED_META_COLS}, body FROM published WHERE id = ?`)
+      .get(id) as RawPublishedRow<PublishedReport> | null;
+    return row ? hydratePublished<PublishedReport>(row) : null;
   }
 
   /** One report's metadata WITHOUT its (up-to-2MB) body — for cheap 404/policy
    *  gating on hot or credential-free paths before deciding to serve the body. */
   getPublishedMeta(id: string): PublishedMeta | null {
     const row = this.db
-      .query(
-        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt, locked_at AS lockedAt, locked_by AS lockedBy FROM published WHERE id = ?",
-      )
-      .get(id) as (Omit<PublishedMeta, "panels" | "params"> & { panels: string | null; params: string | null }) | null;
-    return row ? { ...row, panels: parsePanels(row.panels), params: parseParams(row.params) } : null;
+      .query(`SELECT ${PUBLISHED_META_COLS} FROM published WHERE id = ?`)
+      .get(id) as RawPublishedRow<PublishedMeta> | null;
+    return row ? hydratePublished<PublishedMeta>(row) : null;
   }
 
   /** Published reports/apps without bodies, newest first (admin list). */
   listPublished(): PublishedMeta[] {
     const rows = this.db
-      .query(
-        "SELECT id, title, format, panels, params, refresh_seconds AS refreshSeconds, visibility, created_by AS createdBy, created_at AS createdAt, archived_at AS archivedAt, locked_at AS lockedAt, locked_by AS lockedBy FROM published ORDER BY created_at DESC",
-      )
-      .all() as unknown as (Omit<PublishedMeta, "panels" | "params"> & { panels: string | null; params: string | null })[];
-    return rows.map((r) => ({ ...r, panels: parsePanels(r.panels), params: parseParams(r.params) }));
+      .query(`SELECT ${PUBLISHED_META_COLS} FROM published ORDER BY created_at DESC`)
+      .all() as unknown as RawPublishedRow<PublishedMeta>[];
+    return rows.map((r) => hydratePublished<PublishedMeta>(r));
   }
 
   /** Soft-delete (archive) a published report/app. Returns false if already
    *  archived or unknown. The row + audit trail survive; cached panel data is
-   *  dropped (an archived link must stop serving live data immediately). */
+   *  dropped (an archived link must stop serving live data immediately), as are
+   *  any unlock grants on a password-protected link. */
   archivePublished(id: string): boolean {
     const archived =
       this.db.run("UPDATE published SET archived_at = ? WHERE id = ? AND archived_at IS NULL", [
         new Date().toISOString(),
         id,
       ]).changes > 0;
-    if (archived) this.db.run("DELETE FROM app_cache WHERE app_id = ?", [id]);
+    if (archived) {
+      this.db.run("DELETE FROM app_cache WHERE app_id = ?", [id]);
+      this.revokeAppAccess(id);
+    }
     return archived;
   }
 
@@ -1618,14 +1662,70 @@ export class KnowledgeStore {
   }
 
   /** Set a report's visibility (team ↔ public). Returns false for an unknown or
-   *  archived report. Promoting to public is an admin action (enforced upstream). */
+   *  archived report. Promoting to public is an admin action (enforced upstream).
+   *  Any outstanding unlock grants are revoked when an app leaves the public
+   *  surface, so a link that comes back later starts from a fresh prompt. */
   setReportVisibility(id: string, visibility: ReportVisibility): boolean {
-    return (
+    const changed =
       this.db.run("UPDATE published SET visibility = ? WHERE id = ? AND archived_at IS NULL", [
         visibility,
         id,
-      ]).changes > 0
-    );
+      ]).changes > 0;
+    if (changed && visibility !== "public") this.revokeAppAccess(id);
+    return changed;
+  }
+
+  /* ---- shared password on a public app (issue #112) ---- */
+
+  /** Set (or clear, with null) the shared password on an app. Takes the argon2id
+   *  HASH — hashing happens at the web edge, so the plaintext never reaches the
+   *  store. Every outstanding unlock grant is revoked, so a changed or removed
+   *  password takes effect on the next request for everyone already in. Returns
+   *  false for an unknown/archived app. */
+  setAppPassword(id: string, hash: string | null): boolean {
+    const changed =
+      this.db.run("UPDATE published SET password_hash = ? WHERE id = ? AND archived_at IS NULL", [hash, id])
+        .changes > 0;
+    if (changed) this.revokeAppAccess(id);
+    return changed;
+  }
+
+  /** The argon2id hash guarding an app, or null when it has none. The ONLY read
+   *  of the hash — it never travels in PublishedMeta. */
+  appPasswordHash(id: string): string | null {
+    const row = this.db.query("SELECT password_hash AS h FROM published WHERE id = ?").get(id) as
+      | { h: string | null }
+      | null;
+    return row?.h ?? null;
+  }
+
+  /** Record an unlock grant: a viewer typed the right password for `appId`.
+   *  Expired rows are swept on the way in (this path is rare and cheap). */
+  grantAppAccess(token: string, appId: string, expires: number): void {
+    this.db.run("DELETE FROM app_access WHERE expires <= ?", [Date.now()]);
+    this.db.run("INSERT OR REPLACE INTO app_access (token, app_id, expires, created_at) VALUES (?, ?, ?, ?)", [
+      token,
+      appId,
+      expires,
+      new Date().toISOString(),
+    ]);
+  }
+
+  /** Whether `token` is a live unlock grant FOR THIS APP. The app id is checked
+   *  server-side (never inferred from the cookie's path), so a grant for one app
+   *  can't open another. */
+  appAccessValid(token: string, appId: string, now = Date.now()): boolean {
+    if (!token) return false;
+    const row = this.db
+      .query("SELECT count(*) AS n FROM app_access WHERE token = ? AND app_id = ? AND expires > ?")
+      .get(token, appId, now) as { n: number };
+    return row.n > 0;
+  }
+
+  /** Drop every unlock grant for an app (password changed/cleared, archived, or
+   *  pulled back to team-only). */
+  revokeAppAccess(appId: string): number {
+    return this.db.run("DELETE FROM app_access WHERE app_id = ?", [appId]).changes;
   }
 
   get empty(): boolean {

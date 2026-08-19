@@ -201,6 +201,7 @@ export function AppView() {
     .join("&");
 
   const visibility = data?.visibility ?? "team";
+  const hasPassword = !!data?.hasPassword;
   const link = appShareUrl({ id, visibility });
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
@@ -442,7 +443,13 @@ export function AppView() {
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(link);
-      toast(visibility === "public" ? "Public link copied — no login needed." : "Link copied.");
+      toast(
+        visibility !== "public"
+          ? "Link copied."
+          : hasPassword
+            ? "Public link copied — viewers still need the password."
+            : "Public link copied — no login needed.",
+      );
     } catch {
       toast(link);
     }
@@ -560,6 +567,7 @@ export function AppView() {
         {data ? (
           <VisibilityBadge
             visibility={visibility}
+            hasPassword={hasPassword}
             canManage={active && (mine || isAdmin)}
             onOpen={() => setVisOpen(true)}
           />
@@ -729,10 +737,11 @@ export function AppView() {
       <VisibilityDialog
         open={visOpen}
         visibility={visibility}
+        hasPassword={hasPassword}
         canMakePublic={isAdmin}
-        onSubmit={(next) => {
+        onSubmit={(next, password) => {
           setVisOpen(false);
-          void act(() => api.setVisibility(id, next));
+          void act(() => api.setVisibility(id, next, password));
         }}
         onClose={() => setVisOpen(false)}
       />

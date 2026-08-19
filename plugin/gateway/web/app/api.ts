@@ -142,8 +142,14 @@ export const api = {
   revertApp: (id: string, seq: number) => req<MutationResult>("revert", { method: "POST", body: { id, seq } }),
   archive: (id: string) => req<MutationResult>("archive", { method: "POST", body: { id } }),
   unarchive: (id: string) => req<MutationResult>("unarchive", { method: "POST", body: { id } }),
-  setVisibility: (id: string, visibility: "team" | "public") =>
-    req<MutationResult>("set_visibility", { method: "POST", body: { id, visibility } }),
+  /** Sharing: visibility plus the optional shared password in front of a public
+   *  link. `password` omitted leaves any existing one alone; a string sets it;
+   *  null removes it (admin-only — it widens the link to everyone who has it). */
+  setVisibility: (id: string, visibility: "team" | "public", password?: string | null) =>
+    req<MutationResult>("set_visibility", {
+      method: "POST",
+      body: password === undefined ? { id, visibility } : { id, visibility, password },
+    }),
   // Lock (freeze against agent edits) / unlock — author-or-admin.
   setLocked: (id: string, locked: boolean) =>
     req<MutationResult>("set_locked", { method: "POST", body: { id, locked } }),

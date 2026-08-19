@@ -64,7 +64,16 @@ import {
   type SourceSeries,
   type SourceSeriesData,
 } from "./lib/approval";
-import { authenticate, canApprove, hashPassword, isRole, MIN_PASSWORD_LENGTH } from "./lib/accounts";
+import { authenticate, canApprove, hashPassword, isRole, MIN_PASSWORD_LENGTH, verifyPassword } from "./lib/accounts";
+import {
+  APP_ACCESS_TTL_MS,
+  appAccessClearCookie,
+  appAccessCookie,
+  appAccessSetCookie,
+  appPasswordPage,
+  mintAppAccessToken,
+  parseUnlockForm,
+} from "./lib/app-access";
 import { buildKnowledgeView } from "./lib/facts";
 import { VERSION } from "./lib/version";
 import { resolveLakeUrl } from "./lib/config";
@@ -537,6 +546,29 @@ function parseDraft(raw: unknown): CorrectionDraft | undefined {
   return { type: type as CorrectionDraft["type"], name, body, meta };
 }
 
+/** Read a request body as TEXT, refusing anything over `limit` bytes. Used by
+ *  the credential-free unlock form, where a JSON parse isn't wanted and an
+ *  unbounded read on an anonymous POST would be a free memory sink. */
+function readTextBody(req: http.IncomingMessage, limit: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (Number(req.headers["content-length"] ?? 0) > limit) return reject(new Error("body too large"));
+    let data = "";
+    let over = false;
+    // Drop the overflow but keep DRAINING the stream rather than destroying the
+    // socket — the caller still has an error page to write on it.
+    req.on("data", (c) => {
+      if (over) return;
+      data += c;
+      if (data.length > limit) {
+        over = true;
+        data = "";
+      }
+    });
+    req.on("end", () => (over ? reject(new Error("body too large")) : resolve(data)));
+    req.on("error", reject);
+  });
+}
+
 function readBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -911,25 +943,44 @@ const FRAME_CSP =
 // spends from it; only never-seen variants do.
 const PUBLIC_FRESH_BURST = 60; // bucket capacity
 const PUBLIC_FRESH_PER_SEC = 1; // sustained refill: ~60 fresh runs/min/app
-const freshBudget = new Map<string, { tokens: number; last: number }>();
-const refill = (b: { tokens: number; last: number }, now: number): number =>
-  Math.min(PUBLIC_FRESH_BURST, b.tokens + ((now - b.last) / 1000) * PUBLIC_FRESH_PER_SEC);
+
+/** A per-key token bucket for the credential-free surface. In-process (a box is
+ *  one gateway process) and self-pruning: a long-idle key refills to capacity and
+ *  is then indistinguishable from a fresh one, so full buckets are dropped once
+ *  the map grows — bounding it to recently-active keys rather than every id ever
+ *  seen. Returns false when the bucket is empty. */
+function tokenBucket(capacity: number, perSec: number): (key: string, now: number) => boolean {
+  const buckets = new Map<string, { tokens: number; last: number }>();
+  const refill = (b: { tokens: number; last: number }, now: number): number =>
+    Math.min(capacity, b.tokens + ((now - b.last) / 1000) * perSec);
+  return (key: string, now: number): boolean => {
+    const b = buckets.get(key) ?? { tokens: capacity, last: now };
+    b.tokens = refill(b, now);
+    b.last = now;
+    const ok = b.tokens >= 1;
+    if (ok) b.tokens -= 1;
+    buckets.set(key, b);
+    if (buckets.size > 512)
+      for (const [k, v] of buckets) if (k !== key && refill(v, now) >= capacity) buckets.delete(k);
+    return ok;
+  };
+}
+
 /** Spend one token for a fresh (cache-miss) render of `appId` on the public
  *  surface. Returns false when the bucket is empty → caller renders cache-only. */
-function spendFreshRun(appId: string, now: number): boolean {
-  const b = freshBudget.get(appId) ?? { tokens: PUBLIC_FRESH_BURST, last: now };
-  b.tokens = refill(b, now);
-  b.last = now;
-  const ok = b.tokens >= 1;
-  if (ok) b.tokens -= 1;
-  freshBudget.set(appId, b);
-  // Opportunistic GC: a long-idle app refills to full and is then indistinguishable
-  // from a fresh bucket, so drop fully-refilled entries once the map grows. Bounds
-  // it to recently-active apps rather than every app ever publicly viewed.
-  if (freshBudget.size > 512)
-    for (const [k, v] of freshBudget) if (k !== appId && refill(v, now) >= PUBLIC_FRESH_BURST) freshBudget.delete(k);
-  return ok;
-}
+const spendFreshRun = tokenBucket(PUBLIC_FRESH_BURST, PUBLIC_FRESH_PER_SEC);
+
+// Brute-force brake on the shared-password gate (issue #112). One shared secret
+// guards a public link, so the attempt RATE is what stands between a guesser and
+// the app — argon2id already makes each try expensive, this caps how many they
+// get. Keyed per APP (not per client: the box sits behind Caddy, so a client key
+// would come from a spoofable forwarded header, and per-app is the bound that
+// actually protects the secret). The cost of that choice is that a hammer can
+// make legitimate viewers wait ~20s for a retry slot — an acceptable trade for a
+// view-only gate, and one that can't lock anyone out permanently.
+const UNLOCK_BURST = 10; // ten quick tries (a typo run, a password-manager retry)
+const UNLOCK_PER_SEC = 1 / 20; // then ~3/min sustained
+const spendUnlockAttempt = tokenBucket(UNLOCK_BURST, UNLOCK_PER_SEC);
 
 /** Escape a JSON string for safe inlining inside a <script> tag. */
 function jsonForScript(value: unknown): string {
@@ -1016,6 +1067,8 @@ function appProvenance(
     title: meta.title,
     format: meta.format,
     visibility: meta.visibility,
+    /** A public link additionally guarded by a shared password (issue #112). */
+    hasPassword: meta.hasPassword,
     refreshSeconds: meta.refreshSeconds,
     params: meta.params ?? [],
     createdBy: meta.createdBy,
@@ -1086,6 +1139,10 @@ function escapeHtml(s: string): string {
 // same-origin data fetch, and a same-origin frame — no other network.
 const SHELL_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src 'self'; img-src data:; base-uri 'none'";
+
+// The password gate in front of a protected public app: a plain form, no script
+// at all, and `form-action 'self'` so the field can only ever post back here.
+const GATE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'";
 
 /** The credential-free public app shell at /p/<id>. (The team surface uses
  *  the React app, which renders the same frame + provenance.) Provenance here
@@ -1177,9 +1234,15 @@ function publicAppShell(opts: {
   /** Declared interactive inputs — rendered as stone controls in the header; the
    *  shell re-requests the frame with `?p.<name>=…` when one changes. */
   params: AppParam[];
+  /** This app sits behind a shared password (issue #112). The viewer got here
+   *  with an unlock cookie, so the shell's own fetches must CARRY it — the
+   *  credential-free default (`omit`) would 401 its /data and /state calls. */
+  guarded: boolean;
 }): string {
   const title = escapeHtml(opts.title || "App");
-  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, state: opts.statePath, admin: opts.adminPath, refresh: opts.refreshSeconds, hasPanels: opts.hasPanels });
+  // `creds` rides in the config so the unguarded surface keeps sending nothing
+  // at all, exactly as before, and only a password-gated app sends its grant.
+  const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, state: opts.statePath, admin: opts.adminPath, refresh: opts.refreshSeconds, hasPanels: opts.hasPanels, creds: opts.guarded ? "same-origin" : "omit" });
   const controls = paramControlsHtml(opts.params);
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -1253,8 +1316,8 @@ function publicAppShell(opts: {
         else if(m.op==='set') reply({result:d.entry});
         else reply({result:d.deleted});
       }).catch(function(err){ reply({error:String((err&&err.message)||err)}); }); }
-    if(m.op==='get'||m.op==='list'){ done(fetch(CFG.state+'?scope='+scope+'&owner='+encodeURIComponent(owner),{credentials:'omit'})); }
-    else if(m.op==='set'||m.op==='delete'){ done(fetch(CFG.state,{method:'POST',headers:{'content-type':'application/json'},credentials:'omit',body:JSON.stringify({op:m.op,scope:scope,owner:owner,key:String(m.key),value:m.value})})); }
+    if(m.op==='get'||m.op==='list'){ done(fetch(CFG.state+'?scope='+scope+'&owner='+encodeURIComponent(owner),{credentials:CFG.creds})); }
+    else if(m.op==='set'||m.op==='delete'){ done(fetch(CFG.state,{method:'POST',headers:{'content-type':'application/json'},credentials:CFG.creds,body:JSON.stringify({op:m.op,scope:scope,owner:owner,key:String(m.key),value:m.value})})); }
     else { reply({error:'bad op'}); }
   });
   function rel(iso){ if(!iso) return ''; var s=Math.max(0,Math.round((Date.now()-Date.parse(iso))/1000));
@@ -1273,7 +1336,7 @@ function publicAppShell(opts: {
   function reload(){ ldr.classList.add('on'); if(ldrT) clearTimeout(ldrT); ldrT=setTimeout(ldrOff, 25000);
     var q=paramQuery(); frame.src=CFG.frame+'?'+(q?q+'&':'')+'t='+Date.now(); }
   document.querySelectorAll('[data-pname]').forEach(function(el){ el.addEventListener('change', function(){ reload(); }); });
-  function refresh(){ fetch(CFG.data,{credentials:'omit'}).then(function(r){return r.json()}).then(function(d){
+  function refresh(){ fetch(CFG.data,{credentials:CFG.creds}).then(function(r){return r.json()}).then(function(d){
     var secs=d.refreshSeconds||CFG.refresh;
     var iv=secs<60?secs+'s':secs<3600?Math.round(secs/60)+'m':Math.round(secs/3600)+'h';
     // Omit the "data updated …" clause when there's no successful data yet (null
@@ -1356,6 +1419,83 @@ const httpServer = http.createServer(async (req, res) => {
       // wants the runtime + no-network frame.
       const hasPanels = (meta.panels?.length ?? 0) > 0;
 
+      // ---- optional shared-password gate (issue #112) ----
+      // An admin can put one shared password in front of a public link. It gates
+      // VIEWING only — an unlock grants exactly what the open link already
+      // granted, never a session or a tool (I9) — and it is checked HERE, ahead
+      // of every sub-path, so /frame, /data and /state are as closed as the shell.
+      // Everything below this block is reached only by an unlocked viewer.
+      const gatePath = `/p/${encodeURIComponent(id)}/unlock`;
+      const gatePage = (status: number, error?: string): void => {
+        res.writeHead(status, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": GATE_CSP,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+        });
+        res.end(appPasswordPage({ title: meta.title, actionPath: gatePath, error }));
+      };
+      const unlocked = !meta.hasPassword || store.appAccessValid(appAccessCookie(req.headers.cookie) ?? "", id);
+
+      if (sub === "unlock") {
+        // The one sub-path a locked viewer may reach. POST-only: the password
+        // must never ride in a URL (referrer, history, proxy logs).
+        if (!meta.hasPassword || req.method !== "POST") return notFound();
+        if (!spendUnlockAttempt(id, Date.now())) {
+          store.audit("public", "app_unlock_throttled", { id });
+          return gatePage(429, "Too many attempts on this link — wait a moment and try again.");
+        }
+        let supplied = "";
+        try {
+          supplied = parseUnlockForm(await readTextBody(req, 4096));
+        } catch {
+          return gatePage(400, "Couldn't read that — try again.");
+        }
+        if (!(await verifyPassword(supplied, store.appPasswordHash(id)))) {
+          store.audit("public", "app_unlock_failed", { id });
+          return gatePage(401, "That password didn't work.");
+        }
+        const token = mintAppAccessToken();
+        store.grantAppAccess(token, id, Date.now() + APP_ACCESS_TTL_MS);
+        store.audit("public", "app_unlocked", { id });
+        // PRG: redirect to the app itself so a reload doesn't re-post the form.
+        res.writeHead(302, {
+          location: `/p/${encodeURIComponent(id)}`,
+          "set-cookie": appAccessSetCookie(id, token),
+          "cache-control": "no-store",
+          "referrer-policy": "no-referrer",
+        });
+        res.end();
+        return;
+      }
+
+      if (!unlocked) {
+        // A sub-resource (frame/data/state) without a grant is a hard 401 — the
+        // shell is what prompts; these must never serve app content or accept a
+        // state write. Clear any cookie that got us here: it's expired or was
+        // revoked by a password change, and leaving it would keep the browser
+        // sending a dead grant.
+        if (sub) {
+          res.writeHead(401, {
+            "content-type": "application/json",
+            "set-cookie": appAccessClearCookie(id),
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer",
+          });
+          res.end(JSON.stringify({ ok: false, error: "password required" }));
+          return;
+        }
+        store.audit("public", "app_password_prompted", { id });
+        return gatePage(200);
+      }
+
+      // A protected app's pages must not sit in any shared or heuristic cache —
+      // the whole point is that the bytes are only for someone who typed the
+      // password. Unprotected public apps keep the existing (unspecified) policy.
+      const noStore = meta.hasPassword ? { "cache-control": "no-store" } : {};
+
       // /data is the freshness poll — meaningful only with panels.
       if (sub === "data" && !hasPanels) return notFound();
 
@@ -1369,6 +1509,7 @@ const httpServer = http.createServer(async (req, res) => {
           "content-type": "application/json",
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
+          ...noStore,
         });
         res.end(
           JSON.stringify({
@@ -1399,7 +1540,7 @@ const httpServer = http.createServer(async (req, res) => {
           return;
         }
         const jsonOut = (status: number, body: unknown): void => {
-          res.writeHead(status, { "content-type": "application/json", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" });
+          res.writeHead(status, { "content-type": "application/json", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer", ...noStore });
           res.end(JSON.stringify(body));
         };
         if (req.method === "GET") {
@@ -1445,6 +1586,7 @@ const httpServer = http.createServer(async (req, res) => {
           "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox`,
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
+          ...noStore,
         });
         res.end(frameDocument(rep, panels, { team: false, params: resolvedParamValues(rep.params ?? [], raw) }));
         return;
@@ -1460,6 +1602,7 @@ const httpServer = http.createServer(async (req, res) => {
         "content-security-policy": SHELL_CSP,
         "x-content-type-options": "nosniff",
         "referrer-policy": "no-referrer",
+        ...noStore,
       });
       res.end(
         publicAppShell({
@@ -1471,6 +1614,7 @@ const httpServer = http.createServer(async (req, res) => {
           refreshSeconds: meta.refreshSeconds ?? 300,
           hasPanels,
           params: meta.params ?? [],
+          guarded: meta.hasPassword,
         }),
       );
       return;
@@ -2219,26 +2363,61 @@ const httpServer = http.createServer(async (req, res) => {
             });
           }
 
+          // Sharing: visibility, plus the optional shared password that can sit in
+          // front of a public link (issue #112). One endpoint so the two land
+          // together and an app is never briefly public-and-open on the way to
+          // public-and-protected. `password`: absent = leave as-is, a string =
+          // set it, null = remove it.
           if (api === "set_visibility") {
-            const body = (await readBody(req)) as { id?: string; visibility?: string } | undefined;
+            const body = (await readBody(req)) as { id?: string; visibility?: string; password?: string | null } | undefined;
             const id = (body?.id ?? "").trim();
             const visibility = body?.visibility;
             if (visibility !== "team" && visibility !== "public")
               return json(400, { ok: false, error: "visibility must be 'team' or 'public'" });
+            const changesPassword = body != null && "password" in body;
+            // "" and null both mean REMOVE — a blank field is the natural way a
+            // client says "no password", not a zero-length one to enforce.
+            const password = typeof body?.password === "string" && body.password.length ? body.password : null;
             if (!mayMutateApp(id)) return;
-            // Making an app PUBLIC (a credential-free link) is an ADMIN action
-            // (I9) — an author can take it back to team-only, but not expose it.
-            if (visibility === "public" && !canApprove(session.role)) {
+            const before = store.getPublishedMeta(id);
+            if (!before) return json(404, { ok: false, error: "No active app with that id." });
+            // EXPOSING an app (a credential-free link) is an ADMIN action (I9) —
+            // an author can take it back to team-only, but not put it out there.
+            // Re-asserting "public" on an app that is ALREADY public exposes
+            // nothing new, and is how an author adds a password to their own
+            // live link, so it's only the transition that's gated.
+            if (visibility === "public" && before.visibility !== "public" && !canApprove(session.role)) {
               store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
               return json(403, { ok: false, error: "Only an admin can make an app public." });
             }
+            // REMOVING a password widens a public link to everyone who has it —
+            // the same exposure as promoting to public, so it takes the same
+            // admin bar. Setting or changing one only narrows access, so an
+            // author may do that to their own app.
+            if (changesPassword && !password && !canApprove(session.role)) {
+              store.audit(session.identity, "admin_mutation_denied", { api, role: session.role });
+              return json(403, { ok: false, error: "Only an admin can remove an app's password." });
+            }
+            if (password != null && password.length < MIN_PASSWORD_LENGTH)
+              return json(400, { ok: false, error: `App password must be at least ${MIN_PASSWORD_LENGTH} characters.` });
+            // Password FIRST: going team → public-with-password must not pass
+            // through a moment where the link is live and open.
+            if (changesPassword) {
+              const hash = password ? await hashPassword(password) : null;
+              if (!store.setAppPassword(id, hash)) return json(404, { ok: false, error: "No active app with that id." });
+              store.audit(session.identity, password ? "app_password_set" : "app_password_cleared", { id });
+            }
             const ok = store.setReportVisibility(id, visibility);
-            store.audit(session.identity, "app_visibility_set", { id, visibility, ok });
+            // A protected app whose password was left alone still has one.
+            const guarded = changesPassword ? !!password : before.hasPassword;
+            store.audit(session.identity, "app_visibility_set", { id, visibility, hasPassword: guarded, ok });
             return json(ok ? 200 : 404, {
               ok,
               flash: ok
                 ? visibility === "public"
-                  ? "Now PUBLIC — anyone with the /p link can open it, no login required."
+                  ? guarded
+                    ? "Now PUBLIC with a password — anyone with the link AND the password can open it."
+                    : "Now PUBLIC — anyone with the /p link can open it, no login required."
                   : "Now team-only."
                 : "No active app with that id.",
             });

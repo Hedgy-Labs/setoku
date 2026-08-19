@@ -170,6 +170,9 @@ export interface PublishedMeta {
   panels: AppPanel[] | null;
   refreshSeconds: number | null;
   visibility: ReportVisibility;
+  /** A public link additionally guarded by a shared password (the link alone
+   *  isn't enough). Always false while the app is team-only. */
+  hasPassword: boolean;
   createdBy: string;
   createdAt: string;
   archivedAt: string | null;
@@ -220,6 +223,8 @@ export interface AppData {
   title: string;
   format: "html" | "app";
   visibility: ReportVisibility;
+  /** A public link additionally guarded by a shared password. */
+  hasPassword: boolean;
   refreshSeconds: number | null;
   params: AppParam[];
   createdBy: string;

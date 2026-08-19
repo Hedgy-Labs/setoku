@@ -125,7 +125,12 @@ export function Apps() {
                         <Badge tone="idle">locked</Badge>
                       </span>
                     ) : null}
-                    <VisibilityBadge visibility={r.visibility} canManage={canManage} onOpen={() => setVisApp(r)} />
+                    <VisibilityBadge
+                      visibility={r.visibility}
+                      hasPassword={r.hasPassword}
+                      canManage={canManage}
+                      onOpen={() => setVisApp(r)}
+                    />
                     <Menu label={`Actions for ${r.title}`}>{items}</Menu>
                   </div>
                 );
@@ -190,11 +195,12 @@ export function Apps() {
       <VisibilityDialog
         open={!!visApp}
         visibility={visApp?.visibility ?? "team"}
+        hasPassword={!!visApp?.hasPassword}
         canMakePublic={isAdmin}
-        onSubmit={(next) => {
+        onSubmit={(next, password) => {
           const a = visApp;
           setVisApp(null);
-          if (a) void act(() => api.setVisibility(a.id, next));
+          if (a) void act(() => api.setVisibility(a.id, next, password));
         }}
         onClose={() => setVisApp(null)}
       />

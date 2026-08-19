@@ -2,72 +2,121 @@
 import { AlertDialog } from "@base-ui-components/react/alert-dialog";
 import { useEffect, useRef, useState } from "react";
 import { cn } from "../cn";
+import { MIN_PASSWORD_LENGTH } from "../types";
 
 type Vis = "team" | "public";
+/** The three states a person actually chooses between. "protected" is still
+ *  visibility=public on the wire — plus a shared password on the link. */
+type Choice = "team" | "public" | "protected";
 
-/** A Google-Docs-style visibility picker: one dialog, opened from the badge in
- *  either state, listing Team and Public with the current one marked. The radio
- *  is a LOCAL selection — nothing changes until Save (so a mis-click can't expose
- *  an app), and Save is focused on open so Enter submits. Promoting to Public is
- *  admin-only (I9): the Public row is disabled for non-admins. */
+/** A Google-Docs-style sharing picker: one dialog, opened from the badge in any
+ *  state, listing Team / Anyone with the link / Anyone with the link and password,
+ *  with the current one marked. The radio is a LOCAL selection — nothing changes
+ *  until Save (so a mis-click can't expose an app), and Save is focused on open so
+ *  Enter submits. Exposing an app publicly is admin-only (I9): both public rows
+ *  are disabled for non-admins. */
 export function VisibilityDialog({
   open,
   visibility,
+  hasPassword,
   canMakePublic,
   onSubmit,
   onClose,
 }: {
   open: boolean;
   visibility: Vis;
-  /** Admin — may choose Public. */
+  /** A shared password already guards this app's public link. */
+  hasPassword: boolean;
+  /** Admin — may choose either public option. */
   canMakePublic: boolean;
-  /** Called with the chosen value ONLY when it differs from the current one. */
-  onSubmit: (next: Vis) => void;
+  /** Called with the chosen visibility and the password change ONLY when
+   *  something actually differs: `undefined` leaves any stored password alone,
+   *  a string sets it, null removes it. */
+  onSubmit: (next: Vis, password?: string | null) => void;
   onClose: () => void;
 }) {
-  const [sel, setSel] = useState<Vis>(visibility);
+  const current: Choice = visibility === "public" ? (hasPassword ? "protected" : "public") : "team";
+  const [sel, setSel] = useState<Choice>(current);
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState<string | null>(null);
   // Reset the pending selection to the live value each time the dialog opens.
   useEffect(() => {
-    if (open) setSel(visibility);
-  }, [open, visibility]);
+    if (open) {
+      setSel(current);
+      setPw("");
+      setError(null);
+    }
+  }, [open, current]);
   const saveRef = useRef<HTMLButtonElement>(null);
-  const submit = (): void => (sel === visibility ? onClose() : onSubmit(sel));
 
-  const Option = ({ value, label, desc, disabled }: { value: Vis; label: string; desc: string; disabled?: boolean }) => {
+  const submit = (): void => {
+    if (sel === "protected") {
+      // A typed password replaces whatever is there; an empty field keeps the
+      // existing one (so "still protected, don't change it" is one click) — but
+      // there has to BE one to keep.
+      if (!pw && !hasPassword) {
+        setError(`Enter a password of at least ${MIN_PASSWORD_LENGTH} characters.`);
+        return;
+      }
+      if (pw && pw.length < MIN_PASSWORD_LENGTH) {
+        setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`);
+        return;
+      }
+      if (sel === current && !pw) return onClose(); // nothing to change
+      return onSubmit("public", pw || undefined);
+    }
+    if (sel === current) return onClose();
+    // Leaving "protected" for the open link drops the password; going team-only
+    // leaves it stored, so re-publishing later can't silently unlock the link.
+    return onSubmit(sel === "public" ? "public" : "team", sel === "public" && hasPassword ? null : undefined);
+  };
+
+  const Option = ({ value, label, desc, disabled, children }: { value: Choice; label: string; desc: string; disabled?: boolean; children?: React.ReactNode }) => {
     const checked = sel === value;
-    const current = visibility === value;
     return (
-      <button
-        type="button"
-        role="radio"
-        aria-checked={checked}
-        disabled={disabled}
-        onClick={() => setSel(value)}
+      <div
         className={cn(
-          "flex w-full items-start gap-3 rounded-lg border px-3 py-2.5 text-left transition",
-          checked ? "border-stone-400 bg-stone-50" : "border-stone-200 hover:bg-stone-50",
-          disabled && "cursor-not-allowed opacity-50 hover:bg-transparent",
+          "rounded-lg border transition",
+          checked ? "border-stone-400 bg-stone-50" : "border-stone-200",
+          disabled && "opacity-50",
         )}
       >
-        <span
+        <button
+          type="button"
+          role="radio"
+          aria-checked={checked}
+          disabled={disabled}
+          onClick={() => {
+            setSel(value);
+            setError(null);
+          }}
           className={cn(
-            "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
-            checked ? "border-stone-700" : "border-stone-300",
+            "flex w-full items-start gap-3 rounded-lg px-3 py-2.5 text-left",
+            !checked && !disabled && "hover:bg-stone-50",
+            disabled && "cursor-not-allowed",
           )}
         >
-          {checked ? <span className="h-2 w-2 rounded-full bg-stone-700" /> : null}
-        </span>
-        <span className="min-w-0">
-          <span className="flex items-center gap-2 text-sm font-medium text-stone-900">
-            {label}
-            {current ? <span className="text-xs font-normal text-stone-400">Current</span> : null}
+          <span
+            className={cn(
+              "mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border",
+              checked ? "border-stone-700" : "border-stone-300",
+            )}
+          >
+            {checked ? <span className="h-2 w-2 rounded-full bg-stone-700" /> : null}
           </span>
-          <span className="mt-0.5 block text-xs text-stone-500">
-            {desc}
-            {disabled ? " Only an admin can make an app public." : ""}
+          <span className="min-w-0">
+            <span className="flex items-center gap-2 text-sm font-medium text-stone-900">
+              {label}
+              {current === value ? <span className="text-xs font-normal text-stone-400">Current</span> : null}
+            </span>
+            <span className="mt-0.5 block text-xs text-stone-500">
+              {desc}
+              {disabled ? " Only an admin can share an app publicly." : ""}
+            </span>
           </span>
-        </span>
-      </button>
+        </button>
+        {checked ? children : null}
+      </div>
     );
   };
 
@@ -95,11 +144,38 @@ export function VisibilityDialog({
             <Option value="team" label="Team" desc="Anyone signed in to the box can open it." />
             <Option
               value="public"
-              label="Public"
-              desc="Anyone with the link can open it, no sign-in."
+              label="Anyone with the link"
+              desc="No sign-in — the link is the only thing needed."
               disabled={!canMakePublic}
             />
+            <Option
+              value="protected"
+              label="Anyone with the link and password"
+              desc="No sign-in, but they have to type a shared password first."
+              disabled={!canMakePublic}
+            >
+              <div className="px-3 pb-3">
+                <input
+                  className="input"
+                  type="password"
+                  value={pw}
+                  autoComplete="new-password"
+                  onChange={(e) => {
+                    setPw(e.target.value);
+                    setError(null);
+                  }}
+                  placeholder={
+                    hasPassword ? "leave blank to keep the current password" : `password (${MIN_PASSWORD_LENGTH}+ characters)`
+                  }
+                />
+                <p className="mt-1.5 text-xs text-stone-500">
+                  One password for everyone with the link — share it separately from the link itself. Changing it signs
+                  out everyone who already unlocked the app.
+                </p>
+              </div>
+            </Option>
           </div>
+          {error ? <p className="mt-3 text-xs text-red-700">{error}</p> : null}
           <div className="mt-4 flex justify-end gap-2">
             <AlertDialog.Close data-role="cancel" className="btn btn-ghost">
               Cancel
