@@ -982,6 +982,14 @@ const UNLOCK_BURST = 10; // ten quick tries (a typo run, a password-manager retr
 const UNLOCK_PER_SEC = 1 / 20; // then ~3/min sustained
 const spendUnlockAttempt = tokenBucket(UNLOCK_BURST, UNLOCK_PER_SEC);
 
+// One argon2id verification holds ~64MB while it runs, so on a deliberately
+// small box a BURST of simultaneous attempts is a memory spike, not just CPU.
+// The bucket above caps the rate; this caps the peak. Attempts are cheap and
+// fast (~100ms), so an honest viewer never sees this — and a hammer can't camp
+// on the slots, because the bucket cuts it to ~3/min long before that.
+const MAX_CONCURRENT_UNLOCKS = 2;
+let unlocksInFlight = 0;
+
 /** Escape a JSON string for safe inlining inside a <script> tag. */
 function jsonForScript(value: unknown): string {
   return JSON.stringify(value)
@@ -1452,7 +1460,16 @@ const httpServer = http.createServer(async (req, res) => {
         } catch {
           return gatePage(400, "Couldn't read that — try again.");
         }
-        if (!(await verifyPassword(supplied, store.appPasswordHash(id)))) {
+        if (unlocksInFlight >= MAX_CONCURRENT_UNLOCKS)
+          return gatePage(429, "Busy checking other attempts — try again in a moment.");
+        unlocksInFlight++;
+        let matched = false;
+        try {
+          matched = await verifyPassword(supplied, store.appPasswordHash(id));
+        } finally {
+          unlocksInFlight--;
+        }
+        if (!matched) {
           store.audit("public", "app_unlock_failed", { id });
           return gatePage(401, "That password didn't work.");
         }

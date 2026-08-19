@@ -193,9 +193,11 @@ the plaintext never touches disk or a log).
   password (or pulling the app back to team-only, or archiving it) revokes every
   outstanding one on the next request.
 - Attempts are rate-limited per app (10 burst, then ~3/min) on top of argon2id's
-  own cost. Per *app*, not per client: the box sits behind Caddy, so a client key
-  would come from a spoofable header. The cost is that a hammer can make real
-  viewers wait ~20s for a slot — acceptable for a view-only gate.
+  own cost, and no more than 2 verifications run at once (each argon2id pass
+  holds ~64MB — on a small box a simultaneous burst is a memory spike, not just
+  CPU). The rate limit is per *app*, not per client: the box sits behind Caddy,
+  so a client key would come from a spoofable header. The cost is that a hammer
+  can make real viewers wait ~20s for a slot — acceptable for a view-only gate.
 - Protected pages are served `Cache-Control: no-store`.
 
 **It is a viewing gate, not an identity.** There is no account, no per-person
