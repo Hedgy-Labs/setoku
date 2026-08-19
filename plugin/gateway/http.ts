@@ -1496,19 +1496,19 @@ const httpServer = http.createServer(async (req, res) => {
         if (!meta.hasPassword || req.method !== "POST") return notFound();
         if (!unlockAttempts.spend(id, Date.now())) {
           store.audit("public", "app_unlock_throttled", { id });
-          return gatePage(429, "Too many attempts on this link — wait a moment and try again.");
+          return gatePage(429, "Too many attempts on this link. Wait a moment and try again.");
         }
         let supplied = "";
         try {
           supplied = parseUnlockForm(await readTextBody(req, 4096));
         } catch {
           unlockAttempts.refund(id);
-          return gatePage(400, "Couldn’t read that — try again.");
+          return gatePage(400, "Couldn’t read that. Try again.");
         }
         const slot = await withUnlockSlot(() => verifyPassword(supplied, store.appPasswordHash(id)));
         if (!slot) {
           unlockAttempts.refund(id); // never verified — don't charge for our own backlog
-          return gatePage(429, "Busy checking other attempts — try again in a moment.");
+          return gatePage(429, "Busy checking other attempts. Try again in a moment.");
         }
         if (!slot.value) {
           store.audit("public", "app_unlock_failed", { id });
@@ -1894,7 +1894,7 @@ const httpServer = http.createServer(async (req, res) => {
                 .catch(() => null);
               email = p?.emailAddress ?? "";
             }
-            if (!email) return back("Connected to Google, but couldn’t read the mailbox address — please try connecting again.");
+            if (!email) return back("Connected to Google, but couldn’t read the mailbox address. Please try connecting again.");
             // Replace any prior entry for the SAME mailbox or the SAME refresh token,
             // then add. Every stored account now has a real email, so dedup and
             // /admin disconnect both key on it cleanly (no blank-email edge cases).
@@ -2319,7 +2319,7 @@ const httpServer = http.createServer(async (req, res) => {
             if (!mayMutateApp(id)) return;
             const ok = store.archivePublished(id);
             store.audit(session.identity, "unpublish_app", { id, ok });
-            return json(200, { ok, flash: "Archived — its link no longer works." });
+            return json(200, { ok, flash: "Archived. Its link no longer works." });
           }
 
           // Lock / unlock — author-or-admin, same gate as archive/visibility.
@@ -2337,8 +2337,8 @@ const httpServer = http.createServer(async (req, res) => {
               ok,
               flash: ok
                 ? body.locked
-                  ? "Locked — agents can't edit or archive it until it's unlocked."
-                  : "Unlocked — agents can edit it again."
+                  ? "Locked. Agents can’t edit or archive it until it’s unlocked."
+                  : "Unlocked. Agents can edit it again."
                 : body.locked
                   ? "Already locked."
                   : "Already unlocked.",
@@ -2391,7 +2391,7 @@ const httpServer = http.createServer(async (req, res) => {
             // `error` (not `flash`) on failure — the SPA surfaces `error` on a
             // non-2xx; a `flash` here would be dropped and shown as "HTTP 409".
             if (!ok)
-              return json(409, { ok: false, error: "Couldn't restore that version — the app may have just been archived." });
+              return json(409, { ok: false, error: "Couldn’t restore that version. The app may have just been archived." });
             let reverted = false;
             if (dataChanged && meta.visibility === "public") {
               store.setReportVisibility(id, "team");
@@ -2421,7 +2421,7 @@ const httpServer = http.createServer(async (req, res) => {
               ok: true,
               flash:
                 (reverted
-                  ? `Restored version ${seq} — its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
+                  ? `Restored version ${seq}. Its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
                   : `Restored version ${seq}.`) + panelWarning,
             });
           }
@@ -2442,7 +2442,7 @@ const httpServer = http.createServer(async (req, res) => {
             store.audit(session.identity, "unarchive_app", { id, ok });
             return json(ok ? 200 : 409, {
               ok,
-              flash: ok ? "Restored as team-only — an admin can make it public again." : "Already restored.",
+              flash: ok ? "Restored as team-only. An admin can make it public again." : "Already restored.",
             });
           }
 
@@ -2502,8 +2502,8 @@ const httpServer = http.createServer(async (req, res) => {
               flash: ok
                 ? visibility === "public"
                   ? guarded
-                    ? "Now PUBLIC with a password — anyone with the link AND the password can open it."
-                    : "Now PUBLIC — anyone with the /p link can open it, no login required."
+                    ? "Now PUBLIC with a password. Anyone with the link AND the password can open it."
+                    : "Now PUBLIC. Anyone with the /p link can open it, no login required."
                   : "Now team-only."
                 : "No active app with that id.",
             });
@@ -2542,7 +2542,7 @@ const httpServer = http.createServer(async (req, res) => {
             // `gb` must be PRESENT: a body that never expressed a threshold
             // (empty/malformed) must not silently switch the alarm off —
             // disabling is an explicit gb: 0 or gb: null.
-            if (gb === undefined) return json(400, { ok: false, error: "Pass gb — a GB/day number (0 disables)." });
+            if (gb === undefined) return json(400, { ok: false, error: "Pass gb, a GB/day number (0 disables)." });
             if (gb !== null && (typeof gb !== "number" || !Number.isFinite(gb) || gb < 0 || gb > 100_000))
               return json(400, { ok: false, error: "Threshold must be a GB/day number (0 disables)." });
             setEgressThreshold(store, gb ? gb * 1e9 : null);
@@ -2607,7 +2607,7 @@ const httpServer = http.createServer(async (req, res) => {
             const rotate = body?.rotate === true;
             if (!identity) return json(400, { ok: false, error: "Enter a teammate email to invite." });
             if (!rotate && analystIdentities().includes(identity))
-              return json(409, { ok: false, error: `${identity} already has an agent connector — use Rotate to replace it.` });
+              return json(409, { ok: false, error: `${identity} already has an agent connector. Use Rotate to replace it.` });
             let flash: string | undefined;
             let revokedEnv = false;
             if (rotate) {
@@ -2619,7 +2619,7 @@ const httpServer = http.createServer(async (req, res) => {
             const { persisted } = addAnalystToken(token, identity);
             const invite: Invite = { identity, token, installerUrl: `${baseUrl}/i/${token}`, mcpUrl: `${baseUrl}/mcp`, persisted };
             if (rotate)
-              flash = `Rotated ${identity}'s connector — the old token no longer works.${revokedEnv ? " (One old token is in SETOKU_TOKENS env, not the file — it returns on restart; remove it from .env to fully revoke.)" : ""}`;
+              flash = `Rotated ${identity}’s connector. The old token no longer works.${revokedEnv ? " (One old token is in SETOKU_TOKENS env, not the file, so it returns on restart; remove it from .env to fully revoke.)" : ""}`;
             else store.audit(session.identity, "teammate_invited", { identity, persisted });
             let newLogin: { username: string; role: string; tempPassword: string } | undefined;
             if (!store.getAccount(identity)) {
@@ -2669,7 +2669,7 @@ const httpServer = http.createServer(async (req, res) => {
               // for the 14-day session lifetime; a promote re-logs-in too).
               store.destroySessionsFor(uname);
               store.audit(session.identity, "account_role_changed", { username: uname, role });
-              return json(200, { ok: true, flash: `${uname} is now ${role} — they'll need to sign in again.` });
+              return json(200, { ok: true, flash: `${uname} is now ${role}. They’ll need to sign in again.` });
             }
             if (op === "reset") {
               if (!acct) return json(404, { ok: false, error: `No login "${uname}".` });
@@ -2718,9 +2718,9 @@ const httpServer = http.createServer(async (req, res) => {
               let flash = `Removed ${uname} (${acct ? "login deleted, " : ""}${removed} connector${removed === 1 ? "" : "s"} revoked).`;
               if (envBacked)
                 flash +=
-                  " One token is pinned in SETOKU_TOKENS in the box's .env — it's revoked now but returns on restart; delete it from .env and `docker compose up -d server` to make it permanent.";
+                  " One token is pinned in SETOKU_TOKENS in the box’s .env. It’s revoked now but returns on restart; delete it from .env and `docker compose up -d server` to make it permanent.";
               if (holdsOperatorToken(uname))
-                flash += " Note: this identity also holds an operator (curator/janitor) token in the box's env — unaffected.";
+                flash += " Note: this identity also holds an operator (curator/janitor) token in the box’s env; that one is unaffected.";
               return json(200, { ok: true, flash });
             }
             return json(400, { ok: false, error: "Unknown operation." });
@@ -2742,7 +2742,7 @@ const httpServer = http.createServer(async (req, res) => {
               return json(409, {
                 ok: false,
                 error:
-                  "Per-source access is disabled on this box (SETOKU_SOURCE_ACCESS=0). Remove that env var and restart the server before setting data-access limits — otherwise a deny here wouldn't actually be enforced.",
+                  "Per-source access is disabled on this box (SETOKU_SOURCE_ACCESS=0). Remove that env var and restart the server before setting data-access limits, otherwise a deny here wouldn't actually be enforced.",
               });
             const body = (await readBody(req)) as { username?: string; denies?: unknown } | undefined;
             const uname = (body?.username ?? "").trim();
@@ -2750,7 +2750,7 @@ const httpServer = http.createServer(async (req, res) => {
             const isPerson = analystIdentities().includes(uname) || !!store.getAccount(uname);
             if (!isPerson) return json(404, { ok: false, error: `No person "${uname}" (no login, no connector).` });
             if (!Array.isArray(body?.denies) || body.denies.some((d) => typeof d !== "string"))
-              return json(400, { ok: false, error: "Pass denies — an array of source-family slugs." });
+              return json(400, { ok: false, error: "Pass denies, an array of source-family slugs." });
             // Normalize whatever arrives to catalog-shaped slugs; unknown slugs
             // are kept (a deny must outlive its connector), just normalized.
             const denies = [...new Set((body.denies as string[]).map((d) => familySlug(d)).filter(Boolean))];

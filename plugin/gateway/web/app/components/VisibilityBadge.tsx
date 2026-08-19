@@ -39,7 +39,7 @@ export function VisibilityBadge({
       {visibility}
     </span>
   );
-  const title = guarded ? "Public, password-protected — click to change who can see this" : "Change who can see this";
+  const title = guarded ? "Public, password-protected. Click to change who can see this." : "Change who can see this";
   if (!canManage) return <Badge tone={isPublic ? "ok" : "idle"}>{label}</Badge>;
   return (
     <button

@@ -150,13 +150,13 @@ export function SourceAccessDialog({
               <p className="py-2 text-xs text-stone-400">Loading connected sources…</p>
             ) : !families.length && !stale.length ? (
               <p className="py-2 text-xs text-stone-400">
-                No data sources are connected yet — nothing to restrict.
+                No data sources are connected yet, so there’s nothing to restrict.
               </p>
             ) : (
               <>
                 {outage ? (
                   <p className="mb-1 text-xs text-amber-600">
-                    Couldn’t reach the lake — showing all sources; connection status is unavailable.
+                    Couldn’t reach the lake, so all sources are shown; connection status is unavailable.
                   </p>
                 ) : null}
                 {families.map((f) => (

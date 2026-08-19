@@ -31,11 +31,11 @@ export function Login() {
         </h1>
         <p className="mb-5 text-sm leading-relaxed text-stone-600">
           Sign in to review pending knowledge. This is a separate credential from the access token you
-          give Claude — agents never have it.
+          give Claude. Agents never have it.
         </p>
         {expired && !error ? (
           <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            Your session expired — please sign in again.
+            Your session expired. Please sign in again.
           </div>
         ) : null}
         {error ? <FormError className="mb-4">{error}</FormError> : null}

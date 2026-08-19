@@ -32,10 +32,10 @@ export function Apps() {
       await navigator.clipboard.writeText(appShareUrl(r));
       toast(
         r.visibility !== "public"
-          ? "Link copied — recipients must sign in to the box to view."
+          ? "Link copied. Recipients must sign in to the box to view."
           : r.hasPassword
-            ? "Public link copied — no login, but viewers still need the password."
-            : "Public link copied — anyone can open it, no login.",
+            ? "Public link copied. No login, but viewers still need the password."
+            : "Public link copied. Anyone can open it, no login.",
       );
     } catch {
       toast(appShareUrl(r));
@@ -124,7 +124,7 @@ export function Apps() {
                       <Badge tone="idle">static</Badge>
                     )}
                     {r.lockedAt ? (
-                      <span title={`Locked${r.lockedBy ? ` by ${r.lockedBy}` : ""} — agents can’t edit or archive it.`}>
+                      <span title={`Locked${r.lockedBy ? ` by ${r.lockedBy}` : ""}. Agents can’t edit or archive it.`}>
                         <Badge tone="idle">locked</Badge>
                       </span>
                     ) : null}
@@ -172,7 +172,7 @@ export function Apps() {
       <Confirm
         open={!!archiving}
         title="Archive this app?"
-        body={`"${archiving?.title}" will stop working at its link (public and team). The record is kept — you can restore it from the Archived list.`}
+        body={`"${archiving?.title}" will stop working at its link (public and team). The record is kept, so you can restore it from the Archived list.`}
         confirmLabel="Archive"
         danger
         onConfirm={() => {
@@ -185,7 +185,7 @@ export function Apps() {
       <Confirm
         open={!!locking}
         title="Lock this app?"
-        body={`Agents won’t be able to edit or archive "${locking?.title}" until it’s unlocked — anyone can still view it or copy it into a new app. The author or an admin can unlock it anytime.`}
+        body={`Agents won’t be able to edit or archive "${locking?.title}" until it’s unlocked. Anyone can still view it or copy it into a new app, and the author or an admin can unlock it anytime.`}
         confirmLabel="Lock"
         defaultAction
         onConfirm={() => {
@@ -210,7 +210,7 @@ export function Apps() {
       <NewDialog
         open={newOpen}
         onClose={() => setNewOpen(false)}
-        onCopied={() => toast("Prompt copied — paste it into your agent (describe the app you want).")}
+        onCopied={() => toast("Prompt copied. Paste it into your agent (describe the app you want).")}
       />
     </>
   );
@@ -221,7 +221,7 @@ export function Apps() {
 function NewDialog({ open, onClose, onCopied }: { open: boolean; onClose: () => void; onCopied: () => void }) {
   const prompt =
     `Build a new app on my Setoku (${location.origin}).\n` +
-    `Develop the queries with run_query (find_context / get_metric for curated metrics), then publish_app — give each panel a title + one-line description, and a template using the Setoku.bar/table/stat/line helpers.\n\n` +
+    `Develop the queries with run_query (find_context / get_metric for curated metrics), then publish_app. Give each panel a title + one-line description, and a template using the Setoku.bar/table/stat/line helpers.\n\n` +
     `What I want:\n`;
   return (
     <AlertDialog.Root open={open} onOpenChange={(o) => (o ? null : onClose())}>

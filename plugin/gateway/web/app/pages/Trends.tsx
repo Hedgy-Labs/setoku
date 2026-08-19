@@ -32,7 +32,7 @@ export function Trends() {
   return (
     <>
       <Heading title="Ingestion trends">
-        Rows landed per day, by source, over the last 30 days — the real fill rate of your lake.
+        Rows landed per day, by source, over the last 30 days: the real fill rate of your lake.
         A steady line is a healthy passive drain; spikes track real activity.{" "}
         <Link to="/sources" className="text-stone-600 underline underline-offset-2 hover:text-stone-900">
           ← back to Sources

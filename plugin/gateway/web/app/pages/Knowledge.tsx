@@ -658,7 +658,7 @@ function SubjectPage({
               <MemberBlock key={`${m.type}:${m.name}:${i}`} m={m} lead={i === 0} />
             ))}
             {!primaries.length && gotchas.length ? (
-              <p className="text-sm text-stone-400">No primary doc — gotchas only.</p>
+              <p className="text-sm text-stone-400">No primary doc, gotchas only.</p>
             ) : null}
           </div>
 
@@ -770,9 +770,9 @@ export function Knowledge() {
   return (
     <>
       <Heading title="Knowledge">
-        The curated context your agents read as ground truth — {data?.docs ?? 0} doc(s) across{" "}
+        The curated context your agents read as ground truth: {data?.docs ?? 0} doc(s) across{" "}
         {data?.subjects.length ?? 0} subject(s). This is reference material for agents, not for you:
-        browse it to check what they believe and spot problems. Read-only here — curated edits come
+        browse it to check what they believe and spot problems. Read-only here; curated edits come
         from a curator session, and agent proposals wait in{" "}
         <Link
           className="font-medium text-stone-900 underline decoration-stone-400 underline-offset-2 hover:decoration-stone-600"

@@ -57,7 +57,7 @@ export function Sources() {
         title="Sources"
         action={<Button onClick={() => setConnect({})}>Connect source</Button>}
       >
-        The databases and feeds your agents can query — what’s connected and whether data is actually
+        The databases and feeds your agents can query: what’s connected and whether data is actually
         flowing (a live heartbeat, not just recent rows). Click a source to expand. Sources you haven’t
         connected yet sit under Available. Read-only, refreshed live on each load.
       </Heading>
@@ -84,7 +84,7 @@ export function Sources() {
         isAdmin={isAdmin}
         gmail={gmail}
         onClose={() => setConnect(null)}
-        onCopied={() => toast("Prompt copied — paste it into Claude Code and say which source.")}
+        onCopied={() => toast("Prompt copied. Paste it into Claude Code and say which source.")}
       />
     </>
   );
@@ -119,7 +119,7 @@ function ConnectDialog({
   const admins = (team?.people ?? []).filter((p) => p.role === "admin").map((p) => p.identity);
   const prompt =
     `Connect a new data source to my Setoku (${location.origin}).\n` +
-    `Use the /setoku:connect skill — it wires the source up read-only, verifies data is actually flowing, and saves what it learns as knowledge.\n\n` +
+    `Use the /setoku:connect skill. It wires the source up read-only, verifies data is actually flowing, and saves what it learns as knowledge.\n\n` +
     `What I want to connect: ${source ?? ""}\n`;
   // Gmail's one-time OAuth-client setup, as an agent prompt (paste into Claude Code)
   // rather than manual steps — same "your agent wires it up" model as every other
@@ -134,7 +134,7 @@ function ConnectDialog({
     `2. Take the Client ID and Client secret I give you and set SETOKU_GMAIL_CLIENT_ID and ` +
     `SETOKU_GMAIL_CLIENT_SECRET in the box's .env.\n\n` +
     `3. Recreate the gateway and bring up the gmail-poller (the "gmail" compose profile). You can't connect a ` +
-    `mailbox yourself — that's a browser consent as the mailbox owner's own Google account — so once the ` +
+    `mailbox yourself (that's a browser consent as the mailbox owner's own Google account), so once the ` +
     `client is wired, send me back to Sources → Gmail → "Connect a mailbox" to consent to my own inbox ` +
     `(each other mailbox owner connects theirs the same way, from their own admin login).\n`;
   return (
@@ -151,7 +151,7 @@ function ConnectDialog({
             // the instructions live in the connect flow, not a permanent card.
             <>
               <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
-                Gmail connects with OAuth — each mailbox’s owner consents, read-only. Spam/trash are never
+                Gmail connects with OAuth: each mailbox’s owner consents, read-only. Spam/trash are never
                 read and 2-step/password mail is dropped on the way in.
               </AlertDialog.Description>
               {gmail?.clientConfigured ? (
@@ -165,13 +165,13 @@ function ConnectDialog({
                 <>
                   <p className="mt-3 text-sm leading-relaxed text-stone-600">
                     The one-time OAuth client isn’t set up yet. Paste this into Claude Code with the Setoku
-                    plugin — it’ll walk you through the Google Cloud Console and wire up the box:
+                    plugin. It’ll walk you through the Google Cloud Console and wire up the box:
                   </p>
                   <pre className="mt-3 max-h-56 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
                     {gmailSetupPrompt}
                   </pre>
                   <p className="mt-2 text-sm leading-relaxed text-stone-500">
-                    Once it’s wired up, reload — a Connect button appears here.
+                    Once it’s wired up, reload and a Connect button appears here.
                   </p>
                   <div className="mt-4 flex justify-end gap-2">
                     <AlertDialog.Close className="btn btn-ghost">Close</AlertDialog.Close>
@@ -213,8 +213,8 @@ function ConnectDialog({
           ) : (
             <>
               <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
-                Connecting a source happens on the box this Setoku runs on — read-only credentials, wired
-                up by whoever operates it — so it takes an admin. Tell{" "}
+                Connecting a source happens on the box this Setoku runs on (read-only credentials, wired
+                up by whoever operates it), so it takes an admin. Tell{" "}
                 {admins.length ? (
                   <b className="font-medium text-stone-800">{admins.join(", ")}</b>
                 ) : (
@@ -344,7 +344,7 @@ function EgressKvs({ egress, reload }: { egress: EgressData; reload: () => void 
       {kv(
         "what egress is",
         <span className="text-stone-500">
-          data the mirror streamed out of the source DB — what hosted vendors bill
+          data the mirror streamed out of the source DB: what hosted vendors bill
         </span>,
       )}
       {egress.appId
