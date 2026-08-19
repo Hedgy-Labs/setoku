@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Minimal service worker: cache the app shell, never touch audio or API.
-const CACHE = "podskip-v1";
+const CACHE = "surfer-v1";
 const SHELL = ["/", "/app.css", "/app.js", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {

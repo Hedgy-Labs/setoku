@@ -1,12 +1,12 @@
 {
-  "name": "podskip",
+  "name": "surfer",
   "private": true,
   "description": "Minimal self-hosted podcast player that transcribes episodes and auto-skips ads",
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
     "start": "bun server.ts",
-    "start:fixtures": "PODSKIP_FIXTURES=1 bun server.ts",
+    "start:fixtures": "SURFER_FIXTURES=1 bun server.ts",
     "test": "bun test test/",
     "test:e2e": "bun test e2e/",
     "typecheck": "bun x tsc --noEmit -p ."

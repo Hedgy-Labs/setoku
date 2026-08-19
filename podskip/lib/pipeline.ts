@@ -27,7 +27,7 @@ export interface CacheEntry {
   segmentCount: number;
 }
 
-const DATA_DIR = process.env.PODSKIP_DATA ?? join(import.meta.dir, "..", "data");
+const DATA_DIR = process.env.SURFER_DATA ?? join(import.meta.dir, "..", "data");
 const CACHE_DIR = join(DATA_DIR, "cache");
 const AUDIO_DIR = join(DATA_DIR, "audio");
 
@@ -78,7 +78,7 @@ async function runJob(show: Show, ep: Episode): Promise<void> {
     const aPath = audioPath(show.id, ep.guid);
     if (!existsSync(aPath)) {
       const res = await fetch(ep.audioUrl, {
-        headers: { "user-agent": "podskip/0.1 (personal podcast player)" },
+        headers: { "user-agent": "surfer/0.1 (personal podcast player)" },
         redirect: "follow",
       });
       if (!res.ok) throw new Error(`audio download failed: HTTP ${res.status}`);
@@ -109,10 +109,10 @@ async function runJob(show: Show, ep: Episode): Promise<void> {
     };
     await Bun.write(cachePath(show.id, ep.guid), JSON.stringify(entry, null, 2));
     live.delete(key);
-    console.log(`[podskip] ${show.title} — "${ep.title}": ${ads.length} ad range(s) mapped`);
+    console.log(`[surfer] ${show.title} — "${ep.title}": ${ads.length} ad range(s) mapped`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[podskip] processing failed for "${ep.title}":`, msg);
+    console.error(`[surfer] processing failed for "${ep.title}":`, msg);
     live.set(key, { state: "error", error: msg });
   }
 }

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// PodSkip player. Plain JS, no build step. The interesting part is the skip
+// Surfer player. Plain JS, no build step. The interesting part is the skip
 // engine: on timeupdate, if the playhead is inside a known ad range, jump to
 // the end of that range.
 "use strict";
@@ -12,7 +12,7 @@ const state = {
   current: null, // { showId, guid, title, showTitle, image, durationSec }
   ads: [],
   pollTimer: null,
-  rate: Number(localStorage.getItem("podskip.rate") || 1),
+  rate: Number(localStorage.getItem("surfer.rate") || 1),
 };
 
 const fmt = (s) => {
@@ -28,7 +28,7 @@ function adAt(t, ads) {
   for (const a of ads) if (t >= a.start && t < a.end - 0.25) return a;
   return null;
 }
-window.__podskip = { adAt, state, audio, skips: 0 };
+window.__surfer = { adAt, state, audio, skips: 0 };
 
 function maybeSkip() {
   // !audio.seeking: while a skip's seek is still in flight, timeupdate can
@@ -36,7 +36,7 @@ function maybeSkip() {
   const ad = adAt(audio.currentTime, state.ads);
   if (ad && !audio.seeking) {
     audio.currentTime = ad.end;
-    window.__podskip.skips++;
+    window.__surfer.skips++;
     toast(`Skipped ${Math.round(ad.end - ad.start)}s of ads`);
   }
 }
@@ -59,7 +59,7 @@ function toast(msg) {
 }
 
 // ---- position persistence ------------------------------------------------
-const posKey = () => state.current && `podskip.pos.${state.current.showId}.${state.current.guid}`;
+const posKey = () => state.current && `surfer.pos.${state.current.showId}.${state.current.guid}`;
 let lastSaved = 0;
 function savePosition() {
   if (!state.current || Date.now() - lastSaved < 3000) return;
@@ -235,7 +235,7 @@ const RATES = [1, 1.2, 1.5, 1.8, 2];
 $("btn-rate").addEventListener("click", () => {
   state.rate = RATES[(RATES.indexOf(state.rate) + 1) % RATES.length] || 1;
   audio.playbackRate = state.rate;
-  localStorage.setItem("podskip.rate", String(state.rate));
+  localStorage.setItem("surfer.rate", String(state.rate));
   $("btn-rate").textContent = state.rate + "×";
 });
 $("btn-rate").textContent = state.rate + "×";
@@ -261,7 +261,7 @@ async function loadShows() {
     } else warn.hidden = true;
     render();
   } catch {
-    $("main").innerHTML = `<p class="muted">Could not reach the PodSkip server.</p>`;
+    $("main").innerHTML = `<p class="muted">Could not reach the Surfer server.</p>`;
   }
 }
 loadShows();

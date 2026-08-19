@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// PodSkip — a minimal self-hosted podcast player that maps and skips ads.
+// Surfer — a minimal self-hosted podcast player that maps and skips ads.
 // One Bun process: static PWA + JSON API + Range-capable audio serving.
 import { join, extname } from "node:path";
 import { existsSync } from "node:fs";
@@ -8,9 +8,10 @@ import { fetchShow, findEpisode, type Show, type ShowConfig } from "./lib/feeds.
 import { jobState, startJob, audioPath } from "./lib/pipeline.ts";
 import { transcriptionProvider } from "./lib/transcribe.ts";
 import { fixtureShows, fixtureWav, FIXTURE_ADS, FIXTURE_DURATION } from "./lib/fixtures.ts";
+import { appleTouchIcon } from "./lib/icon.ts";
 
-const FIXTURES = process.env.PODSKIP_FIXTURES === "1";
-const PORT = Number(process.env.PODSKIP_PORT ?? 4321);
+const FIXTURES = process.env.SURFER_FIXTURES === "1";
+const PORT = Number(process.env.SURFER_PORT ?? 4321);
 const WEB_DIR = join(import.meta.dir, "web");
 
 const MIME: Record<string, string> = {
@@ -83,7 +84,7 @@ function serveRange(bytes: Uint8Array | null, file: string | null, type: string,
 
 /** Pass a Range request through to the podcast CDN when we have no local copy yet. */
 async function proxyRemoteAudio(url: string, rangeHeader: string | null): Promise<Response> {
-  const headers: Record<string, string> = { "user-agent": "podskip/0.1 (personal podcast player)" };
+  const headers: Record<string, string> = { "user-agent": "surfer/0.1 (personal podcast player)" };
   if (rangeHeader) headers.range = rangeHeader;
   const upstream = await fetch(url, { headers, redirect: "follow" });
   if (!upstream.ok && upstream.status !== 206) {
@@ -162,6 +163,12 @@ const server = Bun.serve({
       return proxyRemoteAudio(ep.audioUrl, range);
     }
 
+    if (path === "/apple-touch-icon.png") {
+      return new Response(appleTouchIcon() as Uint8Array<ArrayBuffer>, {
+        headers: { "content-type": "image/png", "cache-control": "max-age=86400" },
+      });
+    }
+
     // static PWA
     const rel = path === "/" ? "/index.html" : path;
     const file = join(WEB_DIR, rel);
@@ -175,12 +182,12 @@ const server = Bun.serve({
 });
 
 console.log(
-  `[podskip] listening on http://localhost:${server.port}` +
+  `[surfer] listening on http://localhost:${server.port}` +
     (FIXTURES ? " (FIXTURE MODE — canned shows, no network)" : ""),
 );
 if (!FIXTURES) {
   if (!transcriptionProvider())
-    console.log("[podskip] note: set GROQ_API_KEY or OPENAI_API_KEY to enable transcription");
+    console.log("[surfer] note: set GROQ_API_KEY or OPENAI_API_KEY to enable transcription");
   if (!process.env.ANTHROPIC_API_KEY)
-    console.log("[podskip] note: set ANTHROPIC_API_KEY to enable ad classification");
+    console.log("[surfer] note: set ANTHROPIC_API_KEY to enable ad classification");
 }

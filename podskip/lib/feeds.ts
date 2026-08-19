@@ -101,7 +101,7 @@ export async function fetchShow(cfg: ShowConfig): Promise<Show> {
   const hit = cache.get(cfg.id);
   if (hit && Date.now() - hit.at < FEED_TTL_MS) return hit.show;
   const res = await fetch(cfg.feed, {
-    headers: { "user-agent": "podskip/0.1 (personal podcast player)" },
+    headers: { "user-agent": "surfer/0.1 (personal podcast player)" },
     redirect: "follow",
   });
   if (!res.ok) {

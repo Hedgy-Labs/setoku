@@ -16,7 +16,7 @@ let page: Page;
 
 beforeAll(async () => {
   proc = Bun.spawn(["bun", join(import.meta.dir, "..", "server.ts")], {
-    env: { ...process.env, PODSKIP_FIXTURES: "1", PODSKIP_PORT: String(PORT) },
+    env: { ...process.env, SURFER_FIXTURES: "1", SURFER_PORT: String(PORT) },
     stdout: "ignore",
     stderr: "inherit",
   });

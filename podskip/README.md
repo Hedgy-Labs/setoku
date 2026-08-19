@@ -1,4 +1,4 @@
-# PodSkip
+# Surfer
 
 A minimal self-hosted podcast player that **skips the ads**. One Bun process,
 no build step, installable on your phone as a PWA.
@@ -17,7 +17,7 @@ show by appending its RSS feed URL there.
 ## Run it
 
 ```bash
-cd podskip
+cd surfer
 bun install
 
 export ANTHROPIC_API_KEY=...   # ad classification
@@ -38,7 +38,7 @@ The player is a PWA: open it in the phone's browser → share/menu →
 Two ways to reach it from the phone:
 
 - **Tailscale (easiest):** `tailscale serve 4321` on the machine running
-  PodSkip gives you an HTTPS URL reachable from your phone.
+  Surfer gives you an HTTPS URL reachable from your phone.
 - Any other HTTPS reverse proxy (Caddy, cloudflared, …) pointed at port 4321.
 
 Plain `http://<laptop-ip>:4321` on the same Wi-Fi also plays fine, but iOS
@@ -52,8 +52,8 @@ requires HTTPS for the full PWA treatment.
 - Audio is streamed through the server (byte-range passthrough to the
   podcast CDN, or from the local copy once downloaded). Nothing is served
   publicly; run it for yourself.
-- Episode ad maps live in `podskip/data/cache/`, downloaded audio in
-  `podskip/data/audio/` (both gitignored). Delete a cache file to re-process
+- Episode ad maps live in `data/cache/`, downloaded audio in
+  `data/audio/` (both gitignored). Delete a cache file to re-process
   an episode.
 - Feed URLs and provider details (upload limits, model names) churn — if a
   feed errors or transcription rejects a file, check the URL/model against

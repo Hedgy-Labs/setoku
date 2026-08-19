@@ -1,6 +1,6 @@
 {
-  "name": "PodSkip",
-  "short_name": "PodSkip",
+  "name": "Surfer",
+  "short_name": "Surfer",
   "description": "Podcast player that skips the ads",
   "start_url": "/",
   "display": "standalone",

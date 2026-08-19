@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Fixture mode (PODSKIP_FIXTURES=1): canned shows + a synthesized WAV with
+// Fixture mode (SURFER_FIXTURES=1): canned shows + a synthesized WAV with
 // known "ad" ranges, so the player and skip logic can be exercised end-to-end
 // with no network, no keys, and no real podcast audio.
 import type { Show } from "./feeds.ts";
