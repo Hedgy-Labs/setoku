@@ -62,6 +62,14 @@ fi
 # reaches the box and is never read: the deploy exits 0 while caddy keeps serving
 # the old config forever.
 #
+# UPDATE the blocks a box already has; never INTRODUCE one. Each block claims a
+# public hostname (setoku-com.caddy is the marketing site, which lives on ONE
+# box), so shipping every block to every box would have the others answer for a
+# name their DNS never points at, and chase an ACME cert they can never get. A
+# box gets its blocks deliberately, once (bootstrap or by hand); deploys keep
+# those current and leave every other box alone. A box with none is a clean skip,
+# not a deploy that fails after the gateway is already live.
+#
 # Copy, never rsync --delete: caddy.d also holds BOX-LOCAL blocks that are
 # deliberately not in the repo (e.g. the demo subdomain), and wiping those would
 # take the demo offline.
@@ -72,16 +80,27 @@ fi
 # so a syntax error fails the deploy instead of leaving caddy running old config
 # with a confusing error.
 if ls deploy/caddy.d/*.caddy >/dev/null 2>&1; then
-  ssh "$SSH" "mkdir -p ${DIR}/caddy.d && cp ${DIR}/deploy/caddy.d/*.caddy ${DIR}/caddy.d/"
-  caddyd_after="$(ssh "$SSH" "cat ${DIR}/caddy.d/*.caddy 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
-  if [ "$caddyd_before" != "$caddyd_after" ]; then
-    echo "→ caddy.d site blocks changed — validate + graceful reload (no blip)"
-    ssh "$SSH" "cd ${DIR} && docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null" || {
-      echo "✗ caddy config invalid after installing deploy/caddy.d/*.caddy — NOT reloading."
-      echo "  The box is still serving the previous config. Fix the block and re-deploy."
-      exit 1
-    }
-    ssh "$SSH" "cd ${DIR} && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile"
+  installed=" $(ssh "$SSH" "cd ${DIR}/caddy.d 2>/dev/null && ls *.caddy 2>/dev/null" | tr '\n' ' ' || true)"
+  updates=""
+  for f in deploy/caddy.d/*.caddy; do
+    case "$installed" in *" $(basename "$f") "*) updates="$updates $(basename "$f")" ;; esac
+  done
+  if [ -z "$updates" ]; then
+    echo "→ no repo-managed caddy.d blocks on this box — skipping site-block install"
+    echo "  (put one there by hand if this box should serve that site; deploys keep it current after that)"
+  else
+    echo "→ updating caddy.d site blocks:$updates"
+    ssh "$SSH" "cd ${DIR} && for f in$updates; do cp deploy/caddy.d/\$f caddy.d/\$f; done"
+    caddyd_after="$(ssh "$SSH" "cat ${DIR}/caddy.d/*.caddy 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
+    if [ "$caddyd_before" != "$caddyd_after" ]; then
+      echo "→ caddy.d site blocks changed — validate + graceful reload (no blip)"
+      ssh "$SSH" "cd ${DIR} && docker compose exec -T caddy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null" || {
+        echo "✗ caddy config invalid after installing deploy/caddy.d/*.caddy — NOT reloading."
+        echo "  The box is still serving the previous config. Fix the block and re-deploy."
+        exit 1
+      }
+      ssh "$SSH" "cd ${DIR} && docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile"
+    fi
   fi
 fi
 
