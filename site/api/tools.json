@@ -10,7 +10,7 @@
   "tools": [
     {
       "name": "find_context",
-      "title": "Find business context (verified + unverified)",
+      "title": "Find context for this connector's data (verified + unverified)",
       "role": "analyst",
       "readOnly": true
     },

@@ -67,6 +67,17 @@ export function slugifyName(raw: string | undefined | null): string {
 }
 
 /**
+ * The short human name for THIS box ("campsh"), unslugified: SETOKU_NAME (env)
+ * wins over config.name. Null when neither is set. connectorName() slugifies
+ * this, and the MCP roster (lib/roster) prints it, so the precedence lives here
+ * once rather than drifting between the two.
+ */
+export function boxName(projectDir: string): string | null {
+  const res = loadConfig(projectDir);
+  return process.env.SETOKU_NAME ?? (res.ok ? res.config.name : undefined) ?? null;
+}
+
+/**
  * The Claude Code connector name for this box: `<slug>-setoku`, from
  * SETOKU_NAME (env) or config.name, else the bare `setoku`. `suffix` appends a
  * role for the operator-only connectors (e.g. "curator" → `<slug>-setoku-curator`).
@@ -74,9 +85,7 @@ export function slugifyName(raw: string | undefined | null): string {
  * a restart.
  */
 export function connectorName(projectDir: string, suffix = ""): string {
-  const res = loadConfig(projectDir);
-  const raw = process.env.SETOKU_NAME ?? (res.ok ? res.config.name : undefined);
-  const slug = slugifyName(raw);
+  const slug = slugifyName(boxName(projectDir));
   const base = slug ? `${slug}-setoku` : "setoku";
   return suffix ? `${base}-${suffix}` : base;
 }

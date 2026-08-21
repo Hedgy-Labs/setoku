@@ -33,7 +33,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { buildServer, warmDiscoveryCaches, type TokenRole } from "./app";
 import { EmbedIndex } from "./lib/embed-index";
 import { DerivedSynonyms } from "./lib/derived-synonyms";
-import { loadConfig, resolveProjectDir, connectorName } from "./lib/config";
+import { loadConfig, resolveProjectDir, connectorName, boxName } from "./lib/config";
 import { notifyActivity } from "./lib/notify";
 import { gatherEgress, setEgressThreshold, egressTick } from "./lib/egress";
 import {
@@ -162,9 +162,9 @@ const probeCache = new Map<string, { at: number; value: unknown }>();
 // defeating the point of the cache. The promise is cleared when it settles.
 const probeInflight = new Map<string, Promise<unknown>>();
 const denyKey = (denied: Set<string>): string => [...denied].sort().join(",");
-async function cachedProbe<T>(key: string, produce: () => Promise<T>): Promise<T> {
+async function cachedProbe<T>(key: string, produce: () => Promise<T>, ttlMs = PROBE_TTL_MS): Promise<T> {
   const hit = probeCache.get(key);
-  if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.value as T;
+  if (hit && Date.now() - hit.at < ttlMs) return hit.value as T;
   const pending = probeInflight.get(key);
   if (pending) return pending as Promise<T>;
   const p = (async () => {
@@ -742,6 +742,7 @@ echo "    how many companies are paying us right now?"
 // Lake source tables we know how to surface (shared with the list_sources MCP
 // tool) — query only the ones that actually exist; see gatherSources().
 import { LAKE_SOURCES, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, sourceAccessDisabled } from "./lib/sources";
+import { rosterFrom, type BoxRoster } from "./lib/roster";
 import {
   deniedFamiliesFor,
   metricDocHidden,
@@ -871,6 +872,46 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
   for (const d of visibleKnowledge) byType[d.type] = (byType[d.type] ?? 0) + 1;
 
   return { mirror, lake, knowledge: { docs: visibleKnowledge.length, byType } };
+}
+
+/**
+ * What this box holds, for the MCP surface (lib/roster) — the connected-source
+ * roster that rides the server `instructions` and the entry-point tool
+ * descriptions, so a client learns the connector's subject matter without
+ * calling a tool.
+ *
+ * Cached far longer than the Sources page (5 min, vs 10s): which sources are
+ * CONNECTED changes on the order of days, while row counts change constantly,
+ * and this runs on the MCP request path — every tools/list and every tools/call
+ * — where the ~17-query fan-out would otherwise be a standing tax on a small
+ * box. Stale entries are served immediately and refreshed behind the request,
+ * so only the very first call after boot ever waits. It reuses the Sources
+ * probe's own cache, so a warm /admin Sources page costs this nothing.
+ *
+ * Failure is silent by design: a null roster degrades the descriptions to their
+ * source-agnostic text. A cold or broken lake must never fail an MCP request.
+ */
+const ROSTER_TTL_MS = 5 * 60_000;
+async function rosterFor(denied: Set<string>): Promise<BoxRoster | null> {
+  const key = `roster:${denyKey(denied)}`;
+  const build = async (): Promise<BoxRoster | null> => {
+    try {
+      const sources = await cachedProbe(`sources:${denyKey(denied)}`, () => gatherSources(denied));
+      return rosterFrom(sources, boxName(projectDir), Date.now());
+    } catch {
+      return null;
+    }
+  };
+  const hit = probeCache.get(key) as { at: number; value: BoxRoster | null } | undefined;
+  if (hit && Date.now() - hit.at < ROSTER_TTL_MS) return hit.value;
+  const refreshed = cachedProbe(key, build, ROSTER_TTL_MS);
+  // Stale-while-revalidate: an existing (expired) snapshot answers now and the
+  // refresh lands for the next request. Only a cold cache blocks.
+  if (hit) {
+    void refreshed.catch(() => {});
+    return hit.value;
+  }
+  return refreshed;
 }
 
 /**
@@ -2899,6 +2940,9 @@ const httpServer = http.createServer(async (req, res) => {
       role: auth.role,
       embedIndex,
       derivedSynonyms,
+      // Deny-scoped like every other probe: a restricted member's tool
+      // descriptions must not advertise a family they can't query.
+      roster: await rosterFor(deniedFamiliesFor(store.sourceDenies(auth.identity))),
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,

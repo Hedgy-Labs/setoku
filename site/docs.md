@@ -51,7 +51,7 @@ Callable right now against the demo box:
 
 **Every session** — the analyst surface. Reads data and curated context, and may only *propose* knowledge changes:
 
-- `find_context` — Find business context (verified + unverified)
+- `find_context` — Find context for this connector’s data (verified + unverified)
 - `list_entities` — List documented business entities
 - `describe_entity` — Full context doc for one entity
 - `get_metric` — Canonical metric definition

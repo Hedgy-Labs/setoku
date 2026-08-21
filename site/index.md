@@ -66,7 +66,7 @@ Server, by hand, on a fresh Ubuntu VPS (about $5–12/month):
 
 | Tool | What it does | Role |
 | --- | --- | --- |
-| `find_context` | Find business context (verified + unverified) | analyst |
+| `find_context` | Find context for this connector’s data (verified + unverified) | analyst |
 | `list_entities` | List documented business entities | analyst |
 | `describe_entity` | Full context doc for one entity | analyst |
 | `get_metric` | Canonical metric definition | analyst |

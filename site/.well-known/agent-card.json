@@ -190,7 +190,7 @@
   "tools": [
     {
       "name": "find_context",
-      "description": "Find business context (verified + unverified)",
+      "description": "Find context for this connector's data (verified + unverified)",
       "role": "analyst"
     },
     {
