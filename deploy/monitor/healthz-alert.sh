@@ -35,6 +35,15 @@ ENV_FILE="${SETOKU_ALERT_ENV:-$HOME/.setoku/healthz-alert.env}"
 # shellcheck disable=SC1090
 [ -f "$ENV_FILE" ] && source "$ENV_FILE"   # SETOKU_ALERT_WEBHOOK (secret, off-repo)
 
+# A laptop pager can't tell "box down" from "no local network" (lid closed,
+# dark-wake probes before wifi is up — the 2026-07-31 phantom outage). When the
+# internet itself is unreachable, skip this run entirely: state and streaks
+# stay frozen, so no false DOWN accumulates and no bogus "recovered" pages.
+if ! curl -skm 5 -o /dev/null https://1.1.1.1 && ! curl -skm 5 -o /dev/null https://8.8.8.8; then
+  echo "$(date '+%F %T') local network down — skipping probes"
+  exit 0
+fi
+
 DISK_PCT_ALERT=75
 CONFIRM="${SETOKU_ALERT_CONFIRM:-2}"           # consecutive DOWN probes before paging
 STATE_DIR="${SETOKU_ALERT_STATE_DIR:-$HOME/.setoku/state}"
