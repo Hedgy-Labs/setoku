@@ -190,12 +190,12 @@
   "tools": [
     {
       "name": "find_context",
-      "description": "Find context for this connector's data (verified + unverified)",
+      "description": "Find context for this connector's data",
       "role": "analyst"
     },
     {
       "name": "list_entities",
-      "description": "List documented business entities",
+      "description": "List everything in the knowledge store",
       "role": "analyst"
     },
     {
@@ -220,52 +220,52 @@
     },
     {
       "name": "resolve_correction",
-      "description": "Resolve a pending correction (curator)",
+      "description": "Resolve a pending correction",
       "role": "curator"
     },
     {
       "name": "upsert_context",
-      "description": "Create or update a knowledge doc (generate/curate workflows)",
+      "description": "Create or update a knowledge doc",
       "role": "curator"
     },
     {
       "name": "draft_correction",
-      "description": "Attach a drafted doc-edit to a pending correction (auto-draft)",
+      "description": "Attach a drafted doc-edit to a pending correction",
       "role": "janitor"
     },
     {
       "name": "reject_correction",
-      "description": "Auto-reject a pending correction (janitor, reject-only)",
+      "description": "Auto-reject a pending correction",
       "role": "janitor"
     },
     {
       "name": "list_sources",
-      "description": "List connected data sources (capabilities)",
+      "description": "List connected data sources",
       "role": "analyst"
     },
     {
       "name": "get_schema",
-      "description": "Queryable schema (biz.* mirror + lake, permission-scoped)",
+      "description": "Every table and column you can query",
       "role": "analyst"
     },
     {
       "name": "run_query",
-      "description": "Run a read-only SQL query (capped + audited)",
+      "description": "Run a read-only SQL query",
       "role": "analyst"
     },
     {
       "name": "app_guide",
-      "description": "How to build a Setoku app (read before publish_app / update_app)",
+      "description": "How to build a Setoku app",
       "role": "analyst"
     },
     {
       "name": "publish_app",
-      "description": "Publish a live app to the box (team-shareable URL)",
+      "description": "Publish a live app to the box",
       "role": "analyst"
     },
     {
       "name": "update_app",
-      "description": "Edit an app you published (in place, same link)",
+      "description": "Edit an app you published",
       "role": "analyst"
     },
     {
@@ -275,7 +275,7 @@
     },
     {
       "name": "get_app",
-      "description": "Inspect an app — its full template + panels (how it's built)",
+      "description": "Inspect an app — its full template and panels",
       "role": "analyst"
     },
     {

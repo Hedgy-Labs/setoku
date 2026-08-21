@@ -436,7 +436,7 @@ server.registerTool(
   "find_context",
   {
     annotations: { readOnlyHint: true },
-    title: "Find context for this connector's data (verified + unverified)",
+    title: "Find context for this connector's data",
     description: withRoster(
       "ALWAYS call FIRST, the instant a question about this connector's data arrives — before any " +
       "planning, schema exploration, or reasoning about what a term means; call it with the question, THEN " +
@@ -657,7 +657,7 @@ server.registerTool(
   "list_entities",
   {
     annotations: { readOnlyHint: true },
-    title: "List documented business entities",
+    title: "List everything in the knowledge store",
     description:
       "Lists every documented entity, metric, and canonical query in the knowledge store " +
       "(name + one-line summary). Cheap index — use it to discover what context exists.",
@@ -879,7 +879,7 @@ server.registerTool(
   "resolve_correction",
   {
     annotations: { readOnlyHint: false, destructiveHint: false },
-    title: "Resolve a pending correction (curator)",
+    title: "Resolve a pending correction",
     description:
       "Marks a pending correction accepted or rejected. Curation workflow: on accept, ALSO fold the knowledge " +
       "into the store via upsert_context (a gotcha bullet, a metric doc, an entity edit) — resolving alone only " +
@@ -902,7 +902,7 @@ server.registerTool(
   "upsert_context",
   {
     annotations: { readOnlyHint: false, destructiveHint: false },
-    title: "Create or update a knowledge doc (generate/curate workflows)",
+    title: "Create or update a knowledge doc",
     description:
       "Writes a context document into the knowledge store: entity, metric, query, overview, or gotcha. " +
       "Used by the /setoku:generate and /setoku:curate workflows — do NOT use it mid-analysis to record " +
@@ -989,7 +989,7 @@ server.registerTool(
   "draft_correction",
   {
     annotations: { readOnlyHint: false, destructiveHint: false },
-    title: "Attach a drafted doc-edit to a pending correction (auto-draft)",
+    title: "Attach a drafted doc-edit to a pending correction",
     description:
       "Writes a DRAFT — the exact upsert payload approving the correction would commit — plus advisory FLAGS " +
       "onto a pending correction, so the human curator reviews a finished change instead of a raw note. This " +
@@ -1038,7 +1038,7 @@ server.registerTool(
   "reject_correction",
   {
     annotations: { readOnlyHint: false, destructiveHint: false },
-    title: "Auto-reject a pending correction (janitor, reject-only)",
+    title: "Auto-reject a pending correction",
     description:
       "Rejects a pending correction — queue status only, grants ZERO knowledge authority. Use ONLY for items " +
       "that fail OBJECTIVE checks: drafted SQL errors, references a denied table, malformed, an exact duplicate " +
@@ -1069,7 +1069,7 @@ server.registerTool(
   "list_sources",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "List connected data sources (capabilities)",
+    title: "List connected data sources",
     description: withRoster(
       "Lists what this box can query RIGHT NOW, table by table: the biz.* Postgres mirror, every " +
       "connected lake source with what it holds, and the knowledge store. Capabilities are DYNAMIC and " +
@@ -1249,7 +1249,7 @@ server.registerTool(
   "get_schema",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "Queryable schema (biz.* mirror + lake, permission-scoped)",
+    title: "Every table and column you can query",
     description: withRoster(
       "Describes every table you can query, straight from ClickHouse metadata: the biz.* Postgres " +
       "mirror and the setoku.* lake tables (the gateway has no direct Postgres path). " +
@@ -1399,7 +1399,7 @@ server.registerTool(
   "run_query",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "Run a read-only SQL query (capped + audited)",
+    title: "Run a read-only SQL query",
     description: withRoster(
       "Executes ONE read-only ClickHouse SQL statement (statement timeout + row cap; audited with your " +
       "identity): the biz.* Postgres mirror plus every connected lake source. The direct " +
@@ -1846,7 +1846,7 @@ server.registerTool(
   "app_guide",
   {
     annotations: { readOnlyHint: true },
-    title: "How to build a Setoku app (read before publish_app / update_app)",
+    title: "How to build a Setoku app",
     description:
       "Call this FIRST whenever you're about to author or edit an app — the same way you call find_context " +
       "before querying. Returns the full template + Setoku.* helper + panels/params/state contract you need " +
@@ -1863,7 +1863,7 @@ server.registerTool(
   "publish_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Publish a live app to the box (team-shareable URL)",
+    title: "Publish a live app to the box",
     description:
       "Publishes an app backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
       "the team as a link that stays current — not for answering in-session. " +
@@ -1953,7 +1953,7 @@ server.registerTool(
   "update_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Edit an app you published (in place, same link)",
+    title: "Edit an app you published",
     description:
       "Updates an app you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
       "(new template), `panels` (REPLACES the whole panel set), `params` (REPLACES all inputs), and/or `refreshSeconds`. " +
@@ -2153,7 +2153,7 @@ server.registerTool(
   "get_app",
   {
     annotations: { readOnlyHint: true },
-    title: "Inspect an app — its full template + panels (how it's built)",
+    title: "Inspect an app — its full template and panels",
     description:
       "Returns everything needed to edit a published app in place: the full presentation TEMPLATE " +
       "(the exact `html`/JS you'd pass back to update_app), its interactive `params`, and each panel's " +

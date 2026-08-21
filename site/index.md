@@ -66,24 +66,24 @@ Server, by hand, on a fresh Ubuntu VPS (about $5–12/month):
 
 | Tool | What it does | Role |
 | --- | --- | --- |
-| `find_context` | Find context for this connector’s data (verified + unverified) | analyst |
-| `list_entities` | List documented business entities | analyst |
+| `find_context` | Find context for this connector’s data | analyst |
+| `list_entities` | List everything in the knowledge store | analyst |
 | `describe_entity` | Full context doc for one entity | analyst |
 | `get_metric` | Canonical metric definition | analyst |
 | `report_correction` | Record a context correction / clarification | analyst |
 | `list_corrections` | List pending knowledge corrections | analyst |
-| `resolve_correction` | Resolve a pending correction (curator) | curator |
-| `upsert_context` | Create or update a knowledge doc (generate/curate workflows) | curator |
-| `draft_correction` | Attach a drafted doc-edit to a pending correction (auto-draft) | janitor |
-| `reject_correction` | Auto-reject a pending correction (janitor, reject-only) | janitor |
-| `list_sources` | List connected data sources (capabilities) | analyst |
-| `get_schema` | Queryable schema (biz.* mirror + lake, permission-scoped) | analyst |
-| `run_query` | Run a read-only SQL query (capped + audited) | analyst |
-| `app_guide` | How to build a Setoku app (read before publish_app / update_app) | analyst |
-| `publish_app` | Publish a live app to the box (team-shareable URL) | analyst |
-| `update_app` | Edit an app you published (in place, same link) | analyst |
+| `resolve_correction` | Resolve a pending correction | curator |
+| `upsert_context` | Create or update a knowledge doc | curator |
+| `draft_correction` | Attach a drafted doc-edit to a pending correction | janitor |
+| `reject_correction` | Auto-reject a pending correction | janitor |
+| `list_sources` | List connected data sources | analyst |
+| `get_schema` | Every table and column you can query | analyst |
+| `run_query` | Run a read-only SQL query | analyst |
+| `app_guide` | How to build a Setoku app | analyst |
+| `publish_app` | Publish a live app to the box | analyst |
+| `update_app` | Edit an app you published | analyst |
 | `list_apps` | List apps published to the box | analyst |
-| `get_app` | Inspect an app — its full template + panels (how it’s built) | analyst |
+| `get_app` | Inspect an app — its full template and panels | analyst |
 | `unpublish_app` | Archive a published app | analyst |
 
 ## Skills
