@@ -62,13 +62,13 @@
   "tools": [
     {
       "name": "find_context",
-      "title": "Find business context (verified + unverified)",
+      "title": "Find context for this connector's data",
       "role": "analyst",
       "readOnly": true
     },
     {
       "name": "list_entities",
-      "title": "List documented business entities",
+      "title": "List everything in the knowledge store",
       "role": "analyst",
       "readOnly": true
     },
@@ -98,61 +98,61 @@
     },
     {
       "name": "resolve_correction",
-      "title": "Resolve a pending correction (curator)",
+      "title": "Resolve a pending correction",
       "role": "curator",
       "readOnly": false
     },
     {
       "name": "upsert_context",
-      "title": "Create or update a knowledge doc (generate/curate workflows)",
+      "title": "Create or update a knowledge doc",
       "role": "curator",
       "readOnly": false
     },
     {
       "name": "draft_correction",
-      "title": "Attach a drafted doc-edit to a pending correction (auto-draft)",
+      "title": "Attach a drafted doc-edit to a pending correction",
       "role": "janitor",
       "readOnly": false
     },
     {
       "name": "reject_correction",
-      "title": "Auto-reject a pending correction (janitor, reject-only)",
+      "title": "Auto-reject a pending correction",
       "role": "janitor",
       "readOnly": false
     },
     {
       "name": "list_sources",
-      "title": "List connected data sources (capabilities)",
+      "title": "List connected data sources",
       "role": "analyst",
       "readOnly": true
     },
     {
       "name": "get_schema",
-      "title": "Queryable schema (biz.* mirror + lake, permission-scoped)",
+      "title": "Every table and column you can query",
       "role": "analyst",
       "readOnly": true
     },
     {
       "name": "run_query",
-      "title": "Run a read-only SQL query (capped + audited)",
+      "title": "Run a read-only SQL query",
       "role": "analyst",
       "readOnly": true
     },
     {
       "name": "app_guide",
-      "title": "How to build a Setoku app (read before publish_app / update_app)",
+      "title": "How to build a Setoku app",
       "role": "analyst",
       "readOnly": true
     },
     {
       "name": "publish_app",
-      "title": "Publish a live app to the box (team-shareable URL)",
+      "title": "Publish a live app to the box",
       "role": "analyst",
       "readOnly": false
     },
     {
       "name": "update_app",
-      "title": "Edit an app you published (in place, same link)",
+      "title": "Edit an app you published",
       "role": "analyst",
       "readOnly": false
     },
@@ -164,7 +164,7 @@
     },
     {
       "name": "get_app",
-      "title": "Inspect an app — its full template + panels (how it's built)",
+      "title": "Inspect an app — its full template and panels",
       "role": "analyst",
       "readOnly": true
     },

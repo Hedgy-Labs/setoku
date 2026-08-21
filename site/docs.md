@@ -51,31 +51,31 @@ Callable right now against the demo box:
 
 **Every session** — the analyst surface. Reads data and curated context, and may only *propose* knowledge changes:
 
-- `find_context` — Find business context (verified + unverified)
-- `list_entities` — List documented business entities
+- `find_context` — Find context for this connector’s data
+- `list_entities` — List everything in the knowledge store
 - `describe_entity` — Full context doc for one entity
 - `get_metric` — Canonical metric definition
 - `report_correction` (writes) — Record a context correction / clarification
 - `list_corrections` — List pending knowledge corrections
-- `list_sources` — List connected data sources (capabilities)
-- `get_schema` — Queryable schema (biz.* mirror + lake, permission-scoped)
-- `run_query` — Run a read-only SQL query (capped + audited)
-- `app_guide` — How to build a Setoku app (read before publish_app / update_app)
-- `publish_app` (writes) — Publish a live app to the box (team-shareable URL)
-- `update_app` (writes) — Edit an app you published (in place, same link)
+- `list_sources` — List connected data sources
+- `get_schema` — Every table and column you can query
+- `run_query` — Run a read-only SQL query
+- `app_guide` — How to build a Setoku app
+- `publish_app` (writes) — Publish a live app to the box
+- `update_app` (writes) — Edit an app you published
 - `list_apps` — List apps published to the box
-- `get_app` — Inspect an app — its full template + panels (how it’s built)
+- `get_app` — Inspect an app — its full template and panels
 - `unpublish_app` (writes) — Archive a published app
 
 **Curator sessions only.** Commits curated knowledge:
 
-- `resolve_correction` — Resolve a pending correction (curator)
-- `upsert_context` — Create or update a knowledge doc (generate/curate workflows)
+- `resolve_correction` — Resolve a pending correction
+- `upsert_context` — Create or update a knowledge doc
 
 **Janitor sessions only.** Drafts and auto-rejects pending corrections, commits nothing:
 
-- `draft_correction` — Attach a drafted doc-edit to a pending correction (auto-draft)
-- `reject_correction` — Auto-reject a pending correction (janitor, reject-only)
+- `draft_correction` — Attach a drafted doc-edit to a pending correction
+- `reject_correction` — Auto-reject a pending correction
 
 A session has exactly one role, and the two role-scoped groups are *registered* only for that role: a session without it does not get a refusal, the tool is simply absent from its `tools/list`.
 

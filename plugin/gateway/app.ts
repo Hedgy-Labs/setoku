@@ -29,6 +29,7 @@ import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
 import { mirroredTables, mirrorNameOf, queryableTableName, type MirroredTable } from "./lib/mirror";
 import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
+import { rosterLine, serverInstructions, type BoxRoster } from "./lib/roster";
 import {
   deniedFamiliesFor,
   docHidden,
@@ -104,6 +105,15 @@ export interface GatewayDeps {
    * base table only. Shared across per-request servers, like `store`.
    */
   derivedSynonyms?: DerivedSynonyms | null;
+  /**
+   * What this box actually holds, from the cached Sources probe (lib/roster).
+   * Pushed into the MCP `instructions` and the entry-point tool descriptions so
+   * a client learns the connector's subject matter WITHOUT calling a tool —
+   * the discoverability gap that let a personal-finance box read as a
+   * work-analytics one. Null (probe cold or failed) → the descriptions fall
+   * back to their source-agnostic text; nothing breaks, it's just less helpful.
+   */
+  roster?: BoxRoster | null;
 }
 
 /** Lake table → its source (for family resolution). Built once at module load,
@@ -192,9 +202,21 @@ export function buildServer({
   role,
   embedIndex = null,
   derivedSynonyms = null,
+  roster = null,
 }: GatewayDeps): McpServer {
 const { canWrite, denyLakeRead, canDraft, canReject } = capabilitiesFor(role);
-const server = new McpServer({ name: "setoku", version: VERSION });
+// Server-level instructions ride the initialize response — read once, before
+// any tool call, which is exactly when a client decides what this connector is
+// FOR. Everything else here is only read by a client that already chose to look.
+const server = new McpServer(
+  { name: "setoku", version: VERSION },
+  { instructions: serverInstructions(roster, { canWrite, denyLakeRead }) },
+);
+// Prefix for the entry-point tools' descriptions: the connected-source roster,
+// so "what data is behind this?" is answerable from the tool list alone.
+const holds = rosterLine(roster);
+const withRoster = (description: string): string =>
+  holds ? `${holds} ${description}` : description;
 
 // Per-user source access (I9): the ClickHouse roles to activate for THIS
 // session's lake reads, from the identity's denied families. Computed per
@@ -414,14 +436,17 @@ server.registerTool(
   "find_context",
   {
     annotations: { readOnlyHint: true },
-    title: "Find business context (verified + unverified)",
-    description:
-      "ALWAYS call FIRST, the instant a data/business question arrives — before any planning, schema " +
-      "exploration, or reasoning about what a term means; call it with the question, THEN reason over " +
-      "what it returns. Retrieves verified business context (entity semantics, canonical metric " +
+    title: "Find context for this connector's data",
+    description: withRoster(
+      "ALWAYS call FIRST, the instant a question about this connector's data arrives — before any " +
+      "planning, schema exploration, or reasoning about what a term means; call it with the question, THEN " +
+      "reason over what it returns. Retrieves verified context (entity semantics, canonical metric " +
       "definitions, known-good queries, gotchas, and pending unverified team knowledge) for a " +
-      "natural-language question. Trust it over your own inference from table/column names — it encodes " +
-      "how this business actually computes things.",
+      "natural-language question. Trust it over your own inference from table/column names — it " +
+      "encodes how the numbers here are actually computed. A thin result means the KNOWLEDGE is thin, " +
+      "never that the data is absent: check list_sources / get_schema before saying anything is " +
+      "unavailable.",
+    ),
     inputSchema: {
       question: z
         .string()
@@ -520,6 +545,18 @@ server.registerTool(
         "",
       );
     }
+    // Retrieval came back with nothing: the exact moment a reader concludes
+    // "Setoku doesn't cover this" and stops. It doesn't follow — the knowledge
+    // store being silent on a topic says nothing about what data is connected.
+    // So name the sources here too, where the wrong inference gets made. Gated
+    // on a genuine miss (not merely uncovered TERMS, which is a vocabulary
+    // mismatch) so it stays rare enough to keep reading.
+    if (!top.length && holds) {
+      coverage.push(
+        `Before concluding this box can't answer the question: ${holds} Call list_sources for the current, table-level list.`,
+        "",
+      );
+    }
     out.push(...coverage);
     if (selectedGotchas.length) {
       out.push("## Gotchas (read carefully — these prevent wrong answers)");
@@ -547,6 +584,8 @@ server.registerTool(
       });
       // An empty store is where pointers matter MOST — dropping them here would
       // hand the emptiest box the least help, having already paid for the lookup.
+      // `coverage` carries the roster line too (top.length is 0 here), so an
+      // empty knowledge store still says what the box HOLDS.
       return text([NO_KNOWLEDGE_HINT, ...(coverage.length ? ["", ...coverage] : [])].join("\n"));
     }
     if (top.length === 0) {
@@ -618,7 +657,7 @@ server.registerTool(
   "list_entities",
   {
     annotations: { readOnlyHint: true },
-    title: "List documented business entities",
+    title: "List everything in the knowledge store",
     description:
       "Lists every documented entity, metric, and canonical query in the knowledge store " +
       "(name + one-line summary). Cheap index — use it to discover what context exists.",
@@ -840,7 +879,7 @@ server.registerTool(
   "resolve_correction",
   {
     annotations: { readOnlyHint: false, destructiveHint: false },
-    title: "Resolve a pending correction (curator)",
+    title: "Resolve a pending correction",
     description:
       "Marks a pending correction accepted or rejected. Curation workflow: on accept, ALSO fold the knowledge " +
       "into the store via upsert_context (a gotcha bullet, a metric doc, an entity edit) — resolving alone only " +
@@ -863,7 +902,7 @@ server.registerTool(
   "upsert_context",
   {
     annotations: { readOnlyHint: false, destructiveHint: false },
-    title: "Create or update a knowledge doc (generate/curate workflows)",
+    title: "Create or update a knowledge doc",
     description:
       "Writes a context document into the knowledge store: entity, metric, query, overview, or gotcha. " +
       "Used by the /setoku:generate and /setoku:curate workflows — do NOT use it mid-analysis to record " +
@@ -950,7 +989,7 @@ server.registerTool(
   "draft_correction",
   {
     annotations: { readOnlyHint: false, destructiveHint: false },
-    title: "Attach a drafted doc-edit to a pending correction (auto-draft)",
+    title: "Attach a drafted doc-edit to a pending correction",
     description:
       "Writes a DRAFT — the exact upsert payload approving the correction would commit — plus advisory FLAGS " +
       "onto a pending correction, so the human curator reviews a finished change instead of a raw note. This " +
@@ -999,7 +1038,7 @@ server.registerTool(
   "reject_correction",
   {
     annotations: { readOnlyHint: false, destructiveHint: false },
-    title: "Auto-reject a pending correction (janitor, reject-only)",
+    title: "Auto-reject a pending correction",
     description:
       "Rejects a pending correction — queue status only, grants ZERO knowledge authority. Use ONLY for items " +
       "that fail OBJECTIVE checks: drafted SQL errors, references a denied table, malformed, an exact duplicate " +
@@ -1030,13 +1069,15 @@ server.registerTool(
   "list_sources",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "List connected data sources (capabilities)",
-    description:
-      "Lists what Setoku can query RIGHT NOW: the biz.* Postgres mirror, data-lake tables (logs, " +
-      "product events, finance, chat) with what each holds, and the knowledge store. Capabilities are " +
-      "DYNAMIC, so call this whenever unsure whether Setoku has data for a question, BEFORE telling the " +
-      'user it isn\'t available. Everything is queried via run_query dialect:"clickhouse" — business ' +
-      "tables as biz.<table>, lake tables as setoku.<table>.",
+    title: "List connected data sources",
+    description: withRoster(
+      "Lists what this box can query RIGHT NOW, table by table: the biz.* Postgres mirror, every " +
+      "connected lake source with what it holds, and the knowledge store. Capabilities are DYNAMIC and " +
+      "change without this tool list changing — so call this whenever unsure whether Setoku has data " +
+      "for a question, and ALWAYS before telling the user something isn't available. Everything is " +
+      'queried via run_query dialect:"clickhouse" — business tables as biz.<table>, lake tables as ' +
+      "setoku.<table>.",
+    ),
     inputSchema: {},
   },
   async () => {
@@ -1208,13 +1249,14 @@ server.registerTool(
   "get_schema",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "Queryable schema (biz.* mirror + lake, permission-scoped)",
-    description:
+    title: "Every table and column you can query",
+    description: withRoster(
       "Describes every table you can query, straight from ClickHouse metadata: the biz.* Postgres " +
-      "mirror and the setoku.* lake tables (the gateway has no direct direct Postgres path). " +
+      "mirror and the setoku.* lake tables (the gateway has no direct Postgres path). " +
       "With no arguments: compact list of all tables + column names, biz.* first. With `tables`: full " +
       "detail (column types + the table's ORDER BY key) for those tables. Tables not listed here are " +
       "off-limits — do not query them.",
+    ),
     inputSchema: {
       tables: z
         .array(z.string())
@@ -1357,15 +1399,16 @@ server.registerTool(
   "run_query",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "Run a read-only SQL query (capped + audited)",
-    description:
+    title: "Run a read-only SQL query",
+    description: withRoster(
       "Executes ONE read-only ClickHouse SQL statement (statement timeout + row cap; audited with your " +
-      "identity): the biz.* Postgres mirror plus the lake (logs/events/Slack archive). The direct " +
-      "direct Postgres path is retired — business tables are read as biz.<table>. Engine-enforced " +
+      "identity): the biz.* Postgres mirror plus every connected lake source. The direct " +
+      "Postgres path is retired — business tables are read as biz.<table>. Engine-enforced " +
       "readonly and engine-enforced table access. " +
       "Workflow: find_context first, prefer canonical metric SQL via get_metric, always include an explicit " +
       "LIMIT, never SELECT * on wide tables. Writes/DDL are rejected. Discover tables with get_schema or " +
       "SHOW TABLES / DESCRIBE <table>.",
+    ),
     inputSchema: {
       sql: z.string().describe("A single SELECT/WITH/EXPLAIN statement (ClickHouse SQL)"),
       dialect: z
@@ -1803,7 +1846,7 @@ server.registerTool(
   "app_guide",
   {
     annotations: { readOnlyHint: true },
-    title: "How to build a Setoku app (read before publish_app / update_app)",
+    title: "How to build a Setoku app",
     description:
       "Call this FIRST whenever you're about to author or edit an app — the same way you call find_context " +
       "before querying. Returns the full template + Setoku.* helper + panels/params/state contract you need " +
@@ -1820,7 +1863,7 @@ server.registerTool(
   "publish_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Publish a live app to the box (team-shareable URL)",
+    title: "Publish a live app to the box",
     description:
       "Publishes an app backed by LIVE data and returns a shareable URL. Use this to SHARE a result with " +
       "the team as a link that stays current — not for answering in-session. " +
@@ -1910,7 +1953,7 @@ server.registerTool(
   "update_app",
   {
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
-    title: "Edit an app you published (in place, same link)",
+    title: "Edit an app you published",
     description:
       "Updates an app you created — keeping its id and shareable link. Pass only what changes: `title`, `html` " +
       "(new template), `panels` (REPLACES the whole panel set), `params` (REPLACES all inputs), and/or `refreshSeconds`. " +
@@ -2110,7 +2153,7 @@ server.registerTool(
   "get_app",
   {
     annotations: { readOnlyHint: true },
-    title: "Inspect an app — its full template + panels (how it's built)",
+    title: "Inspect an app — its full template and panels",
     description:
       "Returns everything needed to edit a published app in place: the full presentation TEMPLATE " +
       "(the exact `html`/JS you'd pass back to update_app), its interactive `params`, and each panel's " +
