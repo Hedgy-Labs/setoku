@@ -141,6 +141,41 @@ curl https://setoku.com/api/tools.json</pre>
         </div>
       </section>
 
+      <section id="fit">
+        <h2 class="man">WHO RUNS ONE</h2>
+        <div class="body">
+          <p>
+            One box holds the data of one operator. Usually that is a company,
+            but nothing here assumes a payroll: the same box, the same tools
+            and the same approval step work at any size.
+          </p>
+          <dl class="kv">
+            <dt>A company<span class="t">a token per person</span></dt>
+            <dd>
+              Revenue, churn, pipeline, deploys, support load, and the
+              definitions everyone argues about written down once.
+            </dd>
+            <dt>A household<span class="t">two people, one box</span></dt>
+            <dd>
+              Joint finances, mail, calendars. The partner who doesn’t write SQL
+              asks in plain language, or opens a link that stays current.
+            </dd>
+            <dt>One person<span class="t">reachable everywhere</span></dt>
+            <dd>
+              Your own bank, mail and repos, queryable from phone, web and
+              desktop rather than only from the machine holding the files.
+            </dd>
+          </dl>
+          <p>
+            Not a fit for a static file you already have on disk: if a CSV
+            answers the question and won’t change, query it locally. Setoku
+            earns its keep on data that lives elsewhere and keeps moving (a
+            bank, a budgeting service, a mailbox, an issue tracker), where a
+            hand-made export is stale on arrival.
+          </p>
+        </div>
+      </section>
+
       <section id="resources">
         <h2 class="man">RESOURCES</h2>
         <div class="body">
@@ -355,6 +390,13 @@ curl https://setoku.com/api/tools.json</pre>
             The load-bearing security design, and the thing most worth
             understanding before you build against Setoku: <b>two identities,
             one server, never on the same session.</b>
+          </p>
+          <p>
+            This is not role-based access control for a big org, and it is not
+            optional overhead on a small box. It is prompt-injection defense,
+            and it matters at one user: the moment an agent reads your email or
+            your logs, it is reading text a stranger wrote. The split is what
+            stops that text from rewriting what Setoku knows.
           </p>
           <dl class="kv">
             <dt>Analyst<span class="t">reads the lake · proposes only</span></dt>

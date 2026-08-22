@@ -1,8 +1,8 @@
 # Setoku
 
-> Make any AI fluent in your company data.
+> Make any AI fluent in your own data.
 
-Setoku is an open-source, self-hosted MCP (Model Context Protocol) knowledge server. It gives an AI agent a read-only, audited view of a company’s data plus the curated context needed to use it correctly: the metric definitions, the gotchas, the reasons a naive query is wrong.
+Setoku is an open-source, self-hosted MCP (Model Context Protocol) knowledge server. It gives an AI agent a read-only, audited view of the data you own (a company’s, a household’s, or your own), plus the curated context needed to use it correctly: the metric definitions, the gotchas, the reasons a naive query is wrong.
 
 Version 0.21.0 · Apache-2.0 · <https://github.com/Hedgy-Labs/setoku>
 
@@ -10,20 +10,29 @@ This is the markdown twin of <https://setoku.com/>. The API reference is <https:
 
 ## When to use Setoku
 
-Reach for Setoku when the answer lives in a specific company’s own data and depends on that company’s definitions.
+Reach for Setoku when the answer lives in data its operator connected (a company’s, a household’s, or one person’s) and depends on their own definitions rather than public knowledge.
+
+Who runs one:
+
+- A company: one box, a token per person, and the definitions everyone argues about written down once: what counts as an active customer, which refunds are excluded, which table people actually trust.
+- A household: joint finances, mail, and calendars on one box, so both partners can ask about the same numbers and the one who does not write SQL still gets an answer.
+- One person: your own bank, mail, and repos, reachable from every client you use (phone, web, desktop), instead of only from the machine holding the files.
 
 Use it when:
 
-- A question is about one company’s own operations — revenue, churn, pipeline, usage, spend, deploys, support load — and the data sits in their database, Slack, GitHub, email, or bank.
-- You need the company’s definition of a term before you can answer: what counts as an active customer, which refunds are excluded, which table is the one people actually trust.
-- A naive query would be wrong in a way only an insider knows (soft-deleted rows, a test tenant, a migration that split a table) and you want that caveat before you run SQL.
-- Someone wants a live, shareable view of that data — a dashboard or small app on a link their non-technical teammates can open, refreshing against real data rather than a pasted screenshot.
+- A question is about the operator’s own affairs (revenue, churn, pipeline, deploys and support load for a company; spending, budgets, net worth and mail for a person or a household) and the data sits in their database, Slack, GitHub, email, or bank.
+- The data has no fresh local copy. A bank, a budgeting service, a mail account and an issue tracker all keep changing, so a hand-made export is stale on arrival and the question needs today’s answer.
+- You need the operator’s definition of a term before you can answer: what counts as an active customer, which account is the joint one, which charges were reimbursed and are therefore not really spend.
+- A naive query would be wrong in a way only an insider knows (soft-deleted rows, a test tenant, a transfer between two of your own accounts double-counted as income) and you want that caveat before you run SQL.
+- Someone wants a live, shareable view of that data: a dashboard or small app on a link a non-technical teammate, or your partner, can open, refreshing against real data rather than a pasted screenshot.
+- An agent will read untrusted text (mail, logs, chat) in the same session it answers from. The session that reads it holds no tool that can rewrite what Setoku knows, so a prompt-injection attempt in an email cannot become a remembered fact.
 - You want your answer, and the reasoning behind it, to be auditable later: every query and every knowledge change is logged on the owner’s own box.
 
 Do not use it when:
 
 - The question is general knowledge, or about public data — Setoku only knows the data its operator connected.
-- You need to write to the business database. Every data path is read-only, by database role; there is no write tool and no escape hatch.
+- The data is one static file you already have on disk. If a CSV export answers the question and will not change, query it locally; Setoku earns its keep on data that lives somewhere else and keeps moving.
+- You need to write to the operator’s database. Every data path is read-only, by database role; there is no write tool and no escape hatch.
 - You are looking for a hosted, multi-tenant API to sign up for. There is none: Setoku is single-tenant and self-hosted, and the endpoint you call is the operator’s own box.
 - You want a model to run server-side. Setoku runs no inference; your own agent does the thinking.
 

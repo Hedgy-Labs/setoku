@@ -6,7 +6,7 @@
     <title>Setoku · data knowledge MCP server</title>
     <meta
       name="description"
-      content="Setoku is an open-source MCP server that gives your AI a read-only view of your company’s data, plus the context to use it correctly."
+      content="Setoku is an open-source MCP server that gives your AI a read-only view of the data you own (a company’s, a household’s, or your own), plus the context to use it correctly."
     />
     <link rel="canonical" href="https://setoku.com/" />
     <meta property="og:type" content="website" />
@@ -14,7 +14,7 @@
     <meta property="og:title" content="Setoku · data knowledge MCP server" />
     <meta
       property="og:description"
-      content="An open-source MCP server that gives your AI a read-only view of your company’s data, plus the context to use it correctly."
+      content="An open-source MCP server that gives your AI a read-only view of the data you own (a company’s, a household’s, or your own), plus the context to use it correctly."
     />
     <meta property="og:url" content="https://setoku.com/" />
     <meta property="og:image" content="https://setoku.com/assets/og.png" />
@@ -22,7 +22,7 @@
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="A sprout drawn in ASCII art above the line: setoku — make any AI fluent in your company data."
+      content="A sprout drawn in ASCII art above the line: setoku — make any AI fluent in your own data."
     />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
@@ -61,7 +61,7 @@
             "@id": "https://setoku.com/#website",
             "url": "https://setoku.com/",
             "name": "Setoku",
-            "description": "Setoku is an open-source, self-hosted MCP server that gives your AI a read-only view of your company data, plus the context to use it correctly.",
+            "description": "Setoku is an open-source, self-hosted MCP server that gives your AI a read-only view of the data you own (a company’s, a household’s, or your own), plus the context to use it correctly.",
             "inLanguage": "en",
             "publisher": { "@id": "https://setoku.com/#org" }
           },
@@ -93,7 +93,7 @@
             "applicationSubCategory": "MCP server",
             "operatingSystem": "Linux",
             "url": "https://setoku.com/",
-            "description": "Setoku is a small self-hosted MCP knowledge server plus Claude Code skills for hooking up your data. It gives your AI a read-only, audited way to query your data and remembers what that data means — the metric definitions and the gotchas — so it answers the way your business actually computes things. No AI model runs on the server.",
+            "description": "Setoku is a small self-hosted MCP knowledge server plus Claude Code skills for hooking up your data: a company’s, a household’s, or your own. It gives your AI a read-only, audited way to query it and remembers what that data means (the metric definitions, the gotchas), so it answers the way you actually count things. No AI model runs on the server.",
             "license": "https://www.apache.org/licenses/LICENSE-2.0",
             "downloadUrl": "https://github.com/Hedgy-Labs/setoku",
             "codeRepository": "https://github.com/Hedgy-Labs/setoku",
@@ -109,7 +109,7 @@
             },
             "featureList": [
               "MCP server over Streamable HTTP for any MCP client",
-              "Curated business context: metric definitions, entity docs, and gotchas",
+              "Curated context for your own data: metric definitions, entity docs, and gotchas",
               "Read-only, audited SQL against a ClickHouse lake and a read-only mirror of your database",
               "Publish live dashboards and apps to a shareable link",
               "Human approval for every change to curated knowledge"
@@ -197,8 +197,8 @@
             <b>setoku</b> &mdash; make any AI fluent in your
             <span
               class="rotator"
-              data-words="company data,family data,personal data"
-              >company data</span
+              data-words="own data,company data,family data,personal data"
+              >own data</span
             >
           </h1>
         </div>
@@ -209,13 +209,13 @@
         <div class="body">
 <p>
             Setoku is a small self-hosted MCP knowledge server + Claude Code
-            skills for hooking up your data. It does two things: it gives your
-            AI a read-only way to query your data, and it remembers what that
-            data means (the metric definitions, the gotchas), getting better the
-            more you use it. Ask for a dashboard and publish it to a link your
-            whole team can view, on live data. The MCP works with whatever AI
-            you already have, and no model runs on the server, so no added
-            inference cost.
+            skills for hooking up your data: your company’s, your household’s,
+            or your own. It does two things: it gives your AI a read-only way to
+            query that data, and it remembers what the data means (the metric
+            definitions, the gotchas), getting better the more you use it. Ask
+            for a dashboard and publish it to a link the people you share with
+            can open, on live data. The MCP works with whatever AI you already
+            have, and no model runs on the server, so no added inference cost.
           </p>
           <p class="dim">
             Open source &middot; MCP server &middot; Apache-2.0 &middot;
@@ -225,6 +225,43 @@
               rel="noopener"
               >GitHub ↗</a
             >
+          </p>
+        </div>
+      </section>
+
+      <section id="who">
+        <h2 class="man">WHO RUNS ONE</h2>
+        <div class="body">
+          <p>
+            One box holds the data of one operator. That operator is usually a
+            company, but nothing in Setoku assumes a payroll: the same box, the
+            same tools, the same approval step work at any size.
+          </p>
+          <dl class="kv">
+            <dt>A company<span class="t">a token per person</span></dt>
+            <dd>
+              Revenue, churn, pipeline, deploys, support load. The definitions
+              everyone argues about get written down once: what counts as an
+              active customer, which refunds are excluded, which table people
+              actually trust.
+            </dd>
+            <dt>A household<span class="t">two people, one box</span></dt>
+            <dd>
+              Joint finances, mail, calendars. Both partners ask about the same
+              numbers, and the one who doesn’t write SQL still gets an answer,
+              or a link to a dashboard that stays current on its own.
+            </dd>
+            <dt>One person<span class="t">reachable everywhere</span></dt>
+            <dd>
+              Your own bank, mail, and repos, queryable from every client you
+              use (phone, web, desktop), rather than only from the machine that
+              happens to hold the files.
+            </dd>
+          </dl>
+          <p class="dim">
+            Not for a static CSV you already have on disk: if a file answers the
+            question and won’t change, query it locally. Setoku earns its keep
+            on data that lives somewhere else and keeps moving.
           </p>
         </div>
       </section>
@@ -349,7 +386,7 @@ Other         <span class="bar">█▌</span>                            <span c
             <dt>App tools<span class="t">publish_app · update_app</span></dt>
             <dd>
               Turn an answer into a small web app on live data, published at a
-              link anyone on the team can open. No SQL required.
+              link the people you share with can open. No SQL required.
             </dd>
           </dl>
           <p>You set it up with <b>Claude Code</b> skills:</p>
@@ -363,8 +400,8 @@ Other         <span class="bar">█▌</span>                            <span c
               custom integration.
             </li>
             <li>
-              <span class="cmd">/setoku:generate</span> writes business context
-              from your code.
+              <span class="cmd">/setoku:generate</span> writes context from
+              your code.
             </li>
             <li>
               <span class="cmd">/setoku:curate</span> reviews and approves
@@ -384,8 +421,9 @@ Other         <span class="bar">█▌</span>                            <span c
         <div class="body">
           <p>
             Ask Claude to build a dashboard on your data. Then publish it to a
-            link as a Setoku App, the data stays live, and your whole team can
-            view it. Nothing to deploy, no frontend to maintain.
+            link as a Setoku App, the data stays live, and whoever you share it
+            with can open it, a teammate or your partner. Nothing to deploy,
+            no frontend to maintain.
           </p>
           <dl class="kv">
             <dt>Vibe dashboarding<span class="t">sandbox safety</span></dt>
@@ -561,6 +599,8 @@ SETOKU_ADMIN_USER=you ./deploy/bootstrap.sh</pre>
   <span class="lbl">│</span> <span class="cmd">Render</span>     <span class="lbl">│</span> deploys &amp; logs                   <span class="lbl">│</span>
   <span class="lbl">│</span> <span class="cmd">Slack</span>      <span class="lbl">│</span> messages                         <span class="lbl">│</span>
   <span class="lbl">│</span> <span class="cmd">Mercury</span>    <span class="lbl">│</span> banking &amp; finance                <span class="lbl">│</span>
+  <span class="lbl">│</span> <span class="cmd">Monarch</span>    <span class="lbl">│</span> personal finance &amp; net worth     <span class="lbl">│</span>
+  <span class="lbl">│</span> <span class="cmd">Gmail</span>      <span class="lbl">│</span> personal email                   <span class="lbl">│</span>
   <span class="lbl">└────────────┴──────────────────────────────────┘</span>
 </pre>
           </div>
