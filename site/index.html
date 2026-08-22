@@ -22,7 +22,7 @@
     <meta property="og:image:height" content="630" />
     <meta
       property="og:image:alt"
-      content="A sprout drawn in ASCII art above the line: setoku — make any AI fluent in your own data."
+      content="A sprout drawn in ASCII art above the line: setoku — make any AI fluent in your data."
     />
     <meta name="twitter:card" content="summary_large_image" />
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
@@ -197,8 +197,8 @@
             <b>setoku</b> &mdash; make any AI fluent in your
             <span
               class="rotator"
-              data-words="own data,company data,family data,personal data"
-              >own data</span
+              data-words="data,company data,family data,personal data"
+              >data</span
             >
           </h1>
         </div>
@@ -209,13 +209,13 @@
         <div class="body">
 <p>
             Setoku is a small self-hosted MCP knowledge server + Claude Code
-            skills for hooking up your data: your company’s, your household’s,
-            or your own. It does two things: it gives your AI a read-only way to
-            query that data, and it remembers what the data means (the metric
-            definitions, the gotchas), getting better the more you use it. Ask
-            for a dashboard and publish it to a link the people you share with
-            can open, on live data. The MCP works with whatever AI you already
-            have, and no model runs on the server, so no added inference cost.
+            skills for hooking up your data. It does two things: it gives your
+            AI a read-only way to query that data, and it remembers what the
+            data means (the metric definitions, the gotchas), getting better
+            the more you use it. Ask for a dashboard and publish it to a link
+            the people you share with can open, on live data. The MCP works
+            with whatever AI you already have, and no model runs on the server,
+            so no added inference cost.
           </p>
           <p class="dim">
             Open source &middot; MCP server &middot; Apache-2.0 &middot;
@@ -229,40 +229,27 @@
         </div>
       </section>
 
-      <section id="who">
-        <h2 class="man">WHO RUNS ONE</h2>
+      <section id="who-its-for">
+        <h2 class="man">WHO IT’S FOR</h2>
         <div class="body">
-          <p>
-            One box holds the data of one operator. That operator is usually a
-            company, but nothing in Setoku assumes a payroll: the same box, the
-            same tools, the same approval step work at any size.
-          </p>
           <dl class="kv">
             <dt>A company<span class="t">a token per person</span></dt>
             <dd>
-              Revenue, churn, pipeline, deploys, support load. The definitions
-              everyone argues about get written down once: what counts as an
-              active customer, which refunds are excluded, which table people
-              actually trust.
+              Give agents team-by-team access to revenue, logs, and deploys,
+              for debugging and analysis. Definitions like “active customer”
+              get written down once.
             </dd>
-            <dt>A household<span class="t">two people, one box</span></dt>
+            <dt>A household<span class="t">one family, one box</span></dt>
             <dd>
-              Joint finances, mail, calendars. Both partners ask about the same
-              numbers, and the one who doesn’t write SQL still gets an answer,
-              or a link to a dashboard that stays current on its own.
+              Shared accounts and calendars, so the partner who doesn’t write
+              SQL gets the same answers.
             </dd>
-            <dt>One person<span class="t">reachable everywhere</span></dt>
+            <dt>One person<span class="t">reachable from anywhere</span></dt>
             <dd>
-              Your own bank, mail, and repos, queryable from every client you
-              use (phone, web, desktop), rather than only from the machine that
-              happens to hold the files.
+              Your own accounts and repos, queryable from your phone and the web
+              as well as your desktop.
             </dd>
           </dl>
-          <p class="dim">
-            Not for a static CSV you already have on disk: if a file answers the
-            question and won’t change, query it locally. Setoku earns its keep
-            on data that lives somewhere else and keeps moving.
-          </p>
         </div>
       </section>
 
