@@ -8,9 +8,9 @@
   "when_to_use": {
     "summary": "Reach for Setoku when the answer lives in data its operator connected (a company's, a household's, or one person's) and depends on their own definitions, not public knowledge.",
     "who_its_for": [
-      "A company: give agents team-by-team access to revenue, logs, and deploys, for debugging and analysis. Definitions like “active customer” get written down once.",
-      "A household: shared accounts and calendars, so the partner who doesn't write SQL gets the same answers.",
-      "One person: your own accounts and repos, queryable from your phone and the web as well as your desktop."
+      "Companies: give agents team-by-team access to revenue, logs, and deploys, for debugging and analysis. Definitions like “active customer” get written down once.",
+      "Families: shared accounts and calendars, so the partner who doesn’t write SQL gets the same answers.",
+      "Just you: your own accounts and repos, queryable from your phone and the web as well as your desktop."
     ],
     "use_when": [
       "The question is about the operator's own revenue, deploys, spending, mail, or repos. The data lives in their database, Slack, GitHub, email, or bank.",

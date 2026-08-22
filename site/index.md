@@ -14,9 +14,9 @@ Reach for Setoku when the answer lives in data its operator connected (a company
 
 Who it’s for:
 
-- A company: give agents team-by-team access to revenue, logs, and deploys, for debugging and analysis. Definitions like “active customer” get written down once.
-- A household: shared accounts and calendars, so the partner who doesn’t write SQL gets the same answers.
-- One person: your own accounts and repos, queryable from your phone and the web as well as your desktop.
+- Companies: give agents team-by-team access to revenue, logs, and deploys, for debugging and analysis. Definitions like “active customer” get written down once.
+- Families: shared accounts and calendars, so the partner who doesn’t write SQL gets the same answers.
+- Just you: your own accounts and repos, queryable from your phone and the web as well as your desktop.
 
 Use it when:
 
