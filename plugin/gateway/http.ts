@@ -2416,21 +2416,17 @@ const httpServer = http.createServer(async (req, res) => {
           // Restore an earlier version (#58) — author-or-admin, same gate as
           // rename. Copies the chosen snapshot's content forward as a NEW version
           // (append-only, so the restore is itself undoable) and clears the panel
-          // cache (restored panels recompute on next view). If the restored
-          // content changes what a PUBLIC app exposes, it drops to team-only — an
-          // admin must re-publish it (the human promotion gate, I9), mirroring
-          // update_app.
+          // cache (restored panels recompute on next view). Like update_app, it
+          // lands on the app's existing link: a public app stays public.
           if (api === "revert") {
             const body = (await readBody(req)) as { id?: string; seq?: number } | undefined;
             const id = (body?.id ?? "").trim();
             const seq = Number(body?.seq);
             if (!Number.isInteger(seq) || seq < 1) return json(400, { ok: false, error: "Bad version." });
             if (!mayMutateApp(id)) return;
-            const meta = store.getPublishedMeta(id); // current state (for the visibility check)
+            const meta = store.getPublishedMeta(id); // for the audit's public-link marker
             const snap = store.getAppRevision(id, seq);
-            if (!meta || !snap) return json(404, { ok: false, error: "No such version." });
-            const norm = (v: unknown): string => JSON.stringify(v ?? []);
-            const dataChanged = norm(snap.panels) !== norm(meta.panels) || norm(snap.params) !== norm(meta.params);
+            if (!snap) return json(404, { ok: false, error: "No such version." });
             const ok = store.updatePublished(
               id,
               {
@@ -2446,11 +2442,6 @@ const httpServer = http.createServer(async (req, res) => {
             // non-2xx; a `flash` here would be dropped and shown as "HTTP 409".
             if (!ok)
               return json(409, { ok: false, error: "Couldn’t restore that version. The app may have just been archived." });
-            let reverted = false;
-            if (dataChanged && meta.visibility === "public") {
-              store.setReportVisibility(id, "team");
-              reverted = true;
-            }
             // Re-seed the cache from the restored version and check its panels
             // still run — the snapshot was valid when saved, but the schema/config
             // may have drifted since. Uses the same governed viewer render path
@@ -2469,15 +2460,17 @@ const httpServer = http.createServer(async (req, res) => {
                 // A re-seed failure must not fail the restore; the next view recomputes.
               }
             }
-            store.audit(session.identity, "revert_app", { id, seq, reverted, brokenPanels: !!panelWarning });
-            emitAppChanged(id, "restored"); // other open viewers reload the restored content
-            return json(200, {
-              ok: true,
-              flash:
-                (reverted
-                  ? `Restored version ${seq}. Its data changed, so it reverted to team-only; an admin can re-publish it publicly.`
-                  : `Restored version ${seq}.`) + panelWarning,
+            // Same marker update_app records: a restore also rewrites what a live
+            // public link serves (an older panel set can predate the promotion),
+            // so the audit row has to say the link was live.
+            store.audit(session.identity, "revert_app", {
+              id,
+              seq,
+              brokenPanels: !!panelWarning,
+              public: meta?.visibility === "public",
             });
+            emitAppChanged(id, "restored"); // other open viewers reload the restored content
+            return json(200, { ok: true, flash: `Restored version ${seq}.` + panelWarning });
           }
 
           // Restore an archived app. Author-or-admin, but (unlike the other

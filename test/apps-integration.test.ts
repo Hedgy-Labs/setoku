@@ -207,7 +207,7 @@ describe("get_app — full round-trip (template + params + panels) (#59)", () =>
   });
 });
 
-describe("update_app — params are first-class (validate + I9 re-gate)", () => {
+describe("update_app — params are first-class (validated on every edit)", () => {
   it("rejects a params-only update whose new default doesn't coerce", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");
     const id = idOf((await call(c, "publish_app", { title: "p1", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
@@ -223,7 +223,7 @@ describe("update_app — params are first-class (validate + I9 re-gate)", () => 
     expect(r.isError).toBeTruthy();
     expect(r.text.toLowerCase()).toContain("undeclared param");
   });
-  it("reverts a PUBLIC app to team-only when params change (I9 human re-approval)", async () => {
+  it("keeps a PUBLIC app public when params change — the link survives a re-publish", async () => {
     const c = await gwConnect(BASE, "tok_boss", "pub");
     const id = idOf((await call(c, "publish_app", { title: "p3", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
     const { cookie, csrf } = await login();
@@ -233,11 +233,10 @@ describe("update_app — params are first-class (validate + I9 re-gate)", () => 
       body: JSON.stringify({ id, visibility: "public" }),
     });
     expect((await setVis.json()).ok).toBe(true);
-    // A params-only edit widens what the public link exposes → must re-gate.
     const r = await call(c, "update_app", { id, params: [{ ...REGION_PARAM, options: [{ value: "NA" }, { value: "EMEA" }, { value: "APAC" }, { value: "LATAM" }] }] });
     expect(r.isError).toBeFalsy();
-    expect(r.text.toLowerCase()).toContain("reverted to team-only");
-    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // no longer public
+    expect(r.text).toContain(`/p/${id}`); // the reply still hands back the public link
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200); // and it still serves
   });
 });
 
