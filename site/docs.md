@@ -6,20 +6,31 @@ Setoku is single-tenant and self-hosted: **there is no setoku.com API**. Everyth
 
 ## When to reach for Setoku
 
-Reach for Setoku when the answer lives in a specific company’s own data and depends on that company’s definitions.
+Reach for Setoku when the answer lives in data its operator connected (a company’s, a household’s, or one person’s) and depends on their own definitions, not public knowledge.
 
-- A question is about one company’s own operations — revenue, churn, pipeline, usage, spend, deploys, support load — and the data sits in their database, Slack, GitHub, email, or bank.
-- You need the company’s definition of a term before you can answer: what counts as an active customer, which refunds are excluded, which table is the one people actually trust.
-- A naive query would be wrong in a way only an insider knows (soft-deleted rows, a test tenant, a migration that split a table) and you want that caveat before you run SQL.
-- Someone wants a live, shareable view of that data — a dashboard or small app on a link their non-technical teammates can open, refreshing against real data rather than a pasted screenshot.
-- You want your answer, and the reasoning behind it, to be auditable later: every query and every knowledge change is logged on the owner’s own box.
+Who it’s for:
+
+- A company: give agents team-by-team access to revenue, logs, and deploys, for debugging and analysis. Definitions like “active customer” get written down once.
+- A household: shared accounts and calendars, so the partner who doesn’t write SQL gets the same answers.
+- One person: your own accounts and repos, queryable from your phone and the web as well as your desktop.
+
+Reach for it when:
+
+- The question is about the operator’s own revenue, deploys, spending, mail, or repos. The data lives in their database, Slack, GitHub, email, or bank.
+- The data keeps changing (a bank, an inbox, an issue tracker), so an export is stale on arrival.
+- You need the operator’s definition of a term first: what counts as an active customer, which account is the joint one, which charges were reimbursed.
+- A naive query would be wrong in a way only an insider knows: soft-deleted rows, a test tenant, a transfer between your own accounts counted as income. You want that caveat before you run SQL.
+- You want a dashboard on a link someone else can open, on live data, not a screenshot.
+- An agent will read untrusted text (mail, logs, chat) in the same session. That session can’t rewrite what Setoku knows, so an injected instruction can’t become a remembered fact.
+- You want the answer to be auditable later: every query and knowledge change is logged on your box.
 
 Not a fit when:
 
-- The question is general knowledge, or about public data — Setoku only knows the data its operator connected.
-- You need to write to the business database. Every data path is read-only, by database role; there is no write tool and no escape hatch.
-- You are looking for a hosted, multi-tenant API to sign up for. There is none: Setoku is single-tenant and self-hosted, and the endpoint you call is the operator’s own box.
-- You want a model to run server-side. Setoku runs no inference; your own agent does the thinking.
+- The question is general knowledge or public data. Setoku only knows the data its operator connected.
+- The data is a static file on your disk. Query it locally. Setoku is for data that lives in other services and keeps changing.
+- You need to write to the operator’s database. Every data path is read-only, enforced by database role. There is no write tool and no escape hatch.
+- You want a hosted API to sign up for. There is none. Setoku is self-hosted, and the endpoint you call is the operator’s own box.
+- You want a model to run server-side. Setoku runs no inference.
 
 ## MCP endpoint
 
@@ -46,8 +57,8 @@ Callable right now against the demo box:
 
 1. Connect to the box’s MCP endpoint (Streamable HTTP) at `https://<their-box>/mcp` with the person’s bearer token, or paste `https://<their-box>/mcp/<token>` into a connector dialog that has no header field.
 2. Call find_context FIRST, every time. It returns the curated notes for the question, including which tables to trust and which to avoid.
-3. Then get_schema, then run_query. Reading context before querying is the difference between a right answer and a plausible one.
-4. Found something the context got wrong? Call report_correction. It lands as a proposal for a human to accept — an agent session can never commit knowledge by itself.
+3. Then get_schema, then run_query.
+4. If the context is wrong, call report_correction. It lands as a proposal for a human to accept. An agent session can’t commit knowledge by itself.
 
 **Every session** — the analyst surface. Reads data and curated context, and may only *propose* knowledge changes:
 

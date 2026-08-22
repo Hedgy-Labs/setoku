@@ -198,7 +198,7 @@ function openapi(toolNames: string[]) {
       summary: "The HTTP surface of a self-hosted Setoku MCP knowledge server.",
       description:
         "Setoku is an open-source, self-hosted MCP server that gives an AI agent a read-only, " +
-        "audited view of a company's data plus the curated context needed to use it correctly.\n\n" +
+        "audited view of its operator's own data plus the curated context needed to use it correctly.\n\n" +
         "Every Setoku box exposes this API. There is no multi-tenant setoku.com API: the product " +
         "is single-tenant by design and runs on infrastructure you own, so point `host` at your " +
         "own deployment (or at the public demo box).\n\n" +
@@ -487,34 +487,52 @@ type Connector = { id: string; name: string; data: string };
  * WHEN TO USE SETOKU — the single most useful paragraph on this whole site for a
  * machine reader, and the one thing marketing copy never says out loud. Every
  * discovery file (llms.txt, the agent card, the skill index, index.md) states
- * the same three lists, so an agent gets the same answer wherever it looks.
+ * the same lists, so an agent gets the same answer wherever it looks.
  *
  * Kept honest in both directions: what Setoku is *wrong* for is published next
  * to what it is right for, because an agent that reaches for us on a question we
- * cannot answer wastes a turn and then distrusts the next answer too.
+ * cannot answer wastes a turn and then distrusts the next answer too. The
+ * do-not-use list therefore concedes the static-CSV case outright — that reader
+ * is better served by DuckDB, and saying so is what makes the rest credible.
+ *
+ * `who_its_for` exists because agents evaluating fit pattern-match against a
+ * list of subjects, not against prose. Until it was added, every one of these
+ * files said "company" and nothing said "person", so an agent asked whether a
+ * household should use Setoku correctly answered no — to what we had published,
+ * not to what the product does. The homepage h1 had rotated
+ * "company data / family data / personal data" for months; it was a JS rotator,
+ * so no fetcher ever saw the other two words.
  */
 const WHEN_TO_USE = {
   summary:
-    "Reach for Setoku when the answer lives in a specific company's own data and depends on " +
-    "that company's definitions.",
+    "Reach for Setoku when the answer lives in data its operator connected (a company's, a " +
+    "household's, or one person's) and depends on their own definitions, not public knowledge.",
+  who_its_for: [
+    "A company: give agents team-by-team access to revenue, logs, and deploys, for debugging and analysis. Definitions like “active customer” get written down once.",
+    "A household: shared accounts and calendars, so the partner who doesn't write SQL gets the same answers.",
+    "One person: your own accounts and repos, queryable from your phone and the web as well as your desktop.",
+  ],
   use_when: [
-    "A question is about one company's own operations — revenue, churn, pipeline, usage, spend, deploys, support load — and the data sits in their database, Slack, GitHub, email, or bank.",
-    "You need the company's definition of a term before you can answer: what counts as an active customer, which refunds are excluded, which table is the one people actually trust.",
-    "A naive query would be wrong in a way only an insider knows (soft-deleted rows, a test tenant, a migration that split a table) and you want that caveat before you run SQL.",
-    "Someone wants a live, shareable view of that data — a dashboard or small app on a link their non-technical teammates can open, refreshing against real data rather than a pasted screenshot.",
-    "You want your answer, and the reasoning behind it, to be auditable later: every query and every knowledge change is logged on the owner's own box.",
+    "The question is about the operator's own revenue, deploys, spending, mail, or repos. The data lives in their database, Slack, GitHub, email, or bank.",
+    "The data keeps changing (a bank, an inbox, an issue tracker), so an export is stale on arrival.",
+    "You need the operator's definition of a term first: what counts as an active customer, which account is the joint one, which charges were reimbursed.",
+    "A naive query would be wrong in a way only an insider knows: soft-deleted rows, a test tenant, a transfer between your own accounts counted as income. You want that caveat before you run SQL.",
+    "You want a dashboard on a link someone else can open, on live data, not a screenshot.",
+    "An agent will read untrusted text (mail, logs, chat) in the same session. That session can't rewrite what Setoku knows, so an injected instruction can't become a remembered fact.",
+    "You want the answer to be auditable later: every query and knowledge change is logged on your box.",
   ],
   do_not_use_when: [
-    "The question is general knowledge, or about public data — Setoku only knows the data its operator connected.",
-    "You need to write to the business database. Every data path is read-only, by database role; there is no write tool and no escape hatch.",
-    "You are looking for a hosted, multi-tenant API to sign up for. There is none: Setoku is single-tenant and self-hosted, and the endpoint you call is the operator's own box.",
-    "You want a model to run server-side. Setoku runs no inference; your own agent does the thinking.",
+    "The question is general knowledge or public data. Setoku only knows the data its operator connected.",
+    "The data is a static file on your disk. Query it locally. Setoku is for data that lives in other services and keeps changing.",
+    "You need to write to the operator's database. Every data path is read-only, enforced by database role. There is no write tool and no escape hatch.",
+    "You want a hosted API to sign up for. There is none. Setoku is self-hosted, and the endpoint you call is the operator's own box.",
+    "You want a model to run server-side. Setoku runs no inference.",
   ],
   how_to_call: [
     "Connect to the box's MCP endpoint (Streamable HTTP) at `https://<their-box>/mcp` with the person's bearer token, or paste `https://<their-box>/mcp/<token>` into a connector dialog that has no header field.",
     "Call find_context FIRST, every time. It returns the curated notes for the question, including which tables to trust and which to avoid.",
-    "Then get_schema, then run_query. Reading context before querying is the difference between a right answer and a plausible one.",
-    "Found something the context got wrong? Call report_correction. It lands as a proposal for a human to accept — an agent session can never commit knowledge by itself.",
+    "Then get_schema, then run_query.",
+    "If the context is wrong, call report_correction. It lands as a proposal for a human to accept. An agent session can't commit knowledge by itself.",
   ],
 } as const;
 
@@ -529,8 +547,8 @@ function mcpManifest(toolList: Tool[]) {
     name: "setoku",
     title: "Setoku",
     description:
-      "Self-hosted MCP knowledge server: a read-only, audited view of one company's data plus " +
-      "the curated context needed to use it correctly.",
+      "Self-hosted MCP knowledge server: a read-only, audited view of one operator's own data (a " +
+      "company's, a household's, or one person's), plus the curated context needed to use it correctly.",
     version: VERSION,
     license: "Apache-2.0",
     repository: { url: REPO, source: "github" },
@@ -584,11 +602,11 @@ function agentCard(skillList: Skill[], toolList: Tool[]) {
     protocolVersion: "0.3.0",
     name: "Setoku",
     description:
-      "Setoku makes an AI agent fluent in one company's data. It serves the company's curated " +
-      "context (metric definitions, gotchas, which table to trust) and a governed read-only " +
-      "query path into their warehouse, so an agent can answer business questions correctly and " +
-      "publish live views of the result. Self-hosted and single-tenant: the agent you are " +
-      "talking to runs on the operator's own box.",
+      "Setoku makes an AI agent fluent in one operator's own data: a company's, a household's, " +
+      "or one person's. It serves their curated context (metric definitions, gotchas, which table " +
+      "to trust) and a governed read-only query path into the data itself, so an agent answers " +
+      "from how they actually count things and can publish a live view of the result on a link. " +
+      "Self-hosted and single-tenant: it runs on the operator's own box.",
     version: VERSION,
     provider: { organization: "Hedgy Labs", url: SITE },
     documentationUrl: `${SITE}/docs`,
@@ -631,19 +649,21 @@ function agentCard(skillList: Skill[], toolList: Tool[]) {
         id: s.id,
         name: s.name,
         description: s.description,
-        tags: ["setoku", "mcp", "company-data", s.name],
+        tags: ["setoku", "mcp", "company-data", "personal-data", "household-data", s.name],
         examples: [`/setoku:${s.name}`],
       })),
       {
         id: "setoku:answer",
         name: "answer",
         description:
-          "Answer a question about the operator's own business data: retrieve the curated " +
-          "context for it (find_context), read the schema, then run a governed read-only query.",
-        tags: ["setoku", "mcp", "analytics", "sql", "company-data"],
+          "Answer a question about the operator's own data (a company's, a household's, or one " +
+          "person's): retrieve the curated context for it (find_context), read the schema, then " +
+          "run a governed read-only query.",
+        tags: ["setoku", "mcp", "analytics", "sql", "company-data", "personal-data", "household-data"],
         examples: [
           "What did we bill last month, using our definition of billed revenue?",
           "Which accounts churned in Q2, excluding the test tenant?",
+          "What did we spend on groceries last month, not counting the reimbursed work lunches?",
         ],
       },
       {
@@ -667,8 +687,9 @@ function agentSkillsIndex(skillList: Skill[]) {
   return {
     name: "Setoku",
     description:
-      "Skills for connecting an AI agent to one company's data and keeping the knowledge behind " +
-      "it correct. They ship in the Setoku Claude Code plugin and run against a Setoku box.",
+      "Skills for connecting an AI agent to the data one operator owns (a company's, a " +
+      "household's, or one person's) and keeping the knowledge behind it correct. They ship in " +
+      "the Setoku Claude Code plugin and run against a Setoku box.",
     version: VERSION,
     license: "Apache-2.0",
     homepage: SITE,
@@ -726,9 +747,9 @@ const steps = (xs: readonly string[]) => xs.map((x, i) => `${i + 1}. ${prose(x)}
 function indexMarkdown(toolList: Tool[], connectorList: Connector[], skillList: Skill[]) {
   return `# Setoku
 
-> Make any AI fluent in your company data.
+> Make any AI fluent in your data.
 
-Setoku is an open-source, self-hosted MCP (Model Context Protocol) knowledge server. It gives an AI agent a read-only, audited view of a company’s data plus the curated context needed to use it correctly: the metric definitions, the gotchas, the reasons a naive query is wrong.
+Setoku is an open-source, self-hosted MCP (Model Context Protocol) knowledge server. It gives an AI agent a read-only, audited view of the data you own (a company’s, a household’s, or your own), plus the curated context needed to use it correctly: the metric definitions, the gotchas, the reasons a naive query is wrong.
 
 Version ${VERSION} · Apache-2.0 · <${REPO}>
 
@@ -737,6 +758,10 @@ This is the markdown twin of <${SITE}/>. The API reference is <${SITE}/docs> (ma
 ## When to use Setoku
 
 ${prose(WHEN_TO_USE.summary)}
+
+Who it’s for:
+
+${bullets(WHEN_TO_USE.who_its_for)}
 
 Use it when:
 
@@ -777,7 +802,7 @@ Server, by hand, on a fresh Ubuntu VPS (about $5–12/month):
 
 ## The tool surface
 
-${toolList.length} MCP tools. Which ones a session sees depends on its token’s role — that split is the security model, not a convenience.
+${toolList.length} MCP tools. Which ones a session sees depends on its token’s role. That split is the security model.
 
 | Tool | What it does | Role |
 | --- | --- | --- |
@@ -795,7 +820,7 @@ No connector for yours? \`/setoku:connect\` gives a coding agent the patterns to
 
 ## Security model
 
-- **Two identities, one membrane.** An analyst token may query the lake but holds no tool that commits knowledge. A curator token may commit knowledge but cannot read the lake. They never coexist on one session, so a prompt-injected session cannot weaponize the write path.
+- **Two identities, one membrane.** An analyst token may query the lake but holds no tool that commits knowledge. A curator token may commit knowledge but cannot read the lake. They never coexist on one session, so a prompt-injected session can’t reach the write path.
 - **Accepting knowledge is a human click** on the box’s admin page, outside the agent loop. No MCP tool creates users, grants access, or commits knowledge on its own.
 - **Reads are governed by database roles**, not by parsing SQL in our code. The engine enforces it.
 - **The credential never reaches the model.** Config names an environment variable; the gateway resolves it.
@@ -828,7 +853,7 @@ Contact: hello@setoku.com · Issues: <${REPO}/issues>
 function llmsTxt(skillList: Skill[]) {
   return `# Setoku
 
-> Setoku is an open-source, self-hosted MCP (Model Context Protocol) knowledge server. It gives any AI agent a read-only, audited view of your company’s data plus the curated context needed to use it correctly: the metric definitions, the gotchas, the reasons a naive query is wrong.
+> Setoku is an open-source, self-hosted MCP (Model Context Protocol) knowledge server. It gives any AI agent a read-only, audited view of the data you own (a company’s, a household’s, or your own), plus the curated context needed to use it correctly: the metric definitions, the gotchas, the reasons a naive query is wrong.
 
 Setoku is single-tenant on purpose. There is no hosted Setoku service and no multi-tenant API: you run it on a box you own (one small VPS), and your data and your context stay there. That is the point of the product, not a gap in it. So the API described below is the API that *your* deployment exposes, not one hosted at setoku.com.
 
@@ -839,6 +864,10 @@ Two identities share one server and never overlap. An **analyst** token may quer
 ## When to use Setoku
 
 ${prose(WHEN_TO_USE.summary)}
+
+Who it’s for:
+
+${bullets(WHEN_TO_USE.who_its_for)}
 
 Use it when:
 
@@ -912,6 +941,12 @@ Setoku is single-tenant and self-hosted: **there is no setoku.com API**. Everyth
 ## When to reach for Setoku
 
 ${prose(WHEN_TO_USE.summary)}
+
+Who it’s for:
+
+${bullets(WHEN_TO_USE.who_its_for)}
+
+Reach for it when:
 
 ${bullets(WHEN_TO_USE.use_when)}
 
@@ -1030,7 +1065,7 @@ const NOTE =
 
 const index = {
   name: "Setoku",
-  tagline: "Make any AI fluent in your company data.",
+  tagline: "Make any AI fluent in your data.",
   description: manifest.description,
   version: VERSION,
   license: "Apache-2.0",

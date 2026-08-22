@@ -4,7 +4,7 @@
     "title": "Setoku Gateway API",
     "version": "0.21.0",
     "summary": "The HTTP surface of a self-hosted Setoku MCP knowledge server.",
-    "description": "Setoku is an open-source, self-hosted MCP server that gives an AI agent a read-only, audited view of a company's data plus the curated context needed to use it correctly.\n\nEvery Setoku box exposes this API. There is no multi-tenant setoku.com API: the product is single-tenant by design and runs on infrastructure you own, so point `host` at your own deployment (or at the public demo box).\n\nThe primary interface is MCP over Streamable HTTP at `/mcp`, which carries 19 tools (see https://setoku.com/api/tools.json). The REST endpoints below are the credential-free surface: box health, and published apps.",
+    "description": "Setoku is an open-source, self-hosted MCP server that gives an AI agent a read-only, audited view of its operator's own data plus the curated context needed to use it correctly.\n\nEvery Setoku box exposes this API. There is no multi-tenant setoku.com API: the product is single-tenant by design and runs on infrastructure you own, so point `host` at your own deployment (or at the public demo box).\n\nThe primary interface is MCP over Streamable HTTP at `/mcp`, which carries 19 tools (see https://setoku.com/api/tools.json). The REST endpoints below are the credential-free surface: box health, and published apps.",
     "license": {
       "name": "Apache-2.0",
       "identifier": "Apache-2.0"

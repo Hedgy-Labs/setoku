@@ -141,6 +141,27 @@ curl https://setoku.com/api/tools.json</pre>
         </div>
       </section>
 
+      <section id="who-its-for">
+        <h2 class="man">WHO’S IT FOR</h2>
+        <div class="body">
+          <dl class="kv">
+            <dt>A company<span class="t">a token per person</span></dt>
+            <dd>
+              Every agent on your team gets full knowledge of revenue, logs and
+              deploys. Definitions like what counts as an active customer get
+              written down once.
+            </dd>
+            <dt>A household<span class="t">one family, one box</span></dt>
+            <dd>Share bank accounts and calendars.</dd>
+            <dt>One person<span class="t">reachable from anywhere</span></dt>
+            <dd>
+              Your own accounts and repos, queryable from your phone and the web
+              as well as your desktop.
+            </dd>
+          </dl>
+        </div>
+      </section>
+
       <section id="resources">
         <h2 class="man">RESOURCES</h2>
         <div class="body">
@@ -355,6 +376,13 @@ curl https://setoku.com/api/tools.json</pre>
             The load-bearing security design, and the thing most worth
             understanding before you build against Setoku: <b>two identities,
             one server, never on the same session.</b>
+          </p>
+          <p>
+            This is not role-based access control for a big org, and it is not
+            optional overhead on a small box. It is prompt-injection defense,
+            and it matters at one user: the moment an agent reads your email or
+            your logs, it is reading text a stranger wrote. The split is what
+            stops that text from rewriting what Setoku knows.
           </p>
           <dl class="kv">
             <dt>Analyst<span class="t">reads the lake · proposes only</span></dt>
