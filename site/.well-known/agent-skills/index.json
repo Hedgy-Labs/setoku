@@ -6,7 +6,7 @@
   "homepage": "https://setoku.com",
   "documentation": "https://setoku.com/docs",
   "when_to_use": {
-    "summary": "Reach for Setoku when the answer lives in data its operator connected (a company's, a household's, or one person's) and depends on their own definitions rather than public knowledge.",
+    "summary": "Reach for Setoku when the answer lives in data its operator connected (a company's, a household's, or one person's) and depends on their own definitions, not public knowledge.",
     "who_its_for": [
       "A company: give agents team-by-team access to revenue, logs, and deploys, for debugging and analysis. Definitions like “active customer” get written down once.",
       "A household: shared accounts and calendars, so the partner who doesn't write SQL gets the same answers.",
@@ -15,24 +15,24 @@
     "use_when": [
       "The question is about the operator's own revenue, deploys, spending, mail, or repos. The data lives in their database, Slack, GitHub, email, or bank.",
       "The data keeps changing (a bank, an inbox, an issue tracker), so an export is stale on arrival.",
-      "You need the operator's definition of a term before you can answer: what counts as an active customer, which account is the joint one, which charges were reimbursed and are therefore not really spend.",
-      "A naive query would be wrong in a way only an insider knows (soft-deleted rows, a test tenant, a transfer between two of your own accounts double-counted as income) and you want that caveat before you run SQL.",
+      "You need the operator's definition of a term first: what counts as an active customer, which account is the joint one, which charges were reimbursed.",
+      "A naive query would be wrong in a way only an insider knows: soft-deleted rows, a test tenant, a transfer between your own accounts counted as income. You want that caveat before you run SQL.",
       "You want a dashboard on a link someone else can open, on live data, not a screenshot.",
       "An agent will read untrusted text (mail, logs, chat) in the same session. That session can't rewrite what Setoku knows, so an injected instruction can't become a remembered fact.",
       "You want the answer to be auditable later: every query and knowledge change is logged on your box."
     ],
     "do_not_use_when": [
-      "The question is general knowledge, or about public data — Setoku only knows the data its operator connected.",
-      "The data is one static file you already have on disk. If a file answers the question and will not change, query it locally; Setoku is for data that lives in other services and keeps changing.",
-      "You need to write to the operator's database. Every data path is read-only, by database role; there is no write tool and no escape hatch.",
-      "You are looking for a hosted, multi-tenant API to sign up for. There is none: Setoku is single-tenant and self-hosted, and the endpoint you call is the operator's own box.",
+      "The question is general knowledge or public data. Setoku only knows the data its operator connected.",
+      "The data is a static file on your disk. Query it locally. Setoku is for data that lives in other services and keeps changing.",
+      "You need to write to the operator's database. Every data path is read-only, enforced by database role. There is no write tool and no escape hatch.",
+      "You want a hosted API to sign up for. There is none. Setoku is self-hosted, and the endpoint you call is the operator's own box.",
       "You want a model to run server-side. Setoku runs no inference."
     ],
     "how_to_call": [
       "Connect to the box's MCP endpoint (Streamable HTTP) at `https://<their-box>/mcp` with the person's bearer token, or paste `https://<their-box>/mcp/<token>` into a connector dialog that has no header field.",
       "Call find_context FIRST, every time. It returns the curated notes for the question, including which tables to trust and which to avoid.",
       "Then get_schema, then run_query.",
-      "Found something the context got wrong? Call report_correction. It lands as a proposal for a human to accept — an agent session can never commit knowledge by itself."
+      "If the context is wrong, call report_correction. It lands as a proposal for a human to accept. An agent session can't commit knowledge by itself."
     ]
   },
   "install": [

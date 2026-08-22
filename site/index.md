@@ -10,7 +10,7 @@ This is the markdown twin of <https://setoku.com/>. The API reference is <https:
 
 ## When to use Setoku
 
-Reach for Setoku when the answer lives in data its operator connected (a company’s, a household’s, or one person’s) and depends on their own definitions rather than public knowledge.
+Reach for Setoku when the answer lives in data its operator connected (a company’s, a household’s, or one person’s) and depends on their own definitions, not public knowledge.
 
 Who it’s for:
 
@@ -22,18 +22,18 @@ Use it when:
 
 - The question is about the operator’s own revenue, deploys, spending, mail, or repos. The data lives in their database, Slack, GitHub, email, or bank.
 - The data keeps changing (a bank, an inbox, an issue tracker), so an export is stale on arrival.
-- You need the operator’s definition of a term before you can answer: what counts as an active customer, which account is the joint one, which charges were reimbursed and are therefore not really spend.
-- A naive query would be wrong in a way only an insider knows (soft-deleted rows, a test tenant, a transfer between two of your own accounts double-counted as income) and you want that caveat before you run SQL.
+- You need the operator’s definition of a term first: what counts as an active customer, which account is the joint one, which charges were reimbursed.
+- A naive query would be wrong in a way only an insider knows: soft-deleted rows, a test tenant, a transfer between your own accounts counted as income. You want that caveat before you run SQL.
 - You want a dashboard on a link someone else can open, on live data, not a screenshot.
 - An agent will read untrusted text (mail, logs, chat) in the same session. That session can’t rewrite what Setoku knows, so an injected instruction can’t become a remembered fact.
 - You want the answer to be auditable later: every query and knowledge change is logged on your box.
 
 Do not use it when:
 
-- The question is general knowledge, or about public data — Setoku only knows the data its operator connected.
-- The data is one static file you already have on disk. If a file answers the question and will not change, query it locally; Setoku is for data that lives in other services and keeps changing.
-- You need to write to the operator’s database. Every data path is read-only, by database role; there is no write tool and no escape hatch.
-- You are looking for a hosted, multi-tenant API to sign up for. There is none: Setoku is single-tenant and self-hosted, and the endpoint you call is the operator’s own box.
+- The question is general knowledge or public data. Setoku only knows the data its operator connected.
+- The data is a static file on your disk. Query it locally. Setoku is for data that lives in other services and keeps changing.
+- You need to write to the operator’s database. Every data path is read-only, enforced by database role. There is no write tool and no escape hatch.
+- You want a hosted API to sign up for. There is none. Setoku is self-hosted, and the endpoint you call is the operator’s own box.
 - You want a model to run server-side. Setoku runs no inference.
 
 ## How an agent calls it
@@ -41,7 +41,7 @@ Do not use it when:
 1. Connect to the box’s MCP endpoint (Streamable HTTP) at `https://<their-box>/mcp` with the person’s bearer token, or paste `https://<their-box>/mcp/<token>` into a connector dialog that has no header field.
 2. Call find_context FIRST, every time. It returns the curated notes for the question, including which tables to trust and which to avoid.
 3. Then get_schema, then run_query.
-4. Found something the context got wrong? Call report_correction. It lands as a proposal for a human to accept — an agent session can never commit knowledge by itself.
+4. If the context is wrong, call report_correction. It lands as a proposal for a human to accept. An agent session can’t commit knowledge by itself.
 
 ## Try it without installing anything
 
@@ -71,7 +71,7 @@ Server, by hand, on a fresh Ubuntu VPS (about $5–12/month):
 
 ## The tool surface
 
-19 MCP tools. Which ones a session sees depends on its token’s role — that split is the security model, not a convenience.
+19 MCP tools. Which ones a session sees depends on its token’s role. That split is the security model.
 
 | Tool | What it does | Role |
 | --- | --- | --- |
@@ -119,7 +119,7 @@ No connector for yours? `/setoku:connect` gives a coding agent the patterns to w
 
 ## Security model
 
-- **Two identities, one membrane.** An analyst token may query the lake but holds no tool that commits knowledge. A curator token may commit knowledge but cannot read the lake. They never coexist on one session, so a prompt-injected session cannot weaponize the write path.
+- **Two identities, one membrane.** An analyst token may query the lake but holds no tool that commits knowledge. A curator token may commit knowledge but cannot read the lake. They never coexist on one session, so a prompt-injected session can’t reach the write path.
 - **Accepting knowledge is a human click** on the box’s admin page, outside the agent loop. No MCP tool creates users, grants access, or commits knowledge on its own.
 - **Reads are governed by database roles**, not by parsing SQL in our code. The engine enforces it.
 - **The credential never reaches the model.** Config names an environment variable; the gateway resolves it.
