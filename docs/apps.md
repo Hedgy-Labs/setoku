@@ -405,9 +405,10 @@ Replaces `publish_report` / `list_published` / `unpublish_report`:
   state-only app; only a zero-panel full HTML document is a static report.
 - **`update_app({ id, title?, html?, panels?, params?, refreshSeconds? })`** — edit
   an app **you authored**, in place (same id/link). Only the author can edit;
-  `panels` / `params` each replace the whole set (re-validated + dry-run). Changing
-  `panels` on a *public* app reverts it to team-only — the data it exposes changed,
-  so an admin must re-approve (the human public-promotion gate, I9).
+  `panels` / `params` each replace the whole set (re-validated + dry-run). The edit
+  lands on the app's existing link: a public app stays public (and keeps any shared
+  password), so the change is live for everyone holding that link — see "Editing a
+  public app" below.
 - **`list_apps()`** / **`unpublish_app({ id })`** — unchanged semantics from the
   old list/unpublish.
 - **`get_app({ id })`** — read-only inspection of panel definitions + last-run
@@ -458,6 +459,23 @@ the deferred next step — it pairs with `update_app` for a see-then-fix loop.
   **public** exfil — is closed by reusing the report rule verbatim: **the agent
   can only publish team-only; flipping to public is a human click in the web console**
   (the agent holds no web session).
+- **Editing a public app does not re-gate it.** An `update_app` that changes
+  panels or params on a public app used to drop it back to team-only until an
+  admin re-approved the link. In practice that fired on every ordinary iteration
+  of an app whose whole point was to be public: the link went dark mid-session,
+  and the human clicking it back was re-approving their own edit, one they had
+  just asked for. The gate now sits where I9 actually puts it — on **promotion**,
+  which no agent can perform — and an edit rides on the link the human already
+  blessed. The residual risk is real and named: an injection-driven `update_app`
+  on an already-public app can change what that link exposes without a further
+  click. What still stands against it: only the app's **author** can edit it, and
+  panels run under that creator's source grants, so an edit can never expose more
+  than its author may already read (per-source denies still bite); every edit is
+  audited with a `public` marker saying the change landed on a live link
+  (`update_app` and the web restore alike); each edit appends a version snapshot a
+  human can restore; the team's activity notification announces agent edits on
+  boxes that have a notify webhook configured; and locking an app freezes it
+  against agent edits entirely.
 - **Renders run under the gateway role, not a session.** Panel re-execution
   carries no `denyLakeRead` — the membrane is enforced at *authorship* (a curator
   session can't publish a lake-backed panel), not at render. So a public

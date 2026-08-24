@@ -1512,7 +1512,7 @@ describe("live apps (end-to-end render path)", () => {
     expect((await fetch(`${BASE}/p/${soId}/data`)).status).toBe(404);
   }, 20_000);
 
-  it("update_app is author-gated, edits in place, injects the chart runtime, and reverts public on panel change", async () => {
+  it("update_app is author-gated, edits in place, injects the chart runtime, and keeps a public link live", async () => {
     const alice = await connect("tok-alice");
     const pub = await call(alice, "publish_app", {
       title: "Alice board",
@@ -1538,16 +1538,16 @@ describe("live apps (end-to-end render path)", () => {
     });
     expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200);
 
-    // the author edits PANELS → reverts to team-only (re-approval needed)
+    // the author edits PANELS → the SAME link keeps serving, now with the new panel
     const alice2 = await connect("tok-alice");
     const upd = await call(alice2, "update_app", {
       id,
       panels: [{ key: "a", sql: "SELECT count(*) AS n FROM biz.orders WHERE status='paid'", dialect: "clickhouse" }],
     });
     expect(upd.isError).toBe(false);
-    expect(upd.text.toLowerCase()).toContain("reverted to team");
+    expect(upd.text).toContain(`/p/${id}`); // still the public URL it had
     await alice2.close();
-    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(404); // public link gone
+    expect((await fetch(`${BASE}/p/${id}`)).status).toBe(200); // link never goes dark on a re-publish
 
     // the team frame serves the new code, with the chart runtime injected
     const frame = await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: boss.cookie } })).text();

@@ -1960,8 +1960,8 @@ server.registerTool(
       "Changing `panels` or `params` re-validates and dry-runs every panel against the new params. " +
       "Only the app's AUTHOR can edit it, and a LOCKED app rejects all edits (the author or an admin " +
       "locks/unlocks from the web UI) — copy a locked app with get_app → publish_app instead. " +
-      "Note: changing `panels` or `params` on an app that's currently public reverts it to team-only — an admin " +
-      "must re-approve it for the public link, since the data it exposes changed. " +
+      "An edit lands on the app's EXISTING link: a public app stays public (and keeps any shared password), so " +
+      "your changes are live for everyone holding that link the moment this returns. " +
       "Pass a `message` describing WHAT changed — it shows in the app's version history and the team's activity " +
       "notification. " +
       "The `html` template + `Setoku.*` helper + panels/params contract is documented by app_guide — call it if you haven't.",
@@ -2017,12 +2017,12 @@ server.registerTool(
       return errorText(`message is ${note.length} chars — keep it under ${MAX_UPDATE_MESSAGE_CHARS} (a one-line summary of what changed).`);
 
     // Panels AND params both determine what the panels compute (params bind into
-    // the SQL), so a change to EITHER must be validated and re-seeded — and, on a
-    // public app, re-gated (I9). Re-run the shared prep over the EFFECTIVE panel
-    // set against the EFFECTIVE params whenever either changes: this validates the
-    // new param defaults/names, re-checks every existing panel still compiles
-    // against the new params (a removed/renamed param would otherwise 500 the app
-    // at render), and re-seeds the default-variant cache.
+    // the SQL), so a change to EITHER must be validated and re-seeded. Re-run the
+    // shared prep over the EFFECTIVE panel set against the EFFECTIVE params
+    // whenever either changes: this validates the new param defaults/names,
+    // re-checks every existing panel still compiles against the new params (a
+    // removed/renamed param would otherwise 500 the app at render), and re-seeds
+    // the default-variant cache.
     const panelsChanged = panels !== undefined;
     const paramsChanged = params !== undefined;
     const dataChanged = panelsChanged || paramsChanged;
@@ -2064,17 +2064,14 @@ server.registerTool(
     // Re-seed the cache for the re-derived panels (updatePublished cleared the old rows).
     if (seeds) for (const s of seeds) store.putPanelCache(tid, s.key, { columns: s.columns, rows: s.rows, rowCount: s.rowCount, truncated: s.truncated, error: null });
 
-    // Panels OR params alter what the public link exposes — if it was public,
-    // revert to team so an admin re-approves (the human promotion gate, I9).
-    let reverted = false;
-    if (dataChanged && meta.visibility === "public") {
-      store.setReportVisibility(tid, "team");
-      reverted = true;
-    }
     store.audit(user, "update_app", {
       id: tid,
       changed: [newTitle !== undefined && "title", html !== undefined && "html", panelsChanged && "panels", paramsChanged && "params", refreshSeconds !== undefined && "refreshSeconds"].filter(Boolean),
-      reverted,
+      // Did this edit land on a live PUBLIC link? Marked for EVERY facet, not
+      // just panels/params — an html-only edit changes what public viewers see
+      // too. The audit log is where that shows up: I9's human gate stands on
+      // PROMOTION, which no agent can do, not on every later edit.
+      public: meta.visibility === "public",
       model: modelName,
     });
     // Nudge any browser currently viewing this app to refetch (SSE live-refresh)
@@ -2093,7 +2090,7 @@ server.registerTool(
     void notifyActivity(projectDir, {
       kind: "app_updated",
       title: newTitle ?? meta.title,
-      url: publishUrl(tid, reverted ? "team" : meta.visibility),
+      url: publishUrl(tid, meta.visibility),
       by: user,
       changed: changedFacets,
       message: note,
@@ -2102,8 +2099,7 @@ server.registerTool(
     const finalHtml = html ?? store.getPublished(tid)?.body ?? "";
     const finalPanels = normalized ?? meta.panels ?? [];
     return text(
-      `Updated "${meta.title}" → ${publishUrl(tid, reverted ? "team" : meta.visibility)} (same link).` +
-        (reverted ? "\n\n⚠ Panels or params changed on a PUBLIC app — reverted to team-only; an admin must re-publish it publicly from /admin." : "") +
+      `Updated "${meta.title}" → ${publishUrl(tid, meta.visibility)} (same link).` +
         (await publishNotes(finalHtml, finalPanels)),
     );
   },
