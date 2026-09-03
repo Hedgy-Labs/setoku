@@ -178,6 +178,23 @@ export function fileKind(mime: string): FileKind {
 
 export const sha256Hex = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
+/** How much of a text-like file the viewer decodes and inlines. Past this the
+ *  frame shows a prefix plus a "download for the rest" note — a 50 MB log must
+ *  never be escaped and shipped as one HTML document. */
+export const MAX_VIEW_TEXT_BYTES = 4_000_000;
+
+/** Strict base64 → bytes, or null when the input isn't base64. Buffer.from()
+ *  never throws — it silently decodes garbage (a `data:` URL prefix, stray
+ *  text) into a few bytes with a perfectly valid sha256 — so publish_file
+ *  validates here first. Whitespace is tolerated (line-wrapped output). */
+export function decodeBase64Strict(input: string): Buffer | null {
+  const s = input.replace(/\s+/g, "");
+  if (!s.length || s.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(s)) return null;
+  const buf = Buffer.from(s, "base64");
+  const pad = s.endsWith("==") ? 2 : s.endsWith("=") ? 1 : 0;
+  return buf.length === (s.length / 4) * 3 - pad ? buf : null;
+}
+
 /* ------------------------------- parsing ---------------------------------- */
 
 export interface ParsedTable {
@@ -261,12 +278,14 @@ export function parseDelimited(text: string, delim: string, maxRows = 25_000): P
   const truncated = records.length > maxRows + 1;
   if (truncated) records.length = maxRows + 1;
   if (!records.length) return { columns: [], rows: [], truncated: false };
-  const seen = new Map<string, number>();
+  const seen = new Set<string>();
   const columns = records[0].map((h, idx) => {
-    let name = h.trim() || `col${idx + 1}`;
-    const k = seen.get(name) ?? 0;
-    seen.set(name, k + 1);
-    if (k) name = `${name}_${k + 1}`;
+    const base = h.trim() || `col${idx + 1}`;
+    let name = base;
+    // A suffixed name can itself collide with a literal header ("a,a,a_2"),
+    // so keep going until the candidate is genuinely unused.
+    for (let k = 2; seen.has(name); k++) name = `${base}_${k}`;
+    seen.add(name);
     return name;
   });
   const rows = records.slice(1).map((r) => {
@@ -316,19 +335,23 @@ function esc(s: string): string {
 /** Inline markdown on ALREADY-ESCAPED text: code, bold, italic, links. A link
  *  href must be http(s)/mailto or it renders as plain text — never javascript:. */
 function inline(s: string): string {
-  const code: string[] = [];
-  s = s.replace(/`([^`]+)`/g, (_, c: string) => {
-    code.push(`<code>${c}</code>`);
-    return `\u0000${code.length - 1}\u0000`;
-  });
+  // Code spans and links are lifted out FIRST and put back LAST: their markup
+  // (`target="_blank"`, a URL's underscores) must never be seen by the emphasis
+  // pass. The NUL sentinel can't occur in the escaped source.
+  const held: string[] = [];
+  const hold = (html: string): string => {
+    held.push(html);
+    return `\u0000${held.length - 1}\u0000`;
+  };
+  s = s.replace(/`([^`]+)`/g, (_, c: string) => hold(`<code>${c}</code>`));
+  // The whole source was escaped up front, so `href` already reads &amp; / &quot;
+  // — it goes into the attribute verbatim (re-escaping would double it).
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label: string, href: string) =>
-    /^(https?:\/\/|mailto:)/i.test(href)
-      ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${label}</a>`
-      : m,
+    /^(https?:\/\/|mailto:)/i.test(href) ? hold(`<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`) : m,
   );
   s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/__([^_]+)__/g, "<strong>$1</strong>");
   s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>").replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>");
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i: string) => code[Number(i)]);
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i: string) => held[Number(i)]);
 }
 
 /**
@@ -496,7 +519,11 @@ export class FileStore {
       throw new FileStoreQuotaError(`this publication would exceed ${MAX_BYTES_PER_PUBLICATION} bytes of files`);
     const total = this.usage().bytes;
     if (total - old + size > this.maxTotalBytes)
-      throw new FileStoreQuotaError(`the box's file storage is full (${this.maxTotalBytes} bytes); archive or replace files first`);
+      // Archiving keeps bytes (an archived record can be restored), so the only
+      // ways down are replacing big files with smaller ones or raising the cap.
+      throw new FileStoreQuotaError(
+        `the box's file storage is full (${this.maxTotalBytes} bytes); replace large files with smaller ones, or raise SETOKU_FILES_MAX_BYTES`,
+      );
     const sha256 = file.sha256 ?? sha256Hex(file.bytes);
     this.db.run(
       `INSERT INTO published_files (published_id, name, mime, size, sha256, bytes, uploaded_by, uploaded_at)
@@ -549,17 +576,15 @@ export class FileStore {
   summaries(): Map<string, { count: number; bytes: number; first: { name: string; mime: string; size: number } }> {
     const rows = this.db
       .query(
-        `SELECT published_id AS id, COUNT(*) AS count, SUM(size) AS bytes,
-                MIN(name) AS name FROM published_files GROUP BY published_id`,
+        `SELECT f.published_id AS id, s.count, s.bytes, f.name, f.mime, f.size
+           FROM published_files f
+           JOIN (SELECT published_id, COUNT(*) AS count, SUM(size) AS bytes, MIN(name) AS first
+                   FROM published_files GROUP BY published_id) s
+             ON s.published_id = f.published_id AND s.first = f.name`,
       )
-      .all() as { id: string; count: number; bytes: number; name: string }[];
+      .all() as { id: string; count: number; bytes: number; name: string; mime: string; size: number }[];
     const out = new Map<string, { count: number; bytes: number; first: { name: string; mime: string; size: number } }>();
-    for (const r of rows) {
-      const first = this.db
-        .query("SELECT name, mime, size FROM published_files WHERE published_id = ? AND name = ?")
-        .get(r.id, r.name) as { name: string; mime: string; size: number };
-      out.set(r.id, { count: r.count, bytes: r.bytes, first });
-    }
+    for (const r of rows) out.set(r.id, { count: r.count, bytes: r.bytes, first: { name: r.name, mime: r.mime, size: r.size } });
     return out;
   }
 
@@ -592,6 +617,22 @@ export class FileStore {
       .query(
         `SELECT nonce, published_id AS publishedId, app_id AS appId, name, mime, title, created_by AS createdBy,
                 model, expires, created_at AS createdAt FROM file_uploads WHERE nonce = ? AND expires > ?`,
+      )
+      .get(nonce, now) as PendingUpload | null;
+    return row ?? null;
+  }
+
+  /** Atomically CLAIM a live upload: the row is deleted and returned in one
+   *  statement, so two overlapping PUTs with the same nonce can't both pass —
+   *  the second finds nothing. A benign failure (empty body) re-inserts via
+   *  createUpload so the agent can retry. */
+  claimUpload(nonce: string, now = Date.now()): PendingUpload | null {
+    if (!nonce) return null;
+    const row = this.db
+      .query(
+        `DELETE FROM file_uploads WHERE nonce = ? AND expires > ?
+         RETURNING nonce, published_id AS publishedId, app_id AS appId, name, mime, title, created_by AS createdBy,
+                   model, expires, created_at AS createdAt`,
       )
       .get(nonce, now) as PendingUpload | null;
     return row ?? null;

@@ -13,7 +13,7 @@ import { VisibilityDialog } from "../components/VisibilityDialog";
 import { Button } from "../components/Button";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
-import { appShareUrl } from "../format";
+import { appShareUrl, downloadFile } from "../format";
 import { formatBytes } from "../../../lib/format";
 import type { PublishedMeta } from "../types";
 
@@ -89,11 +89,11 @@ export function Apps() {
                   </MenuItem>,
                 ];
                 if (isFile && r.files?.first) {
-                  // A plain navigation (not fetch): the session cookie rides along and
-                  // the response's Content-Disposition decides download vs. open.
+                  // A real anchor click (not fetch): the session cookie rides along, and
+                  // the `download` attribute saves it even for inline-served types.
                   const f = r.files.first;
                   items.push(
-                    <MenuItem key="dl" onSelect={() => window.open(`/admin/files/${encodeURIComponent(r.id)}/${encodeURIComponent(f.name)}`, "_blank")}>
+                    <MenuItem key="dl" onSelect={() => downloadFile(`/admin/files/${encodeURIComponent(r.id)}/${encodeURIComponent(f.name)}`, f.name)}>
                       Download
                     </MenuItem>,
                   );

@@ -12,7 +12,7 @@ import { VisibilityBadge } from "../components/VisibilityBadge";
 import { VisibilityDialog } from "../components/VisibilityDialog";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
-import { appShareUrl, relTime } from "../format";
+import { appShareUrl, downloadFile, relTime } from "../format";
 import { formatBytes } from "../../../lib/format";
 import type { AppData, AppParam, AppRevision, PanelProvenance } from "../types";
 
@@ -626,9 +626,9 @@ export function AppView() {
             ) : null}
             {isApp ? <MenuItem onSelect={() => manualRefresh()}>Refresh data</MenuItem> : null}
             {theFile ? (
-              // A plain navigation, not a fetch: the session cookie rides along and
-              // Content-Disposition decides download vs. open-in-tab.
-              <MenuItem onSelect={() => window.open(filePath(theFile.name), "_blank")}>Download {theFile.name}</MenuItem>
+              // A real anchor click, not a fetch: the session cookie rides along and
+              // `download` saves it even for types the server serves inline.
+              <MenuItem onSelect={() => downloadFile(filePath(theFile.name), theFile.name)}>Download {theFile.name}</MenuItem>
             ) : null}
             {/* Every app is agent-editable (static ones included), so Edit is
                 gated only on the app existing — never on panels or role (the
@@ -719,7 +719,7 @@ export function AppView() {
             <div className="flex flex-none flex-wrap items-baseline gap-x-4 gap-y-1 border-t border-stone-200 px-3 py-1.5 text-xs">
               <span className="text-stone-500">Files</span>
               {data.files.map((f) => (
-                <a key={f.name} href={filePath(f.name)} target="_blank" rel="noopener" className="text-stone-700 hover:underline">
+                <a key={f.name} href={filePath(f.name)} download={f.name} className="text-stone-700 hover:underline">
                   {f.name} <span className="text-stone-400">{formatBytes(f.size)}</span>
                 </a>
               ))}

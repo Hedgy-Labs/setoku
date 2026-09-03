@@ -71,3 +71,16 @@ export function auditSummary(payload: string): string {
     return payload;
   }
 }
+
+/** Save a same-origin file through a real anchor with `download`, so a control
+ *  labelled Download saves the file even when the server serves that type
+ *  inline (images, PDF, text). window.open would just show it in a tab. */
+export function downloadFile(path: string, name: string): void {
+  const a = document.createElement("a");
+  a.href = path;
+  a.download = name;
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}

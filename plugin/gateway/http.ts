@@ -54,6 +54,7 @@ import {
   FileStore,
   FileStoreQuotaError,
   MAX_UPLOAD_BYTES,
+  MAX_VIEW_TEXT_BYTES,
   defaultFileDbPath,
   fileKind,
   inlineAllowed,
@@ -1247,17 +1248,29 @@ function fileViewerFrame(
     `<div style="border:1px solid #e7e5e4;border-radius:.75rem;padding:1.5rem 2rem;text-align:center;max-width:24rem">` +
     `<div style="font-weight:600;word-break:break-all">${escapeHtml(file.name)}</div>` +
     `<div style="color:#78716c;font-size:.8rem;margin:.3rem 0 1rem">${escapeHtml(file.mime)} · ${formatBytes(file.size)}</div>` +
-    `<a href="${escapeHtml(opts.filePath)}" target="_blank" rel="noopener" style="display:inline-block;font-weight:500;color:#fafaf9;background:#1c1917;border-radius:.4rem;padding:.45rem .9rem;text-decoration:none">${label}</a>` +
+    `<a href="${escapeHtml(opts.filePath)}" target="_blank" rel="noopener"${kind === "pdf" ? "" : ` download="${escapeHtml(file.name)}"`} style="display:inline-block;font-weight:500;color:#fafaf9;background:#1c1917;border-radius:.4rem;padding:.45rem .9rem;text-decoration:none">${label}</a>` +
     `</div></div>`;
   let body: string;
   let panels: RenderedPanel[] = [];
-  const text = (): string => new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  // Text-like kinds decode a bounded PREFIX: a 50 MB log is never escaped and
+  // inlined whole (that's several hundred MB of allocation per anonymous view).
+  const capped = bytes.byteLength > MAX_VIEW_TEXT_BYTES;
+  const text = (): string => new TextDecoder("utf-8", { fatal: false }).decode(capped ? bytes.subarray(0, MAX_VIEW_TEXT_BYTES) : bytes);
+  const capNote = capped
+    ? `<div style="padding:.5rem 1rem;color:#78716c;font-size:.8rem;border-top:1px solid #e7e5e4">Showing the first ${formatBytes(MAX_VIEW_TEXT_BYTES)} of ${formatBytes(file.size)} — download the file for the rest.</div>`
+    : "";
   if (kind === "table") {
     const parsed =
       file.mime === "application/json"
-        ? parseJsonTable(text())
+        ? capped
+          ? null // a JSON array cut mid-way doesn't parse; show the prefix as text
+          : parseJsonTable(text())
         : parseDelimited(text(), file.mime === "text/tab-separated-values" ? "\t" : ",");
     if (parsed && parsed.columns.length) {
+      if (capped && parsed.rows.length) {
+        parsed.rows.pop(); // the last record of a cut prefix is partial
+        parsed.truncated = true;
+      }
       const fit = trimRowsToBytes(parsed.rows, MAX_RENDER_ROW_BYTES);
       panels = [
         {
@@ -1274,10 +1287,11 @@ function fileViewerFrame(
       body =
         head(`.wrap{overflow:auto;padding:.25rem .5rem 1rem}`) +
         `<div class="wrap"><div id="t"></div></div>` +
-        `<script>Setoku.table('t','file',{columns:window.__SETOKU__.panels.file.columns})</script>`;
+        `<script>Setoku.table('t','file',{columns:window.__SETOKU__.panels.file.columns})</script>` +
+        capNote;
     } else {
       // JSON that isn't an array of rows (or a CSV with no header) — show it as text.
-      body = head(`pre{margin:0;padding:1rem;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>`;
+      body = head(`pre{margin:0;padding:1rem;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>` + capNote;
     }
   } else if (kind === "markdown") {
     body =
@@ -1285,9 +1299,9 @@ function fileViewerFrame(
         `article{max-width:46rem;margin:0 auto;padding:1.25rem 1.25rem 3rem}article h1{font-size:1.5rem;margin:.6em 0 .4em}article h2{font-size:1.2rem;margin:1.2em 0 .4em}article h3{font-size:1.02rem;margin:1.1em 0 .3em}` +
           `article p,article li{line-height:1.6}article pre{background:#f5f5f4;border:1px solid #e7e5e4;border-radius:.5rem;padding:.75rem;overflow:auto;font-size:13px}article code{background:#f5f5f4;border-radius:.25rem;padding:.05rem .3rem;font-size:.92em}article pre code{background:none;padding:0}` +
           `article blockquote{margin:0;padding:.1rem 1rem;border-left:3px solid #d6d3d1;color:#57534e}article table{border-collapse:collapse;margin:.5rem 0}article th,article td{border:1px solid #e7e5e4;padding:.3rem .6rem;text-align:left}article th{background:#fafaf9}article a{color:#1c1917}article hr{border:0;border-top:1px solid #e7e5e4;margin:1.5rem 0}`,
-      ) + `<article>${renderMarkdown(text())}</article>`;
+      ) + `<article>${renderMarkdown(text())}</article>` + capNote;
   } else if (kind === "text") {
-    body = head(`pre{margin:0;padding:1rem;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>`;
+    body = head(`pre{margin:0;padding:1rem;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>` + capNote;
   } else if (kind === "image" && file.size <= MAX_INLINE_IMAGE_BYTES) {
     body =
       head(`.img{display:flex;justify-content:center;padding:1rem}.img img{max-width:100%;height:auto}`) +
@@ -1320,15 +1334,19 @@ function fileHeaders(file: StoredFileMeta, extra: Record<string, string>): Recor
   };
 }
 
-/** Serve one attachment: 304 on a matching If-None-Match, else the bytes. */
-function sendFile(req: http.IncomingMessage, res: http.ServerResponse, file: StoredFileMeta, bytes: Uint8Array, extra: Record<string, string>): void {
-  const headers = fileHeaders(file, extra);
-  if (req.headers["if-none-match"] === headers.etag) {
-    res.writeHead(304, { etag: headers.etag, "cache-control": headers["cache-control"] ?? "private, max-age=0" });
-    res.end();
-    return;
-  }
-  res.writeHead(200, headers);
+/** A revalidation hit: the ETag is the content hash we already hold in the
+ *  metadata, so answer 304 BEFORE pulling the blob, auditing, or spending the
+ *  download budget. Returns true when the response was written. */
+function notModified(req: http.IncomingMessage, res: http.ServerResponse, file: StoredFileMeta, cache: string): boolean {
+  if (req.headers["if-none-match"] !== `"${file.sha256}"`) return false;
+  res.writeHead(304, { etag: `"${file.sha256}"`, "cache-control": cache });
+  res.end();
+  return true;
+}
+
+/** Serve one attachment's bytes (the caller handled If-None-Match). */
+function sendFile(res: http.ServerResponse, file: StoredFileMeta, bytes: Uint8Array, extra: Record<string, string>): void {
+  res.writeHead(200, fileHeaders(file, extra));
   res.end(Buffer.from(bytes));
 }
 
@@ -1543,11 +1561,11 @@ function publicAppShell(opts: {
 }): string {
   const title = escapeHtml(opts.title || "App");
   const dl = opts.download
-    ? `<a class="adminbtn" style="display:inline-block" href="${escapeHtml(opts.download.path)}">Download ${escapeHtml(opts.download.name)}</a>`
+    ? `<a class="adminbtn" style="display:inline-block" href="${escapeHtml(opts.download.path)}" download="${escapeHtml(opts.download.name)}">Download ${escapeHtml(opts.download.name)}</a>`
     : "";
   const files = opts.files?.length
     ? `<footer><span class="muted">Files</span>${opts.files
-        .map((f) => `<a href="${escapeHtml(f.path)}">${escapeHtml(f.name)}<span class="muted"> ${formatBytes(f.size)}</span></a>`)
+        .map((f) => `<a href="${escapeHtml(f.path)}" download="${escapeHtml(f.name)}">${escapeHtml(f.name)}<span class="muted"> ${formatBytes(f.size)}</span></a>`)
         .join("")}</footer>`
     : "";
   // `creds` rides in the config so the unguarded surface keeps sending nothing
@@ -1726,7 +1744,11 @@ const httpServer = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ ok: false, error }));
       };
       if (req.method !== "PUT" && req.method !== "POST") return fail(405, "PUT the file's bytes to this URL (curl -T <file> <url>)");
-      const up = fileStore.takeUpload(nonce);
+      // CLAIM (delete+return in one statement) rather than look up: two
+      // overlapping PUTs with one nonce must not both pass. Benign failures
+      // below re-insert the row so the agent can retry with the same URL.
+      const up = fileStore.claimUpload(nonce);
+      const retryable = (): void => fileStore.createUpload(up!);
       if (!up) {
         store.audit("public", "file_upload_rejected", {});
         return fail(404, "unknown, expired, or already-used upload URL — call publish_file again for a fresh one");
@@ -1735,38 +1757,35 @@ const httpServer = http.createServer(async (req, res) => {
       // land, not just when the URL was minted.
       if (up.appId) {
         const t = store.getPublishedMeta(up.appId);
-        if (!t || t.archivedAt || t.lockedAt) {
-          fileStore.consumeUpload(nonce);
-          return fail(409, "that app is no longer accepting files (archived or locked)");
-        }
+        if (!t || t.archivedAt || t.lockedAt) return fail(409, "that app is no longer accepting files (archived or locked)");
       }
-      if (Number(req.headers["content-length"] ?? 0) > MAX_UPLOAD_BYTES) {
-        fileStore.consumeUpload(nonce);
-        return fail(413, `file is over the ${MAX_UPLOAD_BYTES / 1e6} MB cap`);
-      }
+      if (Number(req.headers["content-length"] ?? 0) > MAX_UPLOAD_BYTES) return fail(413, `file is over the ${MAX_UPLOAD_BYTES / 1e6} MB cap`);
       let body: { bytes: Buffer; sha256: string };
       try {
         body = await readBinaryBody(req, MAX_UPLOAD_BYTES);
       } catch (e) {
         if ((e as Error).message === "body too large") {
-          fileStore.consumeUpload(nonce);
           fail(413, `file is over the ${MAX_UPLOAD_BYTES / 1e6} MB cap`);
           req.destroy();
           return;
         }
-        return fail(400, "could not read the upload");
+        retryable();
+        return fail(400, "could not read the upload — retry with the same URL");
       }
-      if (!body.bytes.byteLength) return fail(400, "empty upload — did curl find the file? (retry with the same URL)");
+      if (!body.bytes.byteLength) {
+        retryable();
+        return fail(400, "empty upload — did curl find the file? (retry with the same URL)");
+      }
       const declared = Number(req.headers["content-length"] ?? 0);
-      if (declared && declared !== body.bytes.byteLength) return fail(400, "upload shorter than its content-length — retry with the same URL");
+      if (declared && declared !== body.bytes.byteLength) {
+        retryable();
+        return fail(400, "upload shorter than its content-length — retry with the same URL");
+      }
       const now = new Date().toISOString();
       try {
         fileStore.put(up.publishedId, { name: up.name, mime: up.mime, bytes: body.bytes, sha256: body.sha256, by: up.createdBy, now });
       } catch (e) {
-        if (e instanceof FileStoreQuotaError) {
-          fileStore.consumeUpload(nonce);
-          return fail(413, e.message);
-        }
+        if (e instanceof FileStoreQuotaError) return fail(413, e.message);
         throw e;
       }
       let visibility: "team" | "public" = "team";
@@ -1779,7 +1798,6 @@ const httpServer = http.createServer(async (req, res) => {
       } else {
         store.createPublished({ id: up.publishedId, title: up.title ?? up.name, body: "", format: "file", createdBy: up.createdBy, model: up.model });
       }
-      fileStore.consumeUpload(nonce);
       store.audit(up.createdBy, "publish_file", { id: up.publishedId, name: up.name, mime: up.mime, bytes: body.bytes.byteLength, appId: up.appId, model: up.model, via: "upload" });
       const base = (process.env.SETOKU_PUBLIC_URL ?? "").replace(/\/+$/, "");
       const url = `${base}${visibility === "public" ? `/p/${encodeURIComponent(up.publishedId)}` : `/apps/${encodeURIComponent(up.publishedId)}`}`;
@@ -1943,6 +1961,8 @@ const httpServer = http.createServer(async (req, res) => {
         const fname = segs[2] ?? "";
         const file = fname ? fileStore.meta(id, fname) : null;
         if (!file) return notFound();
+        const cache = meta.hasPassword ? "no-store" : "private, max-age=300";
+        if (notModified(req, res, file, cache)) return;
         if (!fileDownloads.spend(id, Date.now())) {
           res.writeHead(429, { "content-type": "text/plain", "retry-after": "30", "cache-control": "no-store" });
           res.end("too many downloads — try again shortly\n");
@@ -1951,7 +1971,7 @@ const httpServer = http.createServer(async (req, res) => {
         const bytes = fileStore.bytes(id, fname);
         if (!bytes) return notFound();
         store.audit("public", "file_downloaded_public", { id, name: fname });
-        sendFile(req, res, file, bytes, meta.hasPassword ? { "cache-control": "no-store" } : { "cache-control": "private, max-age=300" });
+        sendFile(res, file, bytes, { "cache-control": cache });
         return;
       }
 
@@ -2033,8 +2053,16 @@ const httpServer = http.createServer(async (req, res) => {
         // A shared FILE renders its viewer through the same frame (no panels run).
         if (rep.format === "file") {
           const file = fileStore.list(id)[0];
-          const bytes = file ? fileStore.bytes(id, file.name) : null;
-          if (!file || !bytes) return notFound();
+          if (!file) return notFound();
+          // The viewer decodes/escapes the blob per request (the shell cache-busts
+          // it), so it draws from the same per-record budget as a download.
+          if (!fileDownloads.spend(id, Date.now())) {
+            res.writeHead(429, { "content-type": "text/plain", "retry-after": "30", "cache-control": "no-store" });
+            res.end("too many views — try again shortly\n");
+            return;
+          }
+          const bytes = fileStore.bytes(id, file.name);
+          if (!bytes) return notFound();
           store.audit("public", "app_frame_public", { id });
           res.writeHead(200, {
             "content-type": "text/html; charset=utf-8",
@@ -2228,14 +2256,20 @@ const httpServer = http.createServer(async (req, res) => {
         const [id = "", fname = ""] = reqPath.slice("/admin/files/".length).split("/").map((x) => decodeURIComponent(x));
         const meta = store.getPublishedMeta(id);
         const file = meta && !meta.archivedAt && fname ? fileStore.meta(id, fname) : null;
-        const bytes = file ? fileStore.bytes(id, fname) : null;
-        if (!file || !bytes) {
+        if (!file) {
+          res.writeHead(404, { "content-type": "text/plain" });
+          res.end("not found\n");
+          return;
+        }
+        if (notModified(req, res, file, "private, max-age=300")) return;
+        const bytes = fileStore.bytes(id, fname);
+        if (!bytes) {
           res.writeHead(404, { "content-type": "text/plain" });
           res.end("not found\n");
           return;
         }
         if (session !== DEMO_VIEWER) store.audit(session.identity, "file_downloaded", { id, name: fname });
-        sendFile(req, res, file, bytes, { "cache-control": "private, max-age=300" });
+        sendFile(res, file, bytes, { "cache-control": "private, max-age=300" });
         return;
       }
 

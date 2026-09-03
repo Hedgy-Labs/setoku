@@ -340,7 +340,7 @@ describe("public surface", () => {
     await call(ana, "publish_file", { name: "att.txt", content: "attached", appId });
     await adminPost("set_visibility", { id: appId, visibility: "public" });
     const shell = await (await fetch(`${BASE}/p/${appId}`)).text();
-    expect(shell).toContain(`<footer><span class="muted">Files</span><a href="/p/${appId}/files/att.txt">att.txt`);
+    expect(shell).toContain(`<footer><span class="muted">Files</span><a href="/p/${appId}/files/att.txt" download="att.txt">att.txt`);
     expect(await (await fetch(`${BASE}/p/${appId}/files/att.txt`)).text()).toBe("attached");
     await call(ana, "unpublish_app", { id: appId });
     expect((await fetch(`${BASE}/p/${appId}/files/att.txt`)).status).toBe(404);

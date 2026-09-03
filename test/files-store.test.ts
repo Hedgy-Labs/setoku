@@ -17,6 +17,7 @@ import {
   parseDelimited,
   parseJsonTable,
   renderMarkdown,
+  decodeBase64Strict,
   sha256Hex,
   REFUSED_EXT,
 } from "../plugin/gateway/lib/files";
@@ -125,6 +126,12 @@ describe("FileStore", () => {
     expect(fs.consumeUpload("n1")).toBe(true);
     expect(fs.takeUpload("n1", 500)).toBeNull();
     expect(fs.consumeUpload("n1")).toBe(false);
+    // claimUpload is delete+return in one statement: the second claim finds nothing
+    fs.createUpload(u);
+    expect(fs.claimUpload("n1", 500)).toEqual(u);
+    expect(fs.claimUpload("n1", 500)).toBeNull();
+    fs.createUpload(u);
+    expect(fs.claimUpload("n1", 1_000)).toBeNull(); // expired rows aren't claimable
   });
 });
 
@@ -150,6 +157,13 @@ describe("parseDelimited", () => {
     const t = parseDelimited(`n\n${body}\n`, ",", 3);
     expect(t.rows).toHaveLength(3);
     expect(t.truncated).toBe(true);
+  });
+  it("a suffixed header never collides with a literal one", () => {
+    const t = parseDelimited("a,a,a_2\n1,2,3\n", ",");
+    expect(t.columns).toEqual(["a", "a_2", "a_2_2"]);
+    expect(t.rows[0]).toEqual({ a: "1", a_2: "2", a_2_2: "3" });
+    expect(parseDelimited("col1,,x\n1,2,3\n", ",").columns).toEqual(["col1", "col2", "x"]);
+    expect(parseDelimited("col2,,x\n1,2,3\n", ",").columns).toEqual(["col2", "col2_2", "x"]);
   });
   it("empty input → no columns", () => {
     expect(parseDelimited("", ",")).toEqual({ columns: [], rows: [], truncated: false });
@@ -210,10 +224,33 @@ describe("renderMarkdown", () => {
     expect(html).toContain("<hr>");
     expect(html).not.toContain("<script>");
   });
+  it("two links in one paragraph, a snake_case word, and & in a query all survive", () => {
+    const html = renderMarkdown("see [report](https://a.com/x?a=1&b=2) and [q](https://a.com/y) about churn_rate_v2 here");
+    expect(html).toContain('<a href="https://a.com/x?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">report</a>');
+    expect(html).toContain('<a href="https://a.com/y" target="_blank" rel="noopener noreferrer">q</a>');
+    expect(html).toContain("churn_rate_v2");
+    expect(html).not.toContain("<em>");
+    expect(html).not.toContain("&amp;amp;");
+  });
   it("refuses javascript: links and leaves them as text", () => {
     const html = renderMarkdown("[x](javascript:alert(1)) and <img onerror=1>");
     expect(html).not.toContain("<a ");
     expect(html).toContain("[x](javascript:alert(1))");
     expect(html).toContain("&lt;img onerror=1&gt;");
+  });
+});
+
+describe("decodeBase64Strict", () => {
+  it("round-trips real base64, tolerating line wraps", () => {
+    const raw = Buffer.from("hello, files\n");
+    expect(decodeBase64Strict(raw.toString("base64"))?.equals(raw)).toBe(true);
+    const wrapped = raw.toString("base64").replace(/(.{4})/g, "$1\n");
+    expect(decodeBase64Strict(wrapped)?.equals(raw)).toBe(true);
+  });
+  it("rejects what Buffer.from would silently mangle", () => {
+    expect(decodeBase64Strict("data:image/png;base64,iVBORw0KGgo=")).toBeNull();
+    expect(decodeBase64Strict("not base64!")).toBeNull();
+    expect(decodeBase64Strict("abc")).toBeNull(); // bad length
+    expect(decodeBase64Strict("")).toBeNull();
   });
 });

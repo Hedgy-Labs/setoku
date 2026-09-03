@@ -65,6 +65,23 @@ health="$(dc exec -T server bun -e '
     .catch(() => process.exit(1));')" \
   || { echo "[drill] FAIL: gateway unhealthy" >&2; exit 1; }
 docs="$(printf '%s' "$health" | python3 -c 'import json,sys;print(json.load(sys.stdin)["docs"])')"
+# The side stores must have come back too — a missing or empty files.db means
+# every shared-file link 404s while /health reads fine (I4: the box may hold
+# the only copy). Count rows in each restored file; fail if a snapshot was
+# restored but reads back empty.
+for pair in "apps:app_state" "files:published_files"; do
+  name="${pair%%:*}"; table="${pair##*:}"
+  latest_var="latest_${name:0:1}db"   # latest_adb / latest_fdb
+  [[ -n "${!latest_var:-}" ]] || continue
+  n="$(dc exec -T server bun -e "
+    const { Database } = require('bun:sqlite');
+    console.log(new Database('/data/${name}.db', { readonly: true }).query('SELECT count(*) AS n FROM ${table}').get().n);" 2>/dev/null || echo err)"
+  echo "        ${name}.db: ${n} ${table} rows"
+  # Unreadable = a bad snapshot → fail. Zero rows is legitimate (a box that never
+  # shared a file still snapshots its empty files.db), so it's only a warning.
+  [[ "$n" =~ ^[0-9]+$ ]] || { echo "[drill] FAIL: ${name}.db restored but ${table} is unreadable" >&2; exit 1; }
+  [[ "$n" -gt 0 ]] || echo "        WARNING: ${name}.db has no ${table} rows — expected if nothing was ever stored there" >&2
+done
 rows="$(dc exec -T clickhouse clickhouse-client --user "${CLICKHOUSE_USER:-setoku}" --password "${CLICKHOUSE_PASSWORD}" --query 'SELECT count() FROM setoku.ingest_raw' 2>/dev/null || echo n/a)"
 echo "[drill] OK — knowledge docs: ${docs}, lake ingest_raw rows: ${rows}"
 echo "[drill] now ask a real question through the MCP gateway to finish the drill."

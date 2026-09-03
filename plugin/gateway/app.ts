@@ -48,6 +48,7 @@ import {
   MIME_BY_EXT,
   REFUSED_EXT,
   UPLOAD_TTL_MS,
+  decodeBase64Strict,
   extOf,
   mimeForName,
   sanitizeFileName,
@@ -2317,8 +2318,9 @@ server.registerTool(
     annotations: { readOnlyHint: false, destructiveHint: true },
     title: "Archive a published app",
     description:
-      "Archives a published app/report by its id (from list_apps). The link stops working " +
-      "immediately and its cached data is dropped; the record is kept for the audit trail.",
+      "Archives a published app or shared file by its id (from list_apps). The link stops working " +
+      "immediately and its cached data is dropped; the record is kept for the audit trail. " +
+      "Only the AUTHOR can archive it (an admin can from the web UI), and a locked app rejects it.",
     inputSchema: { id: z.string().describe("The app id from publish_app / list_apps") },
   },
   async ({ id }) => {
@@ -2424,10 +2426,14 @@ server.registerTool(
 
     if (content !== undefined) {
       let buf: Buffer;
-      try {
-        buf = Buffer.from(content, encoding === "base64" ? "base64" : "utf8");
-      } catch {
-        return errorText("content could not be decoded — check `encoding`.");
+      if (encoding === "base64") {
+        if (/^data:/i.test(content.trim()))
+          return errorText("content is a data: URL — pass only the base64 payload after the comma (and keep encoding: \"base64\").");
+        const decoded = decodeBase64Strict(content);
+        if (!decoded) return errorText("content isn't valid base64 — pass the raw file bytes base64-encoded, or omit content and use the upload URL.");
+        buf = decoded;
+      } else {
+        buf = Buffer.from(content, "utf8");
       }
       if (!buf.byteLength) return errorText("content is empty. Omit `content` to get an upload URL for a file on disk.");
       if (buf.byteLength > MAX_INLINE_BYTES)

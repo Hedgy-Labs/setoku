@@ -415,8 +415,9 @@ Replaces `publish_report` / `list_published` / `unpublish_report`:
   lands on the app's existing link: a public app stays public (and keeps any shared
   password), so the change is live for everyone holding that link — see "Editing a
   public app" below.
-- **`list_apps()`** / **`unpublish_app({ id })`** — unchanged semantics from the
-  old list/unpublish.
+- **`list_apps()`** / **`unpublish_app({ id })`** — list and archive. Archiving
+  is **author-only** (like `update_app`); an admin archives anything from the
+  app's page.
 - **`get_app({ id })`** — read-only inspection of panel definitions + last-run
   stamps (and, for a file, its metadata: never the bytes).
 - **`publish_file({ name, title?, content?, encoding?, appId? })`** — share a
