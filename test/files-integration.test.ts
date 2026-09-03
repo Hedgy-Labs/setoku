@@ -140,7 +140,8 @@ describe("publish_file — inline", () => {
       { region: "EMEA", total: "100" },
     ]);
     expect(html).toContain("Setoku.table('t','file'");
-    expect(html).toContain(`/admin/files/${id}/q2.csv`);
+    // the frame carries no download bar of its own — the chrome does that
+    expect(html).not.toContain(`/admin/files/${id}/q2.csv`);
 
     // the /apps/<id>/files/… shape is NOT a file route (the SPA owns /apps/*)
     const spa = await fetch(`${BASE}/apps/${id}/files/q2.csv`, { headers: { cookie: s.cookie } });

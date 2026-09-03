@@ -1236,13 +1236,11 @@ function fileViewerFrame(
   opts: { team: boolean; filePath: string },
 ): string {
   const kind = fileKind(file.mime);
+  // The frame carries NO header of its own: the trusted chrome (the SPA header,
+  // or the public shell) already shows the name, size, and Download. Only the
+  // download card (below) links out, because there is nothing else to render.
   const head = (extra: string): string =>
-    `<style>body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fff}` +
-    `.fhd{display:flex;flex-wrap:wrap;gap:.3rem 1rem;align-items:baseline;padding:.55rem 1rem;border-bottom:1px solid #e7e5e4;color:#78716c;font-size:.8rem}` +
-    `.fhd a{color:#44403c;text-decoration:none;border:1px solid #d6d3d1;background:#fafaf9;padding:.1rem .55rem;border-radius:.4rem}.fhd a:hover{background:#f5f5f4}` +
-    `${extra}</style>` +
-    `<div class="fhd"><span>${escapeHtml(file.name)} · ${formatBytes(file.size)}</span>` +
-    `<a href="${escapeHtml(opts.filePath)}" target="_blank" rel="noopener">Download</a></div>`;
+    `<style>body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fff}${extra}</style>`;
   const card = (label: string): string =>
     head("") +
     `<div style="display:flex;align-items:center;justify-content:center;min-height:60vh;padding:2rem">` +
