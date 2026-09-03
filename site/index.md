@@ -4,7 +4,7 @@
 
 Setoku is an open-source, self-hosted MCP (Model Context Protocol) knowledge server. It gives an AI agent a read-only, audited view of the data you own (a company’s, a household’s, or your own), plus the curated context needed to use it correctly: the metric definitions, the gotchas, the reasons a naive query is wrong.
 
-Version 0.21.0 · Apache-2.0 · <https://github.com/Hedgy-Labs/setoku>
+Version 0.22.0 · Apache-2.0 · <https://github.com/Hedgy-Labs/setoku>
 
 This is the markdown twin of <https://setoku.com/>. The API reference is <https://setoku.com/docs> (markdown: <https://setoku.com/docs.md>).
 

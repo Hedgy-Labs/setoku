@@ -2,7 +2,7 @@
   "protocolVersion": "0.3.0",
   "name": "Setoku",
   "description": "Setoku makes an AI agent fluent in one operator's own data: a company's, a household's, or one person's. It serves their curated context (metric definitions, gotchas, which table to trust) and a governed read-only query path into the data itself, so an agent answers from how they actually count things and can publish a live view of the result on a link. Self-hosted and single-tenant: it runs on the operator's own box.",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "provider": {
     "organization": "Hedgy Labs",
     "url": "https://setoku.com"

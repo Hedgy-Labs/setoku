@@ -1,6 +1,6 @@
 # Setoku API reference
 
-The HTTP API, authentication, and the MCP tool surface for Setoku 0.21.0. This is the markdown twin of <https://setoku.com/docs>.
+The HTTP API, authentication, and the MCP tool surface for Setoku 0.22.0. This is the markdown twin of <https://setoku.com/docs>.
 
 Setoku is single-tenant and self-hosted: **there is no setoku.com API**. Everything below describes the API *your own box* exposes once you deploy it, and the public demo box (`https://demo.setoku.com`) is a real instance of it.
 
