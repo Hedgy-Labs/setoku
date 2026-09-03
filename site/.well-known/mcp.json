@@ -181,6 +181,12 @@
       "title": "Archive a published app",
       "role": "analyst",
       "readOnly": false
+    },
+    {
+      "name": "publish_file",
+      "title": "Share a file to the box",
+      "role": "analyst",
+      "readOnly": false
     }
   ],
   "tool_catalog": "https://setoku.com/api/tools.json",

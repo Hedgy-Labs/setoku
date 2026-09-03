@@ -19,13 +19,25 @@ dc up -d --wait clickhouse
 echo "[drill] 2/5 fetch latest context backups…"
 dc run --rm rclone copy "remote:${SETOKU_BACKUP_S3_BUCKET}/context" /backups/context
 latest_kdb="$(ls -1 backups/context/knowledge-*.db | sort | tail -1)"
+latest_adb="$(ls -1 backups/context/apps-*.db 2>/dev/null | sort | tail -1)"
+latest_fdb="$(ls -1 backups/context/files-*.db 2>/dev/null | sort | tail -1)"
 latest_pg="$(ls -1 backups/context/pg-setoku-*.sql.gz 2>/dev/null | sort | tail -1)"
-echo "        knowledge: ${latest_kdb}   pg: ${latest_pg:-<none — postgres store off by default>}"
+echo "        knowledge: ${latest_kdb}   apps: ${latest_adb:-<none>}   files: ${latest_fdb:-<none>}"
+echo "        pg: ${latest_pg:-<none — postgres store off by default>}"
 
 echo "[drill] 3/5 restore context stores…"
-# knowledge.db goes onto the data volume BEFORE the server starts
-docker run --rm -v setoku_setoku_data:/data -v "$PWD/backups/context:/restore:ro" \
-  alpine sh -c "cp /restore/$(basename "$latest_kdb") /data/knowledge.db"
+# The SQLite files go onto the data volume BEFORE the server starts. apps.db and
+# files.db are optional (a box that never published an app or shared a file has
+# none yet); knowledge.db is required.
+restore_db() {
+  local src="$1" dest="$2"
+  [[ -n "$src" ]] || return 0
+  docker run --rm -v setoku_setoku_data:/data -v "$PWD/backups/context:/restore:ro" \
+    alpine sh -c "cp /restore/$(basename "$src") /data/${dest}"
+}
+restore_db "$latest_kdb" knowledge.db
+restore_db "$latest_adb" apps.db
+restore_db "$latest_fdb" files.db
 # Restore the Postgres store only when a dump exists (profile: pgstore); bring the
 # container up on demand since it's off by default.
 if [[ -n "$latest_pg" ]]; then

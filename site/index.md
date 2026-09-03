@@ -71,7 +71,7 @@ Server, by hand, on a fresh Ubuntu VPS (about $5–12/month):
 
 ## The tool surface
 
-19 MCP tools. Which ones a session sees depends on its token’s role. That split is the security model.
+20 MCP tools. Which ones a session sees depends on its token’s role. That split is the security model.
 
 | Tool | What it does | Role |
 | --- | --- | --- |
@@ -94,6 +94,7 @@ Server, by hand, on a fresh Ubuntu VPS (about $5–12/month):
 | `list_apps` | List apps published to the box | analyst |
 | `get_app` | Inspect an app — its full template and panels | analyst |
 | `unpublish_app` | Archive a published app | analyst |
+| `publish_file` | Share a file to the box | analyst |
 
 ## Skills
 

@@ -25,6 +25,7 @@
  *                         set on a real box. Grants zero write capability.
  *   <dataSource.urlEnv> — the Postgres URL env var named in config.json
  */
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -44,11 +45,24 @@ import {
   type PublishedMeta,
   type PublishedReport,
 } from "./lib/store";
-import { newestComputedAt, renderApp, type RenderedPanel } from "./lib/apps";
+import { MAX_RENDER_ROW_BYTES, newestComputedAt, renderApp, trimRowsToBytes, type RenderedPanel } from "./lib/apps";
 import { emitAppChanged, subscribeAppEvents } from "./lib/app-events";
 import { mirroredTables, mirrorAsOf, referencedBizTables } from "./lib/mirror";
 import { APP_RUNTIME } from "./lib/app-runtime";
 import { AppStore, defaultAppDbPath, AppStoreQuotaError, type StateScope } from "./lib/app-store";
+import {
+  FileStore,
+  FileStoreQuotaError,
+  MAX_UPLOAD_BYTES,
+  defaultFileDbPath,
+  fileKind,
+  inlineAllowed,
+  parseDelimited,
+  parseJsonTable,
+  renderMarkdown,
+  type StoredFileMeta,
+} from "./lib/files";
+import { formatBytes } from "./lib/format";
 import { resolveParams, type AppParam } from "./lib/params";
 import {
   type Invite,
@@ -431,6 +445,10 @@ const store = new KnowledgeStore(process.env.SETOKU_DB_PATH ?? storePath());
 // A SEPARATE db file sibling to knowledge.db; there is no code path from here to
 // the business DB/lake. See lib/app-store.ts.
 const appStore = new AppStore(defaultAppDbPath(process.env.SETOKU_DB_PATH ?? storePath()));
+// Shared files (publish_file) — the bytes behind `format='file'` rows and app
+// attachments. Its own db file too (files.db): blobs stay out of the nightly
+// knowledge snapshot, and the backup script snapshots it on its own line (I4).
+const fileStore = new FileStore(defaultFileDbPath(process.env.SETOKU_DB_PATH ?? storePath()));
 if (store.empty) {
   const imported = seedFromFiles(store, projectDir);
   if (imported > 0) store.audit("system", "seed_from_files", { imported });
@@ -570,6 +588,40 @@ function readTextBody(req: http.IncomingMessage, limit: number): Promise<string>
     });
     req.on("end", () => (over ? reject(new Error("body too large")) : resolve(data)));
     req.on("error", reject);
+  });
+}
+
+/** Read a request body as BYTES with a hard cap, hashing as it streams (the
+ *  file upload path). Over the cap it rejects IMMEDIATELY — the caller answers
+ *  413 and destroys the socket rather than drain tens of MB it will discard. */
+function readBinaryBody(req: http.IncomingMessage, limit: number): Promise<{ bytes: Buffer; sha256: string }> {
+  return new Promise((resolve, reject) => {
+    if (Number(req.headers["content-length"] ?? 0) > limit) return reject(new Error("body too large"));
+    const hash = createHash("sha256");
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let done = false;
+    req.on("data", (c: Buffer) => {
+      if (done) return;
+      size += c.length;
+      if (size > limit) {
+        done = true;
+        chunks.length = 0;
+        return reject(new Error("body too large"));
+      }
+      chunks.push(c);
+      hash.update(c);
+    });
+    req.on("end", () => {
+      if (done) return;
+      done = true;
+      resolve({ bytes: Buffer.concat(chunks), sha256: hash.digest("hex") });
+    });
+    req.on("error", (e) => {
+      if (done) return;
+      done = true;
+      reject(e);
+    });
   });
 }
 
@@ -1163,6 +1215,130 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
   );
 }
 
+/** Images up to this size inline into the frame as a data: URI (the frame CSP
+ *  allows `img-src data:` and nothing else); bigger ones get a download card. */
+const MAX_INLINE_IMAGE_BYTES = 8_000_000;
+
+/**
+ * The viewer for a shared FILE, rendered through the SAME sandboxed frame an app
+ * uses (frameDocument + the Setoku.* runtime), so the public shell and the SPA
+ * need no second frame URL. Tabular files parse server-side into a synthetic
+ * `file` panel that Setoku.table renders; markdown/text render as a document;
+ * an image inlines as data:; everything else is a stone download card whose link
+ * opens a top-level tab (the sandbox allows popups; the frame itself has no
+ * network and never fetches the bytes). `filePath` is the download URL for the
+ * surface being served (public or team).
+ */
+function fileViewerFrame(
+  dash: PublishedReport,
+  file: StoredFileMeta,
+  bytes: Uint8Array,
+  opts: { team: boolean; filePath: string },
+): string {
+  const kind = fileKind(file.mime);
+  const head = (extra: string): string =>
+    `<style>body{margin:0;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fff}` +
+    `.fhd{display:flex;flex-wrap:wrap;gap:.3rem 1rem;align-items:baseline;padding:.55rem 1rem;border-bottom:1px solid #e7e5e4;color:#78716c;font-size:.8rem}` +
+    `.fhd a{color:#44403c;text-decoration:none;border:1px solid #d6d3d1;background:#fafaf9;padding:.1rem .55rem;border-radius:.4rem}.fhd a:hover{background:#f5f5f4}` +
+    `${extra}</style>` +
+    `<div class="fhd"><span>${escapeHtml(file.name)} · ${formatBytes(file.size)}</span>` +
+    `<a href="${escapeHtml(opts.filePath)}" target="_blank" rel="noopener">Download</a></div>`;
+  const card = (label: string): string =>
+    head("") +
+    `<div style="display:flex;align-items:center;justify-content:center;min-height:60vh;padding:2rem">` +
+    `<div style="border:1px solid #e7e5e4;border-radius:.75rem;padding:1.5rem 2rem;text-align:center;max-width:24rem">` +
+    `<div style="font-weight:600;word-break:break-all">${escapeHtml(file.name)}</div>` +
+    `<div style="color:#78716c;font-size:.8rem;margin:.3rem 0 1rem">${escapeHtml(file.mime)} · ${formatBytes(file.size)}</div>` +
+    `<a href="${escapeHtml(opts.filePath)}" target="_blank" rel="noopener" style="display:inline-block;font-weight:500;color:#fafaf9;background:#1c1917;border-radius:.4rem;padding:.45rem .9rem;text-decoration:none">${label}</a>` +
+    `</div></div>`;
+  let body: string;
+  let panels: RenderedPanel[] = [];
+  const text = (): string => new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  if (kind === "table") {
+    const parsed =
+      file.mime === "application/json"
+        ? parseJsonTable(text())
+        : parseDelimited(text(), file.mime === "text/tab-separated-values" ? "\t" : ",");
+    if (parsed && parsed.columns.length) {
+      const fit = trimRowsToBytes(parsed.rows, MAX_RENDER_ROW_BYTES);
+      panels = [
+        {
+          key: "file",
+          dialect: "clickhouse",
+          columns: parsed.columns,
+          rows: fit.rows,
+          rowCount: fit.rows.length,
+          truncated: parsed.truncated || fit.truncated,
+          computedAt: file.uploadedAt,
+          error: null,
+        },
+      ];
+      body =
+        head(`.wrap{overflow:auto;padding:.25rem .5rem 1rem}`) +
+        `<div class="wrap"><div id="t"></div></div>` +
+        `<script>Setoku.table('t','file',{columns:window.__SETOKU__.panels.file.columns})</script>`;
+    } else {
+      // JSON that isn't an array of rows (or a CSV with no header) — show it as text.
+      body = head(`pre{margin:0;padding:1rem;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>`;
+    }
+  } else if (kind === "markdown") {
+    body =
+      head(
+        `article{max-width:46rem;margin:0 auto;padding:1.25rem 1.25rem 3rem}article h1{font-size:1.5rem;margin:.6em 0 .4em}article h2{font-size:1.2rem;margin:1.2em 0 .4em}article h3{font-size:1.02rem;margin:1.1em 0 .3em}` +
+          `article p,article li{line-height:1.6}article pre{background:#f5f5f4;border:1px solid #e7e5e4;border-radius:.5rem;padding:.75rem;overflow:auto;font-size:13px}article code{background:#f5f5f4;border-radius:.25rem;padding:.05rem .3rem;font-size:.92em}article pre code{background:none;padding:0}` +
+          `article blockquote{margin:0;padding:.1rem 1rem;border-left:3px solid #d6d3d1;color:#57534e}article table{border-collapse:collapse;margin:.5rem 0}article th,article td{border:1px solid #e7e5e4;padding:.3rem .6rem;text-align:left}article th{background:#fafaf9}article a{color:#1c1917}article hr{border:0;border-top:1px solid #e7e5e4;margin:1.5rem 0}`,
+      ) + `<article>${renderMarkdown(text())}</article>`;
+  } else if (kind === "text") {
+    body = head(`pre{margin:0;padding:1rem;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>`;
+  } else if (kind === "image" && file.size <= MAX_INLINE_IMAGE_BYTES) {
+    body =
+      head(`.img{display:flex;justify-content:center;padding:1rem}.img img{max-width:100%;height:auto}`) +
+      `<div class="img"><img alt="${escapeHtml(file.name)}" src="data:${escapeHtml(file.mime)};base64,${Buffer.from(bytes).toString("base64")}"></div>`;
+  } else {
+    body = card(kind === "pdf" ? "Open PDF" : "Download");
+  }
+  return frameDocument({ ...dash, body }, panels, { team: opts.team, params: {} });
+}
+
+/** Response headers for serving a file's bytes, on either surface. The mime is
+ *  from OUR allowlist (never the client's); nosniff pins it; `attachment` is
+ *  the default and only inert types render inline; the CSP `sandbox` keeps even
+ *  an inline text/plain from being anything but text. PDF is the one inline
+ *  type served without `sandbox` (Chrome's viewer won't render under it) — it
+ *  still gets default-src 'none'. Strong ETag = the content hash. */
+function fileHeaders(file: StoredFileMeta, extra: Record<string, string>): Record<string, string> {
+  const textual = file.mime.startsWith("text/") || file.mime === "application/json";
+  return {
+    "content-type": textual ? `${file.mime}; charset=utf-8` : file.mime,
+    "content-length": String(file.size),
+    "content-disposition": `${inlineAllowed(file.mime) ? "inline" : "attachment"}; filename="${file.name}"`,
+    "x-content-type-options": "nosniff",
+    "content-security-policy": file.mime === "application/pdf" ? "default-src 'none'" : "default-src 'none'; sandbox",
+    "cross-origin-resource-policy": "same-origin",
+    "referrer-policy": "no-referrer",
+    "accept-ranges": "none",
+    etag: `"${file.sha256}"`,
+    ...extra,
+  };
+}
+
+/** Serve one attachment: 304 on a matching If-None-Match, else the bytes. */
+function sendFile(req: http.IncomingMessage, res: http.ServerResponse, file: StoredFileMeta, bytes: Uint8Array, extra: Record<string, string>): void {
+  const headers = fileHeaders(file, extra);
+  if (req.headers["if-none-match"] === headers.etag) {
+    res.writeHead(304, { etag: headers.etag, "cache-control": headers["cache-control"] ?? "private, max-age=0" });
+    res.end();
+    return;
+  }
+  res.writeHead(200, headers);
+  res.end(Buffer.from(bytes));
+}
+
+// Download budget on the CREDENTIAL-FREE surface: a public link's bytes are
+// cacheable (strong ETag) but a 50 MB attachment on an anonymous URL is still
+// bandwidth someone else pays for. Per-app bucket, same shape as fresh runs.
+const fileDownloads = tokenBucket(120, 2);
+
 /** Provenance JSON for the shell's "how is this calculated" drawer. `team` is
  *  TRUE only on the authenticated team surface. The public surface must NOT leak
  *  schema (raw `sql`, the metric BODY which is the canonical SQL, the author's
@@ -1361,8 +1537,21 @@ function publicAppShell(opts: {
    *  with an unlock cookie, so the shell's own fetches must CARRY it — the
    *  credential-free default (`omit`) would 401 its /data and /state calls. */
   guarded: boolean;
+  /** Attachments (publish_file with appId) — listed under the frame as download
+   *  links. Rendered by THIS trusted shell, never fetched by the frame. */
+  files?: { name: string; size: number; path: string }[];
+  /** For a shared FILE (format 'file'): a Download button in the header. */
+  download?: { name: string; path: string };
 }): string {
   const title = escapeHtml(opts.title || "App");
+  const dl = opts.download
+    ? `<a class="adminbtn" style="display:inline-block" href="${escapeHtml(opts.download.path)}">Download ${escapeHtml(opts.download.name)}</a>`
+    : "";
+  const files = opts.files?.length
+    ? `<footer><span class="muted">Files</span>${opts.files
+        .map((f) => `<a href="${escapeHtml(f.path)}">${escapeHtml(f.name)}<span class="muted"> ${formatBytes(f.size)}</span></a>`)
+        .join("")}</footer>`
+    : "";
   // `creds` rides in the config so the unguarded surface keeps sending nothing
   // at all, exactly as before, and only a password-gated app sends its grant.
   const cfg = jsonForScript({ frame: opts.framePath, data: opts.dataPath, state: opts.statePath, admin: opts.adminPath, refresh: opts.refreshSeconds, hasPanels: opts.hasPanels, creds: opts.guarded ? "same-origin" : "omit" });
@@ -1395,9 +1584,11 @@ function publicAppShell(opts: {
   .pc{display:inline-flex;align-items:center;gap:.4rem;font-size:.8rem;color:#57534e}
   .pc select,.pc input{font:inherit;font-size:.8rem;color:#1c1917;background:#fff;border:1px solid #d6d3d1;border-radius:.4rem;padding:.18rem .45rem}
   .pc select:focus,.pc input:focus{outline:none;border-color:#a8a29e;box-shadow:0 0 0 2px #e7e5e4}
+  footer{flex:none;display:flex;flex-wrap:wrap;gap:.3rem 1rem;align-items:baseline;padding:.45rem 1.1rem;border-top:1px solid #e7e5e4;font-size:.8rem}
+  footer a{color:#44403c;text-decoration:none}footer a:hover{text-decoration:underline}
 </style></head><body>
-<header><h1>${title}</h1><span class="muted" id="stamp"></span><a class="brand" href="https://setoku.com" target="_blank" rel="noopener noreferrer">Made with Setoku</a><a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
-<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe><div id="ldr"><div class="card"><span class="sp"></span>updating…</div></div></main>
+<header><h1>${title}</h1><span class="muted" id="stamp"></span><a class="brand" href="https://setoku.com" target="_blank" rel="noopener noreferrer">Made with Setoku</a>${dl}<a id="adminlink" class="adminbtn" href="">Admin view →</a>${controls}</header>
+<main><iframe id="frame" title="${title}" sandbox="allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer"></iframe><div id="ldr"><div class="card"><span class="sp"></span>updating…</div></div></main>${files}
 <script>
 (function(){
   var CFG=${cfg};
@@ -1523,6 +1714,80 @@ const httpServer = http.createServer(async (req, res) => {
       store.audit(info.identity, "installer_served", {});
       res.writeHead(200, { "content-type": "text/x-shellscript" });
       res.end(installerScript(token, info.identity, baseUrl, connectorName(projectDir)));
+      return;
+    }
+    // ---- file upload — PUT /u/<nonce>, one-time signed URL ----
+    // publish_file mints the nonce (lib/files.ts); the agent curls the bytes
+    // here. The nonce IS the credential: unknown/expired/used → 404, so this
+    // path leaks nothing and accepts nothing it didn't hand out. The
+    // `published` row (a standalone file) is created only once the bytes land.
+    if (req.url?.startsWith("/u/")) {
+      const nonce = decodeURIComponent(req.url.slice(3).split("?")[0]);
+      const fail = (status: number, error: string): void => {
+        res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        res.end(JSON.stringify({ ok: false, error }));
+      };
+      if (req.method !== "PUT" && req.method !== "POST") return fail(405, "PUT the file's bytes to this URL (curl -T <file> <url>)");
+      const up = fileStore.takeUpload(nonce);
+      if (!up) {
+        store.audit("public", "file_upload_rejected", {});
+        return fail(404, "unknown, expired, or already-used upload URL — call publish_file again for a fresh one");
+      }
+      // Attaching: the target must STILL be active and unlocked when the bytes
+      // land, not just when the URL was minted.
+      if (up.appId) {
+        const t = store.getPublishedMeta(up.appId);
+        if (!t || t.archivedAt || t.lockedAt) {
+          fileStore.consumeUpload(nonce);
+          return fail(409, "that app is no longer accepting files (archived or locked)");
+        }
+      }
+      if (Number(req.headers["content-length"] ?? 0) > MAX_UPLOAD_BYTES) {
+        fileStore.consumeUpload(nonce);
+        return fail(413, `file is over the ${MAX_UPLOAD_BYTES / 1e6} MB cap`);
+      }
+      let body: { bytes: Buffer; sha256: string };
+      try {
+        body = await readBinaryBody(req, MAX_UPLOAD_BYTES);
+      } catch (e) {
+        if ((e as Error).message === "body too large") {
+          fileStore.consumeUpload(nonce);
+          fail(413, `file is over the ${MAX_UPLOAD_BYTES / 1e6} MB cap`);
+          req.destroy();
+          return;
+        }
+        return fail(400, "could not read the upload");
+      }
+      if (!body.bytes.byteLength) return fail(400, "empty upload — did curl find the file? (retry with the same URL)");
+      const declared = Number(req.headers["content-length"] ?? 0);
+      if (declared && declared !== body.bytes.byteLength) return fail(400, "upload shorter than its content-length — retry with the same URL");
+      const now = new Date().toISOString();
+      try {
+        fileStore.put(up.publishedId, { name: up.name, mime: up.mime, bytes: body.bytes, sha256: body.sha256, by: up.createdBy, now });
+      } catch (e) {
+        if (e instanceof FileStoreQuotaError) {
+          fileStore.consumeUpload(nonce);
+          return fail(413, e.message);
+        }
+        throw e;
+      }
+      let visibility: "team" | "public" = "team";
+      let appTitle: string | null = null;
+      if (up.appId) {
+        const t = store.getPublishedMeta(up.appId)!;
+        visibility = t.visibility;
+        appTitle = t.format === "file" ? null : t.title;
+        emitAppChanged(up.appId, "updated");
+      } else {
+        store.createPublished({ id: up.publishedId, title: up.title ?? up.name, body: "", format: "file", createdBy: up.createdBy, model: up.model });
+      }
+      fileStore.consumeUpload(nonce);
+      store.audit(up.createdBy, "publish_file", { id: up.publishedId, name: up.name, mime: up.mime, bytes: body.bytes.byteLength, appId: up.appId, model: up.model, via: "upload" });
+      const base = (process.env.SETOKU_PUBLIC_URL ?? "").replace(/\/+$/, "");
+      const url = `${base}${visibility === "public" ? `/p/${encodeURIComponent(up.publishedId)}` : `/apps/${encodeURIComponent(up.publishedId)}`}`;
+      void notifyActivity(projectDir, { kind: "file_published", name: up.name, size: body.bytes.byteLength, url, by: up.createdBy, appTitle });
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+      res.end(JSON.stringify({ ok: true, id: up.publishedId, name: up.name, size: body.bytes.byteLength, sha256: body.sha256, url }) + "\n");
       return;
     }
     // ---- public report surface — /p/<id>, credential-free ----
@@ -1674,6 +1939,24 @@ const httpServer = http.createServer(async (req, res) => {
       // password. Unprotected public apps keep the existing (unspecified) policy.
       const noStore = meta.hasPassword ? { "cache-control": "no-store" } : {};
 
+      // /p/<id>/files/<name> — an attachment's bytes (or a shared file's). Behind
+      // the same meta + password gates as the frame; budgeted per app.
+      if (sub === "files") {
+        const fname = segs[2] ?? "";
+        const file = fname ? fileStore.meta(id, fname) : null;
+        if (!file) return notFound();
+        if (!fileDownloads.spend(id, Date.now())) {
+          res.writeHead(429, { "content-type": "text/plain", "retry-after": "30", "cache-control": "no-store" });
+          res.end("too many downloads — try again shortly\n");
+          return;
+        }
+        const bytes = fileStore.bytes(id, fname);
+        if (!bytes) return notFound();
+        store.audit("public", "file_downloaded_public", { id, name: fname });
+        sendFile(req, res, file, bytes, meta.hasPassword ? { "cache-control": "no-store" } : { "cache-control": "private, max-age=300" });
+        return;
+      }
+
       // /data is the freshness poll — meaningful only with panels.
       if (sub === "data" && !hasPanels) return notFound();
 
@@ -1749,6 +2032,22 @@ const httpServer = http.createServer(async (req, res) => {
       if (sub === "frame") {
         const rep = store.getPublished(id);
         if (!rep) return notFound();
+        // A shared FILE renders its viewer through the same frame (no panels run).
+        if (rep.format === "file") {
+          const file = fileStore.list(id)[0];
+          const bytes = file ? fileStore.bytes(id, file.name) : null;
+          if (!file || !bytes) return notFound();
+          store.audit("public", "app_frame_public", { id });
+          res.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox`,
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer",
+            ...noStore,
+          });
+          res.end(fileViewerFrame(rep, file, bytes, { team: false, filePath: `/p/${encodeURIComponent(id)}/files/${encodeURIComponent(file.name)}` }));
+          return;
+        }
         const raw = parseFrameParams(req.url);
         // Bound prod load on this credential-free link: each would-be fresh (cache-
         // miss) panel run spends from the app's token bucket; once empty, the panel
@@ -1785,6 +2084,12 @@ const httpServer = http.createServer(async (req, res) => {
       res.end(
         publicAppShell({
           title: meta.title,
+          ...((): { files?: { name: string; size: number; path: string }[]; download?: { name: string; path: string } } => {
+            const list = fileStore.list(id);
+            const pathOf = (n: string): string => `/p/${encodeURIComponent(id)}/files/${encodeURIComponent(n)}`;
+            if (meta.format === "file") return list[0] ? { download: { name: list[0].name, path: pathOf(list[0].name) } } : {};
+            return list.length ? { files: list.map((f) => ({ name: f.name, size: f.size, path: pathOf(f.name) })) } : {};
+          })(),
           framePath: `/p/${encodeURIComponent(id)}/frame`,
           dataPath: `/p/${encodeURIComponent(id)}/data`,
           statePath: `/p/${encodeURIComponent(id)}/state`,
@@ -1858,6 +2163,24 @@ const httpServer = http.createServer(async (req, res) => {
           res.end("not found\n");
           return;
         }
+        if (rep.format === "file") {
+          const file = fileStore.list(id)[0];
+          const bytes = file ? fileStore.bytes(id, file.name) : null;
+          if (!file || !bytes) {
+            res.writeHead(404, { "content-type": "text/plain" });
+            res.end("not found\n");
+            return;
+          }
+          if (session !== DEMO_VIEWER) store.audit(session.identity, "app_frame_viewed", { id });
+          res.writeHead(200, {
+            "content-type": "text/html; charset=utf-8",
+            "content-security-policy": `${FRAME_CSP}; sandbox allow-scripts allow-forms allow-popups allow-popups-to-escape-sandbox`,
+            "x-content-type-options": "nosniff",
+            "referrer-policy": "no-referrer",
+          });
+          res.end(fileViewerFrame(rep, file, bytes, { team: true, filePath: `/admin/files/${encodeURIComponent(id)}/${encodeURIComponent(file.name)}` }));
+          return;
+        }
         const raw = parseFrameParams(req.url);
         // ?force=1 bypasses the cache and re-runs the selected variant — author or
         // admin only, so a member (or a stale tab) can't hammer prod through the
@@ -1886,6 +2209,35 @@ const httpServer = http.createServer(async (req, res) => {
           "referrer-policy": "no-referrer",
         });
         res.end(frameDocument(rep, panels, { team: true, params: resolvedParamValues(rep.params ?? [], raw) }));
+        return;
+      }
+
+      // ---- team file download — /admin/files/<id>/<name>, session-gated ----
+      // Same gate as the team frame (a box session, or the demo viewer). Lives
+      // under /admin/ because the SPA owns every /apps/* path.
+      if (reqPath.startsWith("/admin/files/")) {
+        const session = sessions.get(sessionIdFromCookie(req.headers.cookie)) ?? (DEMO ? DEMO_VIEWER : null);
+        if (!session) {
+          res.writeHead(401, { "content-type": "text/plain" });
+          res.end("not signed in\n");
+          return;
+        }
+        if (store.getAccount(session.identity)?.mustChangePassword) {
+          res.writeHead(403, { "content-type": "text/plain" });
+          res.end("password change required\n");
+          return;
+        }
+        const [id = "", fname = ""] = reqPath.slice("/admin/files/".length).split("/").map((x) => decodeURIComponent(x));
+        const meta = store.getPublishedMeta(id);
+        const file = meta && !meta.archivedAt && fname ? fileStore.meta(id, fname) : null;
+        const bytes = file ? fileStore.bytes(id, fname) : null;
+        if (!file || !bytes) {
+          res.writeHead(404, { "content-type": "text/plain" });
+          res.end("not found\n");
+          return;
+        }
+        if (session !== DEMO_VIEWER) store.audit(session.identity, "file_downloaded", { id, name: fname });
+        sendFile(req, res, file, bytes, { "cache-control": "private, max-age=300" });
         return;
       }
 
@@ -2180,10 +2532,12 @@ const httpServer = http.createServer(async (req, res) => {
           const denied = sessionDenied();
           const hideLink = (mid: unknown): boolean =>
             metricDocHidden(mid ? store.getDoc("metric", String(mid)) : null, denied);
+          const fileSummaries = fileStore.summaries();
           return json(
             200,
             store.listPublished().map((r) => ({
               ...r,
+              files: fileSummaries.get(r.id) ?? null,
               panels: r.panels
                 ? r.panels.map((p) => ({ ...p, sql: "", metricId: hideLink(p.metricId) ? null : p.metricId }))
                 : null,
@@ -2206,6 +2560,7 @@ const httpServer = http.createServer(async (req, res) => {
           // from the cache (no query). Keeps the metadata fetch off the DB entirely.
           const prov = appProvenance(store, meta, [], sessionDenied());
           prov.updatedAt = store.newestPanelComputedAt(id);
+          prov.files = fileStore.list(id);
           prov.mirrorAsOf = await appMirrorAsOf(meta);
           // Last-editor stamp for the header (#58) — the newest version's author +
           // time, shown once an app has actually been edited (versions > 1).
@@ -2929,6 +3284,7 @@ const httpServer = http.createServer(async (req, res) => {
     const server = buildServer({
       projectDir,
       store,
+      fileStore,
       user: auth.identity,
       role: auth.role,
       embedIndex,

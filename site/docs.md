@@ -77,6 +77,7 @@ Callable right now against the demo box:
 - `list_apps` — List apps published to the box
 - `get_app` — Inspect an app — its full template and panels
 - `unpublish_app` (writes) — Archive a published app
+- `publish_file` (writes) — Share a file to the box
 
 **Curator sessions only.** Commits curated knowledge:
 
@@ -106,6 +107,8 @@ Credential-free unless marked. Full spec: <https://setoku.com/openapi.json>.
 | `GET /p/{id}/data` | Freshness metadata for a published app | none |
 | `GET /p/{id}/state` | Read an app’s sandboxed state | none |
 | `POST /p/{id}/state` | Write an app’s sandboxed state | none |
+| `GET /p/{id}/files/{name}` | A shared file, or an app’s attachment | none |
+| `PUT /u/{nonce}` | Upload a file’s bytes to a one-time URL | none |
 | `GET /i/{token}` | One-line installer script | none |
 
 ## Errors

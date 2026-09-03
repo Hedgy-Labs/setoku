@@ -160,13 +160,29 @@ export interface AppPanel {
   metricId?: string | null;
 }
 
-/** An app published to the box (list metadata; no body). `format` is always
- *  "app" now (the legacy raw-served "html" format is gone); a data app has live
- *  `panels`, a static one has none. Mirrors lib/store.ts. */
+/** What a published row IS: an app (runs in the frame) or a shared file
+ *  (viewed/downloaded; bytes in files.db). "html" is the retired raw report. */
+export type PublishedFormat = "html" | "app" | "file";
+
+/** One attachment's metadata (server: lib/files.ts StoredFileMeta). Never bytes. */
+export interface FileMeta {
+  name: string;
+  mime: string;
+  size: number;
+  sha256: string;
+  uploadedBy: string;
+  uploadedAt: string;
+}
+
+/** An app or shared file published to the box (list metadata; no body). A
+ *  data app has live `panels`, a static one has none; a `file` row has neither
+ *  and `files.first` is the file itself. Mirrors lib/store.ts. */
 export interface PublishedMeta {
   id: string;
   title: string;
-  format: "html" | "app";
+  format: PublishedFormat;
+  /** Attachment summary from files.db (null when the record carries no files). */
+  files?: { count: number; bytes: number; first: { name: string; mime: string; size: number } } | null;
   panels: AppPanel[] | null;
   refreshSeconds: number | null;
   visibility: ReportVisibility;
@@ -222,7 +238,9 @@ export interface AppParam {
 export interface AppData {
   id: string;
   title: string;
-  format: "html" | "app";
+  format: PublishedFormat;
+  /** Attachments (or, for a `file` row, the one file). */
+  files?: FileMeta[];
   visibility: ReportVisibility;
   /** A shared password is stored for this app — guarding the link while public,
    *  dormant while team-only. */

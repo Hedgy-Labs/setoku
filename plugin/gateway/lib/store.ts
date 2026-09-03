@@ -144,13 +144,18 @@ export interface AppPanel {
   metricId?: string | null;
 }
 
+/** What a `published` row IS: an app (runs) or a file (viewed/downloaded).
+ *  "html" is the retired raw-served report, kept only for old rows. */
+export type PublishedFormat = "html" | "app" | "file";
+
 export interface PublishedReport {
   id: string;
   title: string;
-  /** Render model. Always "app" now (a fragment the runtime wraps); the legacy
-   *  raw-served "html" format is gone. Kept as a field for existing rows and the
-   *  version-history snapshot. */
-  format: "html" | "app";
+  /** Render model. "app" = a fragment the runtime wraps (the default); "file" =
+   *  a shared file (empty body, no panels; its bytes live in files.db, see
+   *  lib/files.ts). The legacy raw-served "html" format is gone but stays a
+   *  member for existing rows and the version-history snapshot. */
+  format: PublishedFormat;
   body: string;
   /** Live data bindings; null/[] for a static (state-only or presentational) app. */
   panels: AppPanel[] | null;
@@ -207,7 +212,7 @@ export interface AppRevisionMeta {
   hasPanels: boolean;
 }
 export interface AppRevision extends AppRevisionMeta {
-  format: "html" | "app";
+  format: PublishedFormat;
   body: string;
   panels: AppPanel[] | null;
   params: AppParam[] | null;
@@ -1319,6 +1324,8 @@ export class KnowledgeStore {
     createdBy: string;
     /** Self-reported model id of the publishing agent (version-history attribution). */
     model?: string | null;
+    /** "app" (default) or "file" — see PublishedFormat. Never "html" for a new row. */
+    format?: "app" | "file";
   }): void {
     const panels = rec.panels && rec.panels.length ? JSON.stringify(rec.panels) : null;
     const params = rec.params && rec.params.length ? JSON.stringify(rec.params) : null;
@@ -1329,9 +1336,9 @@ export class KnowledgeStore {
         rec.id,
         rec.title,
         // Every published app is a fragment the runtime wraps — the legacy raw-served
-        // "html" format is gone, so the stored format is always "app". The column
-        // stays for existing rows / the version-history snapshot.
-        "app",
+        // "html" format is gone. A shared file (lib/files.ts) is the other format:
+        // empty body, bytes in files.db.
+        rec.format ?? "app",
         rec.body,
         panels,
         params,

@@ -42,7 +42,7 @@
   "mcp": {
     "transport": "streamable-http",
     "path": "/mcp",
-    "tool_count": 19,
+    "tool_count": 20,
     "auth": {
       "type": "bearer",
       "accepted_in": [

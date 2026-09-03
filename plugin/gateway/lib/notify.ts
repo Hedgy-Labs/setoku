@@ -46,6 +46,19 @@ export interface AppUpdatedEvent {
   message?: string | null;
 }
 
+/** A file was shared to the box (publish_file), standalone or attached to an app. */
+export interface FilePublishedEvent {
+  kind: "file_published";
+  /** The file name as downloaded (report.csv). */
+  name: string;
+  size: number;
+  /** Shareable link: the file's own page, or the app it was attached to. */
+  url: string;
+  by: string;
+  /** Set when the file was attached to an existing app. */
+  appTitle?: string | null;
+}
+
 /** A new gateway version is now serving (fired once per version, on startup). */
 export interface DeployEvent {
   kind: "deploy";
@@ -69,7 +82,7 @@ export interface EgressAlertEvent {
   box?: string | null;
 }
 
-export type ActivityEvent = AppPublishedEvent | AppUpdatedEvent | DeployEvent | EgressAlertEvent;
+export type ActivityEvent = AppPublishedEvent | AppUpdatedEvent | FilePublishedEvent | DeployEvent | EgressAlertEvent;
 
 /** How long we'll wait on the webhook before giving up — a notification must
  *  never keep a request (or shutdown) hanging on a slow Slack. */
@@ -101,6 +114,12 @@ export function formatEvent(event: ActivityEvent): string {
         `\n${event.url}`
       );
     }
+    case "file_published":
+      return (
+        `📎 *File shared:* “${event.name}” (${formatBytes(event.size)}) by ${event.by}` +
+        (event.appTitle ? ` — attached to “${event.appTitle}”` : "") +
+        `\n${event.url}`
+      );
     case "deploy":
       return (
         `🚀 *Setoku ${event.box ? `(${event.box}) ` : ""}updated* to v${event.version}` +

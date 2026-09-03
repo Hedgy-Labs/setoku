@@ -40,6 +40,20 @@ import {
 } from "./lib/access";
 import { notifyActivity } from "./lib/notify";
 import { emitAppChanged } from "./lib/app-events";
+import {
+  FileStore,
+  FileStoreQuotaError,
+  MAX_INLINE_BYTES,
+  MAX_UPLOAD_BYTES,
+  MIME_BY_EXT,
+  REFUSED_EXT,
+  UPLOAD_TTL_MS,
+  extOf,
+  mimeForName,
+  sanitizeFileName,
+} from "./lib/files";
+import { formatBytes } from "./lib/format";
+import { mintAppAccessToken } from "./lib/app-access";
 import { VERSION } from "./lib/version";
 
 /**
@@ -87,6 +101,9 @@ export function capabilitiesFor(role: TokenRole): Capabilities {
 export interface GatewayDeps {
   projectDir: string;
   store: KnowledgeStore;
+  /** Shared files (files.db) — the bytes behind `format='file'` rows and app
+   *  attachments. Separate from `store` by design (lib/files.ts). */
+  fileStore: FileStore;
   user: string;
   /** The session's capability role (the membrane). Capabilities are derived from
    *  it, so the forbidden write+lake-read combination can't be constructed. */
@@ -198,6 +215,7 @@ export async function warmDiscoveryCaches(projectDir: string): Promise<void> {
 export function buildServer({
   projectDir,
   store,
+  fileStore,
   user,
   role,
   embedIndex = null,
@@ -1591,6 +1609,17 @@ const publishUrl = (id: string, visibility: "team" | "public" = "team"): string 
   return publishBase ? `${publishBase}${path}` : path;
 };
 
+// Where an attachment downloads from. The public path sits behind the same
+// visibility + password gate as the app frame; the team path is session-gated
+// under /admin/ (the SPA owns every /apps/* URL, so it can't live there).
+const fileUrl = (id: string, name: string, visibility: "team" | "public" = "team"): string => {
+  const path =
+    visibility === "public"
+      ? `/p/${encodeURIComponent(id)}/files/${encodeURIComponent(name)}`
+      : `/admin/files/${encodeURIComponent(id)}/${encodeURIComponent(name)}`;
+  return publishBase ? `${publishBase}${path}` : path;
+};
+
 const PANEL_KEY_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 type PanelInput = { key: string; title?: string; description?: string; sql: string; dialect?: "postgres" | "clickhouse"; metricId?: string };
@@ -1836,6 +1865,20 @@ const APP_GUIDE = [
   "Read state on load and re-render after each change. Use it for todos, votes, notes, or an annotation",
   "OVERLAY keyed by a business row id (mark rows reviewed without writing the source).",
   "",
+  "## Sharing a FILE instead — publish_file",
+  "Not everything is an app. A CSV you computed locally, a markdown memo, a chart PNG, a PDF, a",
+  "spreadsheet: share it with publish_file. Same link semantics as an app (team-only; an admin can make",
+  "it public, with an optional password) and it's listed beside the apps.",
+  `- Small content you just produced: pass \`content\` inline (≤ ${MAX_INLINE_BYTES / 1e6} MB; \`encoding: "base64"\` for binary).`,
+  "- A file that already exists on disk: OMIT `content`. You get a one-time upload URL and the exact",
+  "  `curl -T` line — run it. NEVER retype a file's bytes into a tool call.",
+  "- Attach to an app you authored with `appId`: viewers get it as a download under the app. The frame",
+  "  itself has NO network and cannot read attachments — data an app renders comes from panels (SQL).",
+  "- What viewers see: csv/tsv/json → a table; md/txt → a document; png/jpg/gif/webp → the image;",
+  "  pdf → open in a tab; anything else → a download. .html is refused (that's an app: publish_app).",
+  "- Files are NOT knowledge: find_context never returns them. Capture what a file MEANS (the",
+  "  definition it established, the caveat it found) with report_correction.",
+  "",
   "## Minimal example",
   'panels: [{ key: "rev", title: "Revenue (2025)", description: "Sum of paid ticket prices, test excluded",',
   '          sql: "SELECT sum(amount_cents)/100.0 AS dollars FROM ..." }]',
@@ -1871,7 +1914,8 @@ server.registerTool(
       "`panels` are the live data bindings (each `sql` is a read-only query the box re-runs — validate with " +
       "run_query first); omit them for a static report. The link is TEAM-ONLY; an admin can later make it public. " +
       "Every panel is dry-run at publish (broken query → rejected). Edit later with update_app (same link); " +
-      "also list_apps / get_app / unpublish_app.",
+      "also list_apps / get_app / unpublish_app. To share a FILE (a CSV you computed, a memo, an image, a PDF) " +
+      "rather than an app, use publish_file.",
     inputSchema: {
       title: z.string().describe("Short human title (shown in the box's Apps list)"),
       html: z.string().describe("The presentation template (self-contained HTML fragment; use the Setoku.* helpers)."),
@@ -1998,6 +2042,13 @@ server.registerTool(
     const newTitle = title?.trim() || undefined; // whitespace-only title is a no-op, not a change
     if (newTitle === undefined && html === undefined && panels === undefined && params === undefined && refreshSeconds === undefined)
       return errorText("Nothing to update — pass a non-empty title, or html / panels / params / refreshSeconds.");
+    // A shared FILE has no template or panels — only its title is editable here.
+    // New bytes go through publish_file(appId: <this id>, name: <same name>).
+    if (meta.format === "file" && (html !== undefined || panels !== undefined || params !== undefined || refreshSeconds !== undefined))
+      return errorText(
+        `"${meta.title}" is a shared file, not an app — it has no template or panels. update_app can rename it (title only); ` +
+          `to replace its contents call publish_file with appId "${tid}" and the same file name.`,
+      );
     if (html !== undefined) {
       const bytes = Buffer.byteLength(html, "utf8");
       if (bytes > MAX_REPORT_BYTES)
@@ -2121,12 +2172,23 @@ server.registerTool(
     if (!rows.length) return text("Nothing published yet. Create one with publish_app.");
     const active = rows.filter((r) => !r.archivedAt);
     const archived = rows.filter((r) => r.archivedAt);
+    // Attachment summaries come from files.db (a separate file, so no SQL join):
+    // one GROUP BY, merged here by id.
+    const files = fileStore.summaries();
     const lines: string[] = [];
     if (active.length) {
       lines.push("# active");
       for (const r of active) {
         const n = r.panels?.length ?? 0;
-        const kind = n ? `${n} panel${n === 1 ? "" : "s"}` : "static";
+        const att = files.get(r.id);
+        // A shared file reads as what it IS (its type + size); an app as its
+        // panel count, plus how many files ride along with it.
+        const kind =
+          r.format === "file"
+            ? att
+              ? `file, ${extOf(att.first.name) || att.first.mime}, ${formatBytes(att.first.size)}`
+              : "file"
+            : [n ? `${n} panel${n === 1 ? "" : "s"}` : "static", ...(att ? [`${att.count} file${att.count === 1 ? "" : "s"}`] : [])].join(", ");
         // A public app may also carry a shared password (a human sets it in the
         // web UI) — say so, or the link reads as wide open when it isn't.
         const vis = r.visibility === "public" && r.hasPassword ? "public, password" : r.visibility;
@@ -2179,6 +2241,24 @@ server.registerTool(
           "To change it, ask the author or an admin to unlock it in the web UI; or publish_app your own copy from this template.",
         "",
       );
+    // Attachments (files.db): metadata only, never bytes — a 50 MB PDF has no
+    // business in the model's context. A shared FILE is one attachment and no
+    // template; an app may carry several alongside its panels.
+    const attachments = fileStore.list(dash.id);
+    const fileLine = (f: (typeof attachments)[number]): string =>
+      `- ${f.name} · ${f.mime} · ${formatBytes(f.size)} · sha256 ${f.sha256.slice(0, 12)}… · uploaded by ${f.uploadedBy} ${f.uploadedAt.slice(0, 16)}\n  ${fileUrl(dash.id, f.name, dash.visibility)}`;
+    if (dash.format === "file") {
+      lines.push(
+        "## file (a shared file — no template, no panels)",
+        ...(attachments.length ? attachments.map(fileLine) : ["(no bytes stored — the upload never completed)"]),
+        "",
+        `Rename with update_app("${dash.id}", {title}). Replace the contents with publish_file({ name: "${attachments[0]?.name ?? "<same name>"}", appId: "${dash.id}" }). ` +
+          `Archive with unpublish_app("${dash.id}").`,
+      );
+      return text(lines.join("\n"));
+    }
+    if (attachments.length)
+      lines.push("## attachments (downloadable files listed under the app — the frame cannot fetch them)", ...attachments.map(fileLine), "");
     // Params first — update_app REPLACES the whole param set, so a round-trip
     // must carry them back VERBATIM. Emit them as the exact `params` arg JSON
     // (labels, options, min/max/maxLength and all) rather than a lossy human
@@ -2252,11 +2332,163 @@ server.registerTool(
         `"${meta.title}" is locked${meta.lockedBy ? ` (by ${meta.lockedBy})` : ""} — it can't be archived by an agent. ` +
           "Ask the author or an admin to unlock it from the app's ⋮ menu in the web UI.",
       );
+    // Author-only, like update_app: killing someone else's link is a bigger
+    // change than editing it. An admin archives anything from the web UI.
+    if (meta && !meta.archivedAt && meta.createdBy !== user)
+      return errorText(`Only the author (${meta.createdBy}) can archive "${meta.title}" — or an admin, from the web UI.`);
     const ok = store.archivePublished(tid);
     store.audit(user, "unpublish_app", { id, ok });
     return ok
       ? text(`Archived ${id} — its link no longer works.`)
       : errorText(`No active app with id "${id}" (already archived, or unknown id). Call list_apps to check.`);
+  },
+);
+
+// Files: the other kind of published thing (lib/files.ts). Same membrane
+// story as publish_app — publishing a file commits no knowledge and grants
+// nothing; the link is team-only until an admin promotes it. Available to
+// every session.
+server.registerTool(
+  "publish_file",
+  {
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    title: "Share a file to the box",
+    description:
+      "Shares a FILE (a CSV you computed, a markdown memo, a chart image, a PDF, a spreadsheet) as a link, " +
+      "listed beside the apps. Team-only; an admin can make it public. Two ways to send the bytes: " +
+      `pass \`content\` inline for small content you just produced (≤ ${MAX_INLINE_BYTES / 1e6} MB), or OMIT \`content\` ` +
+      "for a file that already exists on disk — you get a one-time upload URL and a `curl -T` line to run, so you " +
+      "never retype the bytes. Pass `appId` to attach the file to an app you authored (a download under the app) " +
+      "or to replace a file you shared before (same name). The extension sets the type (csv, tsv, json, md, txt, " +
+      "png, jpg, gif, webp, pdf, xlsx, docx, parquet, zip …); .html is refused — that's an app (publish_app). " +
+      "Files are not knowledge: find_context never returns them.",
+    inputSchema: {
+      name: z.string().describe("File name with extension, e.g. report.csv — letters, digits, `.`, `_`, `-` only; no path"),
+      title: z.string().optional().describe("Human title for the Apps list (defaults to the file name). Ignored when attaching to an app."),
+      content: z
+        .string()
+        .optional()
+        .describe(
+          `The file's content, INLINE. Only for small content you just produced (≤ ${MAX_INLINE_BYTES / 1e6} MB). ` +
+            "Omit it for a file on disk and use the returned upload URL instead.",
+        ),
+      encoding: z.enum(["utf8", "base64"]).optional().describe("How `content` is encoded (default utf8; base64 for binary)"),
+      appId: z
+        .string()
+        .optional()
+        .describe("Attach to an app you authored (id from publish_app / list_apps), or the id of a file you shared to replace its contents"),
+      model: MODEL_INPUT,
+    },
+  },
+  async ({ name, title, content, encoding, appId, model }) => {
+    const fname = sanitizeFileName(name);
+    if (!fname)
+      return errorText(
+        `"${name}" isn't a usable file name. Use letters, digits, ".", "_" and "-" (no spaces, no path, no leading dot), ≤ 120 chars, e.g. q2-report.csv.`,
+      );
+    const ext = extOf(fname);
+    if (REFUSED_EXT[ext]) return errorText(REFUSED_EXT[ext]);
+    const mime = mimeForName(fname);
+    if (!mime) return errorText(`".${ext || fname}" isn't a shareable type. Use one of: ${Object.keys(MIME_BY_EXT).join(", ")}.`);
+
+    // Attaching: the target must be an active record THIS identity authored and
+    // that isn't locked — the same gate update_app applies, because an
+    // attachment changes what the link serves.
+    const targetId = appId?.trim() || "";
+    const target = targetId ? store.getPublishedMeta(targetId) : null;
+    if (targetId) {
+      if (!target || target.archivedAt) return errorText(`No active app "${targetId}" (archived or unknown). Call list_apps.`);
+      if (target.createdBy !== user) return errorText(`Only the author (${target.createdBy}) can attach files to "${target.title}".`);
+      if (target.lockedAt)
+        return errorText(
+          `"${target.title}" is locked${target.lockedBy ? ` (by ${target.lockedBy})` : ""} — agent edits are disabled. ` +
+            "Ask the author or an admin to unlock it from the app's ⋮ menu in the web UI.",
+        );
+      // A shared FILE is one file: same name = replace its bytes; a different
+      // name would turn it into a bundle with no template, which nothing renders.
+      if (target.format === "file") {
+        const held = fileStore.list(target.id)[0]?.name;
+        if (held && held !== fname)
+          return errorText(
+            `"${target.title}" is a shared file named ${held}. Pass name "${held}" to replace it, or publish a new file (omit appId).`,
+          );
+      }
+    }
+    const id = target ? target.id : mintShareId();
+    const modelName = modelOf(model);
+    const now = new Date().toISOString();
+    const shareUrl = target ? publishUrl(target.id, target.visibility) : publishUrl(id);
+    const audience = target
+      ? ""
+      : " This link is TEAM-ONLY: anyone you share it with must sign in to the box to view it. (An admin can make it public from /admin.)";
+
+    if (content !== undefined) {
+      let buf: Buffer;
+      try {
+        buf = Buffer.from(content, encoding === "base64" ? "base64" : "utf8");
+      } catch {
+        return errorText("content could not be decoded — check `encoding`.");
+      }
+      if (!buf.byteLength) return errorText("content is empty. Omit `content` to get an upload URL for a file on disk.");
+      if (buf.byteLength > MAX_INLINE_BYTES)
+        return errorText(
+          `content is ${formatBytes(buf.byteLength)} — over the ${MAX_INLINE_BYTES / 1e6} MB inline cap. Write it to disk, then call ` +
+            "publish_file WITHOUT `content` and curl the file to the upload URL it returns.",
+        );
+      try {
+        fileStore.put(id, { name: fname, mime, bytes: buf, by: user, now });
+      } catch (e) {
+        if (e instanceof FileStoreQuotaError) return errorText(`Can't store ${fname}: ${e.message}.`);
+        throw e;
+      }
+      if (!target)
+        store.createPublished({ id, title: title?.trim() || fname, body: "", format: "file", createdBy: user, model: modelName });
+      else emitAppChanged(target.id, "updated");
+      store.audit(user, "publish_file", { id, name: fname, mime, bytes: buf.byteLength, appId: target?.id ?? null, model: modelName });
+      void notifyActivity(projectDir, {
+        kind: "file_published",
+        name: fname,
+        size: buf.byteLength,
+        url: shareUrl,
+        by: user,
+        appTitle: target && target.format !== "file" ? target.title : null,
+      });
+      return text(
+        (target
+          ? `Attached ${fname} (${formatBytes(buf.byteLength)}) to "${target.title}" → ${shareUrl}`
+          : `Shared ${fname} (${formatBytes(buf.byteLength)}) → ${shareUrl}`) +
+          audience +
+          (publishBase ? "" : " (Prefix the path with your box URL.)") +
+          `\n\nDownload: ${fileUrl(id, fname, target?.visibility ?? "team")}\nManage: get_app("${id}") / unpublish_app("${id}").`,
+      );
+    }
+
+    // No content: mint a one-time upload URL. The `published` row is NOT
+    // created yet — the PUT handler creates it when the bytes land, so a URL
+    // that's never used leaves nothing behind but an expiring nonce.
+    const nonce = mintAppAccessToken();
+    fileStore.createUpload({
+      nonce,
+      publishedId: id,
+      appId: target?.id ?? null,
+      name: fname,
+      mime,
+      title: title?.trim() || null,
+      createdBy: user,
+      model: modelName,
+      expires: Date.now() + UPLOAD_TTL_MS,
+      createdAt: now,
+    });
+    const uploadUrl = `${publishBase}/u/${nonce}`;
+    store.audit(user, "publish_file_url", { id, name: fname, mime, appId: target?.id ?? null });
+    return text(
+      `Upload URL minted for ${fname} — valid ${UPLOAD_TTL_MS / 60_000} minutes, one file, ≤ ${MAX_UPLOAD_BYTES / 1e6} MB. Run:\n\n` +
+        `  curl -fsS -T "./${fname}" "${uploadUrl}"\n\n` +
+        "(adjust the path to where the file is). " +
+        (publishBase ? "" : "Prefix the URL with your box URL. ") +
+        `When curl returns, the file is live${target ? ` on "${target.title}"` : ""} at ${shareUrl}.${audience}\n` +
+        `Then: get_app("${id}") to confirm, unpublish_app("${id}") to archive.`,
+    );
   },
 );
 
