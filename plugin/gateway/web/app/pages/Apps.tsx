@@ -13,7 +13,8 @@ import { VisibilityDialog } from "../components/VisibilityDialog";
 import { Button } from "../components/Button";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
-import { appShareUrl } from "../format";
+import { appShareUrl, downloadFile } from "../format";
+import { formatBytes } from "../../../lib/format";
 import type { PublishedMeta } from "../types";
 
 export function Apps() {
@@ -58,7 +59,8 @@ export function Apps() {
   return (
     <>
       <Heading title="Apps" action={<Button onClick={() => setNewOpen(true)}>New app</Button>}>
-        Dashboards, trackers, and internal tools your agent builds on your data. They run on{" "}
+        Dashboards, trackers, and internal tools your agent builds on your data, plus the files it shares
+        (a CSV, a memo, a chart). Apps run on{" "}
         <b className="text-stone-800">live data</b> and never write to your sources.{" "}
         <b className="text-stone-800">Team</b> links work for anyone signed in here; an admin can make
         one <b className="text-stone-800">public</b> for a link that needs no login — with a shared
@@ -79,11 +81,23 @@ export function Apps() {
                 const mine = me?.identity === r.createdBy;
                 const canManage = isAdmin || mine;
                 const panelCount = r.panels?.length ?? 0;
+                const isFile = r.format === "file";
+                const fileExt = r.files?.first ? (r.files.first.name.split(".").pop() ?? "").toLowerCase() : "";
                 const items: ReactNode[] = [
                   <MenuItem key="copy" onSelect={() => void copy(r)}>
                     Copy link
                   </MenuItem>,
                 ];
+                if (isFile && r.files?.first) {
+                  // A real anchor click (not fetch): the session cookie rides along, and
+                  // the `download` attribute saves it even for inline-served types.
+                  const f = r.files.first;
+                  items.push(
+                    <MenuItem key="dl" onSelect={() => downloadFile(`/admin/files/${encodeURIComponent(r.id)}/${encodeURIComponent(f.name)}`, f.name)}>
+                      Download
+                    </MenuItem>,
+                  );
+                }
                 if (canManage) {
                   items.push(
                     <MenuItem key="vis" onSelect={() => setVisApp(r)}>
@@ -113,9 +127,14 @@ export function Apps() {
                       <div className="mt-0.5 text-xs text-stone-500">
                         {r.createdBy} · {String(r.createdAt).slice(0, 16)}
                         {panelCount ? ` · ${panelCount} live panel${panelCount === 1 ? "" : "s"}` : ""}
+                        {isFile && r.files?.first ? ` · ${r.files.first.name}` : ""}
+                        {!isFile && r.files?.count ? ` · ${r.files.count} file${r.files.count === 1 ? "" : "s"}` : ""}
                       </div>
                     </div>
-                    {panelCount ? (
+                    {isFile ? (
+                      // A shared file reads as what it is: its type and size (stone).
+                      <Badge tone="idle">{r.files?.first ? `${fileExt || "file"} · ${formatBytes(r.files.first.size)}` : "file"}</Badge>
+                    ) : panelCount ? (
                       <Badge tone="ok">live</Badge>
                     ) : (
                       // No live-data panels. "static" matches the list_apps tool +
@@ -172,7 +191,7 @@ export function Apps() {
       <Confirm
         open={!!archiving}
         title="Archive this app?"
-        body={`"${archiving?.title}" will stop working at its link (public and team). The record is kept, so you can restore it from the Archived list.`}
+        body={`"${archiving?.title}" will stop working at its link (public and team). The record${archiving?.format === "file" ? " and the file" : ""} is kept, so you can restore it from the Archived list.`}
         confirmLabel="Archive"
         danger
         onConfirm={() => {
@@ -231,7 +250,7 @@ function NewDialog({ open, onClose, onCopied }: { open: boolean; onClose: () => 
           <AlertDialog.Title className="text-base font-semibold text-stone-900">New app</AlertDialog.Title>
           <AlertDialog.Description className="mt-2 text-sm leading-relaxed text-stone-600">
             Apps are built by your agent, not a form. Paste this into your Setoku-connected agent, describe what
-            you want, and it'll create and publish it.
+            you want, and it'll create and publish it. (To share a file instead, ask it to publish_file.)
           </AlertDialog.Description>
           <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-stone-50 p-3 text-xs text-stone-700">
             {prompt}

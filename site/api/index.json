@@ -2,7 +2,7 @@
   "name": "Setoku",
   "tagline": "Make any AI fluent in your data.",
   "description": "Governed agentic BI on your Claude subscription. Setoku gives Claude a verified business-context layer (derived from your codebase) plus read-only, audited access to your database — so it answers business questions accurately instead of guessing from column names.",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "license": "Apache-2.0",
   "self_hosted": true,
   "hosted_service": false,
@@ -42,7 +42,7 @@
   "mcp": {
     "transport": "streamable-http",
     "path": "/mcp",
-    "tool_count": 19,
+    "tool_count": 20,
     "auth": {
       "type": "bearer",
       "accepted_in": [

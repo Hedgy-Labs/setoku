@@ -12,7 +12,8 @@ import { VisibilityBadge } from "../components/VisibilityBadge";
 import { VisibilityDialog } from "../components/VisibilityDialog";
 import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
-import { appShareUrl, relTime } from "../format";
+import { appShareUrl, downloadFile, relTime } from "../format";
+import { formatBytes } from "../../../lib/format";
 import type { AppData, AppParam, AppRevision, PanelProvenance } from "../types";
 
 /** The per-panel numbers the frame echoes up for the variant it rendered — the
@@ -205,6 +206,11 @@ export function AppView() {
   const link = appShareUrl({ id, visibility });
   const mine = me?.identity === data?.createdBy;
   const isApp = (data?.panels?.length ?? 0) > 0;
+  // A shared FILE: the frame shows its viewer; there is no template, no panels,
+  // and edits mean "replace the bytes" (publish_file), not update_app.
+  const isFile = data?.format === "file";
+  const theFile = isFile ? (data?.files?.[0] ?? null) : null;
+  const filePath = (name: string): string => `/admin/files/${encodeURIComponent(id)}/${encodeURIComponent(name)}`;
   const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
   const active = !!data && !data.archivedAt;
   // Locked = frozen against AGENT edits (update_app/unpublish_app). Human
@@ -600,6 +606,7 @@ export function AppView() {
             ) : (
               ""
             )}
+            {theFile ? ` · ${theFile.name} · ${formatBytes(theFile.size)}` : ""}
             {isApp && stampAt ? ` · data updated ${relTime(stampAt)}` : ""}
             {isApp && data.mirrorAsOf ? ` · source data as of ${relTime(data.mirrorAsOf)}` : ""}
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
@@ -618,6 +625,11 @@ export function AppView() {
               <MenuItem onSelect={() => setShowHistory(true)}>Version history</MenuItem>
             ) : null}
             {isApp ? <MenuItem onSelect={() => manualRefresh()}>Refresh data</MenuItem> : null}
+            {theFile ? (
+              // A real anchor click, not a fetch: the session cookie rides along and
+              // `download` saves it even for types the server serves inline.
+              <MenuItem onSelect={() => downloadFile(filePath(theFile.name), theFile.name)}>Download {theFile.name}</MenuItem>
+            ) : null}
             {/* Every app is agent-editable (static ones included), so Edit is
                 gated only on the app existing — never on panels or role (the
                 dialog itself adapts to author/admin/other). */}
@@ -701,6 +713,18 @@ export function AppView() {
               </div>
             </div>
           </div>
+          {!isFile && data.files?.length ? (
+            // Attachments (publish_file with appId) — rendered in THIS trusted
+            // chrome as plain links; the sandboxed frame never fetches them.
+            <div className="flex flex-none flex-wrap items-baseline gap-x-4 gap-y-1 border-t border-stone-200 px-3 py-1.5 text-xs">
+              <span className="text-stone-500">Files</span>
+              {data.files.map((f) => (
+                <a key={f.name} href={filePath(f.name)} download={f.name} className="text-stone-700 hover:underline">
+                  {f.name} <span className="text-stone-400">{formatBytes(f.size)}</span>
+                </a>
+              ))}
+            </div>
+          ) : null}
           {isApp && showCalc ? (
             // SQL/description are param-independent (from data); the per-variant row
             // counts/freshness come from the frame's own echo (live) — "updating…"
@@ -766,6 +790,7 @@ export function AppView() {
         locked={locked}
         canUnlock={mine || isAdmin}
         onCopied={() => toast("Prompt copied. Paste it into your agent (with the changes you want).")}
+        file={theFile?.name ?? null}
       />
       <Confirm
         open={archiveOpen}
@@ -964,11 +989,14 @@ function EditDialog({
   locked,
   canUnlock,
   onCopied,
+  file,
 }: {
   open: boolean;
   onClose: () => void;
   id: string;
   title: string;
+  /** For a shared FILE: its name — the prompt steers to publish_file, not update_app. */
+  file?: string | null;
   /** Author of an UNLOCKED app — gets the edit-in-place prompt. */
   canEdit: boolean;
   /** The app is locked (agents can't update_app it) — everyone gets the copy prompt. */
@@ -979,7 +1007,15 @@ function EditDialog({
 }) {
   const url = `${location.origin}/apps/${id}`;
   const named = title ? ` "${title}"` : "";
-  const prompt = canEdit
+  const prompt = file
+    ? canEdit
+      ? `Replace the file${named} (${file}) on my Setoku at ${url}\n` +
+        `Produce the new version, then publish_file({ name: "${file}", appId: "${id}" }) — same link. Omit content and use the upload URL if the file is on disk.\n\n` +
+        `Changes I want:\n`
+      : `Share my own version of the file${named} (${file}) from my Setoku at ${url}\n` +
+        `Produce it, then publish_file({ name: "${file}" }) as a new file (a new link, since I can't replace someone else's).\n\n` +
+        `Changes I want:\n`
+    : canEdit
     ? `Edit my Setoku app${named} at ${url}\n` +
       `Read it with get_app("${id}"), then update_app("${id}", …) in place (same link).\n\n` +
       `Changes I want:\n`

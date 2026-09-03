@@ -145,6 +145,7 @@ describe("tool surface", () => {
         "list_entities",
         "list_sources",
         "publish_app",
+        "publish_file",
         "report_correction",
         "resolve_correction",
         "run_query",

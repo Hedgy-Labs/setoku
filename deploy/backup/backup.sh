@@ -20,13 +20,27 @@ set -a; source .env; set +a
 STAMP="$(date -u +%F)"
 mkdir -p backups/context
 
-echo "[backup] knowledge store snapshot…"
-dc exec -T server rm -f /data/knowledge-snapshot.db
-dc exec -T server bun -e "
-  const { Database } = require('bun:sqlite');
-  new Database('/data/knowledge.db').exec(\"VACUUM INTO '/data/knowledge-snapshot.db'\");"
-docker cp "$(dc ps -q server)":/data/knowledge-snapshot.db "backups/context/knowledge-${STAMP}.db"
-dc exec -T server rm -f /data/knowledge-snapshot.db
+# Three SQLite files, each snapshotted with VACUUM INTO (a consistent copy
+# under WAL, no downtime): knowledge.db (curated knowledge + published apps),
+# apps.db (per-app state: annotations, votes), files.db (shared files — the box
+# may hold the only copy). All three are durable user data (I4).
+snapshot_db() {
+  local name="$1"
+  echo "[backup] ${name} snapshot…"
+  dc exec -T server rm -f "/data/${name}-snapshot.db"
+  dc exec -T server bun -e "
+    const { Database } = require('bun:sqlite');
+    const fs = require('node:fs');
+    if (!fs.existsSync('/data/${name}.db')) { console.error('  (no /data/${name}.db yet — skipped)'); process.exit(0); }
+    new Database('/data/${name}.db').exec(\"VACUUM INTO '/data/${name}-snapshot.db'\");"
+  if dc exec -T server test -f "/data/${name}-snapshot.db"; then
+    docker cp "$(dc ps -q server)":"/data/${name}-snapshot.db" "backups/context/${name}-${STAMP}.db"
+    dc exec -T server rm -f "/data/${name}-snapshot.db"
+  fi
+}
+snapshot_db knowledge
+snapshot_db apps
+snapshot_db files
 
 # The Postgres context store is the reserved migration target (profile: pgstore)
 # and is unused/off by default — dump it only when it's actually running, mirroring

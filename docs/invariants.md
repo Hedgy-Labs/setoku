@@ -26,7 +26,10 @@ README) so the references resolve without bloating the front page.
   buffers to disk so a ClickHouse restart drops nothing. The business-DB mirror
   (`biz.*`, ingest/pg-mirror) is the deliberate exception: re-derivable from prod
   on the next reload, so it lives in its own database and stays OUT of the backup
-  and Parquet-export story.
+  and Parquet-export story. The gateway's three SQLite files are all in it:
+  `knowledge.db` (curated knowledge + published apps), `apps.db` (per-app state),
+  and `files.db` (shared files — the box may hold the only copy of a file
+  someone shared; see docs/apps.md *Files*).
 - **I5 — Dialect-routed, engine-portable knowledge.** Metric SQL declares its
   dialect (`clickhouse` today; future `bigquery`/`snowflake`); `run_query` routes
   accordingly. The context layer is storage-agnostic. A metric is canonical in

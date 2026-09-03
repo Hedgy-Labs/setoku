@@ -1,7 +1,7 @@
 {
   "name": "Setoku connectors",
   "description": "Sources Setoku ingests into its local ClickHouse lake. No connector for yours? The /setoku:connect skill gives a coding agent the patterns to wire one up.",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "connectors": [
     {
       "id": "postgres",

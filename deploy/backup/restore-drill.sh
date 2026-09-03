@@ -19,13 +19,25 @@ dc up -d --wait clickhouse
 echo "[drill] 2/5 fetch latest context backups…"
 dc run --rm rclone copy "remote:${SETOKU_BACKUP_S3_BUCKET}/context" /backups/context
 latest_kdb="$(ls -1 backups/context/knowledge-*.db | sort | tail -1)"
+latest_adb="$(ls -1 backups/context/apps-*.db 2>/dev/null | sort | tail -1)"
+latest_fdb="$(ls -1 backups/context/files-*.db 2>/dev/null | sort | tail -1)"
 latest_pg="$(ls -1 backups/context/pg-setoku-*.sql.gz 2>/dev/null | sort | tail -1)"
-echo "        knowledge: ${latest_kdb}   pg: ${latest_pg:-<none — postgres store off by default>}"
+echo "        knowledge: ${latest_kdb}   apps: ${latest_adb:-<none>}   files: ${latest_fdb:-<none>}"
+echo "        pg: ${latest_pg:-<none — postgres store off by default>}"
 
 echo "[drill] 3/5 restore context stores…"
-# knowledge.db goes onto the data volume BEFORE the server starts
-docker run --rm -v setoku_setoku_data:/data -v "$PWD/backups/context:/restore:ro" \
-  alpine sh -c "cp /restore/$(basename "$latest_kdb") /data/knowledge.db"
+# The SQLite files go onto the data volume BEFORE the server starts. apps.db and
+# files.db are optional (a box that never published an app or shared a file has
+# none yet); knowledge.db is required.
+restore_db() {
+  local src="$1" dest="$2"
+  [[ -n "$src" ]] || return 0
+  docker run --rm -v setoku_setoku_data:/data -v "$PWD/backups/context:/restore:ro" \
+    alpine sh -c "cp /restore/$(basename "$src") /data/${dest}"
+}
+restore_db "$latest_kdb" knowledge.db
+restore_db "$latest_adb" apps.db
+restore_db "$latest_fdb" files.db
 # Restore the Postgres store only when a dump exists (profile: pgstore); bring the
 # container up on demand since it's off by default.
 if [[ -n "$latest_pg" ]]; then
@@ -53,6 +65,23 @@ health="$(dc exec -T server bun -e '
     .catch(() => process.exit(1));')" \
   || { echo "[drill] FAIL: gateway unhealthy" >&2; exit 1; }
 docs="$(printf '%s' "$health" | python3 -c 'import json,sys;print(json.load(sys.stdin)["docs"])')"
+# The side stores must have come back too — a missing or empty files.db means
+# every shared-file link 404s while /health reads fine (I4: the box may hold
+# the only copy). Count rows in each restored file; fail if a snapshot was
+# restored but reads back empty.
+for pair in "apps:app_state" "files:published_files"; do
+  name="${pair%%:*}"; table="${pair##*:}"
+  latest_var="latest_${name:0:1}db"   # latest_adb / latest_fdb
+  [[ -n "${!latest_var:-}" ]] || continue
+  n="$(dc exec -T server bun -e "
+    const { Database } = require('bun:sqlite');
+    console.log(new Database('/data/${name}.db', { readonly: true }).query('SELECT count(*) AS n FROM ${table}').get().n);" 2>/dev/null || echo err)"
+  echo "        ${name}.db: ${n} ${table} rows"
+  # Unreadable = a bad snapshot → fail. Zero rows is legitimate (a box that never
+  # shared a file still snapshots its empty files.db), so it's only a warning.
+  [[ "$n" =~ ^[0-9]+$ ]] || { echo "[drill] FAIL: ${name}.db restored but ${table} is unreadable" >&2; exit 1; }
+  [[ "$n" -gt 0 ]] || echo "        WARNING: ${name}.db has no ${table} rows — expected if nothing was ever stored there" >&2
+done
 rows="$(dc exec -T clickhouse clickhouse-client --user "${CLICKHOUSE_USER:-setoku}" --password "${CLICKHOUSE_PASSWORD}" --query 'SELECT count() FROM setoku.ingest_raw' 2>/dev/null || echo n/a)"
 echo "[drill] OK — knowledge docs: ${docs}, lake ingest_raw rows: ${rows}"
 echo "[drill] now ask a real question through the MCP gateway to finish the drill."

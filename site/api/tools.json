@@ -1,7 +1,7 @@
 {
   "name": "Setoku MCP tools",
   "description": "The tool surface of a Setoku box. Which tools a session actually sees depends on its token's role: an analyst may read the lake but cannot commit knowledge; a curator may commit knowledge but cannot read the lake.",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "roles": {
     "analyst": "Reads data and curated context. May only propose knowledge changes.",
     "curator": "Commits curated knowledge. Cannot read the data lake.",
@@ -119,6 +119,12 @@
     {
       "name": "unpublish_app",
       "title": "Archive a published app",
+      "role": "analyst",
+      "readOnly": false
+    },
+    {
+      "name": "publish_file",
+      "title": "Share a file to the box",
       "role": "analyst",
       "readOnly": false
     }

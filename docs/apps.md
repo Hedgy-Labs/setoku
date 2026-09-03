@@ -52,8 +52,8 @@ silently falling back to the legacy path:
 ```
 published(
   id, title,
-  format,          -- 'app' (renders via the runtime path) | 'html' (legacy frozen report)
-  body,            -- the agent-authored template (fragment for apps)
+  format,          -- 'app' (renders via the runtime path) | 'file' (a shared file, see Files) | 'html' (legacy frozen report)
+  body,            -- the agent-authored template (fragment for apps; '' for a file)
   panels,          -- JSON: [{ key, title?, sql, dialect, metricId? }]  (NULL/[] for a state-only app)
   params,          -- JSON: [{ name, type, default, … }]  declared interactive inputs (NULL for none)
   refresh_seconds, -- TTL for cached panel data (default 300, min 30)
@@ -66,6 +66,12 @@ app_cache(app_id, panel_key, columns, rows, row_count, computed_at, error)
   PRIMARY KEY (app_id, panel_key)   -- panel_key folds in the param variant; capped per app
 
 app_access(token, app_id, expires, created_at)   -- one live unlock of a protected link
+
+-- files.db (its own SQLite file, like apps.db — see Files below)
+published_files(published_id, name, mime, size, sha256, bytes, uploaded_by, uploaded_at)
+  PRIMARY KEY (published_id, name)   -- attachments on an app, or THE file of a 'file' row
+file_uploads(nonce, published_id, app_id, name, mime, title, created_by, model, expires, created_at)
+  -- a minted-but-unfulfilled upload URL; the published row does not exist yet
 ```
 
 An app is `format='app'` whether or not it has data panels: a chart app has
@@ -409,10 +415,14 @@ Replaces `publish_report` / `list_published` / `unpublish_report`:
   lands on the app's existing link: a public app stays public (and keeps any shared
   password), so the change is live for everyone holding that link — see "Editing a
   public app" below.
-- **`list_apps()`** / **`unpublish_app({ id })`** — unchanged semantics from the
-  old list/unpublish.
+- **`list_apps()`** / **`unpublish_app({ id })`** — list and archive. Archiving
+  is **author-only** (like `update_app`); an admin archives anything from the
+  app's page.
 - **`get_app({ id })`** — read-only inspection of panel definitions + last-run
-  stamps.
+  stamps (and, for a file, its metadata: never the bytes).
+- **`publish_file({ name, title?, content?, encoding?, appId? })`** — share a
+  file (see *Files* below). Team-only like an app; `appId` attaches it to an app
+  you authored, or replaces a file you shared before.
 
 The agent already develops and eyeball-validates SQL in-session with `run_query`;
 `publish_app` promotes those exact validated queries to live bindings. (The app's
@@ -489,6 +499,77 @@ the deferred next step — it pairs with `update_app` for a see-then-fix loop.
   allow-scripts allow-forms`. That closes the exfil-via-author-JS hole that
   today's *static* reports actually have (their inline JS can POST inline data to
   any host). Live apps end up **safer** than the reports they replace.
+
+## Files — share anything, not just apps
+
+Not every result is an app. A CSV Claude computed locally, a markdown memo, a
+chart PNG, a PDF, a spreadsheet: none of those can come from a panel (a panel is
+SQL the box runs), so `publish_file` is the second kind of published thing.
+**One concept, two formats:** a `published` row is `format='app'` (it *runs*)
+or `format='file'` (it is *viewed or downloaded*), and either may carry attached
+files. A standalone shared file is a `file` row with exactly one attachment.
+Because it keys on `published.id`, a file gets everything an app has for free:
+the share id, team/public visibility, the shared password, lock, archive,
+rename, the audit log, the Slack notice, the admin list and detail page.
+
+**Getting the bytes onto the box.** Two paths, one tool. Small content the
+model just produced rides inline (`content`, ≤ 1 MB, base64 for binary).
+Anything already on disk goes over HTTP: with `content` omitted the tool mints
+a one-time, ten-minute `PUT /u/<nonce>` URL and returns the exact `curl -T`
+line. This is load-bearing, not a nicety: a model re-emitting a 500 KB CSV
+through a tool call is ~150k output tokens. The nonce is the credential (no
+bearer token in a shell line), and the `published` row is created only when
+the bytes land, so nothing (list, admin, Slack, `/p`) ever sees a half-published
+file.
+
+**Storage.** `files.db`, a sibling of `apps.db`, bytes as BLOBs. Kept out of
+`knowledge.db` so the nightly `VACUUM INTO` snapshot of curated knowledge stays
+small; `deploy/backup/backup.sh` snapshots all three files (I4). Caps: 1 MB
+inline, 50 MB per upload, 20 files / 200 MB per record, and a box-wide total
+(2 GB, `SETOKU_FILES_MAX_BYTES`). Files are **not versioned**: the revision
+snapshot diffs title/body/panels/params, so replacing a file's bytes appends no
+version and revert never touches files; the audit log and `uploadedAt` record
+the replacement.
+
+**Serving.** `GET /p/<id>/files/<name>` (public: same visibility and password
+gate as the frame, per-record download budget) and `GET /admin/files/<id>/<name>`
+(team: session-gated; it lives under `/admin/` because the SPA owns every
+`/apps/*` path). Every response: the mime from **our** allowlist by extension
+(the client never supplies one), `X-Content-Type-Options: nosniff`,
+`Content-Disposition: attachment` unless the type is inert (images, PDF, plain
+text, CSV, JSON, markdown), `Content-Security-Policy: default-src 'none'; sandbox`
+(PDF drops `sandbox`, or Chrome's viewer won't render), `Cross-Origin-Resource-Policy:
+same-origin`, a strong ETag (the sha256) with 304. `.html`/`.js` are refused at
+publish (that's an app); `.svg`/`.xml` are stored but only ever downloaded.
+Untrusted bytes never execute on the box origin.
+
+**Viewing.** A `file` row renders through the **same sandboxed frame** an app
+uses (`frameDocument` + the `Setoku.*` runtime), so neither the public shell nor
+the SPA needs a second frame URL. CSV/TSV/JSON parse server-side into a synthetic
+`file` panel that `Setoku.table` renders; markdown renders via a small built-in
+subset (every character escaped first); text shows as `<pre>`; an image inlines
+as a `data:` URI (the frame CSP allows `img-src data:`); PDF and everything else
+are a download card whose link opens a top-level tab. **The frame never fetches
+files**: its origin is opaque (no session cookie) and its CSP is `default-src
+'none'`. Attachments on an app are listed by the trusted shell under the frame
+as download links — for people, not for the template. Data an app renders still
+comes from panels.
+
+**Not knowledge.** Files are evidence and output, not context. They are never
+indexed into `find_context` or the embedding store. Why: an analyst session
+(which reads untrusted lake text) could otherwise write a memo every other
+session retrieves as truth, a path around the corrections queue (I2); a CSV is
+data with no query path (making it one means "CSV as a lake table", a separate
+project needing a writer credential the gateway deliberately lacks, I9); and
+knowledge is durable meaning while an analysis memo is point-in-time and goes
+stale. What a file *means* is captured by `report_correction` and a human
+approval, as today. Flipping a file public stays an admin click in `/admin`.
+
+**Later.** A panel that binds to an attached file instead of SQL
+(`{ key, file: "data.csv" }`), parsed at render time into columns/rows and
+cached in `app_cache` — file-backed data through the existing injection path
+with no CSP change. That is what makes "Claude did the analysis locally, now
+build a dashboard on it" work.
 
 ## Out of scope (v1)
 

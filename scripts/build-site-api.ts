@@ -457,6 +457,66 @@ function openapi(toolNames: string[]) {
           },
         },
       },
+      "/p/{id}/files/{name}": {
+        get: {
+          tags: ["Apps"],
+          operationId: "getAppFile",
+          summary: "A shared file, or an app's attachment",
+          description:
+            "The bytes of a file an agent shared with publish_file (a CSV, a memo, an image, a PDF), " +
+            "or of a file attached to an app. Reachable without credentials only once an admin has " +
+            "made the record public; a shared password on the link gates this path too. Served with " +
+            "the type derived from the file's extension, nosniff, and as an attachment unless the " +
+            "type is inert (images, PDF, plain text). Never HTML.",
+          security: [],
+          parameters: [
+            { name: "id", in: "path", required: true, schema: { type: "string" } },
+            { name: "name", in: "path", required: true, schema: { type: "string" }, description: "The file name as shared." },
+          ],
+          responses: {
+            "200": { description: "The file's bytes.", content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } } },
+            "304": { description: "Unchanged (strong ETag = the content hash)." },
+            "401": { description: "The link has a shared password and this request carries no unlock grant." },
+            "404": { description: "No such public record, or no such file on it." },
+            "429": { description: "Download budget for this link is spent; retry shortly." },
+          },
+        },
+      },
+      "/u/{nonce}": {
+        put: {
+          tags: ["Apps"],
+          operationId: "uploadFile",
+          summary: "Upload a file's bytes to a one-time URL",
+          description:
+            "The second half of publish_file when the content is not passed inline: the tool mints " +
+            "this URL (valid ten minutes, single use) and the agent PUTs the raw bytes to it, " +
+            "typically `curl -T <file> <url>`. The nonce in the path is the only credential. The " +
+            "shared record is created when the upload completes; nothing is visible before that.",
+          security: [],
+          parameters: [{ name: "nonce", in: "path", required: true, schema: { type: "string" } }],
+          requestBody: { required: true, content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } } },
+          responses: {
+            "200": {
+              description: "Stored. Returns the record id, file name, size, sha256, and the share URL.",
+              content: json({
+                type: "object",
+                properties: {
+                  ok: { type: "boolean" },
+                  id: { type: "string" },
+                  name: { type: "string" },
+                  size: { type: "integer" },
+                  sha256: { type: "string" },
+                  url: { type: "string" },
+                },
+              }),
+            },
+            "400": { description: "Empty or short upload; the URL stays valid to retry.", content: json({ $ref: "#/components/schemas/Error" }) },
+            "404": { description: "Unknown, expired, or already-used URL." },
+            "409": { description: "The app this file was to attach to is archived or locked." },
+            "413": { description: "Over the per-file cap or the box's file storage quota.", content: json({ $ref: "#/components/schemas/Error" }) },
+          },
+        },
+      },
       "/i/{token}": {
         get: {
           tags: ["Install"],

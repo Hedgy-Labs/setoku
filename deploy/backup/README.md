@@ -8,6 +8,7 @@ the box** (the box is disposable; the bucket is not).
 | What | How | When | Retention |
 |---|---|---|---|
 | Knowledge store (SQLite, v0.9) | `VACUUM INTO` snapshot → bucket | nightly | 14 days |
+| App state (`apps.db`) + shared files (`files.db`) | `VACUUM INTO` snapshot each → bucket | nightly | 14 days |
 | Postgres context store | `pg_dump | gzip` → bucket | nightly | 14 days |
 | ClickHouse lake | `clickhouse-backup create_remote` | nightly | 14 backups |
 | Lake → Parquet (portability) | `INSERT INTO FUNCTION s3(..., 'Parquet')` per table | weekly | keep all (cheap, append-only) |

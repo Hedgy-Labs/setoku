@@ -1,7 +1,7 @@
 {
   "name": "Setoku",
   "description": "Skills for connecting an AI agent to the data one operator owns (a company's, a household's, or one person's) and keeping the knowledge behind it correct. They ship in the Setoku Claude Code plugin and run against a Setoku box.",
-  "version": "0.21.0",
+  "version": "0.22.0",
   "license": "Apache-2.0",
   "homepage": "https://setoku.com",
   "documentation": "https://setoku.com/docs",
