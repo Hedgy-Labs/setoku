@@ -205,8 +205,9 @@ async function gql<T>(operationName: string, query: string, variables: Record<st
       continue;
     }
     if (r.status === 401 || r.status === 403) {
-      console.error(`monarch-poller: ${operationName} → ${r.status} (session expired/rejected? re-run deploy/set-monarch-cookie.sh with fresh cookies)`);
-      return null;
+      // A dead session fails the whole tick (no heartbeat, so /admin Sources goes
+      // stale) rather than reading as a quiet hour of zero rows.
+      throw new Error(`${operationName} → ${r.status} (session expired/rejected? re-run deploy/set-monarch-cookie.sh with fresh cookies)`);
     }
     if (!r.ok) {
       console.error(`monarch-poller: ${operationName} → ${r.status} ${(await r.text().catch(() => "")).slice(0, 300)}`);
@@ -577,11 +578,16 @@ const Q_FORCE_REFRESH = `mutation Common_ForceRefreshAccountsMutation($input: Fo
 const Q_SYNC_STATUS = `query ForceRefreshAccountsQuery { accounts { id hasSyncInProgress __typename } }`;
 
 // Kick an institution sync for all accounts and wait until none report
-// hasSyncInProgress (or we hit the timeout). Best-effort: never throws.
-async function forceRefresh(): Promise<void> {
+// hasSyncInProgress (or we hit the timeout). Returns false only when the refresh
+// never reached Monarch (the account lookup failed), so that attempt doesn't use
+// up the day. Once the mutation is sent the day counts even if Monarch declines
+// it, keeping institution syncs to once/day. A rejected session throws (from gql)
+// and fails the tick.
+async function forceRefresh(): Promise<boolean> {
   const d = await gql<{ accounts: { id: string }[] }>("GetAccountIds", Q_ACCOUNT_IDS);
-  const ids = (d?.accounts ?? []).map((a) => a.id);
-  if (!ids.length) return;
+  if (!d) return false;
+  const ids = (d.accounts ?? []).map((a) => a.id);
+  if (!ids.length) return true;
   const r = await gql<{ forceRefreshAccounts: { success: boolean } }>(
     "Common_ForceRefreshAccountsMutation",
     Q_FORCE_REFRESH,
@@ -589,7 +595,7 @@ async function forceRefresh(): Promise<void> {
   );
   if (!r?.forceRefreshAccounts?.success) {
     console.error("monarch-poller: force-refresh not accepted; reading last-synced data");
-    return;
+    return true;
   }
   console.error(`monarch-poller: requested refresh of ${ids.length} account(s), waiting for sync…`);
   const deadline = Date.now() + REFRESH_TIMEOUT_MS;
@@ -600,11 +606,11 @@ async function forceRefresh(): Promise<void> {
     const pending = accts.filter((a) => a.hasSyncInProgress).length;
     if (!pending) {
       console.error("monarch-poller: sync complete");
-      return;
+      return true;
     }
     if (Date.now() >= deadline) {
       console.error(`monarch-poller: refresh wait timed out with ${pending} account(s) still syncing; reading anyway`);
-      return;
+      return true;
     }
   }
 }
@@ -617,13 +623,13 @@ async function tick(): Promise<void> {
 
   // Force-refresh at most once/day: on a one-shot run always; in the loop, on the
   // first tick at or after REFRESH_HOUR Pacific each day (robust to a missed tick).
+  // A refresh that never reached Monarch (dead session, failed lookup) retries next tick.
   if (FORCE_REFRESH) {
     if (RUN_ONCE) {
       await forceRefresh();
     } else {
       const { hour, date } = pacificNow();
-      if (hour >= REFRESH_HOUR && st.lastRefreshDate !== date) {
-        await forceRefresh();
+      if (hour >= REFRESH_HOUR && st.lastRefreshDate !== date && (await forceRefresh())) {
         st.lastRefreshDate = date;
         saveState(st);
       }

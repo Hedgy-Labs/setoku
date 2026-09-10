@@ -42,9 +42,11 @@ deploy/set-monarch-cookie.sh --env-file /opt/setoku/.env
 ```
 
 It writes `SETOKU_MONARCH_SESSION_ID` + `SETOKU_MONARCH_CSRFTOKEN` (hidden prompt;
-nothing else persisted). The session lasts days-to-weeks; when it expires the poller
-logs a `401` and stops updating — re-run the helper with fresh cookies and
-`docker compose restart monarch-poller`. (Set `MONARCH_API_BASE=https://api.monarch.com`
+nothing else persisted). The session lasts days-to-weeks. When it expires, every call
+gets a `401`, each tick fails, and the poller stops sending heartbeats, so Monarch goes
+stale on /admin Sources. Re-run the helper with fresh cookies, then
+`docker compose up -d --force-recreate --no-deps monarch-poller` (a plain `restart`
+doesn't re-read `.env`). (Set `MONARCH_API_BASE=https://api.monarch.com`
 if your session was minted against the newer host.)
 
 > Monitoring tip: `max(monarch_accounts.snapshot_ts)` should stay under ~90 min.
