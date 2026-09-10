@@ -11,10 +11,10 @@ import { Sparkline } from "../components/Sparkline";
 import { Button } from "../components/Button";
 import { Confirm } from "../components/Confirm";
 import { toast } from "../components/Toast";
-import { relTime, freshness, beatIsLive, type StatusColor } from "../format";
+import { relTime, untilTime, freshness, beatIsLive, type StatusColor } from "../format";
 import { formatBytes } from "../../../lib/format";
 import { LAKE_SOURCES, type LakeSource } from "../../../lib/sources";
-import type { SourcesData, SourceTable, SourceSeriesData, EgressData, EgressDay, TeamData } from "../types";
+import type { SourcesData, SourceTable, SourceSeriesData, EgressData, EgressDay, MirrorCadence, TeamData } from "../types";
 
 type GmailStatus = Awaited<ReturnType<typeof api.gmailStatus>>;
 
@@ -265,6 +265,20 @@ function egressPoints(days: EgressDay[]): { day: string; rows: number }[] {
   return points;
 }
 
+/** "every 20 min" / "every 2 h" — whole hours read as hours, everything else as minutes. */
+function every(ms: number): string {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  return m >= 60 && m % 60 === 0 ? `every ${m / 60} h` : `every ${m} min`;
+}
+
+/** The mirror's schedule in one line: the base cadence, plus the quiet window
+ *  when one is set (hours are wall-clock in the mirror's zone, so say which). */
+function cadenceText(c: MirrorCadence): string {
+  if (!c.quietHours) return every(c.intervalMs);
+  const hh = (h: number): string => `${String(h).padStart(2, "0")}:00`;
+  return `${every(c.intervalMs)} · ${every(c.quietIntervalMs)} from ${hh(c.quietHours.start)} to ${hh(c.quietHours.end)} (${c.tz})`;
+}
+
 /** The mirror's source-egress rows: what pg-mirror pulled out of the business
  *  DB per day (the thing hosted-Postgres vendors bill), plus the daily
  *  Slack-alert threshold — editable here by admins, stored on the box. Rendered
@@ -293,8 +307,23 @@ function EgressKvs({ egress, reload }: { egress: EgressData; reload: () => void 
       setSaving(false);
     }
   };
+  const cadence = egress.cadence;
   return (
     <>
+      {cadence ? kv("cadence", cadenceText(cadence)) : null}
+      {cadence
+        ? kv(
+            "next pass",
+            cadence.paused ? (
+              <span className="text-stone-500">
+                paused: {cadence.paused} reached · resumes {untilTime(cadence.nextPassAt) || "after 00:00 UTC"}
+              </span>
+            ) : (
+              untilTime(cadence.nextPassAt) || "—"
+            ),
+          )
+        : null}
+      {cadence ? kv("daily cap", cadence.dailyCapBytes === null ? "off" : `${formatBytes(cadence.dailyCapBytes)}/day → mirror pauses`) : null}
       {kv("egress today", formatBytes(egress.todayBytes))}
       {egress.days.length
         ? kv("last 30 days", <Sparkline points={egressPoints(egress.days)} format={formatBytes} label="Daily mirror egress" />)
@@ -614,11 +643,16 @@ function SourceList({
   const mirrorStale = mirrorRun !== null && freshness(mirrorRun.rows, mirrorRun.last, mirrorRun.beat).label === "stale";
   const overThreshold =
     egress?.configured === true && egress.thresholdBytes !== null && egress.todayBytes >= egress.thresholdBytes;
+  // Only a LIVE mirror's "paused" means anything — a stale row from a dead
+  // mirror must read "mirror stale", not "egress capped".
+  const capped = egress?.cadence?.paused != null && beatIsLive(mirrorRun?.beat);
   const mirrorWarning = mirrorStale
     ? { color: "yellow" as const, label: "mirror stale" }
-    : overThreshold
-      ? { color: "yellow" as const, label: "egress over threshold" }
-      : null;
+    : capped
+      ? { color: "yellow" as const, label: "egress capped" }
+      : overThreshold
+        ? { color: "yellow" as const, label: "egress over threshold" }
+        : null;
 
   if (mirrorConnected) {
     rows.push(

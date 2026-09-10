@@ -108,6 +108,10 @@
                      NOT a core direct grant, or a business-denied user could
                      reconstruct the catalog the deny hides. -->
                 <query>GRANT SELECT ON setoku.pg_mirror_runs</query>
+                <!-- the mirror's published schedule + state (cadence, next
+                     pass, daily cap, paused) — same family as the run-log: it
+                     reveals a mirror exists and how it behaves. -->
+                <query>GRANT SELECT ON setoku.pg_mirror_settings</query>
             </grants>
         </setoku_src_business>
         <!-- grants NOTHING: activated when every family is denied, because

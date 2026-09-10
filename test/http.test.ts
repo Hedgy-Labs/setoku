@@ -701,10 +701,12 @@ describe("approval surface (the human accept path, Phase 5.1/5.5/5.6)", () => {
       thresholdBytes: number | null;
       configured: boolean;
       days: unknown[];
+      cadence: unknown;
     };
     expect(before.thresholdBytes).toBe(10e9);
     expect(before.configured).toBe(false);
     expect(before.days).toEqual([]);
+    expect(before.cadence).toBeNull(); // the mirror never published a schedule here
     // set 5 GB/day
     const set = await apiPost("egress_threshold", { cookie: admin.cookie, csrf: admin.csrf, body: { gb: 5 } });
     expect(set.status).toBe(200);

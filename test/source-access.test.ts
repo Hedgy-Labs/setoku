@@ -256,6 +256,7 @@ describe("source access over HTTP + MCP", () => {
     await gwCall(mcp2, "get_schema");
     const schemaSql = lake.calls.find((c) => c.sql.includes("system.columns"))!.sql;
     expect(schemaSql).toContain("'pg_mirror_runs'");
+    expect(schemaSql).toContain("'pg_mirror_settings'"); // the mirror's own schedule table, likewise
     expect(schemaSql).toContain("NOT IN");
     await mcp2.close();
 

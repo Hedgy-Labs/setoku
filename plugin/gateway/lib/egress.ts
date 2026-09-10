@@ -39,6 +39,42 @@ export interface EgressData {
   configured: boolean;
   /** The built-in "Mirror egress" app, when seeded and still live. */
   appId: string | null;
+  /** The mirror's effective cadence + live state, as it published them to
+   *  setoku.pg_mirror_settings. null = a pre-cadence mirror, or no mirror. */
+  cadence: MirrorCadence | null;
+}
+
+export interface MirrorCadence {
+  intervalMs: number;
+  /** Wall-clock hours [start, end) in `tz` that run at quietIntervalMs. */
+  quietHours: { start: number; end: number } | null;
+  quietIntervalMs: number;
+  tz: string;
+  /** null = no cap. Ledger (NDJSON) bytes per UTC day. */
+  dailyCapBytes: number | null;
+  /** ISO timestamp of the next scheduled pass, per the mirror's own rule. */
+  nextPassAt: string | null;
+  /** Why the mirror is skipping passes right now (e.g. "daily egress cap"). */
+  paused: string | null;
+}
+
+/** setoku.pg_mirror_settings rows → the cadence block. Tolerant of partial
+ *  rows (a mirror mid-upgrade); null only when no interval was ever published. */
+export function cadenceFromRows(rows: Array<{ key: unknown; value: unknown }>): MirrorCadence | null {
+  const kv = new Map(rows.map((r) => [String(r.key), String(r.value ?? "")]));
+  const intervalMs = Number(kv.get("interval_ms"));
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return null;
+  const qh = /^(\d{1,2})-(\d{1,2})$/.exec(kv.get("quiet_hours") ?? "");
+  const cap = Number(kv.get("daily_bytes_cap") ?? 0);
+  return {
+    intervalMs,
+    quietHours: qh ? { start: Number(qh[1]), end: Number(qh[2]) } : null,
+    quietIntervalMs: Number(kv.get("quiet_interval_ms")) || intervalMs,
+    tz: kv.get("tz") || "UTC",
+    dailyCapBytes: Number.isFinite(cap) && cap > 0 ? cap : null,
+    nextPassAt: kv.get("next_pass_at") || null,
+    paused: kv.get("paused") || null,
+  };
 }
 
 /** Default alert threshold. Generous on purpose: loud only when a box is on
@@ -87,30 +123,56 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
     thresholdBytes: egressThreshold(store),
     configured: false,
     appId: liveEgressAppId(store),
+    cadence: null,
   };
   const cfg = loadConfig(projectDir);
   if (!cfg.ok) return out;
   const lakeUrl = resolveLakeUrl(projectDir, cfg.config);
   if (!lakeUrl.ok) return out;
-  try {
-    const res = await runLakeQuery(
+  // Two independent probes, in parallel — a hung lake costs one timeout, not
+  // two. Each degrades on its own: no ledger, or no cadence (a mirror that
+  // predates the settings table).
+  const [ledger, settings] = await Promise.allSettled([
+    runLakeQuery(
       lakeUrl.url,
       `SELECT toString(toDate(finished_at)) AS day, sum(bytes) AS bytes
        FROM setoku.pg_mirror_runs
        WHERE finished_at >= now() - INTERVAL 30 DAY
        GROUP BY day ORDER BY day`,
       { rowCap: 40, statementTimeoutMs: 8_000 },
-    );
-    out.days = (res.rows as Array<Record<string, unknown>>).map((r) => ({
+    ),
+    runLakeQuery(
+      lakeUrl.url,
+      // NB the alias must not shadow the column it aggregates (`AS value` →
+      // ILLEGAL_AGGREGATION under ClickHouse's analyzer).
+      `SELECT key, argMax(value, updated_at) AS v FROM setoku.pg_mirror_settings GROUP BY key`,
+      { rowCap: 20, statementTimeoutMs: 8_000 },
+    ),
+  ]);
+  if (ledger.status === "fulfilled") {
+    out.days = (ledger.value.rows as Array<Record<string, unknown>>).map((r) => ({
       day: String(r.day),
       bytes: Number(r.bytes ?? 0),
     }));
     out.todayBytes = out.days.find((d) => d.day === todayUTC())?.bytes ?? 0;
     out.configured = out.days.length > 0;
-  } catch {
-    /* lake down, table absent, or bytes column not yet migrated — no ledger */
+  }
+  if (settings.status === "fulfilled") {
+    out.cadence = cadenceFromRows(
+      (settings.value.rows as Array<{ key: unknown; v: unknown }>).map((r) => ({ key: r.key, value: r.v })),
+    );
   }
   return out;
+}
+
+/** The level today's egress must reach to alert: the operator's threshold,
+ *  clamped to the mirror's daily cap when one is set — a cap below the
+ *  threshold would otherwise pause the mirror on a day the alert can never
+ *  fire, which is exactly the day the operator needs to hear about. */
+export function effectiveAlertBytes(data: Pick<EgressData, "thresholdBytes" | "cadence">): number | null {
+  if (data.thresholdBytes === null) return null;
+  const cap = data.cadence?.dailyCapBytes ?? null;
+  return cap !== null && cap < data.thresholdBytes ? cap : data.thresholdBytes;
 }
 
 /**
@@ -119,7 +181,7 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
  * ledger stays visible on /admin/sources regardless).
  */
 async function maybeAlert(projectDir: string, store: KnowledgeStore, data: EgressData): Promise<void> {
-  const threshold = data.thresholdBytes; // gatherEgress already read the knob
+  const threshold = effectiveAlertBytes(data); // the knob, clamped to the mirror's cap
   if (threshold === null || !data.configured || data.todayBytes < threshold) return;
   const today = todayUTC();
   if (store.getKv(KV_NOTIFIED) === today) return;

@@ -43,3 +43,17 @@ CREATE TABLE IF NOT EXISTS setoku.pg_mirror_state
 )
 ENGINE = ReplacingMergeTree(checked_at)
 ORDER BY target;
+
+-- The mirror's effective cadence and live state, published by pg-mirror at
+-- startup (interval_ms, quiet_hours, quiet_interval_ms, tz, daily_bytes_cap)
+-- and every pass (next_pass_at, paused). The gateway can't see the mirror
+-- container's env, so /admin Sources reads the schedule from here. Latest
+-- row per key wins. Self-healed on startup too.
+CREATE TABLE IF NOT EXISTS setoku.pg_mirror_settings
+(
+    key        LowCardinality(String)  COMMENT 'setting or state name',
+    value      String                  COMMENT 'value as text ("" = unset)',
+    updated_at DateTime64(3)           COMMENT 'when published (UTC) — ReplacingMergeTree version'
+)
+ENGINE = ReplacingMergeTree(updated_at)
+ORDER BY key;

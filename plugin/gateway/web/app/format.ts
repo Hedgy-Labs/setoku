@@ -27,6 +27,19 @@ export function relTime(s: string | null | undefined): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
+/** "in 12m" / "in 2h" for a future ISO timestamp; "now" once it has passed. */
+export function untilTime(iso: string | null | undefined): string {
+  const ms = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(ms)) return "";
+  const sec = Math.round((ms - Date.now()) / 1000);
+  if (sec < -300) return `overdue (${relTime(new Date(ms).toISOString())})`;
+  if (sec < 30) return "now";
+  const m = Math.round(sec / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `in ${h}h` : `in ${Math.round(h / 24)}d`;
+}
+
 /** True when a connector liveness beat is recent enough to mean "pipeline up". */
 export function beatIsLive(beat?: string | null): boolean {
   const ms = lakeTsToMs(beat);

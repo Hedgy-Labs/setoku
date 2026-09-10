@@ -102,8 +102,38 @@ docker compose up -d --build pg-mirror
 
 Env: `SETOKU_DATABASE_URL` (required, the read-only role),
 `SETOKU_MIRROR_INTERVAL_MS` (default 900000 = 15 min),
+`SETOKU_MIRROR_QUIET_HOURS` / `SETOKU_MIRROR_QUIET_INTERVAL_MS` / `TZ` and
+`SETOKU_MIRROR_DAILY_BYTES_CAP` (see "Egress budget" below),
 `SETOKU_MIRROR_DENY_COLUMNS` (extra per-box `denyColumns`, comma-separated),
 `CLICKHOUSE_*` (like every connector).
+
+## Egress budget
+
+Hosted Postgres meters egress, and the overage bills the moment it happens. Two
+knobs keep the mirror inside a plan, on top of the unchanged-table skip:
+
+- **Quiet hours.** `SETOKU_MIRROR_QUIET_HOURS=23-8` runs the mirror every
+  `SETOKU_MIRROR_QUIET_INTERVAL_MS` (default 2 h) between 23:00 and 08:00 on the
+  wall clock of `TZ` (default UTC; the window wraps past midnight when start >
+  end), and every `SETOKU_MIRROR_INTERVAL_MS` the rest of the day. The loop
+  re-checks the interval in force every minute, so the window's edges take
+  effect within a minute: a pass ending at 07:50 is due at 08:00, not at 09:50.
+- **Daily cap.** `SETOKU_MIRROR_DAILY_BYTES_CAP=12000000000` stops streaming
+  once today's ledger (`setoku.pg_mirror_runs.bytes`, UTC day) reaches 12 GB:
+  the running pass finishes its current table and leaves the rest for later
+  (overshoot is bounded by one table's reload, recorded as status `capped`),
+  and further passes are skipped until midnight UTC. Ledger bytes are the
+  NDJSON the mirror streamed — column names repeated per row — so they
+  **overstate** what the vendor bills on the wire by a schema-dependent factor;
+  compare a few days of the ledger against the vendor's usage page and size the
+  cap from your own ratio. The check fails **open** (a lake error runs the pass
+  and logs) — it is a budget guard, not a security boundary. The /admin Slack
+  alert fires at the lower of its threshold and the cap, so a pause is never
+  silent.
+
+The mirror publishes its effective schedule and state to
+`setoku.pg_mirror_settings`; the Postgres card on /admin Sources shows the
+cadence, the next pass, the cap, and a yellow "egress capped" chip while paused.
 
 The allow/deny list comes from the baked `.setoku/config.json` (same
 `deploy/project-template` bake as the gateway image) and **fails closed**: a

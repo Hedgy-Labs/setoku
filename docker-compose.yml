@@ -406,6 +406,12 @@ services:
       # config` valid for non-mirror deploys (matches the other connectors).
       SETOKU_DATABASE_URL: ${SETOKU_DATABASE_URL:-}
       SETOKU_MIRROR_INTERVAL_MS: ${SETOKU_MIRROR_INTERVAL_MS:-900000}
+      # Slower cadence inside a wall-clock window (TZ) + a hard daily egress cap
+      # for metered source DBs — see ingest/pg-mirror/README.md "Egress budget".
+      SETOKU_MIRROR_QUIET_HOURS: ${SETOKU_MIRROR_QUIET_HOURS:-}
+      SETOKU_MIRROR_QUIET_INTERVAL_MS: ${SETOKU_MIRROR_QUIET_INTERVAL_MS:-7200000}
+      SETOKU_MIRROR_DAILY_BYTES_CAP: ${SETOKU_MIRROR_DAILY_BYTES_CAP:-0}
+      TZ: ${TZ:-UTC}
       # Per-box column excludes (comma-separated "schema.table.column" globs,
       # merged with the baked config's denyColumns) — real column names are
       # tenant data (I3), so they live in the box's .env, not the repo.

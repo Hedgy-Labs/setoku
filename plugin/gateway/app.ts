@@ -161,7 +161,7 @@ const structuralCache = new Map<string, { at: number; tables: StructuralTable[] 
 const SCHEMA_COLUMNS_SQL =
   "SELECT database, table, name, type FROM system.columns " +
   "WHERE database IN ('biz','setoku') " +
-  "AND (database, table) NOT IN (('setoku','ingest_heartbeats'), ('setoku','pg_mirror_runs')) " +
+  "AND (database, table) NOT IN (('setoku','ingest_heartbeats'), ('setoku','pg_mirror_runs'), ('setoku','pg_mirror_settings')) " +
   "ORDER BY database, table, position";
 
 /** Test hook — drop the cached structural index. */
