@@ -129,37 +129,50 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
   if (!cfg.ok) return out;
   const lakeUrl = resolveLakeUrl(projectDir, cfg.config);
   if (!lakeUrl.ok) return out;
-  try {
-    const res = await runLakeQuery(
+  // Two independent probes, in parallel — a hung lake costs one timeout, not
+  // two. Each degrades on its own: no ledger, or no cadence (a mirror that
+  // predates the settings table).
+  const [ledger, settings] = await Promise.allSettled([
+    runLakeQuery(
       lakeUrl.url,
       `SELECT toString(toDate(finished_at)) AS day, sum(bytes) AS bytes
        FROM setoku.pg_mirror_runs
        WHERE finished_at >= now() - INTERVAL 30 DAY
        GROUP BY day ORDER BY day`,
       { rowCap: 40, statementTimeoutMs: 8_000 },
-    );
-    out.days = (res.rows as Array<Record<string, unknown>>).map((r) => ({
-      day: String(r.day),
-      bytes: Number(r.bytes ?? 0),
-    }));
-    out.todayBytes = out.days.find((d) => d.day === todayUTC())?.bytes ?? 0;
-    out.configured = out.days.length > 0;
-  } catch {
-    /* lake down, table absent, or bytes column not yet migrated — no ledger */
-  }
-  try {
-    const res = await runLakeQuery(
+    ),
+    runLakeQuery(
       lakeUrl.url,
       // NB the alias must not shadow the column it aggregates (`AS value` →
       // ILLEGAL_AGGREGATION under ClickHouse's analyzer).
       `SELECT key, argMax(value, updated_at) AS v FROM setoku.pg_mirror_settings GROUP BY key`,
       { rowCap: 20, statementTimeoutMs: 8_000 },
+    ),
+  ]);
+  if (ledger.status === "fulfilled") {
+    out.days = (ledger.value.rows as Array<Record<string, unknown>>).map((r) => ({
+      day: String(r.day),
+      bytes: Number(r.bytes ?? 0),
+    }));
+    out.todayBytes = out.days.find((d) => d.day === todayUTC())?.bytes ?? 0;
+    out.configured = out.days.length > 0;
+  }
+  if (settings.status === "fulfilled") {
+    out.cadence = cadenceFromRows(
+      (settings.value.rows as Array<{ key: unknown; v: unknown }>).map((r) => ({ key: r.key, value: r.v })),
     );
-    out.cadence = cadenceFromRows((res.rows as Array<{ key: unknown; v: unknown }>).map((r) => ({ key: r.key, value: r.v })));
-  } catch {
-    /* a mirror that predates the settings table — the ledger still renders */
   }
   return out;
+}
+
+/** The level today's egress must reach to alert: the operator's threshold,
+ *  clamped to the mirror's daily cap when one is set — a cap below the
+ *  threshold would otherwise pause the mirror on a day the alert can never
+ *  fire, which is exactly the day the operator needs to hear about. */
+export function effectiveAlertBytes(data: Pick<EgressData, "thresholdBytes" | "cadence">): number | null {
+  if (data.thresholdBytes === null) return null;
+  const cap = data.cadence?.dailyCapBytes ?? null;
+  return cap !== null && cap < data.thresholdBytes ? cap : data.thresholdBytes;
 }
 
 /**
@@ -168,7 +181,7 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
  * ledger stays visible on /admin/sources regardless).
  */
 async function maybeAlert(projectDir: string, store: KnowledgeStore, data: EgressData): Promise<void> {
-  const threshold = data.thresholdBytes; // gatherEgress already read the knob
+  const threshold = effectiveAlertBytes(data); // the knob, clamped to the mirror's cap
   if (threshold === null || !data.configured || data.todayBytes < threshold) return;
   const today = todayUTC();
   if (store.getKv(KV_NOTIFIED) === today) return;

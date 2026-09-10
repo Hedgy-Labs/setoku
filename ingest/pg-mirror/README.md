@@ -118,13 +118,18 @@ knobs keep the mirror inside a plan, on top of the unchanged-table skip:
   end), and every `SETOKU_MIRROR_INTERVAL_MS` the rest of the day. The loop
   re-checks the interval in force every minute, so the window's edges take
   effect within a minute: a pass ending at 07:50 is due at 08:00, not at 09:50.
-- **Daily cap.** `SETOKU_MIRROR_DAILY_BYTES_CAP=12000000000` skips passes once
-  today's ledger (`setoku.pg_mirror_runs.bytes`, UTC day) reaches 12 GB, until
-  midnight UTC. Ledger bytes are the NDJSON the mirror streamed, roughly 2× what
-  the vendor bills on the wire, so size the cap in those terms. The check fails
-  **open** (a lake error runs the pass and logs) — it is a budget guard, not a
-  security boundary. Keep the /admin Slack alert threshold *below* the cap so
-  the alert still fires before the mirror pauses.
+- **Daily cap.** `SETOKU_MIRROR_DAILY_BYTES_CAP=12000000000` stops streaming
+  once today's ledger (`setoku.pg_mirror_runs.bytes`, UTC day) reaches 12 GB:
+  the running pass finishes its current table and leaves the rest for later
+  (overshoot is bounded by one table's reload, recorded as status `capped`),
+  and further passes are skipped until midnight UTC. Ledger bytes are the
+  NDJSON the mirror streamed — column names repeated per row — so they
+  **overstate** what the vendor bills on the wire by a schema-dependent factor;
+  compare a few days of the ledger against the vendor's usage page and size the
+  cap from your own ratio. The check fails **open** (a lake error runs the pass
+  and logs) — it is a budget guard, not a security boundary. The /admin Slack
+  alert fires at the lower of its threshold and the cap, so a pause is never
+  silent.
 
 The mirror publishes its effective schedule and state to
 `setoku.pg_mirror_settings`; the Postgres card on /admin Sources shows the

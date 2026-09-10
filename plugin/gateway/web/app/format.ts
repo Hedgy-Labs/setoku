@@ -32,6 +32,7 @@ export function untilTime(iso: string | null | undefined): string {
   const ms = iso ? Date.parse(iso) : NaN;
   if (!Number.isFinite(ms)) return "";
   const sec = Math.round((ms - Date.now()) / 1000);
+  if (sec < -300) return `overdue (${relTime(new Date(ms).toISOString())})`;
   if (sec < 30) return "now";
   const m = Math.round(sec / 60);
   if (m < 60) return `in ${m}m`;

@@ -315,7 +315,9 @@ function EgressKvs({ egress, reload }: { egress: EgressData; reload: () => void 
         ? kv(
             "next pass",
             cadence.paused ? (
-              <span className="text-stone-500">paused: {cadence.paused} reached, resumes 00:00 UTC</span>
+              <span className="text-stone-500">
+                paused: {cadence.paused} reached · resumes {untilTime(cadence.nextPassAt) || "after 00:00 UTC"}
+              </span>
             ) : (
               untilTime(cadence.nextPassAt) || "—"
             ),
@@ -641,7 +643,9 @@ function SourceList({
   const mirrorStale = mirrorRun !== null && freshness(mirrorRun.rows, mirrorRun.last, mirrorRun.beat).label === "stale";
   const overThreshold =
     egress?.configured === true && egress.thresholdBytes !== null && egress.todayBytes >= egress.thresholdBytes;
-  const capped = egress?.cadence?.paused != null;
+  // Only a LIVE mirror's "paused" means anything — a stale row from a dead
+  // mirror must read "mirror stale", not "egress capped".
+  const capped = egress?.cadence?.paused != null && beatIsLive(mirrorRun?.beat);
   const mirrorWarning = mirrorStale
     ? { color: "yellow" as const, label: "mirror stale" }
     : capped

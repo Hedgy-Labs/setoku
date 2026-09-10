@@ -47,8 +47,9 @@
  *                              start > end); unset = one cadence all day
  *   SETOKU_MIRROR_QUIET_INTERVAL_MS  default 7200000 (2 h) — cadence inside the quiet window
  *   SETOKU_MIRROR_DAILY_BYTES_CAP    unset/0 = off — once today's (UTC) ledger bytes
- *                              reach this, passes are skipped until midnight UTC.
- *                              The hard guard for metered source egress.
+ *                              reach this, the pass stops between tables and
+ *                              further passes are skipped until midnight UTC.
+ *                              Overshoot is bounded by one table's reload.
  *   TZ                         default UTC — timezone the quiet window is read in
  *   SETOKU_MIRROR_DENY_COLUMNS extra denyColumns patterns, comma-separated — the
  *                              per-box channel for column names that must not
@@ -746,7 +747,11 @@ export async function runOnce(
   ch: ChOptions,
   cfg: MirrorConfig,
   setState?: (s: string) => void,
-): Promise<{ ok: number; failed: number; rows: number; bytes: number; unchanged: number }> {
+  /** Bytes this pass may still stream (daily cap minus today's ledger). Once
+   *  spent, the remaining changed tables are recorded as "capped" and left for
+   *  a later pass — overshoot is bounded by one table's reload, never a pass. */
+  budgetBytes: number | null = null,
+): Promise<{ ok: number; failed: number; rows: number; bytes: number; unchanged: number; capped: number }> {
   const { tables, failed: discoveryFailed } = await discoverTables(pg, cfg);
   const existing = new Set<string>(
     (await chSelect(ch, `SELECT name FROM system.tables WHERE database = ${sqlString(ch.mirrorDb)}`)).map((r) => String(r.name)),
@@ -761,7 +766,7 @@ export async function runOnce(
       console.error(
         `pg-mirror: discovery returned no allowlisted tables — refusing to prune ${existing.size} existing mirror table(s) (revoked grants or misconfig? fix the source, the next pass reconciles)`,
       );
-    return { ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0 };
+    return { ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0, capped: 0 };
   }
 
   // Signatures the CURRENT mirror tables were built from. A state row whose
@@ -806,6 +811,15 @@ export async function runOnce(
       continue;
     }
 
+    if (budgetBytes !== null && results.reduce((a, r) => a + r.bytes, 0) >= budgetBytes) {
+      // Budget spent: don't start another stream. The table keeps its old
+      // signature, so it reloads first thing once the day rolls over.
+      const r: TableResult = { target, source, rows: 0, bytes: 0, status: "capped", error: "daily egress cap reached" };
+      results.push(r);
+      await recordRun(ch, startedAt, r).catch((e) => console.error(`pg-mirror: could not record run for ${target}: ${e}`));
+      continue;
+    }
+
     const tally = { bytes: 0 };
     try {
       const { rows, bytes } = await mirrorTable(pg, ch, t, existing, { tally });
@@ -846,10 +860,11 @@ export async function runOnce(
 
   const ok = results.filter((r) => r.status === "ok");
   const unchanged = results.filter((r) => r.status === "unchanged").length;
+  const capped = results.filter((r) => r.status === "capped").length;
   const rows = ok.reduce((a, r) => a + r.rows, 0);
   // Bytes across ALL results — failed streams pulled real egress too.
   const bytes = results.reduce((a, r) => a + r.bytes, 0);
-  return { ok: ok.length, failed: results.length - ok.length - unchanged, rows, bytes, unchanged };
+  return { ok: ok.length, failed: results.length - ok.length - unchanged - capped, rows, bytes, unchanged, capped };
 }
 
 /* ------------------------------- main -------------------------------- */
@@ -945,6 +960,34 @@ export function nextPassAt(lastEndMs: number, c: Cadence): number {
   return lastEndMs + limit; // unreachable in practice; never spin forever
 }
 
+/** A positive-millisecond env knob. Blank/unset → the default; anything that
+ *  isn't a finite number > 0 throws (a NaN or 0 interval would turn the
+ *  wait-until loop into back-to-back full reloads of a metered source). */
+export function positiveMs(name: string, raw: string | undefined, dflt: number): number {
+  if (raw === undefined || raw.trim() === "") return dflt;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) throw new Error(`${name} must be a positive number of milliseconds, got ${JSON.stringify(raw)}`);
+  return n;
+}
+
+/** The daily cap knob: unset, blank, or "0" → null (off); otherwise a finite
+ *  positive byte count — a typo like "12GB" must fail fast, not silently
+ *  disable the guard the operator believes is in force. */
+export function parseDailyCap(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "" || raw.trim() === "0") return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`SETOKU_MIRROR_DAILY_BYTES_CAP must be a byte count (0 = off), got ${JSON.stringify(raw)}`);
+  return n > 0 ? n : null;
+}
+
+/** The next 00:00:30 UTC after `nowMs` — when the ledger day rolls over (the
+ *  30 s keeps the first pass clear of the day boundary). */
+export function nextUtcMidnight(nowMs: number): number {
+  const d = new Date(nowMs);
+  d.setUTCHours(24, 0, 30, 0);
+  return d.getTime();
+}
+
 /** The daily-cap gate. Fails OPEN on a ledger read error (the cap is a budget
  *  guard, not a security boundary — lake trouble must not stall the mirror). */
 export async function capReached(
@@ -972,7 +1015,6 @@ function required(name: string): string {
 
 async function main(): Promise<void> {
   const DB_URL = required("SETOKU_DATABASE_URL");
-  const INTERVAL = Number(process.env.SETOKU_MIRROR_INTERVAL_MS ?? 900_000);
   const PROJECT_DIR = process.env.SETOKU_PROJECT_DIR ?? "/project";
   const ch: ChOptions = {
     url: process.env.CLICKHOUSE_URL ?? "http://clickhouse:8123",
@@ -988,20 +1030,23 @@ async function main(): Promise<void> {
   // cap — both fail fast on a malformed value, like the config above.
   const TZ = process.env.TZ || "UTC";
   let cadence: Cadence;
+  let CAP: number | null;
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: TZ }); // throws RangeError on an unknown zone
     cadence = {
-      baseMs: INTERVAL,
-      quietMs: Number(process.env.SETOKU_MIRROR_QUIET_INTERVAL_MS ?? 7_200_000),
+      baseMs: positiveMs("SETOKU_MIRROR_INTERVAL_MS", process.env.SETOKU_MIRROR_INTERVAL_MS, 900_000),
+      quietMs: positiveMs("SETOKU_MIRROR_QUIET_INTERVAL_MS", process.env.SETOKU_MIRROR_QUIET_INTERVAL_MS, 7_200_000),
       quiet: parseQuietHours(process.env.SETOKU_MIRROR_QUIET_HOURS),
       tz: TZ,
     };
+    CAP = parseDailyCap(process.env.SETOKU_MIRROR_DAILY_BYTES_CAP);
   } catch (e) {
     console.error(`pg-mirror: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
   }
-  const capRaw = Number(process.env.SETOKU_MIRROR_DAILY_BYTES_CAP ?? 0);
-  const CAP: number | null = Number.isFinite(capRaw) && capRaw > 0 ? capRaw : null;
+  if (cadence.quiet && cadence.quietMs < cadence.baseMs)
+    console.error(`pg-mirror: quiet interval (${cadence.quietMs}ms) is shorter than the base interval (${cadence.baseMs}ms) — the "quiet" window will run faster, not slower`);
+  const INTERVAL = cadence.baseMs;
   const cadenceText =
     `every ${INTERVAL}ms` +
     (cadence.quiet
@@ -1024,6 +1069,10 @@ async function main(): Promise<void> {
     quiet_interval_ms: String(cadence.quietMs),
     tz: TZ,
     daily_bytes_cap: String(CAP ?? 0),
+    // Live state from a previous life must not outlive it: clear until the
+    // first pass of this process publishes fresh values.
+    next_pass_at: "",
+    paused: "",
   });
 
   // Liveness beats on their own timer so a long reload still reads "flowing"
@@ -1045,7 +1094,8 @@ async function main(): Promise<void> {
   const gb = (b: number | null): string => (b === null ? "?" : (b / 1e9).toFixed(1) + " GB");
   for (;;) {
     if (Number.isFinite(lastEnd)) {
-      const wait = nextPassAt(lastEnd, cadence) - Date.now();
+      const due = paused ? Math.min(nextPassAt(lastEnd, cadence), nextUtcMidnight(lastEnd)) : nextPassAt(lastEnd, cadence);
+      const wait = due - Date.now();
       if (wait > 0) {
         await Bun.sleep(Math.min(wait, TICK));
         continue;
@@ -1054,30 +1104,45 @@ async function main(): Promise<void> {
     const t0 = Date.now();
     const gate = await capReached(CAP, () => todayLedgerBytes(ch));
     if (gate.skip) {
-      // Over budget for the day: no Postgres connection at all. Re-checked on
-      // the normal cadence; the ledger day rolls at 00:00 UTC.
+      // Over budget for the day: no Postgres connection at all. Resumes at the
+      // first tick after the ledger day rolls over (00:00 UTC), see below.
       paused = "daily egress cap";
-      state = `paused: daily egress cap reached (${gb(gate.bytes)} of ${gb(CAP)} today) — resumes 00:00 UTC`;
+      state = `paused: daily egress cap reached (${gb(gate.bytes)} of ${gb(CAP)} today)`;
       const h = new Date().getUTCHours();
       if (h !== capLoggedHour) {
         console.error(`pg-mirror: ${state}`);
         capLoggedHour = h;
       }
     } else {
+      if (paused) console.error("pg-mirror: resumed (daily egress cap cleared)");
       paused = "";
       capLoggedHour = -1;
+      // What this pass may still stream before the cap: the gate just read
+      // today's ledger, so the budget is exact at pass start.
+      const budget = CAP !== null && gate.bytes !== null ? Math.max(0, CAP - gate.bytes) : null;
       try {
         const pg = new SQL(pgOptions(DB_URL)) as unknown as Pg;
         try {
           // Re-read per tick (fails closed — a broken config skips the run and
           // keeps the previous mirror) so a bind-mounted /project picks up
           // allow/deny edits without a restart.
-          const r = await runOnce(pg, ch, loadMirrorConfig(PROJECT_DIR), (s) => {
-            state = s;
-          });
-          state = r.failed
-            ? `partial: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.failed} failed — see setoku.pg_mirror_runs`
-            : `ok: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.rows} row(s) / ${(r.bytes / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)}s`;
+          const r = await runOnce(
+            pg,
+            ch,
+            loadMirrorConfig(PROJECT_DIR),
+            (s) => {
+              state = s;
+            },
+            budget,
+          );
+          if (r.capped) {
+            paused = "daily egress cap";
+            state = `paused: daily egress cap reached mid-pass — ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.capped} left for tomorrow (${(r.bytes / 1e6).toFixed(1)} MB this pass)`;
+          } else {
+            state = r.failed
+              ? `partial: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.failed} failed — see setoku.pg_mirror_runs`
+              : `ok: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.rows} row(s) / ${(r.bytes / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)}s`;
+          }
           console.error(`pg-mirror: ${state}`);
         } finally {
           await pg.end().catch(() => {});
@@ -1088,8 +1153,10 @@ async function main(): Promise<void> {
       }
     }
     lastEnd = Date.now();
-    const next = new Date(nextPassAt(lastEnd, cadence));
-    state += ` · next pass ~${next.toISOString().slice(11, 16)} UTC`;
+    // While paused, the earliest useful moment is the ledger rollover — don't
+    // let a 2 h quiet interval straddle midnight and idle past it.
+    const next = new Date(paused ? Math.min(nextPassAt(lastEnd, cadence), nextUtcMidnight(lastEnd)) : nextPassAt(lastEnd, cadence));
+    state += ` · ${paused ? "resumes" : "next pass"} ~${next.toISOString().slice(11, 16)} UTC`;
     beat();
     publish({ next_pass_at: next.toISOString(), paused });
   }

@@ -40,6 +40,9 @@ import {
   intervalFor,
   nextPassAt,
   capReached,
+  positiveMs,
+  parseDailyCap,
+  nextUtcMidnight,
   type Cadence,
   type ChOptions,
   type MirrorColumn,
@@ -505,6 +508,31 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     expect([...fake.tables.keys()].filter((k) => k.includes("__staging"))).toEqual([]);
   });
 
+  it("a spent byte budget records changed tables as capped and streams nothing more", async () => {
+    const before = await fetchChangeCounters(pg as never, "public", "no_pk");
+    await pgAdmin([`INSERT INTO public.no_pk VALUES ('d')`], DB_NAME);
+    await waitForCounterChange(pg, "public", "no_pk", before);
+    fake.queries.length = 0;
+    fake.runs.length = 0;
+    const r = await runOnce(pg as never, ch, CFG, undefined, 0);
+    // no_pk changed but the budget is spent → capped, not streamed; the
+    // unchanged tables are still verified (that costs no egress)
+    expect(r.capped).toBe(1);
+    expect(r.ok).toBe(0);
+    expect(r.failed).toBe(2); // the two discovery failures (evil__staging, has_interval), as in every pass
+    expect(r.unchanged).toBe(2);
+    expect(fake.queries.some((q) => q.includes("__staging"))).toBe(false); // no stream started
+    expect(fake.tables.get("biz.no_pk")!.length).toBe(3); // previous copy untouched
+    const capped = fake.runs.filter((x) => x.status === "capped");
+    expect(capped.map((x) => x.target_table)).toEqual(["no_pk"]);
+    expect(String(capped[0].error)).toMatch(/daily egress cap/);
+    // the signature was not saved, so the table reloads on the next unbudgeted pass
+    const again = await runOnce(pg as never, ch, CFG);
+    expect(again.ok).toBe(1);
+    expect(again.capped).toBe(0);
+    expect(fake.tables.get("biz.no_pk")!.length).toBe(4);
+  });
+
   it("prunes mirrors that left the allowlist (revocation removes the lake copy)", async () => {
     fake.tables.set("biz.stale_thing", [{ v: 1 }]);
     await runOnce(pg as never, ch, { ...CFG, denyTables: [...CFG.denyTables, "public.no_pk"] });
@@ -516,7 +544,7 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
   it("zero-discovery guard: an empty discovery never prunes the mirror", async () => {
     const before = [...fake.tables.keys()].sort();
     const r = await runOnce(pg as never, ch, { allowTables: ["nosuch.*"], denyTables: [], denyColumns: [] });
-    expect(r).toEqual({ ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0 });
+    expect(r).toEqual({ ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0, capped: 0 });
     expect([...fake.tables.keys()].sort()).toEqual(before); // nothing dropped
   });
 
@@ -763,5 +791,25 @@ describe("cadence: quiet hours + daily cap", () => {
     } finally {
       console.error = origErr;
     }
+  });
+});
+
+describe("cadence: env validation + resume instant", () => {
+  it("positiveMs: default on blank, value when sane, throws on NaN/zero/negative", () => {
+    expect(positiveMs("X", undefined, 900_000)).toBe(900_000);
+    expect(positiveMs("X", "", 900_000)).toBe(900_000);
+    expect(positiveMs("X", "1200000", 900_000)).toBe(1_200_000);
+    for (const bad of ["2h", "0", "-5", "NaN"]) expect(() => positiveMs("X", bad, 1)).toThrow(/X must be/);
+  });
+  it("parseDailyCap: off on unset/blank/0, bytes otherwise, throws on garbage (never silently off)", () => {
+    expect(parseDailyCap(undefined)).toBeNull();
+    expect(parseDailyCap("")).toBeNull();
+    expect(parseDailyCap("0")).toBeNull();
+    expect(parseDailyCap("12000000000")).toBe(12e9);
+    for (const bad of ["12GB", "12_000_000_000", "-1"]) expect(() => parseDailyCap(bad)).toThrow(/DAILY_BYTES_CAP/);
+  });
+  it("nextUtcMidnight: the next 00:00:30 UTC, also across a month boundary", () => {
+    expect(nextUtcMidnight(Date.parse("2026-01-01T23:50:00Z"))).toBe(Date.parse("2026-01-02T00:00:30Z"));
+    expect(nextUtcMidnight(Date.parse("2026-01-31T00:00:00Z"))).toBe(Date.parse("2026-02-01T00:00:30Z"));
   });
 });

@@ -16,6 +16,7 @@ import {
   EGRESS_APP_PANELS,
   EGRESS_APP_TEMPLATE,
   cadenceFromRows,
+  effectiveAlertBytes,
   type EgressData,
 } from "../plugin/gateway/lib/egress";
 
@@ -79,6 +80,19 @@ describe("cadenceFromRows (what the mirror published to pg_mirror_settings)", ()
     expect(cadenceFromRows([])).toBeNull();
     expect(cadenceFromRows(rows({ paused: "", next_pass_at: "x" }))).toBeNull();
     expect(cadenceFromRows(rows({ interval_ms: "nope" }))).toBeNull();
+  });
+});
+
+describe("effectiveAlertBytes (threshold clamped to the mirror's cap)", () => {
+  const cad = (dailyCapBytes: number | null) => ({
+    intervalMs: 1, quietHours: null, quietIntervalMs: 1, tz: "UTC", dailyCapBytes, nextPassAt: null, paused: null,
+  });
+  it("threshold alone, threshold under cap, cap under threshold, alerts off", () => {
+    expect(effectiveAlertBytes({ thresholdBytes: 10e9, cadence: null })).toBe(10e9);
+    expect(effectiveAlertBytes({ thresholdBytes: 10e9, cadence: cad(12e9) })).toBe(10e9);
+    expect(effectiveAlertBytes({ thresholdBytes: 10e9, cadence: cad(8e9) })).toBe(8e9);
+    expect(effectiveAlertBytes({ thresholdBytes: 10e9, cadence: cad(null) })).toBe(10e9);
+    expect(effectiveAlertBytes({ thresholdBytes: null, cadence: cad(8e9) })).toBeNull();
   });
 });
 
