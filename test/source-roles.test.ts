@@ -107,9 +107,10 @@ describe("family helpers", () => {
     expect(biz).toBeDefined();
     expect(biz!.family).toBe("Postgres");
     expect(biz!.role).toBe("setoku_src_business");
-    // biz.* plus the run-log that enumerates the mirrored tables (both must
-    // ride on the role, not a core direct grant)
-    expect(grantTargetsFor(biz!)).toEqual(["biz.*", "setoku.pg_mirror_runs"]);
+    // biz.* plus the run-log that enumerates the mirrored tables and the
+    // mirror's published schedule (all must ride on the role, not a core
+    // direct grant)
+    expect(grantTargetsFor(biz!)).toEqual(["biz.*", "setoku.pg_mirror_runs", "setoku.pg_mirror_settings"]);
   });
 
   it("denying 'business' drops setoku_src_business from the active role list", () => {

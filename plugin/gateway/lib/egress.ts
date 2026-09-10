@@ -150,10 +150,12 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
   try {
     const res = await runLakeQuery(
       lakeUrl.url,
-      `SELECT key, argMax(value, updated_at) AS value FROM setoku.pg_mirror_settings GROUP BY key`,
+      // NB the alias must not shadow the column it aggregates (`AS value` →
+      // ILLEGAL_AGGREGATION under ClickHouse's analyzer).
+      `SELECT key, argMax(value, updated_at) AS v FROM setoku.pg_mirror_settings GROUP BY key`,
       { rowCap: 20, statementTimeoutMs: 8_000 },
     );
-    out.cadence = cadenceFromRows(res.rows as Array<{ key: unknown; value: unknown }>);
+    out.cadence = cadenceFromRows((res.rows as Array<{ key: unknown; v: unknown }>).map((r) => ({ key: r.key, value: r.v })));
   } catch {
     /* a mirror that predates the settings table — the ledger still renders */
   }

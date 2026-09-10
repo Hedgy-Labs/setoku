@@ -98,7 +98,8 @@ export interface LakeFamily {
   tables: string[];
   /** Explicit GRANT targets, when the family's grants don't reduce to
    *  `db.table` (e.g. the business family, whose role carries `biz.*` PLUS the
-   *  setoku.pg_mirror_runs run-log that describes the mirrored tables). */
+   *  setoku.pg_mirror_runs run-log that describes the mirrored tables and the
+   *  setoku.pg_mirror_settings schedule the mirror publishes). */
   grants?: string[];
 }
 
@@ -115,7 +116,7 @@ export const BUSINESS_FAMILY: LakeFamily = {
   role: roleFor("business"),
   db: "biz",
   tables: ["*"],
-  grants: ["biz.*", "setoku.pg_mirror_runs"],
+  grants: ["biz.*", "setoku.pg_mirror_runs", "setoku.pg_mirror_settings"],
 };
 
 /** True when per-source access is globally disabled (SETOKU_SOURCE_ACCESS=0 —
@@ -157,7 +158,7 @@ export function lakeFamilies(): LakeFamily[] {
 }
 
 /** The GRANT targets a family's role carries, e.g. `["setoku.slack_messages"]`
- *  or `["biz.*", "setoku.pg_mirror_runs"]` — the drift-lock test pins
+ *  or `["biz.*", "setoku.pg_mirror_runs", "setoku.pg_mirror_settings"]` — the drift-lock test pins
  *  lake-users.xml to these. */
 export function grantTargetsFor(f: LakeFamily): string[] {
   return f.grants ?? f.tables.map((t) => `${f.db}.${t}`);
