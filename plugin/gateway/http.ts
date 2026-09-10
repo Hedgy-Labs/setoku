@@ -2536,7 +2536,7 @@ const httpServer = http.createServer(async (req, res) => {
         // existence leak on this endpoint).
         if (api === "egress" && req.method === "GET") {
           if (sessionDenied().has(BUSINESS_FAMILY.slug))
-            return json(200, { days: [], todayBytes: 0, thresholdBytes: null, configured: false, appId: null });
+            return json(200, { days: [], todayBytes: 0, thresholdBytes: null, configured: false, appId: null, cadence: null });
           // NOT cached for admins: this endpoint is read back right after an admin
           // edits the alert threshold, so a stale cache would show the old value.
           // It's one cheap query anyway (not the sources fan-out). Viewer stays

@@ -339,4 +339,16 @@ export interface EgressData {
   thresholdBytes: number | null; // null = alerts disabled
   configured: boolean; // false: lake unreachable or the mirror never ran
   appId: string | null; // the built-in "Mirror egress" app, when seeded and live
+  cadence: MirrorCadence | null; // null: the mirror never published its cadence
+}
+
+/** What the mirror published about its own schedule (lib/egress.ts MirrorCadence). */
+export interface MirrorCadence {
+  intervalMs: number;
+  quietHours: { start: number; end: number } | null; // [start, end) wall-clock hours in tz
+  quietIntervalMs: number;
+  tz: string;
+  dailyCapBytes: number | null; // null = no cap
+  nextPassAt: string | null; // ISO
+  paused: string | null; // e.g. "daily egress cap"
 }

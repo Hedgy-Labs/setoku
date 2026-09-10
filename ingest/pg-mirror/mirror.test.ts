@@ -34,6 +34,13 @@ import {
   discoverTables,
   runOnce,
   ensureMirrorObjects,
+  parseQuietHours,
+  inQuietHours,
+  wallClockHour,
+  intervalFor,
+  nextPassAt,
+  capReached,
+  type Cadence,
   type ChOptions,
   type MirrorColumn,
 } from "./mirror";
@@ -683,5 +690,78 @@ describe.skipIf(!CH_URL)("mirror e2e (real ClickHouse)", () => {
     expect(Number(unchangedRuns[0].c)).toBe(2);
     const stateRows = await adminRows(`SELECT target, signature FROM ${rch.db}.pg_mirror_state FINAL ORDER BY target`);
     expect(stateRows.map((s) => s.target)).toEqual(["no_pk", "orders", "ticketing_seat_txn"]);
+  });
+});
+
+/* ------------------------------ cadence ----------------------------- */
+
+describe("cadence: quiet hours + daily cap", () => {
+  const base: Cadence = { baseMs: 20 * 60_000, quietMs: 2 * 3_600_000, quiet: { start: 23, end: 8 }, tz: "UTC" };
+  const at = (iso: string): number => Date.parse(iso);
+
+  it("parseQuietHours: H-H, wrap or same-day; blank = none; garbage fails fast", () => {
+    expect(parseQuietHours("23-8")).toEqual({ start: 23, end: 8 });
+    expect(parseQuietHours(" 9 - 17 ")).toEqual({ start: 9, end: 17 });
+    expect(parseQuietHours(undefined)).toBeNull();
+    expect(parseQuietHours("")).toBeNull();
+    for (const bad of ["23", "25-8", "8-24", "9-9", "night", "23-8-1"]) {
+      expect(() => parseQuietHours(bad)).toThrow(/SETOKU_MIRROR_QUIET_HOURS/);
+    }
+  });
+
+  it("inQuietHours: half-open and wrap-aware", () => {
+    const wrap = { start: 23, end: 8 };
+    for (const h of [23, 0, 1, 7]) expect(inQuietHours(h, wrap)).toBe(true);
+    for (const h of [8, 12, 22]) expect(inQuietHours(h, wrap)).toBe(false);
+    const day = { start: 9, end: 17 };
+    expect(inQuietHours(9, day)).toBe(true);
+    expect(inQuietHours(16, day)).toBe(true);
+    expect(inQuietHours(17, day)).toBe(false);
+    expect(inQuietHours(3, null)).toBe(false);
+  });
+
+  it("wallClockHour: reads the hour in the given zone (PDT, PST, UTC, midnight)", () => {
+    expect(wallClockHour(new Date("2026-07-01T12:00:00Z"), "America/Los_Angeles")).toBe(5); // PDT = UTC-7
+    expect(wallClockHour(new Date("2026-01-15T12:00:00Z"), "America/Los_Angeles")).toBe(4); // PST = UTC-8
+    expect(wallClockHour(new Date("2026-07-01T07:30:00Z"), "America/Los_Angeles")).toBe(0); // the ICU "24" guard
+    expect(wallClockHour(new Date("2026-07-01T12:00:00Z"), "UTC")).toBe(12);
+  });
+
+  it("intervalFor: quiet interval inside the window, base outside, base with no window", () => {
+    expect(intervalFor(new Date("2026-01-01T12:00:00Z"), base)).toBe(base.baseMs);
+    expect(intervalFor(new Date("2026-01-01T23:30:00Z"), base)).toBe(base.quietMs);
+    expect(intervalFor(new Date("2026-01-02T03:00:00Z"), base)).toBe(base.quietMs);
+    expect(intervalFor(new Date("2026-01-02T03:00:00Z"), { ...base, quiet: null })).toBe(base.baseMs);
+  });
+
+  it("nextPassAt: base cadence by day, quiet cadence by night, and the window's end wins", () => {
+    // daytime: 20 min later
+    expect(nextPassAt(at("2026-01-01T12:00:00Z"), base)).toBe(at("2026-01-01T12:20:00Z"));
+    // a pass ending inside the window waits the quiet interval
+    expect(nextPassAt(at("2026-01-01T23:30:00Z"), base)).toBe(at("2026-01-02T01:30:00Z"));
+    // a pass ending at 07:50 is due at 08:00 (base interval in force by then,
+    // elapsed 10 min < 20 min → 08:10), NOT two hours later
+    expect(nextPassAt(at("2026-01-02T07:50:00Z"), base)).toBe(at("2026-01-02T08:10:00Z"));
+    // a pass ending at 07:30 is overdue the moment the window ends
+    expect(nextPassAt(at("2026-01-02T07:30:00Z"), base)).toBe(at("2026-01-02T08:00:00Z"));
+    // entering the window: a 22:50 pass would be due 23:10, but by then the
+    // quiet interval applies → 00:50
+    expect(nextPassAt(at("2026-01-01T22:50:00Z"), base)).toBe(at("2026-01-02T00:50:00Z"));
+    // no window: plain cadence
+    expect(nextPassAt(at("2026-01-02T03:00:00Z"), { ...base, quiet: null })).toBe(at("2026-01-02T03:20:00Z"));
+  });
+
+  it("capReached: skips at/over the cap, runs under it or with no cap, fails OPEN on a read error", async () => {
+    expect(await capReached(null, async () => 1e12)).toEqual({ skip: false, bytes: null });
+    expect(await capReached(12e9, async () => 11e9)).toEqual({ skip: false, bytes: 11e9 });
+    expect(await capReached(12e9, async () => 12e9)).toEqual({ skip: true, bytes: 12e9 });
+    expect(await capReached(12e9, async () => 30e9)).toEqual({ skip: true, bytes: 30e9 });
+    const origErr = console.error;
+    console.error = () => {};
+    try {
+      expect(await capReached(12e9, async () => { throw new Error("lake down"); })).toEqual({ skip: false, bytes: null });
+    } finally {
+      console.error = origErr;
+    }
   });
 });

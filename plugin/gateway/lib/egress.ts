@@ -39,6 +39,42 @@ export interface EgressData {
   configured: boolean;
   /** The built-in "Mirror egress" app, when seeded and still live. */
   appId: string | null;
+  /** The mirror's effective cadence + live state, as it published them to
+   *  setoku.pg_mirror_settings. null = a pre-cadence mirror, or no mirror. */
+  cadence: MirrorCadence | null;
+}
+
+export interface MirrorCadence {
+  intervalMs: number;
+  /** Wall-clock hours [start, end) in `tz` that run at quietIntervalMs. */
+  quietHours: { start: number; end: number } | null;
+  quietIntervalMs: number;
+  tz: string;
+  /** null = no cap. Ledger (NDJSON) bytes per UTC day. */
+  dailyCapBytes: number | null;
+  /** ISO timestamp of the next scheduled pass, per the mirror's own rule. */
+  nextPassAt: string | null;
+  /** Why the mirror is skipping passes right now (e.g. "daily egress cap"). */
+  paused: string | null;
+}
+
+/** setoku.pg_mirror_settings rows → the cadence block. Tolerant of partial
+ *  rows (a mirror mid-upgrade); null only when no interval was ever published. */
+export function cadenceFromRows(rows: Array<{ key: unknown; value: unknown }>): MirrorCadence | null {
+  const kv = new Map(rows.map((r) => [String(r.key), String(r.value ?? "")]));
+  const intervalMs = Number(kv.get("interval_ms"));
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return null;
+  const qh = /^(\d{1,2})-(\d{1,2})$/.exec(kv.get("quiet_hours") ?? "");
+  const cap = Number(kv.get("daily_bytes_cap") ?? 0);
+  return {
+    intervalMs,
+    quietHours: qh ? { start: Number(qh[1]), end: Number(qh[2]) } : null,
+    quietIntervalMs: Number(kv.get("quiet_interval_ms")) || intervalMs,
+    tz: kv.get("tz") || "UTC",
+    dailyCapBytes: Number.isFinite(cap) && cap > 0 ? cap : null,
+    nextPassAt: kv.get("next_pass_at") || null,
+    paused: kv.get("paused") || null,
+  };
 }
 
 /** Default alert threshold. Generous on purpose: loud only when a box is on
@@ -87,6 +123,7 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
     thresholdBytes: egressThreshold(store),
     configured: false,
     appId: liveEgressAppId(store),
+    cadence: null,
   };
   const cfg = loadConfig(projectDir);
   if (!cfg.ok) return out;
@@ -109,6 +146,16 @@ export async function gatherEgress(projectDir: string, store: KnowledgeStore): P
     out.configured = out.days.length > 0;
   } catch {
     /* lake down, table absent, or bytes column not yet migrated — no ledger */
+  }
+  try {
+    const res = await runLakeQuery(
+      lakeUrl.url,
+      `SELECT key, argMax(value, updated_at) AS value FROM setoku.pg_mirror_settings GROUP BY key`,
+      { rowCap: 20, statementTimeoutMs: 8_000 },
+    );
+    out.cadence = cadenceFromRows(res.rows as Array<{ key: unknown; value: unknown }>);
+  } catch {
+    /* a mirror that predates the settings table — the ledger still renders */
   }
   return out;
 }

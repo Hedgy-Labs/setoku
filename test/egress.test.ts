@@ -15,6 +15,7 @@ import {
   ensureEgressApp,
   EGRESS_APP_PANELS,
   EGRESS_APP_TEMPLATE,
+  cadenceFromRows,
   type EgressData,
 } from "../plugin/gateway/lib/egress";
 
@@ -34,7 +35,52 @@ const LEDGER: EgressData = {
   thresholdBytes: DEFAULT_EGRESS_ALERT_BYTES,
   configured: true,
   appId: null,
+  cadence: null,
 };
+
+describe("cadenceFromRows (what the mirror published to pg_mirror_settings)", () => {
+  const rows = (kv: Record<string, string>) => Object.entries(kv).map(([key, value]) => ({ key, value }));
+  it("parses the full block", () => {
+    expect(
+      cadenceFromRows(
+        rows({
+          interval_ms: "1200000",
+          quiet_hours: "23-8",
+          quiet_interval_ms: "7200000",
+          tz: "America/Los_Angeles",
+          daily_bytes_cap: "12000000000",
+          next_pass_at: "2026-09-10T15:20:00.000Z",
+          paused: "",
+        }),
+      ),
+    ).toEqual({
+      intervalMs: 1_200_000,
+      quietHours: { start: 23, end: 8 },
+      quietIntervalMs: 7_200_000,
+      tz: "America/Los_Angeles",
+      dailyCapBytes: 12e9,
+      nextPassAt: "2026-09-10T15:20:00.000Z",
+      paused: null,
+    });
+  });
+  it("no window / no cap / paused, and partial rows degrade sensibly", () => {
+    const c = cadenceFromRows(rows({ interval_ms: "900000", quiet_hours: "", daily_bytes_cap: "0", paused: "daily egress cap" }));
+    expect(c).toEqual({
+      intervalMs: 900_000,
+      quietHours: null,
+      quietIntervalMs: 900_000,
+      tz: "UTC",
+      dailyCapBytes: null,
+      nextPassAt: null,
+      paused: "daily egress cap",
+    });
+  });
+  it("null when no interval was ever published (pre-cadence mirror, empty table)", () => {
+    expect(cadenceFromRows([])).toBeNull();
+    expect(cadenceFromRows(rows({ paused: "", next_pass_at: "x" }))).toBeNull();
+    expect(cadenceFromRows(rows({ interval_ms: "nope" }))).toBeNull();
+  });
+});
 
 describe("egress threshold knob", () => {
   it("defaults, sets, and disables", () => {
