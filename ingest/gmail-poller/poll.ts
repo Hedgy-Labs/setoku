@@ -106,9 +106,12 @@ const BACKFILL_CHUNK_DAYS = Math.max(1, Number(process.env.GMAIL_BACKFILL_CHUNK_
 const BACKFILL_BUDGET_MS = Number(process.env.GMAIL_BACKFILL_BUDGET_MS ?? 600_000);
 const BACKFILL_QUERY_EXTRA = process.env.GMAIL_BACKFILL_QUERY_EXTRA ?? "";
 const CONCURRENCY = Math.max(1, Number(process.env.GMAIL_FETCH_CONCURRENCY ?? 4));
-// Requests per ROLLING MINUTE, matching how Gmail actually meters. 120/min is the
-// measured clean rate on a real box; the governor adapts from there.
-const RATE_START = Number(process.env.GMAIL_RATE_START ?? 120);
+// Requests per ROLLING MINUTE, matching how Gmail actually meters. 150/min is
+// just under the measured ceiling on a real box (120/min ran clean, 300/min
+// throttled hard), and the governor adapts from there. Starting slightly HOT is
+// deliberate: one trim costs a couple of retries, whereas starting cold wastes
+// the headroom for as long as it takes to climb back.
+const RATE_START = Number(process.env.GMAIL_RATE_START ?? 150);
 const RATE_MAX = Number(process.env.GMAIL_RATE_MAX ?? 3000); // published default
 const RATE_MIN = 20;
 // NB: the Pacer instance itself is created just below the class declaration —
@@ -432,8 +435,15 @@ export class Pacer {
     this.clean = 0;
   }
 
-  /** A run of clean responses means there may be headroom; reach for a little. */
-  onSuccess(step = 10, after = 60): void {
+  /**
+   * A run of clean responses means there may be headroom; reach for a little.
+   *
+   * `after` has to be small relative to a chunk (~1000 messages) or the budget
+   * cannot reach the ceiling before the run ends: at one step per 60 clean
+   * responses the governor measured 1.5/s against an achievable 2.5/s, simply
+   * because it never got to climb.
+   */
+  onSuccess(step = 10, after = 20): void {
     if (++this.clean < after) return;
     this.clean = 0;
     this.budget = Math.min(this.max, this.budget + step);

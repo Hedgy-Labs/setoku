@@ -367,7 +367,7 @@ services:
       # per-project and cannot be read, so the poller discovers it (halve on a
       # throttle, creep up while clean). These are the starting guess and the cap,
       # not a speed setting — raising them does not raise the quota.
-      GMAIL_RATE_START: ${SETOKU_GMAIL_RATE_START:-120}
+      GMAIL_RATE_START: ${SETOKU_GMAIL_RATE_START:-150}
       GMAIL_RATE_MAX: ${SETOKU_GMAIL_RATE_MAX:-3000}
     volumes:
       - gmail_state:/state

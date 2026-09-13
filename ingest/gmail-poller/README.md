@@ -150,7 +150,7 @@ The tokens file wins when it exists; env is used only when it doesn't.
 | `GMAIL_BACKFILL_BUDGET_MS` | `600000` | wall clock spent walking per tick |
 | `GMAIL_BACKFILL_QUERY_EXTRA` | — | appended to the **walk** query only, e.g. `-category:promotions -category:social` |
 | `GMAIL_FETCH_CONCURRENCY` | `4` | in-flight `messages.get` calls — bounds parallelism, does NOT set the pace |
-| `GMAIL_RATE_START` | `120` | governor's initial requests per rolling minute; it adapts from here |
+| `GMAIL_RATE_START` | `150` | governor's initial requests per rolling minute; it adapts from here |
 | `GMAIL_RATE_MAX` | `3000` | ceiling for that adaptation (the published per-user default) |
 | `GMAIL_RESYNC_DAYS` | `7` | fallback window when the history cursor expired |
 | `GMAIL_QUERY_EXTRA` | `-in:chats` | appended to every list query |

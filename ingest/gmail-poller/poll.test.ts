@@ -167,6 +167,7 @@ describe("Pacer", () => {
   // Gmail meters a BUDGET per rolling minute, so the governor models that rather
   // than a smooth rate. Bursting within the window is exactly what it permits.
   const p120 = () => new Pacer(120, 20, 3000);
+  // NB: onSuccess defaults are (step 10, after 20); tests pass them explicitly.
 
   it("lets a full minute's budget through without any delay", () => {
     const p = p120();
@@ -219,7 +220,7 @@ describe("Pacer", () => {
     const p = p120();
     for (let i = 0; i < 20_000; i++) {
       if (p.budget > CEILING) p.onThrottle();
-      else p.onSuccess(10, 60);
+      else p.onSuccess(10, 20);
     }
     expect(p.budget).toBeGreaterThan(100);
     expect(p.budget).toBeLessThanOrEqual(CEILING + 10);
@@ -228,5 +229,20 @@ describe("Pacer", () => {
   it("honours the configured bounds", () => {
     expect(new Pacer(99_999, 20, 3000).budget).toBe(3000);
     expect(new Pacer(1, 20, 3000).budget).toBe(20);
+  });
+});
+
+describe("Pacer climb rate", () => {
+  it("reaches the ceiling within one chunk's worth of messages", () => {
+    // A backfill chunk is ~1000 messages. If the governor cannot climb from its
+    // start to the real ceiling inside that, it spends the whole run below it —
+    // which is exactly how a 2.5/s-capable mailbox measured 1.5/s.
+    const CEILING = 160;
+    const p = new Pacer(120, 20, 3000);
+    for (let i = 0; i < 1000; i++) {
+      if (p.budget > CEILING) p.onThrottle();
+      else p.onSuccess();
+    }
+    expect(p.budget).toBeGreaterThanOrEqual(120);
   });
 });
