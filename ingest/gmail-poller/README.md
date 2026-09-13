@@ -13,11 +13,14 @@ failing never resets another.
 
 ## What it does
 
-- **First run:** backfills `GMAIL_BACKFILL_DAYS` (default 90) of mail via
-  `users.messages.list` over `after:<date>`.
+- **Archive walk:** pulls history backwards from today to
+  `GMAIL_BACKFILL_DAYS` (default 90) via `users.messages.list`, one
+  `GMAIL_BACKFILL_CHUNK_DAYS` window at a time, **checkpointing after every
+  chunk**. Newest mail lands first and the archive fills in behind it.
 - **Steady state:** `users.history.list` from the stored `historyId` — only new
-  messages. If the cursor has aged out (long downtime), it resyncs a recent
-  window (`GMAIL_RESYNC_DAYS`) by date.
+  messages. Runs on every tick *including while the walk is still going*, so new
+  mail never queues behind a long backfill. If the cursor has aged out (long
+  downtime), it resyncs a recent window (`GMAIL_RESYNC_DAYS`) by date.
 - Fetches each id with `format=full`, extracts the plain-text body (falls back to
   stripped HTML), parses From/To/Subject/labels, and POSTs NDJSON to Vector at
   `/ingest/gmail/messages`.
@@ -25,7 +28,34 @@ failing never resets another.
 
 Messages are **mutable** (labels change), so the table is a `ReplacingMergeTree`
 keyed by `(account, message_id)` — **query with `FINAL`**. State (the historyId
-cursor) lives on the `/state` volume so restarts don't re-backfill.
+cursor and the walk's checkpoint) lives on the `/state` volume so restarts don't
+re-backfill.
+
+### Pulling a whole mailbox
+
+`GMAIL_BACKFILL_DAYS` is safe to set to years. The walk spends
+`GMAIL_BACKFILL_BUDGET_MS` per tick and then resumes on the next one, ticking
+every 30s while a backfill is outstanding and settling back to
+`GMAIL_POLL_INTERVAL_MS` once it reaches the horizon. Re-ingest is idempotent
+(ReplacingMergeTree), so an interrupted walk costs time, never data.
+
+Two knobs matter for a big mailbox:
+
+- `GMAIL_FETCH_CONCURRENCY` — `messages.get` is one call per message, so this
+  sets the wall clock. Gmail's per-user ceiling is 250 quota units/sec (= 50
+  gets/s); measured throughput is ~7.6/s at 1 and ~29/s at 8.
+- `GMAIL_BACKFILL_QUERY_EXTRA` — appended to the **walk** query only, never to
+  steady state. `-category:promotions -category:social` typically drops a third
+  of a personal mailbox (years of marketing) without touching receipts and
+  notifications, which live in `category:updates`.
+
+Sizing: rows run ~2.6 KiB each on disk, so a 200k-message lifetime archive is
+roughly half a gigabyte.
+
+⚠ The lake table's retention TTL is set in `ingest/schemas/080_gmail_messages.sql`,
+which only runs on a **fresh** ClickHouse. Widening the backfill on a box that is
+already up means also running the `ALTER TABLE … MODIFY TTL` noted in that file —
+otherwise the engine prunes the history you just pulled.
 
 ## What is deliberately NOT ingested
 
@@ -42,8 +72,9 @@ miscategorized receipt is still recoverable; queries default to `WHERE is_bulk =
 can email you. The read/write membrane (I2/I9) is what contains that; treat this
 data as hostile downstream.
 
-Retention: an 18-month `TTL` on the table self-prunes old mail (see
-`ingest/schemas/080_gmail_messages.sql`).
+Retention: a 20-year `TTL` on the table (see
+`ingest/schemas/080_gmail_messages.sql`) — a bound so the table can't grow
+forever, not a trim of history.
 
 ## Auth — scheme #1: per-user OAuth (`gmail.readonly`)
 
@@ -81,9 +112,13 @@ The tokens file wins when it exists; env is used only when it doesn't.
 | `GMAIL_AUTH_MODE` | `oauth` | `dwd` (Workspace domain-wide delegation) is scheme #2, not yet implemented |
 | `GMAIL_VECTOR_URL` | `http://vector:8080` | base; paths appended |
 | `GMAIL_POLL_INTERVAL_MS` | `900000` | 15 min |
-| `GMAIL_BACKFILL_DAYS` | `90` | first-run lookback; bump later, no code change |
+| `GMAIL_BACKFILL_DAYS` | `90` | how far back the archive walk goes; safe to set to years |
+| `GMAIL_BACKFILL_CHUNK_DAYS` | `30` | one walk step; bounds work lost to a crash |
+| `GMAIL_BACKFILL_BUDGET_MS` | `600000` | wall clock spent walking per tick |
+| `GMAIL_BACKFILL_QUERY_EXTRA` | — | appended to the **walk** query only, e.g. `-category:promotions -category:social` |
+| `GMAIL_FETCH_CONCURRENCY` | `4` | in-flight `messages.get` calls (Gmail allows up to 50/s) |
 | `GMAIL_RESYNC_DAYS` | `7` | fallback window when the history cursor expired |
-| `GMAIL_QUERY_EXTRA` | `-in:chats` | appended to backfill/resync query |
+| `GMAIL_QUERY_EXTRA` | `-in:chats` | appended to every list query |
 | `GMAIL_BODY_CAP` | `50000` | plain-text body cap (chars) |
 | `GMAIL_DROP_AUTH` | `1` | `0` keeps auth/2FA mail |
 | `GMAIL_STATE_DIR` | `/state` | cursor lives here |
@@ -91,7 +126,7 @@ The tokens file wins when it exists; env is used only when it doesn't.
 ## Adding a mailbox later
 
 No new service, no restart: in `/admin → Sources → Gmail`, click **Connect a
-mailbox** and consent. The new mailbox backfills on its next tick; existing
+mailbox** and consent. The new mailbox starts its archive walk on the next tick; existing
 mailboxes keep their cursors. Per-mailbox state in `/state/gmail-poller.json` is
 keyed by the credential (a hash of the refresh token), so a disconnect+reconnect
 mints a new token → a fresh backfill (no gap-mail lost).
@@ -102,7 +137,7 @@ mints a new token → a fresh backfill (no gap-mail lost).
   `messageAdded`, so a message reclassified AFTER ingest (INBOX → SPAM/TRASH,
   archive, read/unread) isn't re-observed until a full resync. Mail that *arrives*
   as spam/trash is excluded; mail marked spam *later* stays queryable with stale
-  labels until the 18-month TTL. Re-observing label changes (via `labelAdded` /
+  labels until the retention TTL. Re-observing label changes (via `labelAdded` /
   `labelRemoved` history + a delete path) is a follow-up.
 - **`/admin` manages OAuth-connected mailboxes only.** Mailboxes seeded via
   `GMAIL_REFRESH_TOKENS` (the `set-gmail-token.ts` CLI path) still sync (union with

@@ -56,10 +56,23 @@
  *   GMAIL_AUTH_MODE         "oauth" (default) | "dwd" (not yet implemented)
  *   GMAIL_VECTOR_URL        default http://vector:8080 (base; paths appended)
  *   GMAIL_POLL_INTERVAL_MS  default 900000 (15 min — email doesn't need faster)
- *   GMAIL_BACKFILL_DAYS     first-run lookback, default 90
+ *   GMAIL_BACKFILL_DAYS     how far back the archive walk goes, default 90.
+ *                           Safe to set to years: the walk is CHUNKED and
+ *                           CHECKPOINTED, so it survives restarts (see below).
+ *   GMAIL_BACKFILL_CHUNK_DAYS  one walk step, default 30. Each step is
+ *                           checkpointed, so this bounds work lost to a crash.
+ *   GMAIL_BACKFILL_BUDGET_MS   wall-clock spent walking per tick, default
+ *                           600000 (10 min). The walk resumes on the next tick.
+ *   GMAIL_BACKFILL_QUERY_EXTRA  appended to the ARCHIVE-WALK query only (not to
+ *                           steady state), default "". Use it to keep a deep
+ *                           backfill cheap, e.g. "-category:promotions
+ *                           -category:social" to skip years of marketing mail.
+ *   GMAIL_FETCH_CONCURRENCY in-flight messages.get calls, default 4. Gmail's
+ *                           per-user ceiling is 250 quota units/sec = 50 gets/s;
+ *                           stay well under it (a 429 costs more than it saves).
  *   GMAIL_RESYNC_DAYS       fallback window when a history cursor has expired,
  *                           default 7 (Gmail keeps history records only ~days)
- *   GMAIL_QUERY_EXTRA       appended to the backfill/resync query, default
+ *   GMAIL_QUERY_EXTRA       appended to EVERY list query, default
  *                           "-in:chats" (skip Google Chat). Spam/trash always out.
  *   GMAIL_BODY_CAP          plain-text body cap in chars, default 50000
  *   GMAIL_DROP_AUTH         "0" to keep auth/2FA mail (default drops it)
@@ -74,6 +87,10 @@ const AUTH_MODE = process.env.GMAIL_AUTH_MODE ?? "oauth";
 const VECTOR_BASE = (process.env.GMAIL_VECTOR_URL ?? "http://vector:8080").replace(/\/+$/, "");
 const INTERVAL = Number(process.env.GMAIL_POLL_INTERVAL_MS ?? 900_000);
 const BACKFILL_DAYS = Number(process.env.GMAIL_BACKFILL_DAYS ?? 90);
+const BACKFILL_CHUNK_DAYS = Math.max(1, Number(process.env.GMAIL_BACKFILL_CHUNK_DAYS ?? 30));
+const BACKFILL_BUDGET_MS = Number(process.env.GMAIL_BACKFILL_BUDGET_MS ?? 600_000);
+const BACKFILL_QUERY_EXTRA = process.env.GMAIL_BACKFILL_QUERY_EXTRA ?? "";
+const CONCURRENCY = Math.max(1, Number(process.env.GMAIL_FETCH_CONCURRENCY ?? 4));
 const RESYNC_DAYS = Number(process.env.GMAIL_RESYNC_DAYS ?? 7);
 const QUERY_EXTRA = process.env.GMAIL_QUERY_EXTRA ?? "-in:chats";
 const BODY_CAP = Number(process.env.GMAIL_BODY_CAP ?? 50_000);
@@ -88,7 +105,13 @@ const FLUSH = 200; // messages per Vector POST — bounded memory, like github p
 // instead of resuming incrementally and skipping mail from the gap.
 interface AccountState {
   historyId?: string; // cursor for users.history.list
-  backfilled?: boolean;
+  backfilled?: boolean; // the archive walk has reached GMAIL_BACKFILL_DAYS
+  // Oldest day the archive walk has covered (YYYY-MM-DD). The walk moves
+  // BACKWARDS from today and rewrites this after every chunk, so a restart
+  // resumes where it stopped instead of re-pulling years of mail. Absent on a
+  // mailbox backfilled by an older build — the walk then restarts from today,
+  // which re-fetches the recent window once (idempotent: ReplacingMergeTree).
+  backfilledTo?: string;
 }
 type State = Record<string, AccountState>;
 
@@ -111,6 +134,61 @@ function saveState(s: State): void {
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
 // Gmail's q date operators want YYYY/MM/DD
 const gmailDate = (daysBack: number): string => isoDate(new Date(Date.now() - daysBack * 86_400_000)).replace(/-/g, "/");
+const slashDate = (iso: string): string => iso.replace(/-/g, "/");
+
+/**
+ * The archive walk, as a pure function: the next chunk of history to pull, or
+ * null when the walk has reached `horizonDays` back and is done.
+ *
+ * Why walk BACKWARDS in chunks instead of one `after:<horizon>` list: a lifetime
+ * mailbox is ~200k messages, and messages.get is one call each — hours of work.
+ * One unbounded pull holds every id in memory, saves no cursor until it finishes,
+ * and loses the whole run to a single restart. Walking back a chunk at a time
+ * lets the caller checkpoint after each one, so a restart costs one chunk.
+ *
+ * Newest-first is deliberate: the most useful mail lands in the lake in the first
+ * minutes, and the archive fills in behind it.
+ *
+ * Window edges: Gmail's `after:`/`before:` are day-granular, so consecutive
+ * windows SHARE their boundary day rather than abut it. That double-pulls one
+ * day per chunk — cheap, and it cannot drop a message to an off-by-one, which
+ * a gap silently would (ReplacingMergeTree dedups the overlap).
+ */
+export function nextBackfillWindow(
+  now: Date,
+  horizonDays: number,
+  chunkDays: number,
+  backfilledTo?: string,
+): { after: string; before: string } | null {
+  const day = 86_400_000;
+  const horizon = new Date(now.getTime() - horizonDays * day);
+  // No cursor yet (fresh mailbox, or state written by a pre-walk build): start
+  // at today and walk back. A mailbox the old code already backfilled re-pulls
+  // its recent window once — idempotent, and far safer than assuming a window.
+  // An UNPARSEABLE cursor falls back to today for the same reason: re-walking
+  // costs time, whereas treating it as "done" would silently skip the archive.
+  const parsed = backfilledTo ? new Date(`${backfilledTo}T00:00:00Z`) : now;
+  const cursor = Number.isNaN(parsed.getTime()) ? now : parsed;
+  if (cursor.getTime() <= horizon.getTime()) return null;
+  const step = Math.max(1, chunkDays) * day; // a 0-day chunk would never advance
+  const start = new Date(Math.max(cursor.getTime() - step, horizon.getTime()));
+  return { after: slashDate(isoDate(start)), before: slashDate(isoDate(cursor)) };
+}
+
+/** Map over `items` with at most `limit` in flight, preserving input order. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
 
 /* --------------------------------------------------- auth: MailboxAuth seam */
 // A handle to one mailbox: mint a Bearer access token on demand, drop it on 401.
@@ -265,8 +343,10 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
 // the poll interval (15 min) is longer. The poller beats even with zero mailboxes
 // connected (it's healthy, just waiting), so /admin shows it up, not stale.
 const BEAT_MS = 4 * 60_000;
+const CATCHUP_MS = 30_000; // tick cadence while an archive walk is outstanding
 let lastTickOk = false;
 let lastBeatDetail = "";
+let backfillPending = false;
 
 async function beat(detail: string): Promise<void> {
   try {
@@ -457,24 +537,24 @@ function toLine(msg: GmailMessage, account: string, ingestedAt: string): string 
 // bounded batches. Returns rows actually landed (dropped auth mail not counted).
 async function fetchAndPush(h: MailboxHandle, ids: string[], account: string, ingestedAt: string): Promise<number> {
   let landed = 0;
-  let batch: string[] = [];
-  for (const id of ids) {
-    // notFoundOk: a message listed by history.list can be deleted/expunged before
-    // we fetch it — a 404 must SKIP it, not throw (a throw aborts the whole tick,
-    // the cursor never advances, and every later tick re-404s the same id until the
-    // history window ages out — days of a stalled mailbox from one deletion).
-    const msg = await api<GmailMessage>(h, `/messages/${id}?format=full`, /* notFoundOk */ true);
-    if (!msg) continue;
-    const line = toLine(msg, account, ingestedAt);
-    if (!line) continue;
-    batch.push(line);
-    landed++;
-    if (batch.length >= FLUSH) {
-      await pushToVector(batch);
-      batch = [];
-    }
+  // Fetch a FLUSH-sized slice with CONCURRENCY calls in flight, then push it.
+  // Slicing (rather than one mapLimit over every id) keeps peak memory at one
+  // batch no matter how many ids a walk chunk returned, exactly as the
+  // one-at-a-time version did — the archive walk can hand this tens of
+  // thousands of ids.
+  for (let i = 0; i < ids.length; i += FLUSH) {
+    const lines = await mapLimit(ids.slice(i, i + FLUSH), CONCURRENCY, async (id) => {
+      // notFoundOk: a message listed by history.list can be deleted/expunged before
+      // we fetch it — a 404 must SKIP it, not throw (a throw aborts the whole tick,
+      // the cursor never advances, and every later tick re-404s the same id until the
+      // history window ages out — days of a stalled mailbox from one deletion).
+      const msg = await api<GmailMessage>(h, `/messages/${id}?format=full`, /* notFoundOk */ true);
+      return msg ? toLine(msg, account, ingestedAt) : null;
+    });
+    const batch = lines.filter((l): l is string => l !== null);
+    landed += batch.length;
+    await pushToVector(batch);
   }
-  await pushToVector(batch);
   return landed;
 }
 
@@ -515,7 +595,11 @@ async function listHistoryIds(h: MailboxHandle, startHistoryId: string): Promise
 /* ---------------------------------------------------------------- loop */
 // Sync ONE mailbox. Mutates `state[h.key]`; throws on any hard failure so the
 // caller can keep this mailbox's old cursor and move on to the next.
-async function pollMailbox(h: MailboxHandle, state: State, ingestedAt: string): Promise<{ account: string; landed: number; mode: string }> {
+async function pollMailbox(
+  h: MailboxHandle,
+  state: State,
+  ingestedAt: string,
+): Promise<{ account: string; landed: number; mode: string; walking: boolean }> {
   // Identity + current historyId, captured at START so the cursor we store never
   // runs ahead of what we've processed.
   const profile = await api<{ emailAddress?: string; historyId?: string }>(h, "/profile");
@@ -526,42 +610,64 @@ async function pollMailbox(h: MailboxHandle, state: State, ingestedAt: string): 
   const st: AccountState = state[h.key] ?? {};
 
   let landed = 0;
-  let mode: string;
+  const modes: string[] = [];
 
-  if (!st.backfilled) {
-    const query = `after:${gmailDate(BACKFILL_DAYS)} ${QUERY_EXTRA}`.trim();
-    const ids = await listIds(h, query);
-    console.error(`gmail-poller: ${account} backfill "${query}" → ${ids.length} message(s)`);
-    landed = await fetchAndPush(h, ids, account, ingestedAt);
-    mode = "backfill";
-  } else if (!st.historyId) {
-    // Backfilled, but we never captured a history cursor (rare: a /profile response
-    // that lacked historyId). Resync a SMALL recent window each tick rather than
-    // re-running the full backfill forever — bounds the quota burn until a later
-    // profile call yields a cursor (startHistoryId is stored below when present).
-    const query = `after:${gmailDate(RESYNC_DAYS)} ${QUERY_EXTRA}`.trim();
-    console.error(`gmail-poller: ${account} no history cursor yet; resync "${query}"`);
-    const ids = await listIds(h, query);
-    landed = await fetchAndPush(h, ids, account, ingestedAt);
-    mode = "resync";
-  } else {
+  /* -- 1. steady state: what has arrived since the cursor -- */
+  // Runs on EVERY tick, including while the archive walk below is still working
+  // backwards through years of mail. New mail must never queue behind a
+  // multi-hour backfill. A mailbox with no cursor yet skips this: the walk's
+  // first chunk starts at today, so its recent mail lands in this same tick.
+  if (st.historyId) {
     let ids = await listHistoryIds(h, st.historyId);
+    let mode = "incremental";
     if (ids === null) {
       const query = `after:${gmailDate(RESYNC_DAYS)} ${QUERY_EXTRA}`.trim();
       console.error(`gmail-poller: ${account} history cursor expired; resync "${query}"`);
       ids = await listIds(h, query);
       mode = "resync";
-    } else {
-      mode = "incremental";
     }
-    landed = await fetchAndPush(h, ids, account, ingestedAt);
-    console.error(`gmail-poller: ${account} ${mode} → ${ids.length} new id(s), ${landed} landed`);
+    const n = await fetchAndPush(h, ids, account, ingestedAt);
+    landed += n;
+    modes.push(mode);
+    console.error(`gmail-poller: ${account} ${mode} → ${ids.length} new id(s), ${n} landed`);
   }
 
+  // Advance the cursor BEFORE the walk: steady state is done, and the walk that
+  // follows can run for the rest of the tick's budget. A crash in there must not
+  // cost us this cursor (the walk keeps its own, below).
   if (startHistoryId) st.historyId = startHistoryId;
-  st.backfilled = true;
   state[h.key] = st;
-  return { account, landed, mode };
+  saveState(state);
+
+  /* -- 2. archive walk: backwards to GMAIL_BACKFILL_DAYS, a chunk at a time -- */
+  // Checkpointed after every chunk and bounded by this tick's budget, so a
+  // horizon of years is safe: the walk simply resumes next tick, and a restart
+  // costs one chunk instead of the whole run.
+  const deadline = Date.now() + BACKFILL_BUDGET_MS;
+  let chunks = 0;
+  for (;;) {
+    const w = nextBackfillWindow(new Date(), BACKFILL_DAYS, BACKFILL_CHUNK_DAYS, st.backfilledTo);
+    if (!w) break; // reached the horizon — nothing older is wanted
+    const query = `after:${w.after} before:${w.before} ${QUERY_EXTRA} ${BACKFILL_QUERY_EXTRA}`.replace(/\s+/g, " ").trim();
+    const ids = await listIds(h, query);
+    const n = await fetchAndPush(h, ids, account, ingestedAt);
+    landed += n;
+    chunks++;
+    console.error(`gmail-poller: ${account} backfill "${query}" → ${ids.length} message(s), ${n} landed`);
+    st.backfilledTo = w.after.replace(/\//g, "-");
+    state[h.key] = st;
+    saveState(state); // checkpoint: a restart resumes HERE, not back at today
+    if (Date.now() >= deadline) break;
+  }
+  if (chunks) modes.push(`backfill×${chunks}`);
+
+  // `backfilled` is DERIVED from the checkpoint, never latched: widening
+  // GMAIL_BACKFILL_DAYS on a mailbox an earlier build had already marked done
+  // must put it back into "still walking", or the poller would idle out the full
+  // poll interval between chunks and take days to pull an archive.
+  st.backfilled = nextBackfillWindow(new Date(), BACKFILL_DAYS, BACKFILL_CHUNK_DAYS, st.backfilledTo) === null;
+  state[h.key] = st;
+  return { account, landed, mode: modes.join("+") || "idle", walking: !st.backfilled };
 }
 
 async function tick(): Promise<void> {
@@ -592,6 +698,7 @@ async function tick(): Promise<void> {
 
   let okAccounts = 0;
   let totalLanded = 0;
+  let walking = 0;
   const parts: string[] = [];
 
   for (const h of handles) {
@@ -600,18 +707,25 @@ async function tick(): Promise<void> {
       saveState(state); // persist per-mailbox: one failing doesn't lose the others' cursors
       okAccounts++;
       totalLanded += r.landed;
+      if (r.walking) walking++;
       parts.push(`${r.account}:${r.landed}`);
     } catch (e) {
-      // fetch/token failure for this mailbox: its cursor stays put, re-covered next tick
+      // fetch/token failure for this mailbox: its cursor stays put, re-covered next
+      // tick. An archive walk keeps every chunk it checkpointed before the failure.
       console.error(`gmail-poller: mailbox ${h.label} failed (cursor kept): ${e}`);
+      // A mailbox that threw may still owe us history; keep the fast cadence so it
+      // retries soon rather than idling out the full poll interval.
+      if (!state[h.key]?.backfilled) walking++;
     }
   }
 
   lastTickOk = okAccounts > 0;
   if (lastTickOk) {
-    lastBeatDetail = `${okAccounts}/${handles.length} mailbox(es) · ${totalLanded} msg${parts.length ? ` (${parts.join(", ")})` : ""}`;
+    const still = walking ? ` · ${walking} backfilling` : "";
+    lastBeatDetail = `${okAccounts}/${handles.length} mailbox(es) · ${totalLanded} msg${parts.length ? ` (${parts.join(", ")})` : ""}${still}`;
     await beat(lastBeatDetail);
   }
+  backfillPending = walking > 0;
 }
 
 async function main(): Promise<void> {
@@ -626,7 +740,11 @@ async function main(): Promise<void> {
       lastTickOk = false;
       console.error(`gmail-poller: tick failed: ${e}`);
     }
-    await Bun.sleep(INTERVAL);
+    // An outstanding archive walk gets back-to-back ticks (it already spent its
+    // per-tick budget, so this is a pause, not a busy loop): at the 15-minute
+    // steady cadence a multi-year horizon would take days of wall clock. Once
+    // the walk reaches the horizon this settles to INTERVAL forever.
+    await Bun.sleep(backfillPending ? Math.min(INTERVAL, CATCHUP_MS) : INTERVAL);
   }
 }
 
