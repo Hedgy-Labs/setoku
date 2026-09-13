@@ -306,6 +306,20 @@ function mailboxHandles(): MailboxHandle[] {
 const HARD_RETRIES = 6; // 5xx / auth — a real fault, fail reasonably fast
 const RATE_RETRIES = 12; // throttling is EXPECTED under concurrency, not a fault
 
+// Throttling is invisible once the backoff absorbs it: the poller just goes
+// quietly slow, and "the backfill is taking 13 hours" gives you nothing to act
+// on. Count it and report it per chunk, so the logs say whether to turn
+// GMAIL_FETCH_CONCURRENCY down (throttled) or leave it alone (just a lot of mail).
+let throttleHits = 0;
+let throttleMs = 0;
+function takeThrottleStats(): string {
+  if (!throttleHits) return "";
+  const s = ` · throttled ${throttleHits}× (${(throttleMs / 1000).toFixed(0)}s waiting)`;
+  throttleHits = 0;
+  throttleMs = 0;
+  return s;
+}
+
 /**
  * Backoff for one retry, in ms. Exponential, capped at 5 min, honouring
  * Retry-After when the server sent one.
@@ -345,7 +359,12 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
       const rate = r.status === 429;
       const n = rate ? throttled++ : hard++;
       if ((rate ? throttled : hard) > (rate ? RATE_RETRIES : HARD_RETRIES)) break;
-      await Bun.sleep(backoffMs(n, retryAfter));
+      const wait = backoffMs(n, retryAfter);
+      if (rate) {
+        throttleHits++;
+        throttleMs += wait;
+      }
+      await Bun.sleep(wait);
       continue;
     }
     // 403 is ambiguous on Gmail: a rate limit (retryable) vs a permission/scope
@@ -356,7 +375,10 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
       const body = await r.text().catch(() => "");
       if (/rateLimitExceeded|userRateLimitExceeded|rate limit|Too Many Requests/i.test(body)) {
         if (throttled++ > RATE_RETRIES) break;
-        await Bun.sleep(backoffMs(throttled - 1));
+        const wait = backoffMs(throttled - 1);
+        throttleHits++;
+        throttleMs += wait;
+        await Bun.sleep(wait);
         continue;
       }
       throw new Error(`GET ${pathAndQuery} → 403 (permission/scope?) ${body.slice(0, 200)}`);
@@ -680,10 +702,15 @@ async function pollMailbox(
     if (!w) break; // reached the horizon — nothing older is wanted
     const query = `after:${w.after} before:${w.before} ${QUERY_EXTRA} ${BACKFILL_QUERY_EXTRA}`.replace(/\s+/g, " ").trim();
     const ids = await listIds(h, query);
+    const t0 = Date.now();
     const n = await fetchAndPush(h, ids, account, ingestedAt);
+    const secs = (Date.now() - t0) / 1000;
     landed += n;
     chunks++;
-    console.error(`gmail-poller: ${account} backfill "${query}" → ${ids.length} message(s), ${n} landed`);
+    const rate = secs > 0 ? (ids.length / secs).toFixed(1) : "–";
+    console.error(
+      `gmail-poller: ${account} backfill ${w.after}..${w.before} → ${ids.length} message(s), ${n} landed in ${secs.toFixed(0)}s (${rate}/s)${takeThrottleStats()}`,
+    );
     st.backfilledTo = w.after.replace(/\//g, "-");
     state[h.key] = st;
     saveState(state); // checkpoint: a restart resumes HERE, not back at today
