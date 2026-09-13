@@ -164,70 +164,69 @@ describe("rateBackoffMs", () => {
 });
 
 describe("Pacer", () => {
-  it("spaces requests at the target rate", () => {
-    const p = new Pacer(2, 0.25, 20); // 2/s → one every 500ms
-    expect(p.reserve(1000)).toBe(0); // first goes immediately
-    expect(p.reserve(1000)).toBe(500); // second waits out the gap
-    expect(p.reserve(1000)).toBe(1000);
+  // Gmail meters a BUDGET per rolling minute, so the governor models that rather
+  // than a smooth rate. Bursting within the window is exactly what it permits.
+  const p120 = () => new Pacer(120, 20, 3000);
+
+  it("lets a full minute's budget through without any delay", () => {
+    const p = p120();
+    for (let i = 0; i < 120; i++) expect(p.reserve(1000)).toBe(0);
   });
 
-  it("does not make a caller wait when the rate has already been met", () => {
-    const p = new Pacer(2, 0.25, 20);
+  it("makes the next caller wait for the window to roll, not a fixed gap", () => {
+    const p = p120();
+    for (let i = 0; i < 120; i++) p.reserve(1000);
+    expect(p.reserve(1000)).toBe(60_000); // oldest request ages out a minute after
+  });
+
+  it("frees slots as requests age out of the rolling window", () => {
+    const p = new Pacer(3, 1, 3000);
+    p.reserve(0);
     p.reserve(1000);
-    expect(p.reserve(9000)).toBe(0); // long idle — the slot is free again
+    p.reserve(2000);
+    expect(p.reserve(3000)).toBe(57_000); // full: wait for the 0ms one to expire
+    expect(p.reserve(61_000)).toBe(0); // that one has now aged out
   });
 
-  it("halves the rate on a throttle (multiplicative decrease)", () => {
-    const p = new Pacer(8, 0.25, 20);
-    p.onThrottle(0, 0);
-    expect(p.rate).toBe(4);
-    p.onThrottle(0, 0);
-    expect(p.rate).toBe(2);
+  it("trims the budget gently on a throttle, never below the floor", () => {
+    const p = p120();
+    p.onThrottle();
+    expect(p.budget).toBe(90); // 0.75×, not halved
+    for (let i = 0; i < 50; i++) p.onThrottle();
+    expect(p.budget).toBe(20);
   });
 
-  it("never drops below the floor, however often it is throttled", () => {
-    const p = new Pacer(8, 0.25, 20);
-    for (let i = 0; i < 50; i++) p.onThrottle(0, 0);
-    expect(p.rate).toBe(0.25);
+  it("reaches for headroom only after a run of clean responses", () => {
+    const p = p120();
+    for (let i = 0; i < 59; i++) p.onSuccess(10, 60);
+    expect(p.budget).toBe(120);
+    p.onSuccess(10, 60);
+    expect(p.budget).toBe(130);
   });
 
-  it("holds the whole fleet off for the cool-off after a throttle", () => {
-    const p = new Pacer(2, 0.25, 20);
-    p.onThrottle(1000, 30_000);
-    expect(p.reserve(1000)).toBe(30_000); // per-minute bucket needs time to roll
+  it("a throttle resets progress toward an increase", () => {
+    const p = p120();
+    for (let i = 0; i < 59; i++) p.onSuccess(10, 60);
+    p.onThrottle();
+    for (let i = 0; i < 59; i++) p.onSuccess(10, 60);
+    expect(p.budget).toBe(90);
   });
 
-  it("creeps back up only after a run of clean responses (additive increase)", () => {
-    const p = new Pacer(2, 0.25, 20);
-    for (let i = 0; i < 39; i++) p.onSuccess(0.25, 40);
-    expect(p.rate).toBe(2); // not yet
-    p.onSuccess(0.25, 40);
-    expect(p.rate).toBe(2.25);
-  });
-
-  it("a single throttle resets the progress toward an increase", () => {
-    const p = new Pacer(2, 0.25, 20);
-    for (let i = 0; i < 39; i++) p.onSuccess(0.25, 40);
-    p.onThrottle(0, 0); // rate 1, and the clean streak is gone
-    for (let i = 0; i < 39; i++) p.onSuccess(0.25, 40);
-    expect(p.rate).toBe(1);
-  });
-
-  it("converges just under a ceiling instead of oscillating wildly", () => {
-    // Model a server that rejects anything above 2.5/s and check where we settle.
-    const CEILING = 2.5;
-    const p = new Pacer(2, 0.25, 20);
-    for (let i = 0; i < 4000; i++) {
-      if (p.rate > CEILING) p.onThrottle(0, 0);
-      else p.onSuccess(0.25, 40);
+  it("settles NEAR a ceiling rather than collapsing under it", () => {
+    // The regression this model replaced: the old AIMD pacer converged to a third
+    // of the achievable rate. Against a 150/min server, stay in the useful band.
+    const CEILING = 150;
+    const p = p120();
+    for (let i = 0; i < 20_000; i++) {
+      if (p.budget > CEILING) p.onThrottle();
+      else p.onSuccess(10, 60);
     }
-    expect(p.rate).toBeGreaterThan(1);
-    expect(p.rate).toBeLessThanOrEqual(CEILING + 0.25);
+    expect(p.budget).toBeGreaterThan(100);
+    expect(p.budget).toBeLessThanOrEqual(CEILING + 10);
   });
 
-  it("respects the configured maximum", () => {
-    const p = new Pacer(19.9, 0.25, 20);
-    for (let i = 0; i < 500; i++) p.onSuccess(0.25, 1);
-    expect(p.rate).toBe(20);
+  it("honours the configured bounds", () => {
+    expect(new Pacer(99_999, 20, 3000).budget).toBe(3000);
+    expect(new Pacer(1, 20, 3000).budget).toBe(20);
   });
 });

@@ -55,9 +55,13 @@ archive is ~13 hours. Short burst probes badly overstate it (a 50-message burst
 measures ~29/s); only a sustained run tells the truth.
 
 Because the ceiling is per-project and unknowable, the poller **discovers** it: a
-shared governor halves the request rate on a throttle, pauses briefly so the
-per-minute bucket can roll, and creeps back up while responses stay clean, so it
-converges just under whatever this project actually allows. Two consequences:
+shared governor spends each rolling minute's budget as fast as the API will take
+it, waits exactly long enough for the window to roll, and adapts the budget
+itself — trimming it on a throttle, reaching for a little more after a run of
+clean responses. Modelling the server's own shape matters: an earlier version
+paced to a smooth average requests/sec and measured *worse than no pacing at
+all* (0.8/s against 2.5/s), because smoothing leaves most of each minute unspent.
+Two consequences:
 
 - `GMAIL_FETCH_CONCURRENCY` bounds parallelism but **does not set speed** — the
   governor does. Raising it does not make the backfill faster.
@@ -65,7 +69,8 @@ converges just under whatever this project actually allows. Two consequences:
   bucket is empty Gmail rejects `messages.list` too, which stalls the poller
   wholesale rather than merely slowing it.
 
-`GMAIL_RATE_START` / `GMAIL_RATE_MAX` are the governor's starting guess and cap.
+`GMAIL_RATE_START` / `GMAIL_RATE_MAX` are the governor's starting guess and cap,
+in requests per rolling minute.
 If a mailbox is slower than you expect, check the per-chunk log line (it prints
 the settled pace and the throttle count) before touching anything — and if the
 pace has settled far below the published default, the fix is the project's quota
@@ -145,8 +150,8 @@ The tokens file wins when it exists; env is used only when it doesn't.
 | `GMAIL_BACKFILL_BUDGET_MS` | `600000` | wall clock spent walking per tick |
 | `GMAIL_BACKFILL_QUERY_EXTRA` | — | appended to the **walk** query only, e.g. `-category:promotions -category:social` |
 | `GMAIL_FETCH_CONCURRENCY` | `4` | in-flight `messages.get` calls — bounds parallelism, does NOT set the pace |
-| `GMAIL_RATE_START` | `2` | governor's initial requests/sec; it adapts from here |
-| `GMAIL_RATE_MAX` | `20` | ceiling for that adaptation |
+| `GMAIL_RATE_START` | `120` | governor's initial requests per rolling minute; it adapts from here |
+| `GMAIL_RATE_MAX` | `3000` | ceiling for that adaptation (the published per-user default) |
 | `GMAIL_RESYNC_DAYS` | `7` | fallback window when the history cursor expired |
 | `GMAIL_QUERY_EXTRA` | `-in:chats` | appended to every list query |
 | `GMAIL_BODY_CAP` | `50000` | plain-text body cap (chars) |
