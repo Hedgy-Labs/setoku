@@ -304,7 +304,9 @@ function mailboxHandles(): MailboxHandle[] {
  * token and retries (a fresh one is minted).
  */
 const HARD_RETRIES = 6; // 5xx / auth — a real fault, fail reasonably fast
-const RATE_RETRIES = 12; // throttling is EXPECTED under concurrency, not a fault
+const RATE_RETRIES = 25; // throttling is EXPECTED under concurrency, not a fault;
+// each wait is short (see rateBackoffMs), so a generous budget costs little and
+// keeps a busy minute from failing a chunk.
 
 // Throttling is invisible once the backoff absorbs it: the poller just goes
 // quietly slow, and "the backfill is taking 13 hours" gives you nothing to act
@@ -335,6 +337,30 @@ export function backoffMs(attempt: number, retryAfterMs = 0, rand: number = Math
   return Math.min(Math.max(retryAfterMs, Math.round(exp * (0.5 + rand * 0.5))), 5 * 60_000);
 }
 
+/**
+ * Backoff for a 429, which is a DIFFERENT problem from a fault and needs a
+ * different curve.
+ *
+ * Gmail's limit is a per-USER-per-SECOND quota: the bucket refills every second,
+ * so the correct response to "too fast" is to wait about a second, not to double
+ * away from it. Running the fault backoff here measured 2.2 msg/s with 241
+ * throttles and 1404s of cumulative sleep per 925-message chunk — the waits, not
+ * the quota, were the bottleneck: workers hit 8s/16s/32s sleeps over a budget
+ * that had already refilled.
+ *
+ * So: a short base, a low ceiling, and full jitter (still essential — it is what
+ * keeps concurrent workers from retrying in lockstep). This also self-paces the
+ * fleet: the more often a worker is throttled, the longer it waits, which is a
+ * closed loop that finds the server's actual limit without us configuring it.
+ */
+export function rateBackoffMs(attempt: number, retryAfterMs = 0, rand: number = Math.random()): number {
+  const CEIL = 5_000;
+  const exp = Math.min(250 * 2 ** Math.min(attempt, 8), CEIL);
+  // Retry-After is authoritative even when it exceeds the ceiling — the server
+  // is telling us exactly how long its bucket needs.
+  return Math.max(retryAfterMs, Math.round(exp * (0.5 + rand * 0.5)));
+}
+
 async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false): Promise<T | null> {
   // Two budgets: being throttled is not the same event as the API being broken,
   // and sharing one counter let a burst of 429s exhaust the retries meant for
@@ -359,7 +385,7 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
       const rate = r.status === 429;
       const n = rate ? throttled++ : hard++;
       if ((rate ? throttled : hard) > (rate ? RATE_RETRIES : HARD_RETRIES)) break;
-      const wait = backoffMs(n, retryAfter);
+      const wait = rate ? rateBackoffMs(n, retryAfter) : backoffMs(n, retryAfter);
       if (rate) {
         throttleHits++;
         throttleMs += wait;
@@ -375,7 +401,7 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
       const body = await r.text().catch(() => "");
       if (/rateLimitExceeded|userRateLimitExceeded|rate limit|Too Many Requests/i.test(body)) {
         if (throttled++ > RATE_RETRIES) break;
-        const wait = backoffMs(throttled - 1);
+        const wait = rateBackoffMs(throttled - 1);
         throttleHits++;
         throttleMs += wait;
         await Bun.sleep(wait);

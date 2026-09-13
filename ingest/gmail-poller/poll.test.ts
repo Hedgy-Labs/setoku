@@ -8,7 +8,7 @@
  * Gmail and Vector (covered by test/gmail-connect.test.ts on the connect side).
  */
 import { describe, it, expect } from "bun:test";
-import { nextBackfillWindow, mapLimit, backoffMs } from "./poll";
+import { nextBackfillWindow, mapLimit, backoffMs, rateBackoffMs } from "./poll";
 
 const NOW = new Date("2026-09-13T12:00:00Z");
 /** Walk to exhaustion, as the poller does, and return every window it asked for. */
@@ -130,5 +130,35 @@ describe("backoffMs", () => {
   it("caps at five minutes even for a huge attempt or Retry-After", () => {
     expect(backoffMs(99, 0, 1)).toBe(300_000);
     expect(backoffMs(1, 9_999_999, 0)).toBe(300_000);
+  });
+});
+
+describe("rateBackoffMs", () => {
+  it("stays sub-second at first — Gmail's quota refills every second", () => {
+    // The fault curve waits 1s+ immediately and doubles from there; against a
+    // per-second bucket that is the bottleneck, not the protection.
+    for (const r of [0, 0.5, 1]) expect(rateBackoffMs(0, 0, r)).toBeLessThanOrEqual(250);
+  });
+
+  it("stays far below the fault backoff at every attempt", () => {
+    for (let n = 0; n < 8; n++) expect(rateBackoffMs(n, 0, 1)).toBeLessThan(backoffMs(n, 0, 0));
+  });
+
+  it("caps at 5s instead of climbing to minutes", () => {
+    expect(rateBackoffMs(99, 0, 1)).toBeLessThanOrEqual(5_000);
+    expect(backoffMs(99, 0, 1)).toBe(300_000); // the fault curve still escalates
+  });
+
+  it("still grows with repeated throttling, so a hot worker self-paces", () => {
+    expect(rateBackoffMs(4, 0, 1)).toBeGreaterThan(rateBackoffMs(0, 0, 1));
+  });
+
+  it("jitters, so concurrent workers do not retry in lockstep", () => {
+    const waits = new Set(Array.from({ length: 50 }, (_, i) => rateBackoffMs(4, 0, i / 50)));
+    expect(waits.size).toBeGreaterThan(40);
+  });
+
+  it("obeys Retry-After even past the ceiling — the server knows its own bucket", () => {
+    expect(rateBackoffMs(0, 30_000, 0)).toBe(30_000);
   });
 });
