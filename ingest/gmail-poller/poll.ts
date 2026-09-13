@@ -106,12 +106,13 @@ const BACKFILL_CHUNK_DAYS = Math.max(1, Number(process.env.GMAIL_BACKFILL_CHUNK_
 const BACKFILL_BUDGET_MS = Number(process.env.GMAIL_BACKFILL_BUDGET_MS ?? 600_000);
 const BACKFILL_QUERY_EXTRA = process.env.GMAIL_BACKFILL_QUERY_EXTRA ?? "";
 const CONCURRENCY = Math.max(1, Number(process.env.GMAIL_FETCH_CONCURRENCY ?? 4));
-// Requests per ROLLING MINUTE, matching how Gmail actually meters. 150/min is
-// just under the measured ceiling on a real box (120/min ran clean, 300/min
-// throttled hard), and the governor adapts from there. Starting slightly HOT is
-// deliberate: one trim costs a couple of retries, whereas starting cold wastes
-// the headroom for as long as it takes to climb back.
-const RATE_START = Number(process.env.GMAIL_RATE_START ?? 150);
+// Requests per ROLLING MINUTE, matching how Gmail actually meters. messages.get
+// costs 5 quota units, so the 600 units/min measured as clean on a real box is
+// exactly 120 requests/min — the one rate observed with ZERO throttles. Start
+// there rather than above it: a start that is too hot throttles immediately and
+// the trim/climb cycle then settles BELOW the ceiling it overshot (measured:
+// starting at 150 converged to ~100/min, worse than simply holding 120).
+const RATE_START = Number(process.env.GMAIL_RATE_START ?? 120);
 const RATE_MAX = Number(process.env.GMAIL_RATE_MAX ?? 3000); // published default
 const RATE_MIN = 20;
 // NB: the Pacer instance itself is created just below the class declaration —
@@ -429,9 +430,17 @@ export class Pacer {
     return at - now;
   }
 
-  /** Throttled: we overshot. Trim the budget — gently, and never below the floor. */
+  /**
+   * Throttled: we overshot. Trim the budget — gently, and never below the floor.
+   *
+   * The trim is shallow (0.9, not the textbook 0.5) because the penalty here is
+   * asymmetric and small: overshooting costs one cheap rejection, since a
+   * throttled request consumes no quota, while undershooting costs throughput for
+   * the whole remaining run. A deep cut also makes the steady state oscillate far
+   * below the ceiling instead of hugging it.
+   */
   onThrottle(): void {
-    this.budget = Math.max(this.min, Math.floor(this.budget * 0.75));
+    this.budget = Math.max(this.min, Math.floor(this.budget * 0.9));
     this.clean = 0;
   }
 
@@ -443,7 +452,7 @@ export class Pacer {
    * responses the governor measured 1.5/s against an achievable 2.5/s, simply
    * because it never got to climb.
    */
-  onSuccess(step = 10, after = 20): void {
+  onSuccess(step = 5, after = 20): void {
     if (++this.clean < after) return;
     this.clean = 0;
     this.budget = Math.min(this.max, this.budget + step);

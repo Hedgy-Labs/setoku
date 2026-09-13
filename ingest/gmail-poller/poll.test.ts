@@ -192,7 +192,7 @@ describe("Pacer", () => {
   it("trims the budget gently on a throttle, never below the floor", () => {
     const p = p120();
     p.onThrottle();
-    expect(p.budget).toBe(90); // 0.75×, not halved
+    expect(p.budget).toBe(108); // shallow 0.9 trim: overshoot is cheap, undershoot is not
     for (let i = 0; i < 50; i++) p.onThrottle();
     expect(p.budget).toBe(20);
   });
@@ -209,11 +209,11 @@ describe("Pacer", () => {
     const p = p120();
     for (let i = 0; i < 59; i++) p.onSuccess(10, 60);
     p.onThrottle();
-    for (let i = 0; i < 59; i++) p.onSuccess(10, 60);
-    expect(p.budget).toBe(90);
+    for (let i = 0; i < 19; i++) p.onSuccess(10, 20);
+    expect(p.budget).toBe(108);
   });
 
-  it("settles NEAR a ceiling rather than collapsing under it", () => {
+  it("hugs a ceiling instead of oscillating far below it", () => {
     // The regression this model replaced: the old AIMD pacer converged to a third
     // of the achievable rate. Against a 150/min server, stay in the useful band.
     const CEILING = 150;
@@ -222,7 +222,7 @@ describe("Pacer", () => {
       if (p.budget > CEILING) p.onThrottle();
       else p.onSuccess(10, 20);
     }
-    expect(p.budget).toBeGreaterThan(100);
+    expect(p.budget).toBeGreaterThan(130); // within ~15% of the ceiling, not a third below
     expect(p.budget).toBeLessThanOrEqual(CEILING + 10);
   });
 
