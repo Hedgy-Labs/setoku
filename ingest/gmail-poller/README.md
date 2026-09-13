@@ -39,15 +39,43 @@ every 30s while a backfill is outstanding and settling back to
 `GMAIL_POLL_INTERVAL_MS` once it reaches the horizon. Re-ingest is idempotent
 (ReplacingMergeTree), so an interrupted walk costs time, never data.
 
-Two knobs matter for a big mailbox:
+**Expect this to take hours, and plan for it to run unattended.** Throughput is
+quota-bound, not code-bound: Gmail enforces a *Units per minute per user* budget
+whose real ceiling is set per Google-Cloud-project and cannot be read from the
+API. Measured on one real box:
 
-- `GMAIL_FETCH_CONCURRENCY` — `messages.get` is one call per message, so this
-  sets the wall clock. Gmail's per-user ceiling is 250 quota units/sec (= 50
-  gets/s); measured throughput is ~7.6/s at 1 and ~29/s at 8.
-- `GMAIL_BACKFILL_QUERY_EXTRA` — appended to the **walk** query only, never to
-  steady state. `-category:promotions -category:social` typically drops a third
-  of a personal mailbox (years of marketing) without touching receipts and
-  notifications, which live in `category:updates`.
+| paced target | achieved | throttled |
+|---|---|---|
+| 2/s | 2.0/s | 0 |
+| 5/s | 2.7/s | 140 |
+
+That is ~600 units/min clean — about **2 `messages.get`/sec**, roughly a
+twentieth of the published 15,000 units/min default. At that rate a 122k-message
+archive is ~13 hours. Short burst probes badly overstate it (a 50-message burst
+measures ~29/s); only a sustained run tells the truth.
+
+Because the ceiling is per-project and unknowable, the poller **discovers** it: a
+shared governor halves the request rate on a throttle, pauses briefly so the
+per-minute bucket can roll, and creeps back up while responses stay clean, so it
+converges just under whatever this project actually allows. Two consequences:
+
+- `GMAIL_FETCH_CONCURRENCY` bounds parallelism but **does not set speed** — the
+  governor does. Raising it does not make the backfill faster.
+- Running just *under* the limit beats running over it. Once the per-minute
+  bucket is empty Gmail rejects `messages.list` too, which stalls the poller
+  wholesale rather than merely slowing it.
+
+`GMAIL_RATE_START` / `GMAIL_RATE_MAX` are the governor's starting guess and cap.
+If a mailbox is slower than you expect, check the per-chunk log line (it prints
+the settled pace and the throttle count) before touching anything — and if the
+pace has settled far below the published default, the fix is the project's quota
+in Cloud Console, not a poller setting.
+
+`GMAIL_BACKFILL_QUERY_EXTRA` is the other lever worth knowing: appended to the
+**walk** query only, never to steady state. `-category:promotions
+-category:social` typically drops a third of a personal mailbox (years of
+marketing) without touching receipts and notifications, which live in
+`category:updates`.
 
 Sizing: rows run ~2.6 KiB each on disk, so a 200k-message lifetime archive is
 roughly half a gigabyte.
@@ -116,7 +144,9 @@ The tokens file wins when it exists; env is used only when it doesn't.
 | `GMAIL_BACKFILL_CHUNK_DAYS` | `30` | one walk step; bounds work lost to a crash |
 | `GMAIL_BACKFILL_BUDGET_MS` | `600000` | wall clock spent walking per tick |
 | `GMAIL_BACKFILL_QUERY_EXTRA` | — | appended to the **walk** query only, e.g. `-category:promotions -category:social` |
-| `GMAIL_FETCH_CONCURRENCY` | `4` | in-flight `messages.get` calls (Gmail allows up to 50/s) |
+| `GMAIL_FETCH_CONCURRENCY` | `4` | in-flight `messages.get` calls — bounds parallelism, does NOT set the pace |
+| `GMAIL_RATE_START` | `2` | governor's initial requests/sec; it adapts from here |
+| `GMAIL_RATE_MAX` | `20` | ceiling for that adaptation |
 | `GMAIL_RESYNC_DAYS` | `7` | fallback window when the history cursor expired |
 | `GMAIL_QUERY_EXTRA` | `-in:chats` | appended to every list query |
 | `GMAIL_BODY_CAP` | `50000` | plain-text body cap (chars) |

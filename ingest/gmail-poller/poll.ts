@@ -23,6 +23,15 @@
  * effect on the next tick with no restart, and the poller idles healthily (still
  * beating) when nothing is connected yet.
  *
+ * ⚠ THROUGHPUT IS QUOTA-BOUND, not code-bound. Gmail enforces "Units per minute
+ * per user" and the ceiling is per-project and unreadable: measured on one real
+ * box at ~600 units/min clean (about 2 messages.get/sec), roughly a twentieth of
+ * the published 15000. So a lifetime mailbox is an overnight job, not a coffee
+ * break — which is exactly why the walk checkpoints. Don't tune concurrency
+ * hoping to fix this; the governor (see Pacer) finds the real ceiling and holds
+ * just under it, which is both faster and safer than absorbing rejections: once
+ * the bucket is empty Gmail blocks messages.list too, stalling the poller wholesale.
+ *
  * Per mailbox, each tick fetches what's new and POSTs it to Vector's
  * /ingest/gmail/messages on the internal network:
  *   - first run:  users.messages.list  over q="after:<backfill>"      (deep pull)
@@ -67,11 +76,13 @@
  *                           steady state), default "". Use it to keep a deep
  *                           backfill cheap, e.g. "-category:promotions
  *                           -category:social" to skip years of marketing mail.
- *   GMAIL_FETCH_CONCURRENCY in-flight messages.get calls, default 4. Gmail's
- *                           per-user ceiling is 250 quota units/sec = 50 gets/s,
- *                           and a get answers in ~160ms, so concurrency c runs at
- *                           roughly c/0.16 req/s — c=8 sits ON the limit, c=4 at
- *                           half of it. Stay under: a 429 costs more than it saves.
+ *   GMAIL_FETCH_CONCURRENCY in-flight messages.get calls, default 4. This bounds
+ *                           parallelism; the PACE is set by the governor below,
+ *                           so raising it does not make the poller go faster.
+ *   GMAIL_RATE_START        initial requests/sec, default 2. The governor adapts
+ *                           from here — halving on a throttle, creeping up while
+ *                           clean — so this is a starting guess, not a setting.
+ *   GMAIL_RATE_MAX          ceiling for that adaptation, default 20/s.
  *   GMAIL_RESYNC_DAYS       fallback window when a history cursor has expired,
  *                           default 7 (Gmail keeps history records only ~days)
  *   GMAIL_QUERY_EXTRA       appended to EVERY list query, default
@@ -93,6 +104,10 @@ const BACKFILL_CHUNK_DAYS = Math.max(1, Number(process.env.GMAIL_BACKFILL_CHUNK_
 const BACKFILL_BUDGET_MS = Number(process.env.GMAIL_BACKFILL_BUDGET_MS ?? 600_000);
 const BACKFILL_QUERY_EXTRA = process.env.GMAIL_BACKFILL_QUERY_EXTRA ?? "";
 const CONCURRENCY = Math.max(1, Number(process.env.GMAIL_FETCH_CONCURRENCY ?? 4));
+const RATE_START = Number(process.env.GMAIL_RATE_START ?? 2); // req/s, adapts from here
+const RATE_MAX = Number(process.env.GMAIL_RATE_MAX ?? 20);
+const RATE_MIN = 0.25;
+const pacer = new Pacer(RATE_START, RATE_MIN, RATE_MAX);
 const RESYNC_DAYS = Number(process.env.GMAIL_RESYNC_DAYS ?? 7);
 const QUERY_EXTRA = process.env.GMAIL_QUERY_EXTRA ?? "-in:chats";
 const BODY_CAP = Number(process.env.GMAIL_BODY_CAP ?? 50_000);
@@ -315,8 +330,8 @@ const RATE_RETRIES = 25; // throttling is EXPECTED under concurrency, not a faul
 let throttleHits = 0;
 let throttleMs = 0;
 function takeThrottleStats(): string {
-  if (!throttleHits) return "";
-  const s = ` · throttled ${throttleHits}× (${(throttleMs / 1000).toFixed(0)}s waiting)`;
+  if (!throttleHits) return ` · pace ${pacer.rate.toFixed(1)}/s`;
+  const s = ` · throttled ${throttleHits}× (${(throttleMs / 1000).toFixed(0)}s waiting) · pace ${pacer.rate.toFixed(1)}/s`;
   throttleHits = 0;
   throttleMs = 0;
   return s;
@@ -354,11 +369,66 @@ export function backoffMs(attempt: number, retryAfterMs = 0, rand: number = Math
  * closed loop that finds the server's actual limit without us configuring it.
  */
 export function rateBackoffMs(attempt: number, retryAfterMs = 0, rand: number = Math.random()): number {
-  const CEIL = 5_000;
-  const exp = Math.min(250 * 2 ** Math.min(attempt, 8), CEIL);
+  const CEIL = 60_000; // the bucket is per-MINUTE; a full minute is the worst case
+  const exp = Math.min(2_000 * 2 ** Math.min(attempt, 8), CEIL);
   // Retry-After is authoritative even when it exceeds the ceiling — the server
   // is telling us exactly how long its bucket needs.
   return Math.max(retryAfterMs, Math.round(exp * (0.5 + rand * 0.5)));
+}
+
+/**
+ * A shared rate governor for every Gmail call this process makes.
+ *
+ * Gmail enforces "Units per minute per user", and the ceiling is PER PROJECT —
+ * not something we can read, and not the documented default. Measured on the box
+ * that prompted this: ~600 units/min clean, throttling above ~800. That is about
+ * 2 messages.get/sec, roughly a twentieth of the published 15000 units/min. A
+ * different project will sit somewhere else entirely, so the rate cannot be a
+ * constant in this file — it has to be discovered.
+ *
+ * So: AIMD. Creep the target rate up while requests come back clean, halve it the
+ * moment one is throttled, and pause the whole fleet briefly so the per-minute
+ * bucket can roll. That converges just under whatever the real ceiling is and
+ * stays there, without the operator configuring anything.
+ *
+ * Why pace at all rather than just retry: a rejected request still costs a round
+ * trip and, once the bucket is empty, Gmail blocks *everything* including
+ * messages.list — so a throttle storm can lock the poller out of its own listing
+ * calls. Running clean just under the limit is both faster and better behaved
+ * than running over it and absorbing the rejections.
+ */
+export class Pacer {
+  rate: number; // current target, requests/sec
+  private next = 0; // earliest wall-clock ms at which a request may start
+  private clean = 0;
+  constructor(
+    start: number,
+    readonly min: number,
+    readonly max: number,
+  ) {
+    this.rate = Math.min(Math.max(start, min), max);
+  }
+
+  /** Reserve the next slot, returning how long the caller should wait for it. */
+  reserve(now: number): number {
+    const at = Math.max(now, this.next);
+    this.next = at + 1000 / this.rate;
+    return at - now;
+  }
+
+  /** A throttled response: halve the target and hold the fleet off briefly. */
+  onThrottle(now: number, coolOffMs: number): void {
+    this.rate = Math.max(this.min, this.rate / 2);
+    this.clean = 0;
+    this.next = Math.max(this.next, now + coolOffMs);
+  }
+
+  /** A clean response: after a run of them, edge the target back up. */
+  onSuccess(step = 0.25, after = 40): void {
+    if (++this.clean < after) return;
+    this.clean = 0;
+    this.rate = Math.min(this.max, this.rate + step);
+  }
 }
 
 async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false): Promise<T | null> {
@@ -369,6 +439,10 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
   let throttled = 0;
   for (;;) {
     const token = await h.token();
+    // Every call, retries included, goes through the shared governor: it is the
+    // only thing that knows how fast this project is actually allowed to go.
+    const wait = pacer.reserve(Date.now());
+    if (wait > 0) await Bun.sleep(wait);
     const r = await fetch(`${API}${pathAndQuery}`, {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       signal: AbortSignal.timeout(30_000),
@@ -385,12 +459,13 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
       const rate = r.status === 429;
       const n = rate ? throttled++ : hard++;
       if ((rate ? throttled : hard) > (rate ? RATE_RETRIES : HARD_RETRIES)) break;
-      const wait = rate ? rateBackoffMs(n, retryAfter) : backoffMs(n, retryAfter);
+      const delay = rate ? rateBackoffMs(n, retryAfter) : backoffMs(n, retryAfter);
       if (rate) {
         throttleHits++;
-        throttleMs += wait;
+        throttleMs += delay;
+        pacer.onThrottle(Date.now(), delay);
       }
-      await Bun.sleep(wait);
+      await Bun.sleep(delay);
       continue;
     }
     // 403 is ambiguous on Gmail: a rate limit (retryable) vs a permission/scope
@@ -401,15 +476,17 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
       const body = await r.text().catch(() => "");
       if (/rateLimitExceeded|userRateLimitExceeded|rate limit|Too Many Requests/i.test(body)) {
         if (throttled++ > RATE_RETRIES) break;
-        const wait = rateBackoffMs(throttled - 1);
+        const delay = rateBackoffMs(throttled - 1);
         throttleHits++;
-        throttleMs += wait;
-        await Bun.sleep(wait);
+        throttleMs += delay;
+        pacer.onThrottle(Date.now(), delay);
+        await Bun.sleep(delay);
         continue;
       }
       throw new Error(`GET ${pathAndQuery} → 403 (permission/scope?) ${body.slice(0, 200)}`);
     }
     if (!r.ok) throw new Error(`GET ${pathAndQuery} → ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+    pacer.onSuccess();
     return (await r.json()) as T;
   }
   throw new Error(`GET ${pathAndQuery} gave up after retries (${hard} fault, ${throttled} throttled)`);

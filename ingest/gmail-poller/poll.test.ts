@@ -8,7 +8,7 @@
  * Gmail and Vector (covered by test/gmail-connect.test.ts on the connect side).
  */
 import { describe, it, expect } from "bun:test";
-import { nextBackfillWindow, mapLimit, backoffMs, rateBackoffMs } from "./poll";
+import { nextBackfillWindow, mapLimit, backoffMs, rateBackoffMs, Pacer } from "./poll";
 
 const NOW = new Date("2026-09-13T12:00:00Z");
 /** Walk to exhaustion, as the poller does, and return every window it asked for. */
@@ -134,22 +134,22 @@ describe("backoffMs", () => {
 });
 
 describe("rateBackoffMs", () => {
-  it("stays sub-second at first — Gmail's quota refills every second", () => {
-    // The fault curve waits 1s+ immediately and doubles from there; against a
-    // per-second bucket that is the bottleneck, not the protection.
-    for (const r of [0, 0.5, 1]) expect(rateBackoffMs(0, 0, r)).toBeLessThanOrEqual(250);
+  // Gmail's limit is "Units per MINUTE per user", so a throttled call may have to
+  // wait out most of a minute for the bucket to roll. An earlier version of this
+  // backed off in milliseconds on the theory that the quota refilled each second;
+  // it did not help, because the ceiling — not the wait — was the bottleneck.
+  it("starts at seconds, the scale of a per-minute bucket", () => {
+    for (const r of [0, 0.5, 1]) {
+      expect(rateBackoffMs(0, 0, r)).toBeGreaterThanOrEqual(1_000);
+      expect(rateBackoffMs(0, 0, r)).toBeLessThanOrEqual(2_000);
+    }
   });
 
-  it("stays far below the fault backoff at every attempt", () => {
-    for (let n = 0; n < 8; n++) expect(rateBackoffMs(n, 0, 1)).toBeLessThan(backoffMs(n, 0, 0));
+  it("caps at a minute — the longest a per-minute bucket can need", () => {
+    expect(rateBackoffMs(99, 0, 1)).toBe(60_000);
   });
 
-  it("caps at 5s instead of climbing to minutes", () => {
-    expect(rateBackoffMs(99, 0, 1)).toBeLessThanOrEqual(5_000);
-    expect(backoffMs(99, 0, 1)).toBe(300_000); // the fault curve still escalates
-  });
-
-  it("still grows with repeated throttling, so a hot worker self-paces", () => {
+  it("grows with repeated throttling, so a hot worker self-paces", () => {
     expect(rateBackoffMs(4, 0, 1)).toBeGreaterThan(rateBackoffMs(0, 0, 1));
   });
 
@@ -159,6 +159,75 @@ describe("rateBackoffMs", () => {
   });
 
   it("obeys Retry-After even past the ceiling — the server knows its own bucket", () => {
-    expect(rateBackoffMs(0, 30_000, 0)).toBe(30_000);
+    expect(rateBackoffMs(0, 90_000, 0)).toBe(90_000);
+  });
+});
+
+describe("Pacer", () => {
+  it("spaces requests at the target rate", () => {
+    const p = new Pacer(2, 0.25, 20); // 2/s → one every 500ms
+    expect(p.reserve(1000)).toBe(0); // first goes immediately
+    expect(p.reserve(1000)).toBe(500); // second waits out the gap
+    expect(p.reserve(1000)).toBe(1000);
+  });
+
+  it("does not make a caller wait when the rate has already been met", () => {
+    const p = new Pacer(2, 0.25, 20);
+    p.reserve(1000);
+    expect(p.reserve(9000)).toBe(0); // long idle — the slot is free again
+  });
+
+  it("halves the rate on a throttle (multiplicative decrease)", () => {
+    const p = new Pacer(8, 0.25, 20);
+    p.onThrottle(0, 0);
+    expect(p.rate).toBe(4);
+    p.onThrottle(0, 0);
+    expect(p.rate).toBe(2);
+  });
+
+  it("never drops below the floor, however often it is throttled", () => {
+    const p = new Pacer(8, 0.25, 20);
+    for (let i = 0; i < 50; i++) p.onThrottle(0, 0);
+    expect(p.rate).toBe(0.25);
+  });
+
+  it("holds the whole fleet off for the cool-off after a throttle", () => {
+    const p = new Pacer(2, 0.25, 20);
+    p.onThrottle(1000, 30_000);
+    expect(p.reserve(1000)).toBe(30_000); // per-minute bucket needs time to roll
+  });
+
+  it("creeps back up only after a run of clean responses (additive increase)", () => {
+    const p = new Pacer(2, 0.25, 20);
+    for (let i = 0; i < 39; i++) p.onSuccess(0.25, 40);
+    expect(p.rate).toBe(2); // not yet
+    p.onSuccess(0.25, 40);
+    expect(p.rate).toBe(2.25);
+  });
+
+  it("a single throttle resets the progress toward an increase", () => {
+    const p = new Pacer(2, 0.25, 20);
+    for (let i = 0; i < 39; i++) p.onSuccess(0.25, 40);
+    p.onThrottle(0, 0); // rate 1, and the clean streak is gone
+    for (let i = 0; i < 39; i++) p.onSuccess(0.25, 40);
+    expect(p.rate).toBe(1);
+  });
+
+  it("converges just under a ceiling instead of oscillating wildly", () => {
+    // Model a server that rejects anything above 2.5/s and check where we settle.
+    const CEILING = 2.5;
+    const p = new Pacer(2, 0.25, 20);
+    for (let i = 0; i < 4000; i++) {
+      if (p.rate > CEILING) p.onThrottle(0, 0);
+      else p.onSuccess(0.25, 40);
+    }
+    expect(p.rate).toBeGreaterThan(1);
+    expect(p.rate).toBeLessThanOrEqual(CEILING + 0.25);
+  });
+
+  it("respects the configured maximum", () => {
+    const p = new Pacer(19.9, 0.25, 20);
+    for (let i = 0; i < 500; i++) p.onSuccess(0.25, 1);
+    expect(p.rate).toBe(20);
   });
 });
