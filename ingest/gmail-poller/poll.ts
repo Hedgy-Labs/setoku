@@ -68,8 +68,10 @@
  *                           backfill cheap, e.g. "-category:promotions
  *                           -category:social" to skip years of marketing mail.
  *   GMAIL_FETCH_CONCURRENCY in-flight messages.get calls, default 4. Gmail's
- *                           per-user ceiling is 250 quota units/sec = 50 gets/s;
- *                           stay well under it (a 429 costs more than it saves).
+ *                           per-user ceiling is 250 quota units/sec = 50 gets/s,
+ *                           and a get answers in ~160ms, so concurrency c runs at
+ *                           roughly c/0.16 req/s — c=8 sits ON the limit, c=4 at
+ *                           half of it. Stay under: a 429 costs more than it saves.
  *   GMAIL_RESYNC_DAYS       fallback window when a history cursor has expired,
  *                           default 7 (Gmail keeps history records only ~days)
  *   GMAIL_QUERY_EXTRA       appended to EVERY list query, default
@@ -301,8 +303,31 @@ function mailboxHandles(): MailboxHandle[] {
  * on 404 — used to detect an expired history cursor. A 401 drops the cached access
  * token and retries (a fresh one is minted).
  */
+const HARD_RETRIES = 6; // 5xx / auth — a real fault, fail reasonably fast
+const RATE_RETRIES = 12; // throttling is EXPECTED under concurrency, not a fault
+
+/**
+ * Backoff for one retry, in ms. Exponential, capped at 5 min, honouring
+ * Retry-After when the server sent one.
+ *
+ * FULL JITTER is the load-bearing part, not the curve. GMAIL_FETCH_CONCURRENCY
+ * calls are in flight at once; a deterministic `2 ** attempt * 1000` makes every
+ * throttled call sleep the SAME duration and retry in lockstep — the same
+ * thundering herd that produced the 429 — so they re-throttle each other until
+ * the shared retry budget is gone. Spreading the wakeups fixes it.
+ */
+export function backoffMs(attempt: number, retryAfterMs = 0, rand: number = Math.random()): number {
+  const exp = Math.min(2 ** Math.min(attempt, 10) * 1000, 5 * 60_000);
+  return Math.min(Math.max(retryAfterMs, Math.round(exp * (0.5 + rand * 0.5))), 5 * 60_000);
+}
+
 async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false): Promise<T | null> {
-  for (let attempt = 0; attempt < 6; attempt++) {
+  // Two budgets: being throttled is not the same event as the API being broken,
+  // and sharing one counter let a burst of 429s exhaust the retries meant for
+  // real faults (which is exactly how a whole backfill chunk used to die).
+  let hard = 0;
+  let throttled = 0;
+  for (;;) {
     const token = await h.token();
     const r = await fetch(`${API}${pathAndQuery}`, {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
@@ -311,22 +336,27 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
     if (notFoundOk && r.status === 404) return null;
     if (r.status === 401) {
       h.invalidate(); // force a fresh access token, then retry
+      if (++hard > HARD_RETRIES) break;
       continue;
     }
     // 429 rate / 5xx → back off (respect Retry-After if sent)
     if (r.status === 429 || r.status >= 500) {
       const retryAfter = Number(r.headers.get("retry-after") ?? 0) * 1000;
-      await Bun.sleep(Math.min(Math.max(retryAfter, 2 ** attempt * 1000), 5 * 60_000));
+      const rate = r.status === 429;
+      const n = rate ? throttled++ : hard++;
+      if ((rate ? throttled : hard) > (rate ? RATE_RETRIES : HARD_RETRIES)) break;
+      await Bun.sleep(backoffMs(n, retryAfter));
       continue;
     }
     // 403 is ambiguous on Gmail: a rate limit (retryable) vs a permission/scope
     // error (permanent). Retry ONLY the rate-limit flavor — a permanent 403 must
-    // fail fast, or it burns all 6 backoffs (up to 5 min each) and, since tick()
+    // fail fast, or it burns every backoff (up to 5 min each) and, since tick()
     // polls mailboxes sequentially, stalls every OTHER mailbox behind it.
     if (r.status === 403) {
       const body = await r.text().catch(() => "");
       if (/rateLimitExceeded|userRateLimitExceeded|rate limit|Too Many Requests/i.test(body)) {
-        await Bun.sleep(Math.min(2 ** attempt * 1000, 5 * 60_000));
+        if (throttled++ > RATE_RETRIES) break;
+        await Bun.sleep(backoffMs(throttled - 1));
         continue;
       }
       throw new Error(`GET ${pathAndQuery} → 403 (permission/scope?) ${body.slice(0, 200)}`);
@@ -334,7 +364,7 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
     if (!r.ok) throw new Error(`GET ${pathAndQuery} → ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
     return (await r.json()) as T;
   }
-  throw new Error(`GET ${pathAndQuery} gave up after retries`);
+  throw new Error(`GET ${pathAndQuery} gave up after retries (${hard} fault, ${throttled} throttled)`);
 }
 
 /* ------------------------------------------------------------- liveness */

@@ -8,7 +8,7 @@
  * Gmail and Vector (covered by test/gmail-connect.test.ts on the connect side).
  */
 import { describe, it, expect } from "bun:test";
-import { nextBackfillWindow, mapLimit } from "./poll";
+import { nextBackfillWindow, mapLimit, backoffMs } from "./poll";
 
 const NOW = new Date("2026-09-13T12:00:00Z");
 /** Walk to exhaustion, as the poller does, and return every window it asked for. */
@@ -97,5 +97,38 @@ describe("mapLimit", () => {
   it("handles fewer items than the limit, and none at all", async () => {
     expect(await mapLimit([1, 2], 8, async (n) => n * 2)).toEqual([2, 4]);
     expect(await mapLimit([], 8, async (n) => n)).toEqual([]);
+  });
+});
+
+describe("backoffMs", () => {
+  it("spreads concurrent retries instead of synchronizing them", () => {
+    // The whole point: N in-flight calls throttled at the same instant must NOT
+    // wake at the same instant, or they re-throttle each other until the retry
+    // budget is gone (this is what killed the first archive-walk chunk).
+    const waits = new Set(Array.from({ length: 50 }, (_, i) => backoffMs(3, 0, i / 50)));
+    expect(waits.size).toBeGreaterThan(40);
+  });
+
+  it("grows with the attempt number", () => {
+    const at = (n: number) => backoffMs(n, 0, 1); // fix the jitter to compare curves
+    expect(at(1)).toBeGreaterThan(at(0));
+    expect(at(5)).toBeGreaterThan(at(3));
+  });
+
+  it("never sleeps less than half the nominal backoff, nor more than it", () => {
+    for (const r of [0, 0.5, 0.999]) {
+      expect(backoffMs(4, 0, r)).toBeGreaterThanOrEqual(8_000);
+      expect(backoffMs(4, 0, r)).toBeLessThanOrEqual(16_000);
+    }
+  });
+
+  it("honours Retry-After when the server sends a longer one", () => {
+    expect(backoffMs(0, 45_000, 0)).toBe(45_000);
+    expect(backoffMs(0, 100, 0)).toBe(500); // shorter than our own floor → ignored
+  });
+
+  it("caps at five minutes even for a huge attempt or Retry-After", () => {
+    expect(backoffMs(99, 0, 1)).toBe(300_000);
+    expect(backoffMs(1, 9_999_999, 0)).toBe(300_000);
   });
 });
