@@ -356,17 +356,18 @@ services:
       # chunked and checkpointed, so it resumes after a restart instead of
       # re-pulling from today. QUERY_EXTRA applies to the WALK only (not steady
       # state) — e.g. "-category:promotions -category:social" keeps a deep
-      # backfill cheap. CONCURRENCY is in-flight messages.get calls; Gmail's
-      # per-user ceiling is 250 quota units/sec = 50 gets/s, so stay well under.
+      # backfill cheap. CONCURRENCY bounds in-flight messages.get calls; it does
+      # NOT set the speed — the rate governor below does.
       GMAIL_BACKFILL_DAYS: ${SETOKU_GMAIL_BACKFILL_DAYS:-90}
       GMAIL_BACKFILL_CHUNK_DAYS: ${SETOKU_GMAIL_BACKFILL_CHUNK_DAYS:-30}
       GMAIL_BACKFILL_BUDGET_MS: ${SETOKU_GMAIL_BACKFILL_BUDGET_MS:-600000}
       GMAIL_BACKFILL_QUERY_EXTRA: ${SETOKU_GMAIL_BACKFILL_QUERY_EXTRA:-}
       GMAIL_FETCH_CONCURRENCY: ${SETOKU_GMAIL_FETCH_CONCURRENCY:-4}
       # Throughput is quota-bound: Gmail's "units per minute per user" ceiling is
-      # per-project and cannot be read, so the poller discovers it (halve on a
-      # throttle, creep up while clean). These are the starting guess and the cap,
-      # not a speed setting — raising them does not raise the quota.
+      # per-project and cannot be read, so the poller discovers it (trim on a
+      # throttle, creep up while clean). Requests per ROLLING MINUTE; these are a
+      # starting guess and a cap, NOT a speed setting — raising them does not
+      # raise the quota. A real box measured 120/min (2 req/s) as its clean rate.
       GMAIL_RATE_START: ${SETOKU_GMAIL_RATE_START:-120}
       GMAIL_RATE_MAX: ${SETOKU_GMAIL_RATE_MAX:-3000}
     volumes:

@@ -25,17 +25,25 @@
  *
  * ⚠ THROUGHPUT IS QUOTA-BOUND, not code-bound. Gmail enforces "Units per minute
  * per user" and the ceiling is per-project and unreadable: measured on one real
- * box at ~600 units/min clean (about 2 messages.get/sec), roughly a twentieth of
- * the published 15000. So a lifetime mailbox is an overnight job, not a coffee
- * break — which is exactly why the walk checkpoints. Don't tune concurrency
- * hoping to fix this; the governor (see Pacer) finds the real ceiling and holds
- * just under it, which is both faster and safer than absorbing rejections: once
- * the bucket is empty Gmail blocks messages.list too, stalling the poller wholesale.
+ * box at ~600 units/min clean — messages.get costs 5 units, so about 120 req/min
+ * or 2/sec, roughly a twentieth of the published 15000. A 124k-message lifetime
+ * mailbox is therefore an overnight job, not a coffee break, which is exactly
+ * why the walk checkpoints. Don't tune concurrency hoping to fix it.
+ *
+ * The governor (see Pacer) holds just under that ceiling. Note this is a SAFETY
+ * trade, not a speed win: hammering measured slightly FASTER (2.5/s vs 2.0/s,
+ * because a throttled request costs no quota, so retries grab slots the instant
+ * they free) — but it empties the bucket hard enough that Gmail starts rejecting
+ * messages.list too, which stalls the poller wholesale instead of merely slowing
+ * it. Predictable 2/s beats 2.5/s that can wedge mid-archive.
  *
  * Per mailbox, each tick fetches what's new and POSTs it to Vector's
  * /ingest/gmail/messages on the internal network:
- *   - first run:  users.messages.list  over q="after:<backfill>"      (deep pull)
- *   - steady:     users.history.list   from the stored historyId       (only new)
+ *   - archive walk: users.messages.list over q="after:X before:Y", walking
+ *                   BACKWARDS from today to GMAIL_BACKFILL_DAYS a chunk at a
+ *                   time, checkpointed after each (survives restarts)
+ *   - steady state: users.history.list from the stored historyId (only new) —
+ *                   runs every tick, including while the walk is still going
  * then users.messages.get?format=full per id → parsed plain-text row.
  *
  * A message is MUTABLE (labels change), so — like github_issues — the lake table
@@ -449,7 +457,7 @@ export class Pacer {
    *
    * `after` has to be small relative to a chunk (~1000 messages) or the budget
    * cannot reach the ceiling before the run ends: at one step per 60 clean
-   * responses the governor measured 1.5/s against an achievable 2.5/s, simply
+   * responses the governor measured 1.5/s against an achievable 2.0/s, simply
    * because it never got to climb.
    */
   onSuccess(step = 5, after = 20): void {

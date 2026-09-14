@@ -49,10 +49,14 @@ API. Measured on one real box:
 | 2/s | 2.0/s | 0 |
 | 5/s | 2.7/s | 140 |
 
-That is ~600 units/min clean — about **2 `messages.get`/sec**, roughly a
-twentieth of the published 15,000 units/min default. At that rate a 122k-message
-archive is ~13 hours. Short burst probes badly overstate it (a 50-message burst
-measures ~29/s); only a sustained run tells the truth.
+`messages.get` costs 5 quota units, so ~600 units/min clean is **120 requests
+per minute — 2/sec**, roughly a twentieth of the published 15,000 units/min
+default.
+
+Measure before you tune, and measure a SUSTAINED run: a 50-message burst probe
+reports ~29/s, an order of magnitude over what holds, because Gmail allows a
+short burst and then clamps. One real pull of a lifetime mailbox landed
+**124,358 messages (16 years, 216 MiB on disk) in about 17 hours** at that rate.
 
 Because the ceiling is per-project and unknowable, the poller **discovers** it: a
 shared governor spends each rolling minute's budget as fast as the API will take
@@ -65,9 +69,12 @@ Two consequences:
 
 - `GMAIL_FETCH_CONCURRENCY` bounds parallelism but **does not set speed** — the
   governor does. Raising it does not make the backfill faster.
-- Running just *under* the limit beats running over it. Once the per-minute
-  bucket is empty Gmail rejects `messages.list` too, which stalls the poller
-  wholesale rather than merely slowing it.
+- Running just *under* the limit is a SAFETY trade, not a speed win. Hammering
+  measured slightly faster (2.5/s vs 2.0/s — a throttled request costs no quota,
+  so retries grab slots the moment they free), but it empties the bucket hard
+  enough that Gmail starts rejecting `messages.list` as well, stalling the poller
+  wholesale rather than merely slowing it. A predictable 2/s beats a 2.5/s that
+  can wedge halfway through an archive.
 
 `GMAIL_RATE_START` / `GMAIL_RATE_MAX` are the governor's starting guess and cap,
 in requests per rolling minute.

@@ -49,7 +49,7 @@ describe("nextBackfillWindow", () => {
     expect(nextBackfillWindow(NOW, 90, 30, "2020-01-01")).toBeNull();
   });
 
-  it("covers a multi-year horizon in finite chunks (the campsh case)", () => {
+  it("covers a multi-year horizon in finite chunks (a lifetime mailbox)", () => {
     const ws = walk(365 * 17, 30);
     expect(ws.length).toBe(Math.ceil((365 * 17) / 30));
     expect(ws.at(-1)!.after).toBe("2009/09/17"); // 6205 days back, leap days included
@@ -233,16 +233,25 @@ describe("Pacer", () => {
 });
 
 describe("Pacer climb rate", () => {
-  it("reaches the ceiling within one chunk's worth of messages", () => {
+  it("reaches a higher ceiling within one chunk's worth of messages", () => {
     // A backfill chunk is ~1000 messages. If the governor cannot climb from its
     // start to the real ceiling inside that, it spends the whole run below it —
-    // which is exactly how a 2.5/s-capable mailbox measured 1.5/s.
-    const CEILING = 160;
+    // which is how an earlier build measured 1.5/s against an achievable 2.0/s.
+    // Start WELL below the ceiling so the assertion can only pass by climbing.
+    const CEILING = 300;
     const p = new Pacer(120, 20, 3000);
     for (let i = 0; i < 1000; i++) {
       if (p.budget > CEILING) p.onThrottle();
       else p.onSuccess();
     }
-    expect(p.budget).toBeGreaterThanOrEqual(120);
+    expect(p.budget).toBeGreaterThan(250); // climbed 120 → near 300, not stuck
+  });
+
+  it("does not climb when every response is throttled", () => {
+    // Guards the inverse: a governor that drifts up regardless of outcome would
+    // pass the test above for the wrong reason.
+    const p = new Pacer(120, 20, 3000);
+    for (let i = 0; i < 1000; i++) p.onThrottle();
+    expect(p.budget).toBe(20); // pinned to the floor
   });
 });
