@@ -23,10 +23,27 @@
  * effect on the next tick with no restart, and the poller idles healthily (still
  * beating) when nothing is connected yet.
  *
+ * ⚠ THROUGHPUT IS QUOTA-BOUND, not code-bound. Gmail enforces "Units per minute
+ * per user" and the ceiling is per-project and unreadable: measured on one real
+ * box at ~600 units/min clean — messages.get costs 5 units, so about 120 req/min
+ * or 2/sec, roughly a twentieth of the published 15000. A 124k-message lifetime
+ * mailbox is therefore an overnight job, not a coffee break, which is exactly
+ * why the walk checkpoints. Don't tune concurrency hoping to fix it.
+ *
+ * The governor (see Pacer) holds just under that ceiling. Note this is a SAFETY
+ * trade, not a speed win: hammering measured slightly FASTER (2.5/s vs 2.0/s,
+ * because a throttled request costs no quota, so retries grab slots the instant
+ * they free) — but it empties the bucket hard enough that Gmail starts rejecting
+ * messages.list too, which stalls the poller wholesale instead of merely slowing
+ * it. Predictable 2/s beats 2.5/s that can wedge mid-archive.
+ *
  * Per mailbox, each tick fetches what's new and POSTs it to Vector's
  * /ingest/gmail/messages on the internal network:
- *   - first run:  users.messages.list  over q="after:<backfill>"      (deep pull)
- *   - steady:     users.history.list   from the stored historyId       (only new)
+ *   - archive walk: users.messages.list over q="after:X before:Y", walking
+ *                   BACKWARDS from today to GMAIL_BACKFILL_DAYS a chunk at a
+ *                   time, checkpointed after each (survives restarts)
+ *   - steady state: users.history.list from the stored historyId (only new) —
+ *                   runs every tick, including while the walk is still going
  * then users.messages.get?format=full per id → parsed plain-text row.
  *
  * A message is MUTABLE (labels change), so — like github_issues — the lake table
@@ -56,10 +73,29 @@
  *   GMAIL_AUTH_MODE         "oauth" (default) | "dwd" (not yet implemented)
  *   GMAIL_VECTOR_URL        default http://vector:8080 (base; paths appended)
  *   GMAIL_POLL_INTERVAL_MS  default 900000 (15 min — email doesn't need faster)
- *   GMAIL_BACKFILL_DAYS     first-run lookback, default 90
+ *   GMAIL_BACKFILL_DAYS     how far back the archive walk goes, default 90.
+ *                           Safe to set to years: the walk is CHUNKED and
+ *                           CHECKPOINTED, so it survives restarts (see below).
+ *   GMAIL_BACKFILL_CHUNK_DAYS  one walk step, default 30. Each step is
+ *                           checkpointed, so this bounds work lost to a crash.
+ *   GMAIL_BACKFILL_BUDGET_MS   wall-clock spent walking per tick, default
+ *                           600000 (10 min). The walk resumes on the next tick.
+ *   GMAIL_BACKFILL_QUERY_EXTRA  appended to the ARCHIVE-WALK query only (not to
+ *                           steady state), default "". Use it to keep a deep
+ *                           backfill cheap, e.g. "-category:promotions
+ *                           -category:social" to skip years of marketing mail.
+ *   GMAIL_FETCH_CONCURRENCY in-flight messages.get calls, default 4. This bounds
+ *                           parallelism; the PACE is set by the governor below,
+ *                           so raising it does not make the poller go faster.
+ *   GMAIL_RATE_START        initial requests per ROLLING MINUTE, default 120 (the
+ *                           measured clean rate on a real box). The governor
+ *                           adapts from here, so it is a starting guess, not a
+ *                           speed setting.
+ *   GMAIL_RATE_MAX          ceiling for that adaptation, default 3000/min (the
+ *                           published per-user default).
  *   GMAIL_RESYNC_DAYS       fallback window when a history cursor has expired,
  *                           default 7 (Gmail keeps history records only ~days)
- *   GMAIL_QUERY_EXTRA       appended to the backfill/resync query, default
+ *   GMAIL_QUERY_EXTRA       appended to EVERY list query, default
  *                           "-in:chats" (skip Google Chat). Spam/trash always out.
  *   GMAIL_BODY_CAP          plain-text body cap in chars, default 50000
  *   GMAIL_DROP_AUTH         "0" to keep auth/2FA mail (default drops it)
@@ -74,6 +110,21 @@ const AUTH_MODE = process.env.GMAIL_AUTH_MODE ?? "oauth";
 const VECTOR_BASE = (process.env.GMAIL_VECTOR_URL ?? "http://vector:8080").replace(/\/+$/, "");
 const INTERVAL = Number(process.env.GMAIL_POLL_INTERVAL_MS ?? 900_000);
 const BACKFILL_DAYS = Number(process.env.GMAIL_BACKFILL_DAYS ?? 90);
+const BACKFILL_CHUNK_DAYS = Math.max(1, Number(process.env.GMAIL_BACKFILL_CHUNK_DAYS ?? 30));
+const BACKFILL_BUDGET_MS = Number(process.env.GMAIL_BACKFILL_BUDGET_MS ?? 600_000);
+const BACKFILL_QUERY_EXTRA = process.env.GMAIL_BACKFILL_QUERY_EXTRA ?? "";
+const CONCURRENCY = Math.max(1, Number(process.env.GMAIL_FETCH_CONCURRENCY ?? 4));
+// Requests per ROLLING MINUTE, matching how Gmail actually meters. messages.get
+// costs 5 quota units, so the 600 units/min measured as clean on a real box is
+// exactly 120 requests/min — the one rate observed with ZERO throttles. Start
+// there rather than above it: a start that is too hot throttles immediately and
+// the trim/climb cycle then settles BELOW the ceiling it overshot (measured:
+// starting at 150 converged to ~100/min, worse than simply holding 120).
+const RATE_START = Number(process.env.GMAIL_RATE_START ?? 120);
+const RATE_MAX = Number(process.env.GMAIL_RATE_MAX ?? 3000); // published default
+const RATE_MIN = 20;
+// NB: the Pacer instance itself is created just below the class declaration —
+// `new` on a class in its temporal dead zone is a runtime ReferenceError.
 const RESYNC_DAYS = Number(process.env.GMAIL_RESYNC_DAYS ?? 7);
 const QUERY_EXTRA = process.env.GMAIL_QUERY_EXTRA ?? "-in:chats";
 const BODY_CAP = Number(process.env.GMAIL_BODY_CAP ?? 50_000);
@@ -88,7 +139,13 @@ const FLUSH = 200; // messages per Vector POST — bounded memory, like github p
 // instead of resuming incrementally and skipping mail from the gap.
 interface AccountState {
   historyId?: string; // cursor for users.history.list
-  backfilled?: boolean;
+  backfilled?: boolean; // the archive walk has reached GMAIL_BACKFILL_DAYS
+  // Oldest day the archive walk has covered (YYYY-MM-DD). The walk moves
+  // BACKWARDS from today and rewrites this after every chunk, so a restart
+  // resumes where it stopped instead of re-pulling years of mail. Absent on a
+  // mailbox backfilled by an older build — the walk then restarts from today,
+  // which re-fetches the recent window once (idempotent: ReplacingMergeTree).
+  backfilledTo?: string;
 }
 type State = Record<string, AccountState>;
 
@@ -111,6 +168,61 @@ function saveState(s: State): void {
 const isoDate = (d: Date): string => d.toISOString().slice(0, 10);
 // Gmail's q date operators want YYYY/MM/DD
 const gmailDate = (daysBack: number): string => isoDate(new Date(Date.now() - daysBack * 86_400_000)).replace(/-/g, "/");
+const slashDate = (iso: string): string => iso.replace(/-/g, "/");
+
+/**
+ * The archive walk, as a pure function: the next chunk of history to pull, or
+ * null when the walk has reached `horizonDays` back and is done.
+ *
+ * Why walk BACKWARDS in chunks instead of one `after:<horizon>` list: a lifetime
+ * mailbox is ~200k messages, and messages.get is one call each — hours of work.
+ * One unbounded pull holds every id in memory, saves no cursor until it finishes,
+ * and loses the whole run to a single restart. Walking back a chunk at a time
+ * lets the caller checkpoint after each one, so a restart costs one chunk.
+ *
+ * Newest-first is deliberate: the most useful mail lands in the lake in the first
+ * minutes, and the archive fills in behind it.
+ *
+ * Window edges: Gmail's `after:`/`before:` are day-granular, so consecutive
+ * windows SHARE their boundary day rather than abut it. That double-pulls one
+ * day per chunk — cheap, and it cannot drop a message to an off-by-one, which
+ * a gap silently would (ReplacingMergeTree dedups the overlap).
+ */
+export function nextBackfillWindow(
+  now: Date,
+  horizonDays: number,
+  chunkDays: number,
+  backfilledTo?: string,
+): { after: string; before: string } | null {
+  const day = 86_400_000;
+  const horizon = new Date(now.getTime() - horizonDays * day);
+  // No cursor yet (fresh mailbox, or state written by a pre-walk build): start
+  // at today and walk back. A mailbox the old code already backfilled re-pulls
+  // its recent window once — idempotent, and far safer than assuming a window.
+  // An UNPARSEABLE cursor falls back to today for the same reason: re-walking
+  // costs time, whereas treating it as "done" would silently skip the archive.
+  const parsed = backfilledTo ? new Date(`${backfilledTo}T00:00:00Z`) : now;
+  const cursor = Number.isNaN(parsed.getTime()) ? now : parsed;
+  if (cursor.getTime() <= horizon.getTime()) return null;
+  const step = Math.max(1, chunkDays) * day; // a 0-day chunk would never advance
+  const start = new Date(Math.max(cursor.getTime() - step, horizon.getTime()));
+  return { after: slashDate(isoDate(start)), before: slashDate(isoDate(cursor)) };
+}
+
+/** Map over `items` with at most `limit` in flight, preserving input order. */
+export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
 
 /* --------------------------------------------------- auth: MailboxAuth seam */
 // A handle to one mailbox: mint a Bearer access token on demand, drop it on 401.
@@ -223,9 +335,150 @@ function mailboxHandles(): MailboxHandle[] {
  * on 404 — used to detect an expired history cursor. A 401 drops the cached access
  * token and retries (a fresh one is minted).
  */
+const HARD_RETRIES = 6; // 5xx / auth — a real fault, fail reasonably fast
+const RATE_RETRIES = 25; // throttling is EXPECTED under concurrency, not a fault;
+// each wait is short (see rateBackoffMs), so a generous budget costs little and
+// keeps a busy minute from failing a chunk.
+
+// Throttling is invisible once the backoff absorbs it: the poller just goes
+// quietly slow, and "the backfill is taking 13 hours" gives you nothing to act
+// on. Count it and report it per chunk, so the logs say whether to turn
+// GMAIL_FETCH_CONCURRENCY down (throttled) or leave it alone (just a lot of mail).
+let throttleHits = 0;
+let throttleMs = 0;
+function takeThrottleStats(): string {
+  if (!throttleHits) return ` · budget ${pacer.budget}/min`;
+  const s = ` · throttled ${throttleHits}× (${(throttleMs / 1000).toFixed(0)}s waiting) · budget ${pacer.budget}/min`;
+  throttleHits = 0;
+  throttleMs = 0;
+  return s;
+}
+
+/**
+ * Backoff for one retry, in ms. Exponential, capped at 5 min, honouring
+ * Retry-After when the server sent one.
+ *
+ * FULL JITTER is the load-bearing part, not the curve. GMAIL_FETCH_CONCURRENCY
+ * calls are in flight at once; a deterministic `2 ** attempt * 1000` makes every
+ * throttled call sleep the SAME duration and retry in lockstep — the same
+ * thundering herd that produced the 429 — so they re-throttle each other until
+ * the shared retry budget is gone. Spreading the wakeups fixes it.
+ */
+export function backoffMs(attempt: number, retryAfterMs = 0, rand: number = Math.random()): number {
+  const exp = Math.min(2 ** Math.min(attempt, 10) * 1000, 5 * 60_000);
+  return Math.min(Math.max(retryAfterMs, Math.round(exp * (0.5 + rand * 0.5))), 5 * 60_000);
+}
+
+/**
+ * Backoff for a 429, which is a DIFFERENT problem from a fault and needs a
+ * different curve.
+ *
+ * Gmail's limit is a per-USER-per-SECOND quota: the bucket refills every second,
+ * so the correct response to "too fast" is to wait about a second, not to double
+ * away from it. Running the fault backoff here measured 2.2 msg/s with 241
+ * throttles and 1404s of cumulative sleep per 925-message chunk — the waits, not
+ * the quota, were the bottleneck: workers hit 8s/16s/32s sleeps over a budget
+ * that had already refilled.
+ *
+ * So: a short base, a low ceiling, and full jitter (still essential — it is what
+ * keeps concurrent workers from retrying in lockstep). This also self-paces the
+ * fleet: the more often a worker is throttled, the longer it waits, which is a
+ * closed loop that finds the server's actual limit without us configuring it.
+ */
+export function rateBackoffMs(attempt: number, retryAfterMs = 0, rand: number = Math.random()): number {
+  const CEIL = 60_000; // the bucket is per-MINUTE; a full minute is the worst case
+  const exp = Math.min(2_000 * 2 ** Math.min(attempt, 8), CEIL);
+  // Retry-After is authoritative even when it exceeds the ceiling — the server
+  // is telling us exactly how long its bucket needs.
+  return Math.max(retryAfterMs, Math.round(exp * (0.5 + rand * 0.5)));
+}
+
+/**
+ * A shared quota governor for every Gmail call this process makes.
+ *
+ * Gmail enforces "Units per minute per user": a BUDGET on a rolling minute, not
+ * a smooth rate. Model it the way the server does — spend the minute's allowance
+ * as fast as the API will take it, then wait exactly long enough for the oldest
+ * request to age out of the window.
+ *
+ * The first attempt paced to an average requests/sec with textbook AIMD and
+ * measured WORSE than no pacing at all: 0.8/s against the 2.5/s it replaced.
+ * Halving on every throttle while creeping back at +0.25 per 40 clean responses
+ * drove the rate to the floor faster than it could recover, and smoothing left
+ * most of each minute's budget unspent. Matching the server's own shape fixes
+ * both: bursty within the window is exactly what the window permits.
+ *
+ * The budget still adapts, because the real ceiling is per-project and cannot be
+ * read — measured ~600 units/min (≈120 messages.get/min) on the box that
+ * prompted this, roughly a twentieth of the published 15000. It adapts gently:
+ * overshooting costs one retry, while undershooting costs the whole run.
+ */
+export class Pacer {
+  private stamps: number[] = []; // request times inside the current rolling minute
+  private clean = 0;
+  constructor(
+    public budget: number, // requests allowed per rolling minute
+    readonly min: number,
+    readonly max: number,
+  ) {
+    this.budget = Math.min(Math.max(budget, min), max);
+  }
+
+  /** Claim the next slot; returns how long the caller must wait to take it. */
+  reserve(now: number): number {
+    const cutoff = now - 60_000;
+    while (this.stamps.length && this.stamps[0]! <= cutoff) this.stamps.shift();
+    if (this.stamps.length < this.budget) {
+      this.stamps.push(now);
+      return 0;
+    }
+    // Budget spent: the next slot opens when the oldest request leaves the window.
+    const at = this.stamps[0]! + 60_000;
+    this.stamps.push(at);
+    return at - now;
+  }
+
+  /**
+   * Throttled: we overshot. Trim the budget — gently, and never below the floor.
+   *
+   * The trim is shallow (0.9, not the textbook 0.5) because the penalty here is
+   * asymmetric and small: overshooting costs one cheap rejection, since a
+   * throttled request consumes no quota, while undershooting costs throughput for
+   * the whole remaining run. A deep cut also makes the steady state oscillate far
+   * below the ceiling instead of hugging it.
+   */
+  onThrottle(): void {
+    this.budget = Math.max(this.min, Math.floor(this.budget * 0.9));
+    this.clean = 0;
+  }
+
+  /**
+   * A run of clean responses means there may be headroom; reach for a little.
+   *
+   * `after` has to be small relative to a chunk (~1000 messages) or the budget
+   * cannot reach the ceiling before the run ends: at one step per 60 clean
+   * responses the governor measured 1.5/s against an achievable 2.0/s, simply
+   * because it never got to climb.
+   */
+  onSuccess(step = 5, after = 20): void {
+    if (++this.clean < after) return;
+    this.clean = 0;
+    this.budget = Math.min(this.max, this.budget + step);
+  }
+}
+
 async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false): Promise<T | null> {
-  for (let attempt = 0; attempt < 6; attempt++) {
+  // Two budgets: being throttled is not the same event as the API being broken,
+  // and sharing one counter let a burst of 429s exhaust the retries meant for
+  // real faults (which is exactly how a whole backfill chunk used to die).
+  let hard = 0;
+  let throttled = 0;
+  for (;;) {
     const token = await h.token();
+    // Every call, retries included, goes through the shared governor: it is the
+    // only thing that knows how fast this project is actually allowed to go.
+    const wait = pacer.reserve(Date.now());
+    if (wait > 0) await Bun.sleep(wait);
     const r = await fetch(`${API}${pathAndQuery}`, {
       headers: { authorization: `Bearer ${token}`, accept: "application/json" },
       signal: AbortSignal.timeout(30_000),
@@ -233,31 +486,50 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
     if (notFoundOk && r.status === 404) return null;
     if (r.status === 401) {
       h.invalidate(); // force a fresh access token, then retry
+      if (++hard > HARD_RETRIES) break;
       continue;
     }
     // 429 rate / 5xx → back off (respect Retry-After if sent)
     if (r.status === 429 || r.status >= 500) {
       const retryAfter = Number(r.headers.get("retry-after") ?? 0) * 1000;
-      await Bun.sleep(Math.min(Math.max(retryAfter, 2 ** attempt * 1000), 5 * 60_000));
+      const rate = r.status === 429;
+      const n = rate ? throttled++ : hard++;
+      if ((rate ? throttled : hard) > (rate ? RATE_RETRIES : HARD_RETRIES)) break;
+      const delay = rate ? rateBackoffMs(n, retryAfter) : backoffMs(n, retryAfter);
+      if (rate) {
+        throttleHits++;
+        throttleMs += delay;
+        pacer.onThrottle();
+      }
+      await Bun.sleep(delay);
       continue;
     }
     // 403 is ambiguous on Gmail: a rate limit (retryable) vs a permission/scope
     // error (permanent). Retry ONLY the rate-limit flavor — a permanent 403 must
-    // fail fast, or it burns all 6 backoffs (up to 5 min each) and, since tick()
+    // fail fast, or it burns every backoff (up to 5 min each) and, since tick()
     // polls mailboxes sequentially, stalls every OTHER mailbox behind it.
     if (r.status === 403) {
       const body = await r.text().catch(() => "");
       if (/rateLimitExceeded|userRateLimitExceeded|rate limit|Too Many Requests/i.test(body)) {
-        await Bun.sleep(Math.min(2 ** attempt * 1000, 5 * 60_000));
+        if (throttled++ > RATE_RETRIES) break;
+        const delay = rateBackoffMs(throttled - 1);
+        throttleHits++;
+        throttleMs += delay;
+        pacer.onThrottle();
+        await Bun.sleep(delay);
         continue;
       }
       throw new Error(`GET ${pathAndQuery} → 403 (permission/scope?) ${body.slice(0, 200)}`);
     }
     if (!r.ok) throw new Error(`GET ${pathAndQuery} → ${r.status} ${(await r.text().catch(() => "")).slice(0, 200)}`);
+    pacer.onSuccess();
     return (await r.json()) as T;
   }
-  throw new Error(`GET ${pathAndQuery} gave up after retries`);
+  throw new Error(`GET ${pathAndQuery} gave up after retries (${hard} fault, ${throttled} throttled)`);
 }
+
+/** The one governor shared by every Gmail call this process makes. */
+const pacer = new Pacer(RATE_START, RATE_MIN, RATE_MAX);
 
 /* ------------------------------------------------------------- liveness */
 // One beat for the whole poller (all mailboxes), after each tick AND on a fast
@@ -265,8 +537,10 @@ async function api<T>(h: MailboxHandle, pathAndQuery: string, notFoundOk = false
 // the poll interval (15 min) is longer. The poller beats even with zero mailboxes
 // connected (it's healthy, just waiting), so /admin shows it up, not stale.
 const BEAT_MS = 4 * 60_000;
+const CATCHUP_MS = 30_000; // tick cadence while an archive walk is outstanding
 let lastTickOk = false;
 let lastBeatDetail = "";
+let backfillPending = false;
 
 async function beat(detail: string): Promise<void> {
   try {
@@ -457,24 +731,24 @@ function toLine(msg: GmailMessage, account: string, ingestedAt: string): string 
 // bounded batches. Returns rows actually landed (dropped auth mail not counted).
 async function fetchAndPush(h: MailboxHandle, ids: string[], account: string, ingestedAt: string): Promise<number> {
   let landed = 0;
-  let batch: string[] = [];
-  for (const id of ids) {
-    // notFoundOk: a message listed by history.list can be deleted/expunged before
-    // we fetch it — a 404 must SKIP it, not throw (a throw aborts the whole tick,
-    // the cursor never advances, and every later tick re-404s the same id until the
-    // history window ages out — days of a stalled mailbox from one deletion).
-    const msg = await api<GmailMessage>(h, `/messages/${id}?format=full`, /* notFoundOk */ true);
-    if (!msg) continue;
-    const line = toLine(msg, account, ingestedAt);
-    if (!line) continue;
-    batch.push(line);
-    landed++;
-    if (batch.length >= FLUSH) {
-      await pushToVector(batch);
-      batch = [];
-    }
+  // Fetch a FLUSH-sized slice with CONCURRENCY calls in flight, then push it.
+  // Slicing (rather than one mapLimit over every id) keeps peak memory at one
+  // batch no matter how many ids a walk chunk returned, exactly as the
+  // one-at-a-time version did — the archive walk can hand this tens of
+  // thousands of ids.
+  for (let i = 0; i < ids.length; i += FLUSH) {
+    const lines = await mapLimit(ids.slice(i, i + FLUSH), CONCURRENCY, async (id) => {
+      // notFoundOk: a message listed by history.list can be deleted/expunged before
+      // we fetch it — a 404 must SKIP it, not throw (a throw aborts the whole tick,
+      // the cursor never advances, and every later tick re-404s the same id until the
+      // history window ages out — days of a stalled mailbox from one deletion).
+      const msg = await api<GmailMessage>(h, `/messages/${id}?format=full`, /* notFoundOk */ true);
+      return msg ? toLine(msg, account, ingestedAt) : null;
+    });
+    const batch = lines.filter((l): l is string => l !== null);
+    landed += batch.length;
+    await pushToVector(batch);
   }
-  await pushToVector(batch);
   return landed;
 }
 
@@ -515,7 +789,11 @@ async function listHistoryIds(h: MailboxHandle, startHistoryId: string): Promise
 /* ---------------------------------------------------------------- loop */
 // Sync ONE mailbox. Mutates `state[h.key]`; throws on any hard failure so the
 // caller can keep this mailbox's old cursor and move on to the next.
-async function pollMailbox(h: MailboxHandle, state: State, ingestedAt: string): Promise<{ account: string; landed: number; mode: string }> {
+async function pollMailbox(
+  h: MailboxHandle,
+  state: State,
+  ingestedAt: string,
+): Promise<{ account: string; landed: number; mode: string; walking: boolean }> {
   // Identity + current historyId, captured at START so the cursor we store never
   // runs ahead of what we've processed.
   const profile = await api<{ emailAddress?: string; historyId?: string }>(h, "/profile");
@@ -526,42 +804,69 @@ async function pollMailbox(h: MailboxHandle, state: State, ingestedAt: string): 
   const st: AccountState = state[h.key] ?? {};
 
   let landed = 0;
-  let mode: string;
+  const modes: string[] = [];
 
-  if (!st.backfilled) {
-    const query = `after:${gmailDate(BACKFILL_DAYS)} ${QUERY_EXTRA}`.trim();
-    const ids = await listIds(h, query);
-    console.error(`gmail-poller: ${account} backfill "${query}" → ${ids.length} message(s)`);
-    landed = await fetchAndPush(h, ids, account, ingestedAt);
-    mode = "backfill";
-  } else if (!st.historyId) {
-    // Backfilled, but we never captured a history cursor (rare: a /profile response
-    // that lacked historyId). Resync a SMALL recent window each tick rather than
-    // re-running the full backfill forever — bounds the quota burn until a later
-    // profile call yields a cursor (startHistoryId is stored below when present).
-    const query = `after:${gmailDate(RESYNC_DAYS)} ${QUERY_EXTRA}`.trim();
-    console.error(`gmail-poller: ${account} no history cursor yet; resync "${query}"`);
-    const ids = await listIds(h, query);
-    landed = await fetchAndPush(h, ids, account, ingestedAt);
-    mode = "resync";
-  } else {
+  /* -- 1. steady state: what has arrived since the cursor -- */
+  // Runs on EVERY tick, including while the archive walk below is still working
+  // backwards through years of mail. New mail must never queue behind a
+  // multi-hour backfill. A mailbox with no cursor yet skips this: the walk's
+  // first chunk starts at today, so its recent mail lands in this same tick.
+  if (st.historyId) {
     let ids = await listHistoryIds(h, st.historyId);
+    let mode = "incremental";
     if (ids === null) {
       const query = `after:${gmailDate(RESYNC_DAYS)} ${QUERY_EXTRA}`.trim();
       console.error(`gmail-poller: ${account} history cursor expired; resync "${query}"`);
       ids = await listIds(h, query);
       mode = "resync";
-    } else {
-      mode = "incremental";
     }
-    landed = await fetchAndPush(h, ids, account, ingestedAt);
-    console.error(`gmail-poller: ${account} ${mode} → ${ids.length} new id(s), ${landed} landed`);
+    const n = await fetchAndPush(h, ids, account, ingestedAt);
+    landed += n;
+    modes.push(mode);
+    console.error(`gmail-poller: ${account} ${mode} → ${ids.length} new id(s), ${n} landed`);
   }
 
+  // Advance the cursor BEFORE the walk: steady state is done, and the walk that
+  // follows can run for the rest of the tick's budget. A crash in there must not
+  // cost us this cursor (the walk keeps its own, below).
   if (startHistoryId) st.historyId = startHistoryId;
-  st.backfilled = true;
   state[h.key] = st;
-  return { account, landed, mode };
+  saveState(state);
+
+  /* -- 2. archive walk: backwards to GMAIL_BACKFILL_DAYS, a chunk at a time -- */
+  // Checkpointed after every chunk and bounded by this tick's budget, so a
+  // horizon of years is safe: the walk simply resumes next tick, and a restart
+  // costs one chunk instead of the whole run.
+  const deadline = Date.now() + BACKFILL_BUDGET_MS;
+  let chunks = 0;
+  for (;;) {
+    const w = nextBackfillWindow(new Date(), BACKFILL_DAYS, BACKFILL_CHUNK_DAYS, st.backfilledTo);
+    if (!w) break; // reached the horizon — nothing older is wanted
+    const query = `after:${w.after} before:${w.before} ${QUERY_EXTRA} ${BACKFILL_QUERY_EXTRA}`.replace(/\s+/g, " ").trim();
+    const ids = await listIds(h, query);
+    const t0 = Date.now();
+    const n = await fetchAndPush(h, ids, account, ingestedAt);
+    const secs = (Date.now() - t0) / 1000;
+    landed += n;
+    chunks++;
+    const rate = secs > 0 ? (ids.length / secs).toFixed(1) : "–";
+    console.error(
+      `gmail-poller: ${account} backfill ${w.after}..${w.before} → ${ids.length} message(s), ${n} landed in ${secs.toFixed(0)}s (${rate}/s)${takeThrottleStats()}`,
+    );
+    st.backfilledTo = w.after.replace(/\//g, "-");
+    state[h.key] = st;
+    saveState(state); // checkpoint: a restart resumes HERE, not back at today
+    if (Date.now() >= deadline) break;
+  }
+  if (chunks) modes.push(`backfill×${chunks}`);
+
+  // `backfilled` is DERIVED from the checkpoint, never latched: widening
+  // GMAIL_BACKFILL_DAYS on a mailbox an earlier build had already marked done
+  // must put it back into "still walking", or the poller would idle out the full
+  // poll interval between chunks and take days to pull an archive.
+  st.backfilled = nextBackfillWindow(new Date(), BACKFILL_DAYS, BACKFILL_CHUNK_DAYS, st.backfilledTo) === null;
+  state[h.key] = st;
+  return { account, landed, mode: modes.join("+") || "idle", walking: !st.backfilled };
 }
 
 async function tick(): Promise<void> {
@@ -592,6 +897,7 @@ async function tick(): Promise<void> {
 
   let okAccounts = 0;
   let totalLanded = 0;
+  let walking = 0;
   const parts: string[] = [];
 
   for (const h of handles) {
@@ -600,18 +906,25 @@ async function tick(): Promise<void> {
       saveState(state); // persist per-mailbox: one failing doesn't lose the others' cursors
       okAccounts++;
       totalLanded += r.landed;
+      if (r.walking) walking++;
       parts.push(`${r.account}:${r.landed}`);
     } catch (e) {
-      // fetch/token failure for this mailbox: its cursor stays put, re-covered next tick
+      // fetch/token failure for this mailbox: its cursor stays put, re-covered next
+      // tick. An archive walk keeps every chunk it checkpointed before the failure.
       console.error(`gmail-poller: mailbox ${h.label} failed (cursor kept): ${e}`);
+      // A mailbox that threw may still owe us history; keep the fast cadence so it
+      // retries soon rather than idling out the full poll interval.
+      if (!state[h.key]?.backfilled) walking++;
     }
   }
 
   lastTickOk = okAccounts > 0;
   if (lastTickOk) {
-    lastBeatDetail = `${okAccounts}/${handles.length} mailbox(es) · ${totalLanded} msg${parts.length ? ` (${parts.join(", ")})` : ""}`;
+    const still = walking ? ` · ${walking} backfilling` : "";
+    lastBeatDetail = `${okAccounts}/${handles.length} mailbox(es) · ${totalLanded} msg${parts.length ? ` (${parts.join(", ")})` : ""}${still}`;
     await beat(lastBeatDetail);
   }
+  backfillPending = walking > 0;
 }
 
 async function main(): Promise<void> {
@@ -626,7 +939,11 @@ async function main(): Promise<void> {
       lastTickOk = false;
       console.error(`gmail-poller: tick failed: ${e}`);
     }
-    await Bun.sleep(INTERVAL);
+    // An outstanding archive walk gets back-to-back ticks (it already spent its
+    // per-tick budget, so this is a pause, not a busy loop): at the 15-minute
+    // steady cadence a multi-year horizon would take days of wall clock. Once
+    // the walk reaches the horizon this settles to INTERVAL forever.
+    await Bun.sleep(backfillPending ? Math.min(INTERVAL, CATCHUP_MS) : INTERVAL);
   }
 }
 

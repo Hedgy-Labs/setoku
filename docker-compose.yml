@@ -329,7 +329,8 @@ services:
   # backfill for free, no public endpoint. format=full → plain-text body; SPAM +
   # TRASH are never listed and auth/2FA mail is dropped at the poller. Mutable
   # (labels change) → ReplacingMergeTree keyed (account, message_id). State on a
-  # volume so restarts don't re-backfill.
+  # volume so restarts don't re-backfill — the archive walk checkpoints into it
+  # after every chunk, so a restart mid-backfill costs one chunk, not the run.
   #
   # Auth: per-mailbox refresh tokens come from the "/admin → Connect Gmail" flow,
   # which the gateway writes to /data/gmail-tokens.json on the setoku_data volume;
@@ -351,8 +352,24 @@ services:
       GMAIL_CLIENT_SECRET: ${SETOKU_GMAIL_CLIENT_SECRET:-}
       GMAIL_TOKENS_FILE: /gateway-data/gmail-tokens.json
       GMAIL_REFRESH_TOKENS: ${SETOKU_GMAIL_REFRESH_TOKENS:-}
-      # first-run lookback (days) — bump later without a code change
+      # How far back the archive walk goes. Safe to set to years: the walk is
+      # chunked and checkpointed, so it resumes after a restart instead of
+      # re-pulling from today. QUERY_EXTRA applies to the WALK only (not steady
+      # state) — e.g. "-category:promotions -category:social" keeps a deep
+      # backfill cheap. CONCURRENCY bounds in-flight messages.get calls; it does
+      # NOT set the speed — the rate governor below does.
       GMAIL_BACKFILL_DAYS: ${SETOKU_GMAIL_BACKFILL_DAYS:-90}
+      GMAIL_BACKFILL_CHUNK_DAYS: ${SETOKU_GMAIL_BACKFILL_CHUNK_DAYS:-30}
+      GMAIL_BACKFILL_BUDGET_MS: ${SETOKU_GMAIL_BACKFILL_BUDGET_MS:-600000}
+      GMAIL_BACKFILL_QUERY_EXTRA: ${SETOKU_GMAIL_BACKFILL_QUERY_EXTRA:-}
+      GMAIL_FETCH_CONCURRENCY: ${SETOKU_GMAIL_FETCH_CONCURRENCY:-4}
+      # Throughput is quota-bound: Gmail's "units per minute per user" ceiling is
+      # per-project and cannot be read, so the poller discovers it (trim on a
+      # throttle, creep up while clean). Requests per ROLLING MINUTE; these are a
+      # starting guess and a cap, NOT a speed setting — raising them does not
+      # raise the quota. A real box measured 120/min (2 req/s) as its clean rate.
+      GMAIL_RATE_START: ${SETOKU_GMAIL_RATE_START:-120}
+      GMAIL_RATE_MAX: ${SETOKU_GMAIL_RATE_MAX:-3000}
     volumes:
       - gmail_state:/state
       # read-only view of the gateway's data volume, for the Connect-flow tokens

@@ -9,7 +9,7 @@
 -- read/unread) is NOT re-observed until a full resync (history-cursor expiry).
 -- Practical consequence: a message that ARRIVES as spam/trash is excluded (see
 -- below), but one that arrives in INBOX and is LATER marked spam stays queryable
--- with its stale labels until the 18-month TTL. Don't rely on `labels` for current
+-- with its stale labels until the retention TTL. Don't rely on `labels` for current
 -- state. (Re-observing label changes is a known follow-up — see the poller README.)
 --
 -- ⚠ subject / snippet / body / from_name are UNTRUSTED free text — anyone can
@@ -21,8 +21,16 @@
 -- ⚠ Merges are async: query with FINAL (or argMax / LIMIT 1 BY) for current
 -- state — a message re-observed (e.g. on resync) would otherwise appear twice.
 --
--- Retention: an 18-month TTL on received_at self-prunes the archive so a family
--- box never hoards a lifetime of mail. Adjust the window here, not via a cron.
+-- Retention: a 20-year TTL on received_at. The TTL exists so the table can never
+-- grow without bound, NOT to trim history — a lifetime mailbox is the point, and
+-- at ~2.6 KiB/message on disk even 200k messages is well under a gigabyte. Adjust
+-- the window here, not via a cron.
+--
+-- ⚠ This file only runs on a FRESH ClickHouse (it is mounted into
+-- /docker-entrypoint-initdb.d). Changing the TTL above does nothing to a box that
+-- is already up — that needs an explicit
+--   ALTER TABLE setoku.gmail_messages MODIFY TTL toDateTime(received_at) + INTERVAL 20 YEAR
+-- against the running server.
 --
 -- NB: unlike the github/monarch sources there is NO `raw` catch-all column — the
 -- raw MIME payload is the full body again (plus attachment bytes metadata), so
@@ -46,10 +54,11 @@ CREATE TABLE IF NOT EXISTS setoku.gmail_messages
     ingested_at     DateTime64(3)           COMMENT 'observation time — ReplacingMergeTree version (newest wins)'
 )
 ENGINE = ReplacingMergeTree(ingested_at)
--- monthly partitions: the 18-month TTL caps this at ~19 live partitions, and a
--- 90-day backfill inserts across only ~4 — well under ClickHouse's 100-partitions
--- -per-insert-block limit even if the backfill window is later widened to years.
+-- monthly partitions. A lifetime archive is ~200 live partitions, which is fine
+-- for MergeTree; what matters is the 100-partitions-PER-INSERT-BLOCK limit, and
+-- the poller cannot trip it: it walks history in bounded day-windows (default 30)
+-- and flushes 200 rows at a time, so one insert block spans a month or two.
 PARTITION BY toYYYYMM(received_at)
 ORDER BY (account, message_id)
-TTL toDateTime(received_at) + INTERVAL 18 MONTH
-COMMENT 'Personal Gmail (poll-based). Mutable rows → query with FINAL. Untrusted free text; spam/trash & auth mail excluded; marketing flagged is_bulk; 18-mo retention.';
+TTL toDateTime(received_at) + INTERVAL 20 YEAR
+COMMENT 'Personal Gmail (poll-based). Mutable rows → query with FINAL. Untrusted free text; spam/trash & auth mail excluded; marketing flagged is_bulk; 20-yr retention.';

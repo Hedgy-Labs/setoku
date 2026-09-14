@@ -639,7 +639,8 @@ export interface TableResult {
   bytes: number;
   /** "unchanged" = the source verifiably didn't move since the last reload —
    *  no restream, but the mirror is known current as of this check. */
-  status: "ok" | "error" | "unchanged";
+  /** "capped" = skipped because the daily egress budget was already spent. */
+  status: "ok" | "error" | "unchanged" | "capped";
   error: string;
 }
 
