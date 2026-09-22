@@ -428,6 +428,11 @@ services:
       SETOKU_MIRROR_QUIET_HOURS: ${SETOKU_MIRROR_QUIET_HOURS:-}
       SETOKU_MIRROR_QUIET_INTERVAL_MS: ${SETOKU_MIRROR_QUIET_INTERVAL_MS:-7200000}
       SETOKU_MIRROR_DAILY_BYTES_CAP: ${SETOKU_MIRROR_DAILY_BYTES_CAP:-0}
+      # xmin-incremental pulls ("0" = full reloads only) and the reconcile
+      # backstop (nightly in the quiet window, else every N hours; "0" = off)
+      # — see ingest/pg-mirror/README.md "Incremental pull".
+      SETOKU_MIRROR_INCREMENTAL: ${SETOKU_MIRROR_INCREMENTAL:-1}
+      SETOKU_MIRROR_RECONCILE_HOURS: ${SETOKU_MIRROR_RECONCILE_HOURS:-24}
       TZ: ${TZ:-UTC}
       # Per-box column excludes (comma-separated "schema.table.column" globs,
       # merged with the baked config's denyColumns) — real column names are

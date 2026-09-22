@@ -33,6 +33,11 @@
     <profiles>
         <setoku_readonly>
             <readonly>2</readonly>
+            <!-- every read of a ReplacingMergeTree is FINAL: incrementally
+                 mirrored biz.* tables (ingest/pg-mirror) hold superseded row
+                 versions until a background merge, and a reader must never
+                 see them. A no-op on plain MergeTree tables. -->
+            <final>1</final>
             <max_execution_time>60</max_execution_time>
             <constraints>
                 <max_execution_time>

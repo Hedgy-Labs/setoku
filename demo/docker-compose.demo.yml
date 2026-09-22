@@ -87,6 +87,11 @@ services:
     environment:
       SETOKU_DATABASE_URL: postgres://postgres:${DEMO_PG_PASSWORD:-demo}@demo-postgres.local:5432/${DEMO_DB:-bulldogs}
       SETOKU_MIRROR_INTERVAL_MS: ${DEMO_MIRROR_INTERVAL_MS:-900000}
+      # Full reloads by default: the demo dataset is a static fixture on a
+      # local, unmetered Postgres, so xmin pulls save nothing — and switching
+      # them on rebuilds every mirror table as a ReplacingMergeTree once
+      # (millions of rows) on a box it shares. DEMO_MIRROR_INCREMENTAL=1 opts in.
+      SETOKU_MIRROR_INCREMENTAL: ${DEMO_MIRROR_INCREMENTAL:-0}
       CLICKHOUSE_URL: http://demo-clickhouse:8123
       CLICKHOUSE_USER: setoku
       CLICKHOUSE_PASSWORD: ${DEMO_CH_PASSWORD:-demo}
