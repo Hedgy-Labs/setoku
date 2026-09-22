@@ -29,7 +29,13 @@ import { extractSql } from "./lib/lint";
 import { queryCaptureNudge, panelCaptureNote } from "./lib/nudge";
 import { mirroredTables, mirrorNameOf, queryableTableName, type MirroredTable } from "./lib/mirror";
 import { LAKE_SOURCES, BEAT_LIVE_MS, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, lakeRolesFor } from "./lib/sources";
-import { rosterLine, serverInstructions, type BoxRoster } from "./lib/roster";
+import {
+  rosterKeywords,
+  rosterLine,
+  rosterTitle,
+  serverInstructions,
+  type BoxRoster,
+} from "./lib/roster";
 import {
   deniedFamiliesFor,
   docHidden,
@@ -231,11 +237,20 @@ const server = new McpServer(
   { name: "setoku", version: VERSION },
   { instructions: serverInstructions(roster, { canWrite, denyLakeRead }) },
 );
-// Prefix for the entry-point tools' descriptions: the connected-source roster,
-// so "what data is behind this?" is answerable from the tool list alone.
+// The entry-point tools' description sandwich, for the three ways a host reads
+// one. HEAD: the budgeted roster, so "what data is behind this?" survives a
+// truncated preview. MIDDLE: what the tool does. TAIL: retrieval keywords for
+// the embedder behind a host's tool search — a description that never says
+// "email" loses the inbox question before any of this prose is read.
 const holds = rosterLine(roster);
+const alsoMatches = rosterKeywords(roster);
 const withRoster = (description: string): string =>
-  holds ? `${holds} ${description}` : description;
+  [holds, description, alsoMatches].filter(Boolean).join(" ");
+// Titles are the shortest surface of all — a picker may show one with no
+// description at all, so the domains ride there too.
+const domainList = rosterTitle(roster);
+const withDomains = (title: string): string =>
+  domainList ? `${title} — ${domainList}` : title;
 
 // Per-user source access (I9): the ClickHouse roles to activate for THIS
 // session's lake reads, from the identity's denied families. Computed per
@@ -455,7 +470,7 @@ server.registerTool(
   "find_context",
   {
     annotations: { readOnlyHint: true },
-    title: "Find context for this connector's data",
+    title: withDomains("Find context for this connector's data"),
     description: withRoster(
       "ALWAYS call FIRST, the instant a question about this connector's data arrives — before any " +
       "planning, schema exploration, or reasoning about what a term means; call it with the question, THEN " +
@@ -572,7 +587,7 @@ server.registerTool(
     // mismatch) so it stays rare enough to keep reading.
     if (!top.length && holds) {
       coverage.push(
-        `Before concluding this box can't answer the question: ${holds} Call list_sources for the current, table-level list.`,
+        `Before concluding this box can't answer the question — ${holds} Call list_sources for the current, table-level list.`,
         "",
       );
     }
@@ -1088,7 +1103,7 @@ server.registerTool(
   "list_sources",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "List connected data sources",
+    title: withDomains("List connected data sources"),
     description: withRoster(
       "Lists what this box can query RIGHT NOW, table by table: the biz.* Postgres mirror, every " +
       "connected lake source with what it holds, and the knowledge store. Capabilities are DYNAMIC and " +
@@ -1268,7 +1283,7 @@ server.registerTool(
   "get_schema",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "Every table and column you can query",
+    title: withDomains("Every table and column you can query"),
     description: withRoster(
       "Describes every table you can query, straight from ClickHouse metadata: the biz.* Postgres " +
       "mirror and the setoku.* lake tables (the gateway has no direct Postgres path). " +
@@ -1418,7 +1433,7 @@ server.registerTool(
   "run_query",
   {
     annotations: { readOnlyHint: true, openWorldHint: true },
-    title: "Run a read-only SQL query",
+    title: withDomains("Run a read-only SQL query"),
     description: withRoster(
       "Executes ONE read-only ClickHouse SQL statement (statement timeout + row cap; audited with your " +
       "identity): the biz.* Postgres mirror plus every connected lake source. The direct " +
