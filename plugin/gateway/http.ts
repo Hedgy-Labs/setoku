@@ -795,7 +795,7 @@ echo "    how many companies are paying us right now?"
 // Lake source tables we know how to surface (shared with the list_sources MCP
 // tool) — query only the ones that actually exist; see gatherSources().
 import { LAKE_SOURCES, BUSINESS_FAMILY, familyOf, familySlug, lakeFamilies, sourceAccessDisabled } from "./lib/sources";
-import { rosterFrom, type BoxRoster } from "./lib/roster";
+import { rosterCacheTtlMs, rosterFrom, type BoxRoster } from "./lib/roster";
 import {
   deniedFamiliesFor,
   metricDocHidden,
@@ -905,7 +905,15 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
         // denied lake source.
         if (!denied.has(BUSINESS_FAMILY.slug))
           try {
-            mirror.tables = (await mirroredTables(lakeUrl.url)).map((m) => ({
+            // {fresh:true} because this snapshot feeds the ROSTER, and a cold
+            // cache's 1s give-up would record "no mirror" as though the box had
+            // none — the bulldogs demo told every client "No source is flowing
+            // into this box yet" while holding 18 mirrored tables, because the
+            // first snapshot after each restart lost that race and SWR then
+            // served it for the life of the box's quiet periods. The mirror
+            // card can afford best-effort; a claim about what the box HAS
+            // cannot.
+            mirror.tables = (await mirroredTables(lakeUrl.url, { fresh: true })).map((m) => ({
               target: m.target,
               source: m.source,
               asOf: m.asOf,
@@ -944,7 +952,6 @@ async function gatherSources(denied: Set<string> = new Set()): Promise<SourcesDa
  * Failure is silent by design: a null roster degrades the descriptions to their
  * source-agnostic text. A cold or broken lake must never fail an MCP request.
  */
-const ROSTER_TTL_MS = 5 * 60_000;
 async function rosterFor(denied: Set<string>): Promise<BoxRoster | null> {
   const key = `roster:${denyKey(denied)}`;
   const build = async (): Promise<BoxRoster | null> => {
@@ -956,8 +963,15 @@ async function rosterFor(denied: Set<string>): Promise<BoxRoster | null> {
     }
   };
   const hit = probeCache.get(key) as { at: number; value: BoxRoster | null } | undefined;
-  if (hit && Date.now() - hit.at < ROSTER_TTL_MS) return hit.value;
-  const refreshed = cachedProbe(key, build, ROSTER_TTL_MS);
+  // TTL by CONTENT: a roster that names sources is stable for minutes, while
+  // "this box holds nothing" is the one claim that must never be served stale —
+  // it's the STANDING RULE's own failure mode, and on a low-traffic box a single
+  // bad snapshot would otherwise be handed to every visitor indefinitely
+  // (each arrival finds it expired, is served it anyway, and kicks a refresh
+  // that expires again before the next one shows up).
+  const ttl = rosterCacheTtlMs(hit?.value ?? null);
+  if (hit && Date.now() - hit.at < ttl) return hit.value;
+  const refreshed = cachedProbe(key, build, ttl);
   // Stale-while-revalidate: an existing (expired) snapshot answers now and the
   // refresh lands for the next request. Only a cold cache blocks.
   if (hit) {
