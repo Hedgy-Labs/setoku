@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 // SPDX-License-Identifier: Apache-2.0
 /**
- * Business-DB → lake mirror (issue #47). Full-reloads every allowlisted
- * Postgres table into the bundled ClickHouse on a poller-style loop, so heavy
- * app panels read the mirror (`biz.*`, clickhouse dialect) instead of
- * seq-scanning prod. Per table, per run:
+ * Business-DB → lake mirror (issue #47). Mirrors every allowlisted Postgres
+ * table into the bundled ClickHouse on a poller-style loop, so heavy app panels
+ * read the mirror (`biz.*`, clickhouse dialect) instead of seq-scanning prod.
+ * Per table, per run:
  *
  *   1. derive DDL from the pg catalog (explicit type map — unmapped types fail
  *      that table LOUDLY, they never guess),
@@ -15,23 +15,48 @@
  *      what keeps prod egress (metered on hosted Postgres — the Supabase
  *      overage of 2026-07) proportional to CHANGE, not to size × cadence.
  *      A skip is recorded as status "unchanged" in `setoku.pg_mirror_runs`
- *      (the mirror provably equals the source, so freshness advances),
- *   3. create `biz.<table>__staging` and SELECT-stream rows in through a
- *      cursor (bounded memory) using the SAME read-only role the gateway
- *      queries with — the allow/deny list and the role's grants are inherited,
- *      so a table denied to run_query never leaves prod (I1/I2 unchanged),
- *   4. verify the staged row count, then atomically EXCHANGE/RENAME into
- *      place — readers never see a half-loaded table,
- *   5. record the reload in `setoku.pg_mirror_runs` (freshness + failure
- *      legibility for /healthz, /admin, and the app frame's "as of" stamp)
- *      and beat `ingest_heartbeats` like every other connector.
+ *      (the mirror provably equals the source, so freshness advances). On a
+ *      hot standby the counters only see the standby's OWN writes (always 0),
+ *      so the skip is disabled there — it would freeze the mirror forever,
+ *   3. a table that DID change is pulled INCREMENTALLY when it can be (see
+ *      "Incremental pull" below): only rows written since the last pass, by
+ *      Postgres `xmin`, upserted into a ReplacingMergeTree — otherwise
+ *   4. it is FULLY reloaded: create `biz.<table>__staging` and SELECT-stream
+ *      rows in through a cursor (bounded memory) using the SAME read-only role
+ *      the gateway queries with — the allow/deny list and the role's grants
+ *      are inherited, so a table denied to run_query never leaves prod
+ *      (I1/I2 unchanged) — verify the staged row count, then atomically
+ *      EXCHANGE/RENAME into place (readers never see a half-loaded table),
+ *   5. record the pass in `setoku.pg_mirror_runs` (freshness + failure
+ *      legibility for /healthz, /admin, and the app frame's "as of" stamp;
+ *      `mode` says full vs incremental) and beat `ingest_heartbeats` like
+ *      every other connector.
  *
- * Full reload every run = no CDC, no replica-identity footguns; schema drift
- * is a non-event (the next run picks up the new shape — a DDL-only change
- * defeats the unchanged-skip via the schema signature), and a table dropped
- * from prod or from the allowlist is pruned from the mirror on the next run.
- * Mirrored tables are re-derivable from prod, so `biz` is deliberately a
- * SEPARATE ClickHouse database: excluded from clickhouse-backup
+ * Incremental pull (schema-agnostic — no updatedAt/createdAt convention):
+ * every heap row carries `xmin`, the id of the transaction that last wrote it.
+ * Each pass runs in one REPEATABLE READ snapshot and remembers that
+ * snapshot's xmin — the oldest transaction still running, so every row
+ * version the snapshot could NOT see (including rows written under a
+ * SAVEPOINT, whose subxids `pg_visible_in_snapshot` misjudges) has
+ * xmin ≥ it. The next pass fetches only rows with xmin ≥ that boundary,
+ * compared modulo 2^32 so xid wraparound is a non-event. Deletes, TRUNCATE
+ * and key changes leave no xmin behind, so every incremental pass also
+ * compares `count(*)` (same snapshot) with the mirror's `count() FINAL` —
+ * any difference falls back to a full reload in the same pass. A full
+ * reload also runs every SETOKU_MIRROR_RECONCILE_HOURS as a backstop.
+ * Eligible: a plain-heap table (or partitioned table of heap leaves) with a
+ * primary key — or a unique index over NOT NULL columns — of exact key types,
+ * on Postgres ≥ 13. Anything else keeps the full-reload path, so a deploy we
+ * can't read xmin from (views, FDWs, Postgres-compatible engines) behaves
+ * exactly as before. Readers dedupe via `final=1` on the setoku_readonly
+ * ClickHouse profile (deploy/clickhouse/lake-users.xml).
+ *
+ * Full reload stays the fallback = no CDC, no replication slots; schema drift
+ * is a non-event (a DDL-only change defeats both the unchanged-skip and the
+ * incremental path via the shape signature, so the next pass reloads), and a
+ * table dropped from prod or from the allowlist is pruned from the mirror on
+ * the next run. Mirrored tables are re-derivable from prod, so `biz` is
+ * deliberately a SEPARATE ClickHouse database: excluded from clickhouse-backup
  * (CLICKHOUSE_SKIP_TABLES) and from the parquet export (both walk `setoku`) —
  * the precious lake data (I4) stays exactly what it was.
  *
@@ -51,6 +76,10 @@
  *                              further passes are skipped until midnight UTC.
  *                              Overshoot is bounded by one table's reload.
  *   TZ                         default UTC — timezone the quiet window is read in
+ *   SETOKU_MIRROR_INCREMENTAL  default on; "0" = full reloads only (no xmin pulls)
+ *   SETOKU_MIRROR_RECONCILE_HOURS    default 24 — an incrementally-pulled table
+ *                              that changed gets a full reload once it's this
+ *                              old (backstop); "0" = never
  *   SETOKU_MIRROR_DENY_COLUMNS extra denyColumns patterns, comma-separated — the
  *                              per-box channel for column names that must not
  *                              land in the repo-baked config template (I3)
@@ -266,15 +295,24 @@ export interface MirrorTable {
   schema: string;
   name: string;
   columns: MirrorColumn[];
-  pk: string[]; // primary-key column names, index order
+  /** Row-identity key, index order: the primary key, else the narrowest unique
+   *  index over NOT NULL columns; [] when neither exists (or a key column is
+   *  deny-listed — a partial key would merge distinct rows). */
+  pk: string[];
+  /** Pulled by xmin into a ReplacingMergeTree (see "Incremental pull" in the
+   *  header) instead of full-reloaded on every change. Set by discovery. */
+  incremental?: boolean;
 }
 
 /** CREATE TABLE for the staging copy. ORDER BY = the pg primary key (that's the
  *  entire tuning story); PK-less tables get ORDER BY tuple(). Every row also
  *  carries `_mirrored_at` (DEFAULT-filled at load, constant per batch so it
- *  compresses to nothing) — the "data as of" is queryable inline
- *  (max(_mirrored_at)) without knowing about pg_mirror_runs. Skipped, loudly,
- *  if the source already has a column of that name. */
+ *  compresses to nothing) — when that row version was last pulled, queryable
+ *  inline without knowing about pg_mirror_runs. Skipped, loudly, if the source
+ *  already has a column of that name (such a table can't go incremental: the
+ *  stamp is its ReplacingMergeTree version). Incremental tables are
+ *  ReplacingMergeTree keyed on the pg key, so an upserted row version
+ *  replaces the old one — readers see one row per key via `final=1`. */
 export function stagingDDL(db: string, staging: string, t: MirrorTable): string {
   const colDefs = t.columns.map((c) => `  ${chIdent(c.name)} ${c.chType}`);
   if (!t.columns.some((c) => c.name === "_mirrored_at")) {
@@ -283,10 +321,11 @@ export function stagingDDL(db: string, staging: string, t: MirrorTable): string 
     console.error(`pg-mirror: ${t.schema}.${t.name} has its own _mirrored_at column — skipping the freshness stamp`);
   }
   const orderBy = t.pk.length ? `(${t.pk.map(chIdent).join(", ")})` : "tuple()";
+  const engine = t.incremental ? "ReplacingMergeTree(`_mirrored_at`)" : "MergeTree";
   return (
     `CREATE TABLE ${chIdent(db)}.${chIdent(staging)}\n(\n${colDefs.join(",\n")}\n)\n` +
-    `ENGINE = MergeTree\nORDER BY ${orderBy}\n` +
-    `COMMENT ${sqlString(`mirror of ${t.schema}.${t.name} (pg-mirror, full reload)`)}`
+    `ENGINE = ${engine}\nORDER BY ${orderBy}\n` +
+    `COMMENT ${sqlString(`mirror of ${t.schema}.${t.name} (pg-mirror, ${t.incremental ? "incremental" : "full reload"})`)}`
   );
 }
 
@@ -442,6 +481,11 @@ export async function ensureMirrorObjects(ch: ChOptions): Promise<void> {
   // on a fresh ClickHouse) — idempotent in-place migration, like store.ts's
   // ensureColumn.
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS bytes UInt64 AFTER rows`);
+  await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS mode LowCardinality(String)`);
+  // Incremental bookkeeping: the xmin boundary the next pass pulls from, and
+  // when the table was last FULLY reloaded (the reconcile backstop).
+  await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_state ADD COLUMN IF NOT EXISTS cursor String`);
+  await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_state ADD COLUMN IF NOT EXISTS full_at DateTime64(3)`);
 }
 
 /** Upsert settings/state rows (latest updated_at wins per key). */
@@ -467,14 +511,67 @@ export async function todayLedgerBytes(ch: ChOptions): Promise<number> {
 // Bun.sql client — kept `any`-shaped so tests can hand in a plain connection.
 type Pg = { unsafe(q: string): Promise<any>; begin<T>(fn: (tx: Pg) => Promise<T>): Promise<T>; end(): Promise<void> };
 
-/** Enumerate allowlisted, SELECT-granted base tables with columns + PK from the
- *  pg catalog. Partition children are skipped (the parent covers them); views
- *  and matviews are not mirrored. A table with an unmappable column is returned
- *  in `failed` so the run can record it loudly without blocking the rest. */
+/** What the source server can do, read once per pass. */
+export interface ServerInfo {
+  /** server_version_num (150001 for 15.1); 0 when unreadable. */
+  version: number;
+  /** A hot standby: pg_stat write counters never move there. */
+  replica: boolean;
+}
+
+/** Fails soft: a Postgres-compatible engine that can't answer gets version 0
+ *  (no incremental) and replica false (today's behavior). */
+export async function fetchServerInfo(pg: Pg): Promise<ServerInfo> {
+  try {
+    const rows: { v: number | string; r: boolean }[] = await pg.unsafe(
+      `SELECT current_setting('server_version_num')::int AS v, pg_is_in_recovery() AS r`,
+    );
+    return { version: Number(rows[0]?.v ?? 0) || 0, replica: rows[0]?.r === true };
+  } catch {
+    return { version: 0, replica: false };
+  }
+}
+
+/** xmin + pg_current_snapshot()/xid8 arrived in Postgres 13. */
+export const INCREMENTAL_MIN_VERSION = 130000;
+
+/** Key column types whose pg → ClickHouse mapping is exact, so two distinct pg
+ *  keys can never collapse into one mirror row. (Floats and bare numeric round
+ *  or truncate; arrays/json aren't keys.) */
+const EXACT_KEY_UDTS = new Set([
+  "int2", "int4", "int8", "oid", "text", "varchar", "bpchar", "name", "citext", "uuid", "bool",
+  "date", "timestamp", "timestamptz",
+]);
+const exactKeyColumn = (c: MirrorColumn): boolean => !c.isArray && !c.nullable && (c.isEnum || EXACT_KEY_UDTS.has(c.udt));
+
+/** The mirror's row identity: the primary key if every column of it made it
+ *  into the mirror, else the narrowest unique index whose columns all did AND
+ *  are NOT NULL (pg unique indexes let NULLs repeat). A key missing a column —
+ *  deny-listed, say — is no key at all: ordering by part of it is harmless for
+ *  MergeTree, but a ReplacingMergeTree would merge distinct rows. */
+export function chooseKey(indexes: [string, { isPk: boolean; cols: string[] }][], columns: MirrorColumn[]): string[] {
+  const usable = (cols: string[]): boolean => cols.length > 0 && cols.every((n) => columns.some((c) => c.name === n && !c.nullable));
+  const pk = indexes.find(([, ix]) => ix.isPk);
+  if (pk && usable(pk[1].cols)) return pk[1].cols;
+  const unique = indexes
+    .filter(([, ix]) => !ix.isPk && usable(ix.cols))
+    .sort(([an, a], [bn, b]) => a.cols.length - b.cols.length || an.localeCompare(bn));
+  return unique[0]?.[1].cols ?? [];
+}
+
+/** Enumerate allowlisted, SELECT-granted base tables with columns + key from
+ *  the pg catalog. Partition children are skipped (the parent covers them);
+ *  views and matviews are not mirrored. A table with an unmappable column is
+ *  returned in `failed` so the run can record it loudly without blocking the
+ *  rest. `incremental: false` (or a server below Postgres 13) keeps every
+ *  table on the full-reload path. */
 export async function discoverTables(
   pg: Pg,
   cfg: MirrorConfig,
+  opts: { incremental?: boolean; server?: ServerInfo } = {},
 ): Promise<{ tables: MirrorTable[]; failed: { schema: string; name: string; error: string }[] }> {
+  const server = opts.server ?? (await fetchServerInfo(pg));
+  const allowIncremental = opts.incremental !== false && server.version >= INCREMENTAL_MIN_VERSION;
   const tableRows: { schema: string; name: string }[] = await pg.unsafe(`
     SELECT n.nspname AS schema, c.relname AS name
     FROM pg_class c
@@ -503,15 +600,52 @@ export async function discoverTables(
       AND n.nspname NOT IN ('pg_catalog', 'information_schema')
     ORDER BY n.nspname, c.relname, a.attnum`);
 
-  const pkRows: { table_schema: string; table_name: string; column_name: string; pos: number }[] = await pg.unsafe(`
-    SELECT n.nspname AS table_schema, c.relname AS table_name, a.attname AS column_name, ord.n AS pos
+  // Primary keys plus plain unique indexes (no predicate, no expressions,
+  // valid) — the fallback identity for PK-less tables (common for ORM-made
+  // token/join tables). Only KEY columns count: INCLUDE columns (pg ≥ 11)
+  // don't make a row unique.
+  const keyAtts = server.version >= 110000 ? "AND ord.n <= i.indnkeyatts" : "";
+  const idxRows: { table_schema: string; table_name: string; index_name: string; is_pk: boolean; column_name: string; pos: number }[] =
+    await pg.unsafe(`
+    SELECT n.nspname AS table_schema, c.relname AS table_name, ic.relname AS index_name,
+           i.indisprimary AS is_pk, a.attname AS column_name, ord.n AS pos
     FROM pg_index i
     JOIN pg_class c ON c.oid = i.indrelid
+    JOIN pg_class ic ON ic.oid = i.indexrelid
     JOIN pg_namespace n ON n.oid = c.relnamespace
     CROSS JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS ord(attnum, n)
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum = ord.attnum
-    WHERE i.indisprimary
-    ORDER BY 1, 2, 4`);
+    WHERE (i.indisprimary OR (i.indisunique AND i.indisvalid AND i.indpred IS NULL AND i.indexprs IS NULL))
+      ${keyAtts}
+    ORDER BY 1, 2, 3, 6`);
+
+  // Which tables store rows in plain heap (where xmin means "last writer"): a
+  // heap table, or a partitioned table whose every leaf is one. Catalog shape
+  // differs by version (relam ≥ 12, pg_partition_tree ≥ 12), so this only runs
+  // where incremental is possible at all, and a failure just means "no".
+  const heap = new Set<string>();
+  if (allowIncremental) {
+    const heapRows: { schema: string; name: string }[] = await pg
+      .unsafe(`
+      SELECT n.nspname AS schema, c.relname AS name
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN pg_am am ON am.oid = c.relam
+      WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition
+        AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+        AND CASE WHEN c.relkind = 'r' THEN coalesce(am.amname = 'heap', false)
+                 ELSE NOT EXISTS (
+                   SELECT 1 FROM pg_partition_tree(c.oid) pt
+                   JOIN pg_class lc ON lc.oid = pt.relid
+                   LEFT JOIN pg_am la ON la.oid = lc.relam
+                   WHERE pt.isleaf AND (lc.relkind <> 'r' OR coalesce(la.amname, '') <> 'heap'))
+            END`)
+      .catch((e: unknown) => {
+        console.error(`pg-mirror: heap-storage check failed, incremental disabled this pass: ${e}`);
+        return [];
+      });
+    for (const r of heapRows) heap.add(`${r.schema}.${r.name}`);
+  }
 
   const key = (s: string, t: string): string => `${s}.${t}`;
   const colsByTable = new Map<string, PgColumnRow[]>();
@@ -520,11 +654,14 @@ export async function discoverTables(
     if (!colsByTable.has(k)) colsByTable.set(k, []);
     colsByTable.get(k)!.push(r);
   }
-  const pkByTable = new Map<string, string[]>();
-  for (const r of pkRows) {
+  // table → index name → { is_pk, columns in key order }
+  const idxByTable = new Map<string, Map<string, { isPk: boolean; cols: string[] }>>();
+  for (const r of idxRows) {
     const k = key(r.table_schema, r.table_name);
-    if (!pkByTable.has(k)) pkByTable.set(k, []);
-    pkByTable.get(k)!.push(r.column_name);
+    if (!idxByTable.has(k)) idxByTable.set(k, new Map());
+    const byName = idxByTable.get(k)!;
+    if (!byName.has(r.index_name)) byName.set(r.index_name, { isPk: r.is_pk === true, cols: [] });
+    byName.get(r.index_name)!.cols.push(r.column_name);
   }
 
   const tables: MirrorTable[] = [];
@@ -551,11 +688,14 @@ export async function discoverTables(
     }
     try {
       const columns = raw.map(mapColumn);
-      // A PK column that is somehow nullable can't anchor ORDER BY — fall back.
-      const pk = (pkByTable.get(key(t.schema, t.name)) ?? []).filter((name) =>
-        columns.some((c) => c.name === name && !c.nullable),
-      );
-      tables.push({ schema: t.schema, name: t.name, columns, pk });
+      const pk = chooseKey([...(idxByTable.get(key(t.schema, t.name))?.entries() ?? [])], columns);
+      const incremental =
+        allowIncremental &&
+        heap.has(key(t.schema, t.name)) &&
+        pk.length > 0 &&
+        pk.every((name) => exactKeyColumn(columns.find((c) => c.name === name)!)) &&
+        !columns.some((c) => c.name === "_mirrored_at"); // the stamp is the ReplacingMergeTree version
+      tables.push({ schema: t.schema, name: t.name, columns, pk, incremental });
     } catch (e) {
       failed.push({ schema: t.schema, name: t.name, error: (e as Error).message });
     }
@@ -583,12 +723,18 @@ export async function discoverTables(
 /* ------------------------ unchanged detection ------------------------ */
 
 /** Shape signature of the mirrored copy — column names/types + the ORDER BY
- *  key. Folded into the change signature so DDL-only drift (ADD COLUMN, a
- *  denyColumns edit) still reloads a table whose tuple counters are quiet.
- *  Bun.hash (Wyhash) is stable per Bun version; a Bun upgrade at worst costs
- *  one spurious full reload. */
+ *  key, plus the engine for incremental tables. Folded into the change
+ *  signature so DDL-only drift (ADD COLUMN, a denyColumns edit) still reloads a
+ *  table whose tuple counters are quiet, and gates the incremental path: rows
+ *  are only ever upserted into a mirror built with the SAME shape (a flip
+ *  between MergeTree and ReplacingMergeTree always goes through a full
+ *  reload). Full-reload tables hash exactly as they always have, so this
+ *  engine flag costs them no reload. Bun.hash (Wyhash) is stable per Bun
+ *  version; a Bun upgrade at worst costs one spurious full reload. */
 export function schemaSignature(t: MirrorTable): string {
-  return Bun.hash(JSON.stringify([t.columns.map((c) => [c.name, c.chType]), t.pk])).toString(36);
+  const shape: unknown[] = [t.columns.map((c) => [c.name, c.chType]), t.pk];
+  if (t.incremental) shape.push("replacing");
+  return Bun.hash(JSON.stringify(shape)).toString(36);
 }
 
 const pgString = (s: string): string => "'" + s.replace(/'/g, "''") + "'";
@@ -599,7 +745,8 @@ const pgString = (s: string): string => "'" + s.replace(/'/g, "''") + "'";
  *  ins/upd/del counter; its analyze-driven estimate drift can only cause a
  *  spurious reload, never a missed change (counters are monotonic, and a
  *  stats reset changes the string too). Stats views aren't privilege-gated,
- *  so the read-only role sees them. */
+ *  so the read-only role sees them. Meaningless on a hot standby (they count
+ *  only the standby's own writes) — runOnce never calls this there. */
 export async function fetchChangeCounters(pg: Pg, schema: string, name: string): Promise<string | null> {
   const rows: { sig: string }[] = await pg.unsafe(
     `SELECT n_tup_ins::text || ':' || n_tup_upd::text || ':' || n_tup_del::text || ':' || n_live_tup::text AS sig
@@ -608,16 +755,42 @@ export async function fetchChangeCounters(pg: Pg, schema: string, name: string):
   return rows[0]?.sig ?? null;
 }
 
-/** Last stored signature per biz target (what the CURRENT mirror was built
- *  from). ReplacingMergeTree keyed on target; FINAL collapses to the latest. */
-export async function loadMirrorState(ch: ChOptions): Promise<Map<string, string>> {
-  const rows = await chSelect(ch, `SELECT target, signature FROM ${chIdent(ch.db)}.pg_mirror_state FINAL`);
-  return new Map(rows.map((r) => [String(r.target), String(r.signature)]));
+/** What the CURRENT mirror of one table was built from. */
+export interface MirrorState {
+  /** `<shape>/<counters>` at the last reload or verified-unchanged check. */
+  signature: string;
+  /** Incremental tables: the xmin boundary (a decimal xid8) the next pass
+   *  pulls from. "" = none — the next change full-reloads. */
+  cursor: string;
+  /** Epoch ms of the last FULL reload (0 = unknown) — the reconcile clock. */
+  fullAt: number;
 }
 
-async function saveMirrorState(ch: ChOptions, target: string, source: string, signature: string): Promise<void> {
+/** Last stored state per biz target. ReplacingMergeTree keyed on target; FINAL
+ *  collapses to the latest. */
+export async function loadMirrorState(ch: ChOptions): Promise<Map<string, MirrorState>> {
+  const rows = await chSelect(
+    ch,
+    `SELECT target, signature, cursor, toUnixTimestamp64Milli(full_at) AS full_at FROM ${chIdent(ch.db)}.pg_mirror_state FINAL`,
+  );
+  return new Map(
+    rows.map((r) => [String(r.target), { signature: String(r.signature), cursor: String(r.cursor ?? ""), fullAt: Number(r.full_at ?? 0) || 0 }]),
+  );
+}
+
+/** Writes the WHOLE state row — the table keeps only the latest row per
+ *  target, so a re-stamp that dropped the cursor would silently cost the next
+ *  change a full reload. */
+async function saveMirrorState(ch: ChOptions, target: string, source: string, st: MirrorState): Promise<void> {
   const params = new URLSearchParams({ query: `INSERT INTO ${chIdent(ch.db)}.pg_mirror_state FORMAT JSONEachRow` });
-  const line = JSON.stringify({ target, source, signature, checked_at: runStamp(new Date()) });
+  const line = JSON.stringify({
+    target,
+    source,
+    signature: st.signature,
+    cursor: st.cursor,
+    full_at: runStamp(new Date(st.fullAt)),
+    checked_at: runStamp(new Date()),
+  });
   await chFetch(ch, params, line + "\n", 10_000);
 }
 
@@ -630,7 +803,7 @@ export interface TableResult {
   target: string;
   source: string;
   rows: number;
-  /** NDJSON bytes streamed for this reload — a close proxy for what the copy
+  /** NDJSON bytes streamed for this pass — a close proxy for what the copy
    *  pulled OUT of the source database, which is what hosted-Postgres vendors
    *  meter as egress. 0 on unchanged; on error, what had already streamed
    *  before the failure (a failing table retries every pass, so those bytes
@@ -642,10 +815,71 @@ export interface TableResult {
   /** "capped" = skipped because the daily egress budget was already spent. */
   status: "ok" | "error" | "unchanged" | "capped";
   error: string;
+  /** How an ok/error pass pulled: every row, or only rows past the xmin
+   *  boundary. "" for unchanged/capped (nothing pulled). */
+  mode: "full" | "incremental" | "";
 }
 
-/** Reload one table: staging → stream → verify count → atomic swap. `existing`
- *  is this run's snapshot of biz tables (kept current across the run). */
+/** Every mirror read runs in one REPEATABLE READ, READ ONLY transaction: one
+ *  snapshot for the whole table (the cursor, the count, and the xmin boundary
+ *  all agree), and it works through transaction-pooling proxies like
+ *  Supabase's pooler, where a session-level cursor wouldn't survive outside
+ *  an explicit transaction. Allowed on a hot standby too. */
+const SNAPSHOT_TXN = "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY";
+
+/** The snapshot's xmin — the oldest transaction still running when it was
+ *  taken — as a decimal xid8. Every row version this snapshot can't see was
+ *  written by that transaction or a later one (a SAVEPOINT's subxid is always
+ *  above its parent's xid), so it is the next pass's safe lower bound. */
+async function snapshotBoundary(tx: Pg): Promise<{ xmin: bigint; xmax: bigint }> {
+  const rows: { lo: string; hi: string }[] = await tx.unsafe(
+    `SELECT pg_snapshot_xmin(s)::text AS lo, pg_snapshot_xmax(s)::text AS hi FROM (SELECT pg_current_snapshot() AS s) q`,
+  );
+  return { xmin: BigInt(rows[0].lo), xmax: BigInt(rows[0].hi) };
+}
+
+/** Stream a SELECT through a cursor into a ClickHouse table as NDJSON. The
+ *  tally advances per FETCH, not per flush: those bytes left the source DB
+ *  (the billable event) the moment the cursor returned them, so a throw
+ *  anywhere past that point — including before the first ClickHouse flush —
+ *  must not erase them from the ledger. */
+async function streamInto(
+  tx: Pg,
+  ch: ChOptions,
+  t: MirrorTable,
+  select: string,
+  table: string,
+  tally: { bytes: number },
+  onProgress?: (rows: number) => void,
+): Promise<{ rows: number; bytes: number }> {
+  await tx.unsafe(`DECLARE setoku_mirror_cur CURSOR FOR ${select}`);
+  let streamed = 0;
+  let bytes = 0;
+  let buf = "";
+  for (;;) {
+    const batch: Record<string, unknown>[] = await tx.unsafe(`FETCH ${FETCH_ROWS} FROM setoku_mirror_cur`);
+    let chunk = "";
+    for (const row of batch) chunk += serializeRow(row, t.columns);
+    const chunkBytes = Buffer.byteLength(chunk, "utf8");
+    buf += chunk;
+    bytes += chunkBytes;
+    tally.bytes += chunkBytes;
+    streamed += batch.length;
+    if (buf.length >= FLUSH_BYTES || (batch.length < FETCH_ROWS && buf.length)) {
+      await chInsert(ch, ch.mirrorDb, table, buf);
+      buf = "";
+      onProgress?.(streamed);
+    }
+    if (batch.length < FETCH_ROWS) break;
+  }
+  await tx.unsafe("CLOSE setoku_mirror_cur");
+  return { rows: streamed, bytes };
+}
+
+/** Full reload of one table: staging → stream → verify count → atomic swap.
+ *  `existing` is this run's snapshot of biz tables (kept current across the
+ *  run). An incremental table also returns the boundary its NEXT pass pulls
+ *  from. */
 export async function mirrorTable(
   pg: Pg,
   ch: ChOptions,
@@ -653,13 +887,14 @@ export async function mirrorTable(
   existing: Set<string>,
   opts?: {
     onProgress?: (rows: number) => void;
-    /** Mutated as each cursor FETCH lands, so the caller still knows what was
-     *  pulled out of the source when the reload THROWS — a failed-and-retrying
-     *  stream is the most expensive egress there is, and the ledger must see
-     *  it even when the failure hits before the first ClickHouse flush. */
+    /** Incremented as each cursor FETCH lands, so the caller still knows what
+     *  was pulled out of the source when the reload THROWS — a
+     *  failed-and-retrying stream is the most expensive egress there is, and
+     *  the ledger must see it even when the failure hits before the first
+     *  ClickHouse flush. */
     tally?: { bytes: number };
   },
-): Promise<{ rows: number; bytes: number }> {
+): Promise<{ rows: number; bytes: number; cursor: string }> {
   const target = bizTableName(t.schema, t.name);
   const staging = `${target}__staging`;
   const db = ch.mirrorDb;
@@ -669,37 +904,12 @@ export async function mirrorTable(
   await chCommand(ch, stagingDDL(db, staging, t));
   existing.add(staging);
 
-  // One READ ONLY transaction per table = one consistent snapshot per table
-  // (works through transaction-pooling proxies like Supabase's pooler, where a
-  // session-level cursor wouldn't survive outside an explicit transaction).
-  let streamed = 0;
-  let bytes = 0;
-  await pg.begin(async (tx) => {
-    await tx.unsafe("SET TRANSACTION READ ONLY");
-    await tx.unsafe(`DECLARE setoku_mirror_cur CURSOR FOR ${buildSelect(t)}`);
-    let buf = "";
-    let bufBytes = 0; // bytes of `buf` not yet folded into `bytes` (per-chunk, so it's O(n) total)
-    for (;;) {
-      const batch: Record<string, unknown>[] = await tx.unsafe(`FETCH ${FETCH_ROWS} FROM setoku_mirror_cur`);
-      let chunk = "";
-      for (const row of batch) chunk += serializeRow(row, t.columns);
-      buf += chunk;
-      bufBytes += Buffer.byteLength(chunk, "utf8");
-      streamed += batch.length;
-      // The tally advances per FETCH, not per flush: these bytes left the
-      // source DB (the billable event) the moment the cursor returned them,
-      // so a throw anywhere past this point — including before the first
-      // ClickHouse flush — must not erase them from the ledger.
-      if (opts?.tally) opts.tally.bytes = bytes + bufBytes;
-      if (buf.length >= FLUSH_BYTES || (batch.length < FETCH_ROWS && buf.length)) {
-        bytes += bufBytes;
-        bufBytes = 0;
-        await chInsert(ch, db, staging, buf);
-        buf = "";
-        opts?.onProgress?.(streamed);
-      }
-      if (batch.length < FETCH_ROWS) break;
-    }
+  const tally = opts?.tally ?? { bytes: 0 };
+  let cursor = "";
+  const { rows: streamed, bytes } = await pg.begin(async (tx) => {
+    await tx.unsafe(SNAPSHOT_TXN);
+    if (t.incremental) cursor = String((await snapshotBoundary(tx)).xmin);
+    return streamInto(tx, ch, t, buildSelect(t), staging, tally, opts?.onProgress);
   });
 
   // Verify the staged copy before swapping — a mid-stream failure already threw,
@@ -721,7 +931,54 @@ export async function mirrorTable(
     existing.add(target);
   }
   existing.delete(staging);
-  return { rows: streamed, bytes };
+  return { rows: streamed, bytes, cursor };
+}
+
+/** The delta filter: xmin within [from, snapshot xmax) modulo 2^32. xmin is a
+ *  32-bit xid that wraps; any row version the snapshot can see was written
+ *  within 2^31 xids of it, so the window is unambiguous. Frozen rows keep
+ *  their raw xmin (pg ≥ 9.4) and can at worst land in the window by
+ *  coincidence — an extra row re-sent, never a row missed. null = the window
+ *  is unusable (the cursor is from the future — a repointed source — or so old
+ *  it may have wrapped): full reload instead. */
+export function xminWindow(from: bigint, snapshotXmax: bigint): string | null {
+  const width = snapshotXmax - from;
+  if (width < 0n || width >= 2n ** 31n) return null;
+  const lo = from % 2n ** 32n;
+  return `((xmin::text::bigint - ${lo}) & 4294967295) < ${width}`;
+}
+
+/** Incremental pass for one table: in ONE snapshot, pull rows whose xmin is
+ *  past `from` and count the source; upsert the rows into the live
+ *  ReplacingMergeTree; then compare counts. Deletes, TRUNCATE and key changes
+ *  leave no xmin behind — any of them makes the counts disagree, and the
+ *  caller full-reloads (`mismatch`). An upsert of several batches is visible
+ *  batch by batch (per-row consistent, not per-table atomic like the swap). */
+export async function mirrorDelta(
+  pg: Pg,
+  ch: ChOptions,
+  t: MirrorTable,
+  from: bigint,
+  opts?: { tally?: { bytes: number }; onProgress?: (rows: number) => void },
+): Promise<{ rows: number; bytes: number; cursor: string; mismatch: string | null }> {
+  const target = bizTableName(t.schema, t.name);
+  const tally = opts?.tally ?? { bytes: 0 };
+  const res = await pg.begin(async (tx) => {
+    await tx.unsafe(SNAPSHOT_TXN);
+    const snap = await snapshotBoundary(tx);
+    const where = xminWindow(from, snap.xmax);
+    if (where === null) return { rows: 0, bytes: 0, cursor: "", sourceCount: -1, window: false };
+    const counted: { n: string }[] = await tx.unsafe(
+      `SELECT count(*)::text AS n FROM ${pgIdent(t.schema)}.${pgIdent(t.name)}`,
+    );
+    const pulled = await streamInto(tx, ch, t, `${buildSelect(t)} WHERE ${where}`, target, tally, opts?.onProgress);
+    return { ...pulled, cursor: String(snap.xmin), sourceCount: Number(counted[0].n), window: true };
+  });
+  if (!res.window) return { rows: 0, bytes: 0, cursor: "", mismatch: "xmin boundary unusable (source repointed, or last pass too long ago)" };
+  const mirrored = await chSelect(ch, `SELECT count() AS c FROM ${chIdent(ch.mirrorDb)}.${chIdent(target)} FINAL`);
+  const m = Number(mirrored[0]?.c ?? -1);
+  const mismatch = m === res.sourceCount ? null : `source has ${res.sourceCount} rows, mirror ${m} (deletes, TRUNCATE, or a key change)`;
+  return { rows: res.rows, bytes: res.bytes, cursor: res.cursor, mismatch };
 }
 
 const runStamp = (d: Date): string => d.toISOString().replace("T", " ").replace("Z", "");
@@ -737,23 +994,41 @@ async function recordRun(ch: ChOptions, startedAt: Date, r: TableResult): Promis
     bytes: r.bytes,
     status: r.status,
     error: r.error,
+    mode: r.mode,
   });
   await chFetch(ch, params, line + "\n", 10_000);
 }
 
-/** One full mirror pass: discover → reload each changed table (skip the
- *  verifiably unchanged) → prune stale mirrors. */
+export interface RunOptions {
+  /** Bytes this pass may still stream (daily cap minus today's ledger). Once
+   *  spent, the remaining changed tables are recorded as "capped" and left for
+   *  a later pass — overshoot is bounded by one table's pull, never a pass. */
+  budgetBytes?: number | null;
+  /** false = every table full-reloads (SETOKU_MIRROR_INCREMENTAL=0). */
+  incremental?: boolean;
+  /** An incremental table that changed full-reloads once its last full reload
+   *  is this old — the backstop for anything the count check can't see.
+   *  null = never. */
+  reconcileMs?: number | null;
+  /** Override the server probe (tests). */
+  server?: ServerInfo;
+}
+
+/** One mirror pass: discover → pull each changed table (skip the verifiably
+ *  unchanged; xmin delta where eligible, full reload otherwise) → prune stale
+ *  mirrors. */
 export async function runOnce(
   pg: Pg,
   ch: ChOptions,
   cfg: MirrorConfig,
   setState?: (s: string) => void,
-  /** Bytes this pass may still stream (daily cap minus today's ledger). Once
-   *  spent, the remaining changed tables are recorded as "capped" and left for
-   *  a later pass — overshoot is bounded by one table's reload, never a pass. */
-  budgetBytes: number | null = null,
-): Promise<{ ok: number; failed: number; rows: number; bytes: number; unchanged: number; capped: number }> {
-  const { tables, failed: discoveryFailed } = await discoverTables(pg, cfg);
+  budgetOrOpts: number | null | RunOptions = null,
+): Promise<{ ok: number; failed: number; rows: number; bytes: number; unchanged: number; capped: number; incremental: number }> {
+  const opts: RunOptions = typeof budgetOrOpts === "object" && budgetOrOpts !== null ? budgetOrOpts : { budgetBytes: budgetOrOpts };
+  const budgetBytes = opts.budgetBytes ?? null;
+  const reconcileMs = opts.reconcileMs === undefined ? DEFAULT_RECONCILE_MS : opts.reconcileMs;
+  const server = opts.server ?? (await fetchServerInfo(pg));
+  const { tables, failed: discoveryFailed } = await discoverTables(pg, cfg, { incremental: opts.incremental, server });
   const existing = new Set<string>(
     (await chSelect(ch, `SELECT name FROM system.tables WHERE database = ${sqlString(ch.mirrorDb)}`)).map((r) => String(r.name)),
   );
@@ -767,20 +1042,20 @@ export async function runOnce(
       console.error(
         `pg-mirror: discovery returned no allowlisted tables — refusing to prune ${existing.size} existing mirror table(s) (revoked grants or misconfig? fix the source, the next pass reconciles)`,
       );
-    return { ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0, capped: 0 };
+    return { ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0, capped: 0, incremental: 0 };
   }
 
-  // Signatures the CURRENT mirror tables were built from. A state row whose
-  // biz table is gone is ignored (the skip below also requires the table to
-  // exist), so pruned tables need no state cleanup.
+  // State the CURRENT mirror tables were built from. A state row whose biz
+  // table is gone is ignored (both the skip and the delta also require the
+  // table to exist), so pruned tables need no state cleanup.
   const state = await loadMirrorState(ch).catch((e) => {
-    console.error(`pg-mirror: could not load mirror state (skip disabled this pass): ${e}`);
-    return new Map<string, string>();
+    console.error(`pg-mirror: could not load mirror state (skip + incremental disabled this pass): ${e}`);
+    return new Map<string, MirrorState>();
   });
 
   const results: TableResult[] = [];
   for (const f of discoveryFailed) {
-    const r: TableResult = { target: bizTableName(f.schema, f.name), source: `${f.schema}.${f.name}`, rows: 0, bytes: 0, status: "error", error: f.error };
+    const r: TableResult = { target: bizTableName(f.schema, f.name), source: `${f.schema}.${f.name}`, rows: 0, bytes: 0, status: "error", error: f.error, mode: "" };
     results.push(r);
     console.error(`pg-mirror: ${r.source} not mirrorable: ${f.error}`);
     await recordRun(ch, new Date(), r).catch(() => {});
@@ -791,21 +1066,24 @@ export async function runOnce(
     n += 1;
     const target = bizTableName(t.schema, t.name);
     const source = `${t.schema}.${t.name}`;
-    setState?.(`reloading ${target} (${n}/${tables.length})`);
+    setState?.(`pulling ${target} (${n}/${tables.length})`);
     const startedAt = new Date();
+    const shape = schemaSignature(t);
+    const prev = state.get(target);
 
-    // Counters are read BEFORE the reload streams, so the stored signature can
+    // Counters are read BEFORE the pull streams, so the stored signature can
     // only UNDERSTATE what the mirror holds — a change racing the copy makes
-    // the next pass reload once more, never skip a stale mirror.
-    const counters = await fetchChangeCounters(pg, t.schema, t.name).catch(() => null);
-    const signature = `${schemaSignature(t)}/${counters ?? "no-stats"}`;
+    // the next pass pull once more, never skip a stale mirror. A standby's
+    // counters never move, so there the skip is off (null → never equal).
+    const counters = server.replica ? null : await fetchChangeCounters(pg, t.schema, t.name).catch(() => null);
+    const signature = `${shape}/${counters ?? "no-stats"}`;
 
-    if (counters !== null && existing.has(target) && state.get(target) === signature) {
-      const r: TableResult = { target, source, rows: 0, bytes: 0, status: "unchanged", error: "" };
+    if (counters !== null && existing.has(target) && prev?.signature === signature) {
+      const r: TableResult = { target, source, rows: 0, bytes: 0, status: "unchanged", error: "", mode: "" };
       results.push(r);
       // Re-stamp checked_at: freshness surfaces read "verified equal to the
       // source at this time" from pg_mirror_runs/pg_mirror_state.
-      await saveMirrorState(ch, target, source, signature).catch((e) =>
+      await saveMirrorState(ch, target, source, prev).catch((e) =>
         console.error(`pg-mirror: could not re-stamp state for ${target}: ${e}`),
       );
       await recordRun(ch, startedAt, r).catch((e) => console.error(`pg-mirror: could not record run for ${target}: ${e}`));
@@ -814,31 +1092,54 @@ export async function runOnce(
 
     if (budgetBytes !== null && results.reduce((a, r) => a + r.bytes, 0) >= budgetBytes) {
       // Budget spent: don't start another stream. The table keeps its old
-      // signature, so it reloads first thing once the day rolls over.
-      const r: TableResult = { target, source, rows: 0, bytes: 0, status: "capped", error: "daily egress cap reached" };
+      // state, so it pulls first thing once the day rolls over.
+      const r: TableResult = { target, source, rows: 0, bytes: 0, status: "capped", error: "daily egress cap reached", mode: "" };
       results.push(r);
       await recordRun(ch, startedAt, r).catch((e) => console.error(`pg-mirror: could not record run for ${target}: ${e}`));
       continue;
     }
 
+    // The delta is only ever applied to a mirror built with this exact shape
+    // (engine included) from an unbroken chain of snapshots.
+    const reconcileDue = reconcileMs !== null && startedAt.getTime() - (prev?.fullAt ?? 0) >= reconcileMs;
+    const canDelta =
+      t.incremental === true && existing.has(target) && !!prev?.cursor && prev.signature.split("/")[0] === shape && !reconcileDue;
+
     const tally = { bytes: 0 };
+    let mode: TableResult["mode"] = canDelta ? "incremental" : "full";
     try {
-      const { rows, bytes } = await mirrorTable(pg, ch, t, existing, { tally });
-      results.push({ target, source, rows, bytes, status: "ok", error: "" });
-      // Only after a successful swap — a failed reload keeps the old signature
-      // so the table retries next pass instead of skipping on a stale mirror.
-      await saveMirrorState(ch, target, source, signature).catch((e) =>
+      let pulled: { rows: number; bytes: number; cursor: string } | null = null;
+      if (canDelta) {
+        const d = await mirrorDelta(pg, ch, t, BigInt(prev!.cursor), { tally });
+        if (d.mismatch === null) pulled = d;
+        else console.error(`pg-mirror: ${source}: ${d.mismatch} — full reload`);
+      }
+      let fullAt = prev?.fullAt ?? 0;
+      if (pulled === null) {
+        mode = "full";
+        const f = await mirrorTable(pg, ch, t, existing, { tally });
+        // a delta that fell back still pulled its rows — the ledger gets both
+        pulled = { rows: f.rows, bytes: tally.bytes, cursor: f.cursor };
+        fullAt = startedAt.getTime();
+      }
+      results.push({ target, source, rows: pulled.rows, bytes: pulled.bytes, status: "ok", error: "", mode });
+      // Only after a successful pull — a failure keeps the old state so the
+      // table retries next pass (from the old boundary) instead of skipping
+      // on a stale mirror.
+      await saveMirrorState(ch, target, source, { signature, cursor: pulled.cursor, fullAt }).catch((e) =>
         console.error(`pg-mirror: could not save state for ${target}: ${e}`),
       );
     } catch (e) {
       // Best-effort staging cleanup; the previous good copy (if any) stays live.
+      // A delta that died mid-upsert left some newer row versions in place —
+      // harmless: the next pass re-pulls from the same boundary.
       await chCommand(ch, `DROP TABLE IF EXISTS ${chIdent(ch.mirrorDb)}.${chIdent(`${target}__staging`)} SYNC`).catch(() => {});
       existing.delete(`${target}__staging`);
       // The failure still PULLED tally.bytes out of the source — and a failing
       // table retries every pass, which is the most expensive egress pattern
       // there is. Recording 0 here would blind the ledger (and the alert) to
       // exactly the overage it exists to catch.
-      results.push({ target, source, rows: 0, bytes: tally.bytes, status: "error", error: (e as Error).message.slice(0, 500) });
+      results.push({ target, source, rows: 0, bytes: tally.bytes, status: "error", error: (e as Error).message.slice(0, 500), mode });
       console.error(`pg-mirror: ${source} failed: ${(e as Error).message}`);
     }
     await recordRun(ch, startedAt, results[results.length - 1]).catch((e) =>
@@ -865,7 +1166,8 @@ export async function runOnce(
   const rows = ok.reduce((a, r) => a + r.rows, 0);
   // Bytes across ALL results — failed streams pulled real egress too.
   const bytes = results.reduce((a, r) => a + r.bytes, 0);
-  return { ok: ok.length, failed: results.length - ok.length - unchanged - capped, rows, bytes, unchanged, capped };
+  const incremental = ok.filter((r) => r.mode === "incremental").length;
+  return { ok: ok.length, failed: results.length - ok.length - unchanged - capped, rows, bytes, unchanged, capped, incremental };
 }
 
 /* ------------------------------- main -------------------------------- */
@@ -981,6 +1283,19 @@ export function parseDailyCap(raw: string | undefined): number | null {
   return n > 0 ? n : null;
 }
 
+/** Default reconcile backstop: a changed incremental table full-reloads once
+ *  a day. */
+export const DEFAULT_RECONCILE_MS = 24 * 3_600_000;
+
+/** SETOKU_MIRROR_RECONCILE_HOURS: unset/blank → the default, "0" → never
+ *  (null), otherwise positive hours. Garbage fails fast like the other knobs. */
+export function parseReconcileHours(raw: string | undefined): number | null {
+  if (raw === undefined || raw.trim() === "") return DEFAULT_RECONCILE_MS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`SETOKU_MIRROR_RECONCILE_HOURS must be a number of hours (0 = never), got ${JSON.stringify(raw)}`);
+  return n === 0 ? null : n * 3_600_000;
+}
+
 /** The next 00:00:30 UTC after `nowMs` — when the ledger day rolls over (the
  *  30 s keeps the first pass clear of the day boundary). */
 export function nextUtcMidnight(nowMs: number): number {
@@ -1032,6 +1347,8 @@ async function main(): Promise<void> {
   const TZ = process.env.TZ || "UTC";
   let cadence: Cadence;
   let CAP: number | null;
+  let RECONCILE: number | null;
+  const INCREMENTAL = process.env.SETOKU_MIRROR_INCREMENTAL?.trim() !== "0";
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: TZ }); // throws RangeError on an unknown zone
     cadence = {
@@ -1041,6 +1358,7 @@ async function main(): Promise<void> {
       tz: TZ,
     };
     CAP = parseDailyCap(process.env.SETOKU_MIRROR_DAILY_BYTES_CAP);
+    RECONCILE = parseReconcileHours(process.env.SETOKU_MIRROR_RECONCILE_HOURS);
   } catch (e) {
     console.error(`pg-mirror: ${e instanceof Error ? e.message : String(e)}`);
     process.exit(1);
@@ -1053,9 +1371,12 @@ async function main(): Promise<void> {
     (cadence.quiet
       ? ` (every ${cadence.quietMs}ms from ${cadence.quiet.start}:00 to ${cadence.quiet.end}:00 ${TZ})`
       : "") +
-    (CAP ? `, daily cap ${CAP} bytes` : "");
+    (CAP ? `, daily cap ${CAP} bytes` : "") +
+    (INCREMENTAL
+      ? `, incremental (xmin) where eligible, reconcile ${RECONCILE === null ? "never" : `every ${RECONCILE / 3_600_000}h`}`
+      : ", full reloads only (SETOKU_MIRROR_INCREMENTAL=0)");
   console.error(
-    `pg-mirror: full reload ${cadenceText} → ${ch.url} db ${ch.mirrorDb} ` +
+    `pg-mirror: mirror ${cadenceText} → ${ch.url} db ${ch.mirrorDb} ` +
       `(allow ${JSON.stringify(cfg.allowTables)}, deny ${JSON.stringify(cfg.denyTables)}, ` +
       `denyColumns ${JSON.stringify(cfg.denyColumns)})`,
   );
@@ -1070,6 +1391,8 @@ async function main(): Promise<void> {
     quiet_interval_ms: String(cadence.quietMs),
     tz: TZ,
     daily_bytes_cap: String(CAP ?? 0),
+    incremental: INCREMENTAL ? "1" : "0",
+    reconcile_hours: RECONCILE === null ? "0" : String(RECONCILE / 3_600_000),
     // Live state from a previous life must not outlive it: clear until the
     // first pass of this process publishes fresh values.
     next_pass_at: "",
@@ -1134,15 +1457,15 @@ async function main(): Promise<void> {
             (s) => {
               state = s;
             },
-            budget,
+            { budgetBytes: budget, incremental: INCREMENTAL, reconcileMs: RECONCILE },
           );
           if (r.capped) {
             paused = "daily egress cap";
-            state = `paused: daily egress cap reached mid-pass — ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.capped} left for tomorrow (${(r.bytes / 1e6).toFixed(1)} MB this pass)`;
+            state = `paused: daily egress cap reached mid-pass — ${r.ok} pulled, ${r.unchanged} unchanged, ${r.capped} left for tomorrow (${(r.bytes / 1e6).toFixed(1)} MB this pass)`;
           } else {
             state = r.failed
-              ? `partial: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.failed} failed — see setoku.pg_mirror_runs`
-              : `ok: ${r.ok} reloaded, ${r.unchanged} unchanged, ${r.rows} row(s) / ${(r.bytes / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)}s`;
+              ? `partial: ${r.ok} pulled (${r.incremental} incremental), ${r.unchanged} unchanged, ${r.failed} failed — see setoku.pg_mirror_runs`
+              : `ok: ${r.ok} pulled (${r.incremental} incremental), ${r.unchanged} unchanged, ${r.rows} row(s) / ${(r.bytes / 1e6).toFixed(1)} MB in ${Math.round((Date.now() - t0) / 1000)}s`;
           }
           console.error(`pg-mirror: ${state}`);
         } finally {

@@ -74,7 +74,7 @@ one.
     the connection string in the box's `SETOKU_DATABASE_URL`, set the table
     allow-list. That credential feeds **pg-mirror**, not the gateway (the
     gateway gets no DB URL): enable the mirror (profile `mirror`) and pg-mirror
-    full-reloads the allowlisted tables into ClickHouse `biz.*` on a cron —
+    copies the allowlisted tables into ClickHouse `biz.*` on a cron —
     the mirror is how the data becomes queryable at all. The credential lives
     on the box, never in the repo.
   - *Vercel / Render / Slack / Mercury* — the existing drain / pull-bridge

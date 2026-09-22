@@ -1,17 +1,18 @@
 # pg-mirror — the business DB, mirrored into the lake
 
-Full-reloads every allowlisted Postgres table into the bundled ClickHouse on a
-poller-style loop (issue #47). The mirror (`biz.*`, clickhouse dialect) is the
+Mirrors every allowlisted Postgres table into the bundled ClickHouse on a
+poller-style loop (issue #47): a full reload, or an `xmin` delta for tables
+that qualify (see "Incremental pull"). The mirror (`biz.*`, clickhouse dialect) is the
 **default read path for heavy app panels**: prod Postgres stays for ad-hoc
 `run_query`, point lookups, and verifying the mirror against source.
 
-## Why full reload
+## Why no CDC
 
-No CDC, no replication slots pointed at prod, no replica-identity footguns.
-Schema drift is a non-event — the next run picks up the new shape — and a table
-dropped from prod or from the allowlist is **pruned** from the mirror on the
-next pass, so revoking a grant removes the lake copy too. Incremental cursors
-are a later optimization for append-only tables only if size demands.
+No logical replication, no replication slots pointed at prod, no
+replica-identity footguns: the mirror only ever SELECTs through the read-only
+role. Schema drift is a non-event (the next run picks up the new shape), and a
+table dropped from prod or from the allowlist is **pruned** from the mirror on
+the next pass, so revoking a grant removes the lake copy too.
 
 ## Skip-unchanged: egress scales with change, not size × cadence
 
@@ -29,6 +30,63 @@ time (`_mirrored_at` inside the rows still marks the last actual restream).
 Counters are read *before* a reload streams, so a change racing the copy can
 only cause one extra reload next pass, never a skipped stale mirror; a missing
 stats row disables the skip for that table (reload rather than guess).
+
+## Incremental pull: egress scales with the rows that changed
+
+Skip-unchanged only helps a table with no writes at all. A busy table used to
+restream in full on every pass, so a large table with a trickle of inserts cost
+its full size many times a day. So a table that changed is pulled
+**incrementally** when it qualifies:
+
+- Every Postgres heap row carries `xmin`, the id of the transaction that last
+  wrote it. Each pass reads in one `REPEATABLE READ` snapshot and stores that
+  snapshot's xmin (the oldest transaction still running) in
+  `setoku.pg_mirror_state.cursor`. The next pass fetches only rows with
+  `xmin` at or past that boundary. Rows written by transactions still open at
+  snapshot time, including rows written under a `SAVEPOINT`, are always above
+  it, so nothing slips between passes. (`pg_visible_in_snapshot` is **not**
+  used: it misjudges subtransaction ids.) The comparison is modulo 2^32, so
+  xid wraparound doesn't matter.
+- The rows are upserted into the live mirror, a `ReplacingMergeTree` keyed on
+  the pg key and versioned by `_mirrored_at`. Readers see one row per key
+  because the gateway's ClickHouse profile sets `final=1`
+  (`deploy/clickhouse/lake-users.xml`). There's no staging swap, so a
+  multi-batch delta becomes visible batch by batch.
+- Deletes, `TRUNCATE` and key changes leave no `xmin` behind. So every
+  incremental pass also compares `count(*)` (same snapshot) with the mirror's
+  `count() FINAL`; any difference means a full reload in the same pass.
+  A changed table also gets a full reload once its last one is
+  `SETOKU_MIRROR_RECONCILE_HOURS` old (default 24; `0` = never), as a backstop.
+
+This relies on no column names (no `updatedAt` convention) and no extra grants.
+A table qualifies when it is a plain heap table (or a partitioned table whose
+leaves all are) with a primary key, or else a unique index over `NOT NULL`
+columns, whose key types map exactly (ints, text, uuid, dates/timestamps,
+enums, bool), on Postgres 13 or later. Everything else (views, FDWs,
+Postgres-compatible engines, float keys, PK-less tables) stays on full reload,
+exactly as before. `SETOKU_MIRROR_INCREMENTAL=0` turns it off.
+
+The cost on prod is two reads per changed table per pass: a heap scan for the
+delta (`xmin` can't be indexed) and a `count(*)`, which is usually an index-only
+scan of the key. Neither reads the out-of-line (TOAST) data that dominates fat
+tables, so it is much less work than the full reload it replaces there. For a
+small, narrow table it can be slightly more; the egress is what drops.
+`setoku.pg_mirror_runs.mode` records `full` or `incremental` for every pull.
+
+The cost on the lake side is `FINAL` on reads. Measured on a 16M-row table
+(ClickHouse 26.10, laptop): once background merges have folded the table into
+one part, `final=1` adds nothing; with a few un-merged delta parts on top, a
+full-table aggregate took about 2x as long (65 ms to 120 ms; 100 ms to 250 ms
+at 2 threads). Tables of a few hundred thousand rows don't notice. A very large
+table that changes constantly pays that 2x on full scans, and
+`SETOKU_MIRROR_INCREMENTAL=0` is the escape hatch if it matters more than the
+egress.
+
+**Read replicas.** On a hot standby, `pg_stat_user_tables` counts only the
+standby's own writes, so the counters never move and the unchanged-skip would
+freeze the mirror forever. The mirror checks `pg_is_in_recovery()` and turns the
+skip off there. Incremental tables still cost only their delta; full-reload
+tables reload every pass.
 
 ## denyColumns: leave the fat columns out
 
@@ -61,8 +119,9 @@ which deploys don't overwrite) — the env list merges into the config's.
 
 Naming: `public.orders` → `biz.orders`; other schemas prefix,
 `ticketing.seat_txn` → `biz.ticketing_seat_txn`. Every mirrored row carries
-`_mirrored_at` (stamped at load), so "data as of" is queryable inline —
-`SELECT max(_mirrored_at) FROM biz.<t>` — without reading `pg_mirror_runs`.
+`_mirrored_at`, stamped when that row version was last pulled. It is the
+ReplacingMergeTree version for incremental tables. For the table's "data as
+of", read `pg_mirror_runs` (an unchanged or zero-row pass stamps no rows).
 
 The copy streams through one READ ONLY cursor per table (a consistent
 snapshot, and it works through transaction-pooling proxies). For very large
@@ -102,6 +161,8 @@ docker compose up -d --build pg-mirror
 
 Env: `SETOKU_DATABASE_URL` (required, the read-only role),
 `SETOKU_MIRROR_INTERVAL_MS` (default 900000 = 15 min),
+`SETOKU_MIRROR_INCREMENTAL` (default on, `0` = full reloads only),
+`SETOKU_MIRROR_RECONCILE_HOURS` (default 24, `0` = never),
 `SETOKU_MIRROR_QUIET_HOURS` / `SETOKU_MIRROR_QUIET_INTERVAL_MS` / `TZ` and
 `SETOKU_MIRROR_DAILY_BYTES_CAP` (see "Egress budget" below),
 `SETOKU_MIRROR_DENY_COLUMNS` (extra per-box `denyColumns`, comma-separated),

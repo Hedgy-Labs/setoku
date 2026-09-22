@@ -43,6 +43,11 @@ import {
   positiveMs,
   parseDailyCap,
   nextUtcMidnight,
+  chooseKey,
+  xminWindow,
+  parseReconcileHours,
+  fetchServerInfo,
+  INCREMENTAL_MIN_VERSION,
   type Cadence,
   type ChOptions,
   type MirrorColumn,
@@ -251,10 +256,14 @@ describe("pgOptions", () => {
 /* --------------------- FakeClickHouse (unit-level) --------------------- */
 
 /** Models exactly the surface the mirror drives: DDL (CREATE/DROP/EXCHANGE/
- *  RENAME), JSONEachRow inserts, count()/system.tables selects. */
+ *  RENAME), JSONEachRow inserts, count()/system.tables selects. A
+ *  ReplacingMergeTree is modeled as already merged: an insert REPLACES any
+ *  row with the same ORDER BY key (the real engine's read-time dedup via
+ *  FINAL is proven in the real-ClickHouse e2e below). */
 class FakeClickHouse {
   server: ReturnType<typeof Bun.serve>;
   tables = new Map<string, Record<string, unknown>[]>(); // "db.name" → rows
+  engines = new Map<string, { replacing: boolean; key: string[] }>(); // "db.name" → engine
   queries: string[] = [];
   heartbeats: Record<string, unknown>[] = [];
   runs: Record<string, unknown>[] = [];
@@ -294,7 +303,17 @@ class FakeClickHouse {
       else {
         if (this.failInserts) return new Response("boom", { status: 500 });
         if (!this.tables.has(key)) return new Response(`no such table ${key}`, { status: 404 });
-        this.tables.get(key)!.push(...rows);
+        const target = this.tables.get(key)!;
+        const eng = this.engines.get(key);
+        if (eng?.replacing) {
+          const id = (r: Record<string, unknown>): string => JSON.stringify(eng.key.map((k) => r[k]));
+          const at = new Map(target.map((x, i) => [id(x), i]));
+          for (const row of rows) {
+            const i = at.get(id(row));
+            if (i !== undefined) target[i] = row;
+            else at.set(id(row), target.push(row) - 1);
+          }
+        } else target.push(...rows);
       }
       return ok();
     }
@@ -302,11 +321,17 @@ class FakeClickHouse {
     if ((m = q.match(/^CREATE TABLE IF NOT EXISTS/i))) return ok();
     if ((m = q.match(/^ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS/i))) return ok();
     if ((m = q.match(/^CREATE TABLE (\S+)/i))) {
+      const order = q.match(/ORDER BY \((.*)\)\n/);
       this.tables.set(this.key(m[1]), []);
+      this.engines.set(this.key(m[1]), {
+        replacing: /ENGINE = ReplacingMergeTree/.test(q),
+        key: order ? order[1].split(", ").map((k) => k.replace(/`/g, "")) : [],
+      });
       return ok();
     }
     if ((m = q.match(/^DROP TABLE IF EXISTS (\S+)/i))) {
       this.tables.delete(this.key(m[1]));
+      this.engines.delete(this.key(m[1]));
       return ok();
     }
     if ((m = q.match(/^EXCHANGE TABLES (\S+) AND (\S+)/i))) {
@@ -316,6 +341,9 @@ class FakeClickHouse {
       const tmp = this.tables.get(a)!;
       this.tables.set(a, this.tables.get(b)!);
       this.tables.set(b, tmp);
+      const tmpEngine = this.engines.get(a)!;
+      this.engines.set(a, this.engines.get(b)!);
+      this.engines.set(b, tmpEngine);
       return ok();
     }
     if ((m = q.match(/^RENAME TABLE (\S+) TO (\S+)/i))) {
@@ -323,6 +351,8 @@ class FakeClickHouse {
       if (!this.tables.has(a)) return new Response("missing table", { status: 404 });
       this.tables.set(this.key(m[2]), this.tables.get(a)!);
       this.tables.delete(a);
+      this.engines.set(this.key(m[2]), this.engines.get(a)!);
+      this.engines.delete(a);
       return ok();
     }
     if ((m = q.match(/^SELECT count\(\) AS c FROM (\S+)/i))) {
@@ -330,11 +360,16 @@ class FakeClickHouse {
       if (!rows) return new Response("missing table", { status: 404 });
       return ok(JSON.stringify({ data: [{ c: String(rows.length) }] }));
     }
-    if ((m = q.match(/^SELECT target, signature FROM \S+\.pg_mirror_state FINAL/i))) {
+    if ((m = q.match(/^SELECT target, signature, cursor, toUnixTimestamp64Milli\(full_at\) AS full_at FROM \S+\.pg_mirror_state FINAL/i))) {
       // ReplacingMergeTree(checked_at) ORDER BY target — last write per target wins
       const latest = new Map<string, Record<string, unknown>>();
       for (const r of this.state) latest.set(String(r.target), r);
-      return ok(JSON.stringify({ data: [...latest.values()].map((r) => ({ target: r.target, signature: r.signature })) }));
+      const ms = (stamp: unknown): string => String(Date.parse(String(stamp).replace(" ", "T") + "Z") || 0);
+      return ok(
+        JSON.stringify({
+          data: [...latest.values()].map((r) => ({ target: r.target, signature: r.signature, cursor: r.cursor ?? "", full_at: ms(r.full_at) })),
+        }),
+      );
     }
     if ((m = q.match(/^SELECT name FROM system\.tables WHERE database = '([^']*)'/i))) {
       const db = m[1];
@@ -544,7 +579,7 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
   it("zero-discovery guard: an empty discovery never prunes the mirror", async () => {
     const before = [...fake.tables.keys()].sort();
     const r = await runOnce(pg as never, ch, { allowTables: ["nosuch.*"], denyTables: [], denyColumns: [] });
-    expect(r).toEqual({ ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0, capped: 0 });
+    expect(r).toEqual({ ok: 0, failed: 0, rows: 0, bytes: 0, unchanged: 0, capped: 0, incremental: 0 });
     expect([...fake.tables.keys()].sort()).toEqual(before); // nothing dropped
   });
 
@@ -602,6 +637,287 @@ describe("mirror integration (real Postgres → FakeClickHouse)", () => {
     const again = await runOnce(pg as never, ch, cfg);
     expect(again.unchanged).toBe(2);
     expect(again.ok).toBe(0);
+  });
+});
+
+/* -------------------- incremental (xmin) pull -------------------- */
+
+describe("incremental units", () => {
+  const id = mapColumn(col({ column_name: "id", udt_name: "int8", not_null: true }));
+  const email = mapColumn(col({ column_name: "email", udt_name: "text", not_null: true }));
+  const nick = mapColumn(col({ column_name: "nick", udt_name: "text" })); // nullable
+  const org = mapColumn(col({ column_name: "org", udt_name: "int4", not_null: true }));
+
+  it("chooseKey: the PK wins; else the narrowest NOT NULL unique index; never a partial key", () => {
+    const pk: [string, { isPk: boolean; cols: string[] }] = ["t_pkey", { isPk: true, cols: ["id"] }];
+    const wide: [string, { isPk: boolean; cols: string[] }] = ["t_org_email_key", { isPk: false, cols: ["org", "email"] }];
+    const narrow: [string, { isPk: boolean; cols: string[] }] = ["t_email_key", { isPk: false, cols: ["email"] }];
+    const onNullable: [string, { isPk: boolean; cols: string[] }] = ["t_nick_key", { isPk: false, cols: ["nick"] }];
+    expect(chooseKey([wide, pk, narrow], [id, email, org])).toEqual(["id"]);
+    expect(chooseKey([wide, narrow], [id, email, org])).toEqual(["email"]);
+    // a nullable unique column lets NULLs repeat — not an identity
+    expect(chooseKey([onNullable], [id, nick])).toEqual([]);
+    // PK column deny-listed (absent from the mirror) → fall back, never a prefix
+    expect(chooseKey([pk, wide], [email, org])).toEqual(["org", "email"]);
+    expect(chooseKey([pk], [email])).toEqual([]);
+  });
+
+  it("xminWindow: modulo-2^32 window from the boundary to the snapshot's xmax", () => {
+    expect(xminWindow(1000n, 1500n)).toBe("((xmin::text::bigint - 1000) & 4294967295) < 500");
+    // an epoch boundary inside the window: lo is the 32-bit part, width stays exact
+    const from = 2n ** 32n * 3n - 10n;
+    expect(xminWindow(from, from + 30n)).toBe(`((xmin::text::bigint - ${2n ** 32n - 10n}) & 4294967295) < 30`);
+    expect(xminWindow(1000n, 900n)).toBeNull(); // cursor from the future: a repointed source
+    expect(xminWindow(0n, 2n ** 31n)).toBeNull(); // too wide to be unambiguous
+    expect(xminWindow(5n, 5n)).toBe("((xmin::text::bigint - 5) & 4294967295) < 0"); // idle source: pulls nothing
+  });
+
+  it("the modulo window selects exactly the xids in [from, xmax) across a wraparound", () => {
+    // mirror the SQL predicate in JS over 32-bit raw xids
+    const inWin = (raw: bigint, from: bigint, xmax: bigint): boolean =>
+      ((raw - (from % 2n ** 32n)) & 0xffffffffn) < xmax - from;
+    const from = 2n ** 32n * 2n - 3n; // 3 xids before epoch 2 begins
+    const xmax = from + 6n;
+    const raw = (full: bigint): bigint => full % 2n ** 32n;
+    expect(inWin(raw(from - 1n), from, xmax)).toBe(false);
+    for (let d = 0n; d < 6n; d++) expect(inWin(raw(from + d), from, xmax)).toBe(true);
+    expect(inWin(raw(xmax), from, xmax)).toBe(false);
+  });
+
+  it("schemaSignature: full-reload tables hash as before; incremental adds the engine", () => {
+    const t = { schema: "public", name: "t", columns: [id], pk: ["id"] };
+    const legacy = Bun.hash(JSON.stringify([[["id", "Int64"]], ["id"]])).toString(36);
+    expect(schemaSignature(t)).toBe(legacy); // no spurious reload on upgrade
+    expect(schemaSignature({ ...t, incremental: false })).toBe(legacy);
+    expect(schemaSignature({ ...t, incremental: true })).not.toBe(legacy); // engine flip forces a full reload
+  });
+
+  it("stagingDDL: incremental tables are ReplacingMergeTree versioned by _mirrored_at", () => {
+    const ddl = stagingDDL("biz", "t__staging", { schema: "public", name: "t", columns: [id], pk: ["id"], incremental: true });
+    expect(ddl).toContain("ENGINE = ReplacingMergeTree(`_mirrored_at`)");
+    expect(ddl).toContain("ORDER BY (`id`)");
+  });
+
+  it("parseReconcileHours: default 24 h, 0 = never, garbage fails fast", () => {
+    expect(parseReconcileHours(undefined)).toBe(24 * 3_600_000);
+    expect(parseReconcileHours(" ")).toBe(24 * 3_600_000);
+    expect(parseReconcileHours("0")).toBeNull();
+    expect(parseReconcileHours("6")).toBe(6 * 3_600_000);
+    expect(() => parseReconcileHours("daily")).toThrow(/RECONCILE_HOURS/);
+    expect(() => parseReconcileHours("-1")).toThrow(/RECONCILE_HOURS/);
+  });
+});
+
+const INCR_DB = "setoku_mirror_incr_test";
+const INCR_URL = `postgresql:///${INCR_DB}?host=${encodeURIComponent(PG_HOST)}`;
+const INCR_CFG = { allowTables: ["public.*"], denyTables: [], denyColumns: [] as string[] };
+
+describe("incremental pull (real Postgres → FakeClickHouse)", () => {
+  let ipg: SQL;
+  let ifake: FakeClickHouse;
+  let ich: ChOptions;
+
+  const runsFor = (target: string): Record<string, unknown>[] => ifake.runs.filter((r) => r.target_table === target);
+  const lastRun = (target: string): Record<string, unknown> => runsFor(target).at(-1)!;
+  const events = (): Record<string, unknown>[] => ifake.tables.get("biz.events")!;
+  const eventIds = (): number[] => events().map((e) => Number(e.id)).sort((a, b) => a - b);
+  /** Write, then wait until pg_stat shows it — the unchanged-skip must not
+   *  race the stats flush. */
+  const write = async (statements: string[], table = "events"): Promise<void> => {
+    const before = await fetchChangeCounters(ipg as never, "public", table);
+    await pgAdmin(statements, INCR_DB);
+    await waitForCounterChange(ipg, "public", table, before);
+  };
+
+  beforeAll(async () => {
+    const maint = process.env.SETOKU_E2E_PG_MAINTENANCE_DB ?? "template1";
+    await pgAdmin([`DROP DATABASE IF EXISTS ${INCR_DB} WITH (FORCE)`, `CREATE DATABASE ${INCR_DB}`], maint);
+    await pgAdmin(
+      [
+        `CREATE TABLE public.events (id bigint PRIMARY KEY, kind text NOT NULL, payload text)`,
+        `INSERT INTO public.events SELECT g, 'k' || (g % 7), repeat('x', 200) FROM generate_series(1, 1000) g`,
+        // no PK, only a unique index over NOT NULL columns
+        `CREATE TABLE public.tokens (identifier text NOT NULL, token text NOT NULL, expires timestamptz, UNIQUE (identifier, token))`,
+        `INSERT INTO public.tokens VALUES ('a@example.com', 't1', now())`,
+        `CREATE TABLE public.loose (v text)`, // no key → full reload
+        `INSERT INTO public.loose VALUES ('a')`,
+        `CREATE TABLE public.float_key (k float8 PRIMARY KEY)`, // inexact key → full reload
+        `CREATE TABLE public.parted (id int NOT NULL, k int NOT NULL, PRIMARY KEY (id, k)) PARTITION BY RANGE (k)`,
+        `CREATE TABLE public.parted_0 PARTITION OF public.parted FOR VALUES FROM (0) TO (100)`,
+        `INSERT INTO public.parted VALUES (1, 1), (2, 2)`,
+      ],
+      INCR_DB,
+    );
+    ipg = new SQL(pgOptions(INCR_URL) as never);
+    ifake = new FakeClickHouse();
+    ich = { url: ifake.url, user: "setoku", password: "pw", db: "setoku", mirrorDb: "biz" };
+    await ensureMirrorObjects(ich);
+  });
+  afterAll(async () => {
+    await ipg?.end();
+    ifake?.stop();
+  });
+
+  it("discovery marks heap tables with an exact key as incremental — and nothing else", async () => {
+    const server = await fetchServerInfo(ipg as never);
+    expect(server.version).toBeGreaterThanOrEqual(INCREMENTAL_MIN_VERSION);
+    expect(server.replica).toBe(false);
+    const { tables } = await discoverTables(ipg as never, INCR_CFG, { server });
+    const by = Object.fromEntries(tables.map((t) => [t.name, t]));
+    expect(by.events.incremental).toBe(true);
+    expect(by.tokens.incremental).toBe(true);
+    expect(by.tokens.pk).toEqual(["identifier", "token"]); // unique-index fallback
+    expect(by.parted.incremental).toBe(true); // partitioned, every leaf heap
+    expect(by.loose.incremental).toBe(false);
+    expect(by.float_key.incremental).toBe(false);
+    // opt-out and old servers keep everything on the full-reload path
+    const off = await discoverTables(ipg as never, INCR_CFG, { server, incremental: false });
+    expect(off.tables.some((t) => t.incremental)).toBe(false);
+    const old = await discoverTables(ipg as never, INCR_CFG, { server: { version: 120000, replica: false } });
+    expect(old.tables.some((t) => t.incremental)).toBe(false);
+  });
+
+  it("first pass full-reloads into ReplacingMergeTree and stores an xmin boundary", async () => {
+    const r = await runOnce(ipg as never, ich, INCR_CFG);
+    expect(r.ok).toBe(5);
+    expect(r.incremental).toBe(0);
+    expect(eventIds().length).toBe(1000);
+    expect(ifake.engines.get("biz.events")!.replacing).toBe(true);
+    expect(ifake.engines.get("biz.loose")!.replacing).toBe(false);
+    expect(lastRun("events").mode).toBe("full");
+    const st = ifake.state.filter((s) => s.target === "events").at(-1)!;
+    expect(String(st.cursor)).toMatch(/^\d+$/);
+    expect(ifake.state.filter((s) => s.target === "loose").at(-1)!.cursor).toBe("");
+  });
+
+  it("a changed table pulls ONLY rows written since the boundary, upserted in place", async () => {
+    const fullBytes = Number(lastRun("events").bytes);
+    await write([
+      `INSERT INTO public.events VALUES (1001, 'new', 'a'), (1002, 'new', 'b'), (1003, 'new', 'c')`,
+      `UPDATE public.events SET payload = 'edited' WHERE id IN (10, 20)`,
+    ]);
+    ifake.queries.length = 0;
+    const r = await runOnce(ipg as never, ich, INCR_CFG);
+    const run = lastRun("events");
+    expect(run.mode).toBe("incremental");
+    expect(run.rows).toBe(5);
+    expect(Number(run.bytes)).toBeLessThan(fullBytes / 50); // the whole point: egress ∝ change
+    expect(eventIds().length).toBe(1003);
+    expect(events().find((e) => Number(e.id) === 10)!.payload).toBe("edited");
+    // no staging table, no swap — upserted straight into the live mirror
+    expect(ifake.queries.some((q) => q.includes("`biz`.`events__staging`"))).toBe(false);
+    expect(ifake.queries.some((q) => q.startsWith("SELECT count() AS c FROM `biz`.`events` FINAL"))).toBe(true);
+    // untouched tables are still skipped outright on a primary
+    expect(lastRun("tokens").status).toBe("unchanged");
+    expect(r.incremental).toBeGreaterThanOrEqual(1);
+  });
+
+  it("a row written under a SAVEPOINT in a transaction straddling the pass is not lost", async () => {
+    // pg_visible_in_snapshot() misjudges subxids; the snapshot-xmin boundary doesn't
+    const open = new SQL({ ...pgOptions(INCR_URL), max: 1 } as never);
+    let before: string | null;
+    try {
+      await open.unsafe("BEGIN");
+      await open.unsafe("SELECT txid_current()");
+      await open.unsafe("SAVEPOINT s1");
+      await open.unsafe(`INSERT INTO public.events VALUES (5000, 'savepoint', 'late')`);
+      // a later transaction commits meanwhile, pushing the snapshot's xmax past the subxid
+      await write([`INSERT INTO public.events VALUES (5001, 'other', 'early')`]);
+      await runOnce(ipg as never, ich, INCR_CFG);
+      expect(lastRun("events").mode).toBe("incremental");
+      expect(eventIds()).toContain(5001);
+      expect(eventIds()).not.toContain(5000); // not committed yet
+      before = await fetchChangeCounters(ipg as never, "public", "events");
+      await open.unsafe("COMMIT");
+    } finally {
+      await open.end(); // a live backend may sit on its stats; exiting flushes them
+    }
+    await waitForCounterChange(ipg, "public", "events", before);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("incremental");
+    expect(eventIds()).toContain(5000);
+  });
+
+  it("a delete makes the counts disagree → full reload in the same pass", async () => {
+    await write([`DELETE FROM public.events WHERE id = 1`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("full");
+    expect(lastRun("events").status).toBe("ok");
+    expect(eventIds()).not.toContain(1);
+    expect(eventIds().length).toBe(1004);
+    // and the chain resumes incrementally afterwards
+    await write([`INSERT INTO public.events VALUES (6000, 'after', 'x')`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("incremental");
+    expect(eventIds()).toContain(6000);
+  });
+
+  it("a primary-key change leaves the old key behind → caught by the count, full reload", async () => {
+    await write([`UPDATE public.events SET id = 9999 WHERE id = 2`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("full");
+    expect(eventIds()).not.toContain(2);
+    expect(eventIds()).toContain(9999);
+  });
+
+  it("TRUNCATE (which moves no xmin) is caught the same way", async () => {
+    await write([`TRUNCATE public.tokens`, `INSERT INTO public.tokens VALUES ('b@example.com', 't2', now())`], "tokens");
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("tokens").mode).toBe("full");
+    expect(ifake.tables.get("biz.tokens")!.map((t) => t.identifier)).toEqual(["b@example.com"]);
+  });
+
+  it("on a hot standby the stats skip is off: every table is pulled, incremental ones as tiny deltas", async () => {
+    const r = await runOnce(ipg as never, ich, { ...INCR_CFG }, undefined, { server: { version: 150000, replica: true } });
+    expect(r.unchanged).toBe(0); // standby counters never move — skipping would freeze the mirror
+    expect(lastRun("events").mode).toBe("incremental");
+    expect(lastRun("events").rows).toBe(0);
+    expect(lastRun("loose").mode).toBe("full");
+  });
+
+  it("the reconcile backstop full-reloads a changed incremental table once it's due", async () => {
+    await write([`INSERT INTO public.events VALUES (7000, 'r', 'x')`]);
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, { reconcileMs: 1 });
+    expect(lastRun("events").mode).toBe("full");
+    expect(eventIds()).toContain(7000);
+  });
+
+  it("an unusable boundary (source repointed to a younger database) falls back to a full reload", async () => {
+    const st = ifake.state.filter((s) => s.target === "events").at(-1)!;
+    ifake.state.push({ ...st, cursor: String(2n ** 40n) }); // "from the future"
+    await write([`INSERT INTO public.events VALUES (8000, 'r', 'x')`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("full");
+    expect(eventIds()).toContain(8000);
+    expect(BigInt(String(ifake.state.filter((s) => s.target === "events").at(-1)!.cursor))).toBeLessThan(2n ** 40n);
+  });
+
+  it("switching incremental off rebuilds as MergeTree (shape changed) and back again", async () => {
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, { incremental: false });
+    expect(ifake.engines.get("biz.events")!.replacing).toBe(false);
+    expect(lastRun("events").mode).toBe("full");
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(ifake.engines.get("biz.events")!.replacing).toBe(true);
+    expect(lastRun("events").mode).toBe("full"); // the flip back goes through a full reload too
+    await write([`INSERT INTO public.events VALUES (9000, 'r', 'x')`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("incremental");
+  });
+
+  it("a delta that fails mid-upsert keeps the old boundary and re-pulls next pass", async () => {
+    const before = String(ifake.state.filter((s) => s.target === "events").at(-1)!.cursor);
+    await write([`UPDATE public.events SET payload = 'retry-me' WHERE id = 3`]);
+    ifake.failInserts = true;
+    const r = await runOnce(ipg as never, ich, INCR_CFG);
+    ifake.failInserts = false;
+    expect(r.failed).toBeGreaterThanOrEqual(1);
+    expect(lastRun("events").status).toBe("error");
+    expect(lastRun("events").mode).toBe("incremental");
+    expect(Number(lastRun("events").bytes)).toBeGreaterThan(0); // the pulled row still hits the ledger
+    expect(String(ifake.state.filter((s) => s.target === "events").at(-1)!.cursor)).toBe(before);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").status).toBe("ok");
+    expect(events().find((e) => Number(e.id) === 3)!.payload).toBe("retry-me");
   });
 });
 
@@ -718,6 +1034,88 @@ describe.skipIf(!CH_URL)("mirror e2e (real ClickHouse)", () => {
     expect(Number(unchangedRuns[0].c)).toBe(2);
     const stateRows = await adminRows(`SELECT target, signature FROM ${rch.db}.pg_mirror_state FINAL ORDER BY target`);
     expect(stateRows.map((s) => s.target)).toEqual(["no_pk", "orders", "ticketing_seat_txn"]);
+  });
+});
+
+describe.skipIf(!CH_URL)("incremental e2e (real ClickHouse)", () => {
+  const PG_DB = "setoku_mirror_incr_e2e";
+  let epg: SQL;
+  let ech: ChOptions;
+  const chq = async (q: string): Promise<Record<string, unknown>[]> => {
+    const u = new URL(CH_URL!);
+    const res = await fetch(`${u.origin}/?${new URLSearchParams({ default_format: "JSON" })}`, {
+      method: "POST",
+      headers: { authorization: `Basic ${btoa(`${decodeURIComponent(u.username) || "default"}:${decodeURIComponent(u.password)}`)}` },
+      body: q,
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`ch: ${text.slice(0, 300)}`);
+    return text ? (JSON.parse(text) as { data: Record<string, unknown>[] }).data : [];
+  };
+  const write = async (statements: string[]): Promise<void> => {
+    const before = await fetchChangeCounters(epg as never, "public", "events");
+    await pgAdmin(statements, PG_DB);
+    await waitForCounterChange(epg, "public", "events", before);
+  };
+
+  beforeAll(async () => {
+    const maint = process.env.SETOKU_E2E_PG_MAINTENANCE_DB ?? "template1";
+    await pgAdmin([`DROP DATABASE IF EXISTS ${PG_DB} WITH (FORCE)`, `CREATE DATABASE ${PG_DB}`], maint);
+    await pgAdmin(
+      [
+        `CREATE TABLE public.events (id bigint PRIMARY KEY, payload text)`,
+        `INSERT INTO public.events SELECT g, 'v1' FROM generate_series(1, 1000) g`,
+        `CREATE TABLE public.loose (v text)`,
+        `INSERT INTO public.loose VALUES ('a'), ('a')`,
+      ],
+      PG_DB,
+    );
+    epg = new SQL(pgOptions(`postgresql:///${PG_DB}?host=${encodeURIComponent(PG_HOST)}`) as never);
+    ech = { url: new URL(CH_URL!).origin, user: decodeURIComponent(new URL(CH_URL!).username) || "default", password: decodeURIComponent(new URL(CH_URL!).password), db: "setoku_mirror_incr_meta", mirrorDb: "biz_mirror_incr" };
+    await chq(`DROP DATABASE IF EXISTS ${ech.db}`);
+    await chq(`DROP DATABASE IF EXISTS ${ech.mirrorDb}`);
+    await chq(`CREATE DATABASE ${ech.db}`);
+    await ensureMirrorObjects(ech);
+  });
+  afterAll(async () => {
+    await epg?.end();
+    await chq(`DROP DATABASE IF EXISTS ${ech.db}`).catch(() => {});
+    await chq(`DROP DATABASE IF EXISTS ${ech.mirrorDb}`).catch(() => {});
+  });
+
+  it("upserts deltas into a ReplacingMergeTree that readers see deduped under final=1", async () => {
+    const r1 = await runOnce(epg as never, ech, INCR_CFG);
+    expect(r1.ok).toBe(2);
+    const eng = await chq(`SELECT engine FROM system.tables WHERE database = '${ech.mirrorDb}' AND name = 'events'`);
+    expect(eng[0].engine).toBe("ReplacingMergeTree");
+
+    await write([`UPDATE public.events SET payload = 'v2' WHERE id <= 10`, `INSERT INTO public.events VALUES (1001, 'new')`]);
+    const r2 = await runOnce(epg as never, ech, INCR_CFG);
+    expect(r2.incremental).toBe(1);
+    const run = await chq(`SELECT mode, rows FROM ${ech.db}.pg_mirror_runs WHERE target_table = 'events' ORDER BY finished_at DESC LIMIT 1`);
+    expect({ mode: run[0].mode, rows: Number(run[0].rows) }).toEqual({ mode: "incremental", rows: 11 }); // UInt64 JSON is quoted on 25.x, bare on 26.x
+
+    // the profile setting (lake-users.xml final=1) — no FINAL keyword in the query
+    const viaSetting = await chq(
+      `SELECT count() AS c, countIf(payload = 'v2') AS v2 FROM ${ech.mirrorDb}.events SETTINGS final = 1`,
+    );
+    expect([Number(viaSetting[0].c), Number(viaSetting[0].v2)]).toEqual([1001, 10]);
+    const viaKeyword = await chq(`SELECT payload FROM ${ech.mirrorDb}.events FINAL WHERE id = 5`);
+    expect(viaKeyword.map((x) => x.payload)).toEqual(["v2"]);
+    // final=1 is a no-op on plain MergeTree mirrors (the profile applies it to EVERY table)
+    const plain = await chq(`SELECT count() AS c FROM ${ech.mirrorDb}.loose SETTINGS final = 1`);
+    expect(Number(plain[0].c)).toBe(2);
+
+    // a delete falls back to a full reload through the real EXCHANGE path
+    await write([`DELETE FROM public.events WHERE id = 1`]);
+    await runOnce(epg as never, ech, INCR_CFG);
+    const after = await chq(`SELECT count() AS c, countIf(id = 1) AS gone FROM ${ech.mirrorDb}.events SETTINGS final = 1`);
+    expect([Number(after[0].c), Number(after[0].gone)]).toEqual([1000, 0]);
+    const modes = await chq(`SELECT mode FROM ${ech.db}.pg_mirror_runs WHERE target_table = 'events' ORDER BY finished_at`);
+    expect(modes.map((m) => m.mode)).toEqual(["full", "incremental", "full"]);
+    const state = await chq(`SELECT cursor, full_at > now() - INTERVAL 1 MINUTE AS recent FROM ${ech.db}.pg_mirror_state FINAL WHERE target = 'events'`);
+    expect(String(state[0].cursor)).toMatch(/^\d+$/);
+    expect(Number(state[0].recent)).toBe(1);
   });
 });
 
