@@ -30,7 +30,10 @@ import { KnowledgeStore } from "../plugin/gateway/lib/store";
 
 import {
   FAMILY_DOMAIN,
+  ROSTER_EMPTY_TTL_MS,
+  ROSTER_TTL_MS,
   connectedFamilies,
+  rosterCacheTtlMs,
   rosterFrom,
   rosterKeywords,
   rosterLine,
@@ -65,7 +68,7 @@ const campshRoster = (over: Partial<BoxRoster> = {}): BoxRoster => ({
     },
     "campsh",
     NOW,
-  ),
+  )!,
   ...over,
 });
 
@@ -96,6 +99,55 @@ describe("connectedFamilies", () => {
 
   test("plumbing is not a domain", () => {
     expect(connectedFamilies(campshTables(), NOW)).not.toContain("Unrouted (raw)");
+  });
+});
+
+describe("rosterFrom tells 'I cannot see' apart from 'there is nothing'", () => {
+  const withLake = (lake: Partial<{ configured: boolean; ok: boolean }>) =>
+    rosterFrom(
+      {
+        mirror: { tables: [] },
+        lake: { configured: true, ok: true, tables: campshTables(), ...lake },
+        knowledge: { docs: 6, byType: {} },
+      },
+      "campsh",
+      NOW,
+    );
+
+  test("an unreachable lake yields NO roster, not an empty one", () => {
+    // Rendering a down lake as an empty roster prints "No source is flowing into
+    // this box yet" — a confident wrong answer about data the user owns. Null
+    // degrades to the source-agnostic text instead.
+    expect(withLake({ ok: false })).toBeNull();
+  });
+
+  test("a box with no lake configured still reports its knowledge and mirror", () => {
+    // Not an error state — plenty of boxes are mirror-only.
+    expect(withLake({ configured: false, ok: false })).not.toBeNull();
+  });
+
+  test("a healthy lake reports its families", () => {
+    expect(withLake({})!.families).toContain("Gmail");
+  });
+});
+
+describe("rosterCacheTtlMs — 'nothing here' is never cached as long as the truth", () => {
+  test("a roster that names sources is stable for minutes", () => {
+    expect(rosterCacheTtlMs(campshRoster())).toBe(ROSTER_TTL_MS);
+  });
+
+  test("a mirror-only box counts as naming something", () => {
+    expect(rosterCacheTtlMs(campshRoster({ families: [], mirrored: 12 }))).toBe(ROSTER_TTL_MS);
+  });
+
+  test("an empty roster expires fast", () => {
+    // The bulldogs demo served one bad empty snapshot to every visitor for the
+    // life of the box's quiet periods: each arrival found it expired, was served
+    // it anyway (stale-while-revalidate), and kicked a refresh that expired
+    // again before the next visitor showed up.
+    expect(rosterCacheTtlMs(campshRoster({ families: [], mirrored: 0 }))).toBe(ROSTER_EMPTY_TTL_MS);
+    expect(rosterCacheTtlMs(null)).toBe(ROSTER_EMPTY_TTL_MS);
+    expect(ROSTER_EMPTY_TTL_MS).toBeLessThan(ROSTER_TTL_MS);
   });
 });
 
@@ -332,6 +384,75 @@ describe("FAMILY_DOMAIN covers the catalog", () => {
       expect(d.short.toLowerCase()).not.toBe((d.vendor ?? "").toLowerCase());
       expect(d.short.length, `${family} short`).toBeLessThan(d.long.length);
     }
+  });
+});
+
+
+// A box whose lake answers SLOWLY on a cold cache — the bulldogs-demo shape.
+// Nothing in the lake has rows (it's mirror-only), the mirror query takes longer
+// than lib/mirror's COLD_WAIT_MS, and the FIRST MCP request after boot is the one
+// that builds the roster. That snapshot used to record "no mirror" and then get
+// served to every visitor for the life of the box's quiet periods.
+describe("a slow cold lake must not be reported as an empty box", () => {
+  const PORT = 38781;
+  const BASE = `http://127.0.0.1:${PORT}`;
+  const MIRROR_DELAY_MS = 1_400; // > COLD_WAIT_MS (1s) in lib/mirror
+  let tmpRepo: string;
+  let proc: Subprocess;
+  let lake: FakeLake;
+
+  beforeAll(async () => {
+    lake = startFakeLake(async (sql) => {
+      if (sql.includes("GROUP BY connector")) return { columns: ["connector", "beat"], rows: [] };
+      if (sql.includes("target_table AS target")) {
+        await Bun.sleep(MIRROR_DELAY_MS);
+        return {
+          columns: ["target", "source", "as_of"],
+          rows: [
+            { target: "ticketing_account", source: "ticketing.account", as_of: "2026-08-21 00:00:00" },
+            { target: "merch_online_order", source: "merch.online_order", as_of: "2026-08-21 00:00:00" },
+          ],
+        };
+      }
+      // mirror-only box: every lake source table exists but is empty
+      if (sql.includes("count() AS rows")) return { columns: ["rows", "last"], rows: [{ rows: 0, last: null }] };
+      return { rows: [{ ok: 1 }] };
+    });
+
+    tmpRepo = fs.mkdtempSync(path.join(os.tmpdir(), "setoku-slowlake-"));
+    fs.cpSync(path.join(FIXTURES, "setoku"), path.join(tmpRepo, ".setoku"), { recursive: true });
+    proc = spawnGateway({
+      SETOKU_PROJECT_DIR: tmpRepo,
+      SETOKU_DB_PATH: path.join(tmpRepo, "knowledge.db"),
+      SETOKU_LAKE_URL: lake.url,
+      SETOKU_HTTP_PORT: String(PORT),
+      SETOKU_TOKENS: "tok-ann=ann@co.test",
+    });
+    await waitHealthy(BASE);
+  }, 30_000);
+
+  afterAll(() => {
+    proc?.kill();
+    lake?.stop();
+    if (tmpRepo) fs.rmSync(tmpRepo, { recursive: true, force: true });
+  });
+
+  test("the FIRST connection already knows about the mirror", async () => {
+    // THE regression: the very first request is the one that builds the roster,
+    // and it is the one a cold mirror cache loses. No warm-up, no second call.
+    const client = await connect(BASE, "tok-ann");
+    const instructions = client.getInstructions() ?? "";
+    expect(instructions).not.toContain("No source is flowing");
+    expect(instructions).toContain("biz.*");
+    await client.close();
+  });
+
+  test("and so do the tool descriptions it hands out", async () => {
+    const client = await connect(BASE, "tok-ann");
+    const { tools } = await client.listTools();
+    const d = tools.find((t) => t.name === "find_context")?.description ?? "";
+    expect(d).toContain("app database (biz.*)");
+    await client.close();
   });
 });
 

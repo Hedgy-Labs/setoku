@@ -176,14 +176,44 @@ export function connectedFamilies(tables: SourcesData["lake"]["tables"], nowMs: 
   return [...live];
 }
 
-/** Build the roster from the /admin Sources snapshot. */
-export function rosterFrom(sources: SourcesData, box: string | null, nowMs: number): BoxRoster {
+/**
+ * Build the roster from the /admin Sources snapshot.
+ *
+ * Null when the lake is configured but unreachable: "I can't see the lake right
+ * now" and "this box holds nothing" are different claims, and only one of them
+ * is safe to make. Rendering a down lake as an empty roster prints "No source is
+ * flowing into this box yet" — a confident, wrong answer about data the user
+ * owns, which is the exact failure the standing rule exists to prevent. A null
+ * roster degrades to the source-agnostic text instead, and list_sources (which
+ * reports the lake error honestly) stays one call away.
+ */
+export function rosterFrom(
+  sources: SourcesData,
+  box: string | null,
+  nowMs: number,
+): BoxRoster | null {
+  if (sources.lake.configured && !sources.lake.ok) return null;
   return {
     box,
     families: connectedFamilies(sources.lake.tables, nowMs),
     mirrored: sources.mirror.tables.length,
     docs: sources.knowledge.docs,
   };
+}
+
+/** Full roster cache TTL — which sources are CONNECTED changes on the order of
+ *  days, and this runs on every MCP request. */
+export const ROSTER_TTL_MS = 5 * 60_000;
+/** TTL for a roster that claims NOTHING is connected. Short on purpose: an
+ *  empty roster is either a brand-new box (which is about to gain a source and
+ *  should show it promptly) or a probe that went wrong, and the cost of being
+ *  wrong is telling the user their own data isn't there. */
+export const ROSTER_EMPTY_TTL_MS = 30_000;
+
+/** How long THIS roster may be served from cache — by content, not by clock. */
+export function rosterCacheTtlMs(roster: BoxRoster | null): number {
+  if (!roster) return ROSTER_EMPTY_TTL_MS;
+  return roster.families.length || roster.mirrored > 0 ? ROSTER_TTL_MS : ROSTER_EMPTY_TTL_MS;
 }
 
 /** A family's entry, or a never-wrong fallback built from its label. */
