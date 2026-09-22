@@ -46,6 +46,7 @@ import {
   chooseKey,
   xminWindow,
   parseReconcileHours,
+  quietWindowStart,
   fetchServerInfo,
   INCREMENTAL_MIN_VERSION,
   type Cadence,
@@ -360,14 +361,14 @@ class FakeClickHouse {
       if (!rows) return new Response("missing table", { status: 404 });
       return ok(JSON.stringify({ data: [{ c: String(rows.length) }] }));
     }
-    if ((m = q.match(/^SELECT target, signature, cursor, toUnixTimestamp64Milli\(full_at\) AS full_at FROM \S+\.pg_mirror_state FINAL/i))) {
+    if ((m = q.match(/^SELECT target, signature, cursor, toUnixTimestamp64Milli\(full_at\) AS full_at, deltas FROM \S+\.pg_mirror_state FINAL/i))) {
       // ReplacingMergeTree(checked_at) ORDER BY target — last write per target wins
       const latest = new Map<string, Record<string, unknown>>();
       for (const r of this.state) latest.set(String(r.target), r);
       const ms = (stamp: unknown): string => String(Date.parse(String(stamp).replace(" ", "T") + "Z") || 0);
       return ok(
         JSON.stringify({
-          data: [...latest.values()].map((r) => ({ target: r.target, signature: r.signature, cursor: r.cursor ?? "", full_at: ms(r.full_at) })),
+          data: [...latest.values()].map((r) => ({ target: r.target, signature: r.signature, cursor: r.cursor ?? "", full_at: ms(r.full_at), deltas: r.deltas ?? 0 })),
         }),
       );
     }
@@ -698,6 +699,18 @@ describe("incremental units", () => {
     expect(ddl).toContain("ORDER BY (`id`)");
   });
 
+  it("quietWindowStart: when the current quiet window began, across midnight; null outside", () => {
+    const c: Cadence = { baseMs: 20 * 60_000, quietMs: 2 * 3_600_000, quiet: { start: 23, end: 8 }, tz: "America/Los_Angeles" };
+    const at = (iso: string): number => Date.parse(iso);
+    // 01:30 PDT (08:30Z) → the window opened 23:00 PDT the evening before (06:00Z)
+    expect(quietWindowStart(at("2026-09-23T08:30:00Z"), c)).toBe(at("2026-09-23T06:00:00Z"));
+    // 23:10 PDT → 23:00 PDT the same evening
+    expect(quietWindowStart(at("2026-09-23T06:10:00Z"), c)).toBe(at("2026-09-23T06:00:00Z"));
+    // 14:00 PDT → outside
+    expect(quietWindowStart(at("2026-09-22T21:00:00Z"), c)).toBeNull();
+    expect(quietWindowStart(at("2026-09-23T08:30:00Z"), { ...c, quiet: null })).toBeNull();
+  });
+
   it("parseReconcileHours: default 24 h, 0 = never, garbage fails fast", () => {
     expect(parseReconcileHours(undefined)).toBe(24 * 3_600_000);
     expect(parseReconcileHours(" ")).toBe(24 * 3_600_000);
@@ -875,11 +888,43 @@ describe("incremental pull (real Postgres → FakeClickHouse)", () => {
     expect(lastRun("loose").mode).toBe("full");
   });
 
-  it("the reconcile backstop full-reloads a changed incremental table once it's due", async () => {
+  const eventsState = (): Record<string, unknown> => ifake.state.filter((s) => s.target === "events").at(-1)!;
+
+  it("age mode: a mirror that absorbed deltas reconciles once due — even with no new writes", async () => {
     await write([`INSERT INTO public.events VALUES (7000, 'r', 'x')`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("incremental");
+    expect(eventsState().deltas).toBe(1);
+    // quiet now, but busy earlier: the backstop still rebuilds it
     await runOnce(ipg as never, ich, INCR_CFG, undefined, { reconcileMs: 1 });
-    expect(lastRun("events").mode).toBe("full");
+    expect(lastRun("events").mode).toBe("reconcile");
+    expect(eventsState().deltas).toBe(0);
     expect(eventIds()).toContain(7000);
+    // an exact full reload has nothing to reconcile: back to the plain skip
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, { reconcileMs: 1 });
+    expect(lastRun("events").status).toBe("unchanged");
+    // a table that never took a delta is never reconciled
+    expect(lastRun("tokens").status).toBe("unchanged");
+  });
+
+  it("window mode: reconcile only inside the quiet window, once per window", async () => {
+    await write([`INSERT INTO public.events VALUES (7100, 'r', 'x')`]);
+    const outside = { reconcileMs: 1, reconcileWindowStart: (): number | null => null };
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, outside);
+    expect(lastRun("events").mode).toBe("incremental"); // age alone doesn't count in window mode
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, outside);
+    expect(lastRun("events").status).toBe("unchanged"); // outside the window: no reconcile
+    const windowBegan = Date.now();
+    const inside = { reconcileWindowStart: (): number | null => windowBegan };
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, inside);
+    expect(lastRun("events").mode).toBe("reconcile");
+    expect(lastRun("tokens").status).toBe("unchanged"); // no deltas → nothing to reconcile
+    // same window, busy again: deltas resume, no second reconcile this window
+    await write([`INSERT INTO public.events VALUES (7101, 'r', 'x')`]);
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, inside);
+    expect(lastRun("events").mode).toBe("incremental");
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, inside);
+    expect(lastRun("events").status).toBe("unchanged");
   });
 
   it("an unusable boundary (source repointed to a younger database) falls back to a full reload", async () => {

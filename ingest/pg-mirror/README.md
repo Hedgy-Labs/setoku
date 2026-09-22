@@ -55,8 +55,14 @@ its full size many times a day. So a table that changed is pulled
 - Deletes, `TRUNCATE` and key changes leave no `xmin` behind. So every
   incremental pass also compares `count(*)` (same snapshot) with the mirror's
   `count() FINAL`; any difference means a full reload in the same pass.
-  A changed table also gets a full reload once its last one is
-  `SETOKU_MIRROR_RECONCILE_HOURS` old (default 24; `0` = never), as a backstop.
+- As a backstop, a mirror that has absorbed deltas since its last full reload
+  is rebuilt once a day (`mode = reconcile`). With `SETOKU_MIRROR_QUIET_HOURS`
+  set, that happens in the first pass of each quiet window, off-peak. Without
+  a window it happens once the last full reload is
+  `SETOKU_MIRROR_RECONCILE_HOURS` old (default 24; `0` turns the backstop
+  off). It runs even if the table is quiet at that moment, since a table busy
+  all day and idle at night is exactly the one to check. Tables that never
+  took a delta are never reconciled; they are already an exact full reload.
 
 This relies on no column names (no `updatedAt` convention) and no extra grants.
 A table qualifies when it is a plain heap table (or a partitioned table whose
@@ -162,7 +168,7 @@ docker compose up -d --build pg-mirror
 Env: `SETOKU_DATABASE_URL` (required, the read-only role),
 `SETOKU_MIRROR_INTERVAL_MS` (default 900000 = 15 min),
 `SETOKU_MIRROR_INCREMENTAL` (default on, `0` = full reloads only),
-`SETOKU_MIRROR_RECONCILE_HOURS` (default 24, `0` = never),
+`SETOKU_MIRROR_RECONCILE_HOURS` (default 24, `0` = never; see "Incremental pull"),
 `SETOKU_MIRROR_QUIET_HOURS` / `SETOKU_MIRROR_QUIET_INTERVAL_MS` / `TZ` and
 `SETOKU_MIRROR_DAILY_BYTES_CAP` (see "Egress budget" below),
 `SETOKU_MIRROR_DENY_COLUMNS` (extra per-box `denyColumns`, comma-separated),

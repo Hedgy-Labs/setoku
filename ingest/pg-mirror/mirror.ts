@@ -42,8 +42,9 @@
  * compared modulo 2^32 so xid wraparound is a non-event. Deletes, TRUNCATE
  * and key changes leave no xmin behind, so every incremental pass also
  * compares `count(*)` (same snapshot) with the mirror's `count() FINAL` —
- * any difference falls back to a full reload in the same pass. A full
- * reload also runs every SETOKU_MIRROR_RECONCILE_HOURS as a backstop.
+ * any difference falls back to a full reload in the same pass. A mirror that
+ * absorbed deltas is also fully reloaded once a day as a backstop: nightly in
+ * the quiet window if there is one (SETOKU_MIRROR_RECONCILE_HOURS).
  * Eligible: a plain-heap table (or partitioned table of heap leaves) with a
  * primary key — or a unique index over NOT NULL columns — of exact key types,
  * on Postgres ≥ 13. Anything else keeps the full-reload path, so a deploy we
@@ -77,9 +78,11 @@
  *                              Overshoot is bounded by one table's reload.
  *   TZ                         default UTC — timezone the quiet window is read in
  *   SETOKU_MIRROR_INCREMENTAL  default on; "0" = full reloads only (no xmin pulls)
- *   SETOKU_MIRROR_RECONCILE_HOURS    default 24 — an incrementally-pulled table
- *                              that changed gets a full reload once it's this
- *                              old (backstop); "0" = never
+ *   SETOKU_MIRROR_RECONCILE_HOURS    default 24; "0" = never — the backstop: a
+ *                              mirror that absorbed deltas gets a full reload
+ *                              in the first pass of each quiet window (when
+ *                              SETOKU_MIRROR_QUIET_HOURS is set), else once
+ *                              its last full reload is this many hours old
  *   SETOKU_MIRROR_DENY_COLUMNS extra denyColumns patterns, comma-separated — the
  *                              per-box channel for column names that must not
  *                              land in the repo-baked config template (I3)
@@ -486,6 +489,7 @@ export async function ensureMirrorObjects(ch: ChOptions): Promise<void> {
   // when the table was last FULLY reloaded (the reconcile backstop).
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_state ADD COLUMN IF NOT EXISTS cursor String`);
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_state ADD COLUMN IF NOT EXISTS full_at DateTime64(3)`);
+  await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_state ADD COLUMN IF NOT EXISTS deltas UInt32`);
 }
 
 /** Upsert settings/state rows (latest updated_at wins per key). */
@@ -764,6 +768,9 @@ export interface MirrorState {
   cursor: string;
   /** Epoch ms of the last FULL reload (0 = unknown) — the reconcile clock. */
   fullAt: number;
+  /** Incremental pulls that moved rows since that full reload. 0 = the mirror
+   *  is exactly a full reload (nothing to reconcile). */
+  deltas: number;
 }
 
 /** Last stored state per biz target. ReplacingMergeTree keyed on target; FINAL
@@ -771,10 +778,13 @@ export interface MirrorState {
 export async function loadMirrorState(ch: ChOptions): Promise<Map<string, MirrorState>> {
   const rows = await chSelect(
     ch,
-    `SELECT target, signature, cursor, toUnixTimestamp64Milli(full_at) AS full_at FROM ${chIdent(ch.db)}.pg_mirror_state FINAL`,
+    `SELECT target, signature, cursor, toUnixTimestamp64Milli(full_at) AS full_at, deltas FROM ${chIdent(ch.db)}.pg_mirror_state FINAL`,
   );
   return new Map(
-    rows.map((r) => [String(r.target), { signature: String(r.signature), cursor: String(r.cursor ?? ""), fullAt: Number(r.full_at ?? 0) || 0 }]),
+    rows.map((r) => [
+      String(r.target),
+      { signature: String(r.signature), cursor: String(r.cursor ?? ""), fullAt: Number(r.full_at ?? 0) || 0, deltas: Number(r.deltas ?? 0) || 0 },
+    ]),
   );
 }
 
@@ -789,6 +799,7 @@ async function saveMirrorState(ch: ChOptions, target: string, source: string, st
     signature: st.signature,
     cursor: st.cursor,
     full_at: runStamp(new Date(st.fullAt)),
+    deltas: st.deltas,
     checked_at: runStamp(new Date()),
   });
   await chFetch(ch, params, line + "\n", 10_000);
@@ -815,9 +826,10 @@ export interface TableResult {
   /** "capped" = skipped because the daily egress budget was already spent. */
   status: "ok" | "error" | "unchanged" | "capped";
   error: string;
-  /** How an ok/error pass pulled: every row, or only rows past the xmin
-   *  boundary. "" for unchanged/capped (nothing pulled). */
-  mode: "full" | "incremental" | "";
+  /** How an ok/error pass pulled: every row ("full", or "reconcile" when the
+   *  daily backstop forced it), or only rows past the xmin boundary. "" for
+   *  unchanged/capped (nothing pulled). */
+  mode: "full" | "reconcile" | "incremental" | "";
 }
 
 /** Every mirror read runs in one REPEATABLE READ, READ ONLY transaction: one
@@ -1006,10 +1018,15 @@ export interface RunOptions {
   budgetBytes?: number | null;
   /** false = every table full-reloads (SETOKU_MIRROR_INCREMENTAL=0). */
   incremental?: boolean;
-  /** An incremental table that changed full-reloads once its last full reload
-   *  is this old — the backstop for anything the count check can't see.
+  /** Reconcile backstop for anything the count check can't see: a mirror that
+   *  has absorbed deltas full-reloads once its last full reload is this old.
    *  null = never. */
   reconcileMs?: number | null;
+  /** Quiet-window mode for the backstop (replaces the age rule): given the
+   *  pass start, the epoch ms the CURRENT quiet window began, or null outside
+   *  it. A table reconciles at the first pass of each window whose last full
+   *  reload predates the window — i.e. nightly, off-peak. */
+  reconcileWindowStart?: (now: Date) => number | null;
   /** Override the server probe (tests). */
   server?: ServerInfo;
 }
@@ -1027,6 +1044,8 @@ export async function runOnce(
   const opts: RunOptions = typeof budgetOrOpts === "object" && budgetOrOpts !== null ? budgetOrOpts : { budgetBytes: budgetOrOpts };
   const budgetBytes = opts.budgetBytes ?? null;
   const reconcileMs = opts.reconcileMs === undefined ? DEFAULT_RECONCILE_MS : opts.reconcileMs;
+  // undefined = age mode; null = window mode, outside the window (no reconcile)
+  const windowStart = opts.reconcileWindowStart ? opts.reconcileWindowStart(new Date()) : undefined;
   const server = opts.server ?? (await fetchServerInfo(pg));
   const { tables, failed: discoveryFailed } = await discoverTables(pg, cfg, { incremental: opts.incremental, server });
   const existing = new Set<string>(
@@ -1078,7 +1097,20 @@ export async function runOnce(
     const counters = server.replica ? null : await fetchChangeCounters(pg, t.schema, t.name).catch(() => null);
     const signature = `${shape}/${counters ?? "no-stats"}`;
 
-    if (counters !== null && existing.has(target) && prev?.signature === signature) {
+    // Reconcile backstop: a mirror that has absorbed deltas since its last
+    // full reload is rebuilt once a day — in the quiet window when one is
+    // configured (off-peak, and on a fresh egress-ledger day), else by age.
+    // Decided BEFORE the unchanged skip: a table busy all day and quiet at
+    // night is exactly the one that must still reconcile at night.
+    const reconcileDue =
+      reconcileMs !== null &&
+      existing.has(target) &&
+      (prev?.deltas ?? 0) > 0 &&
+      (windowStart !== undefined
+        ? windowStart !== null && (prev?.fullAt ?? 0) < windowStart
+        : startedAt.getTime() - (prev?.fullAt ?? 0) >= reconcileMs);
+
+    if (!reconcileDue && counters !== null && existing.has(target) && prev?.signature === signature) {
       const r: TableResult = { target, source, rows: 0, bytes: 0, status: "unchanged", error: "", mode: "" };
       results.push(r);
       // Re-stamp checked_at: freshness surfaces read "verified equal to the
@@ -1101,12 +1133,11 @@ export async function runOnce(
 
     // The delta is only ever applied to a mirror built with this exact shape
     // (engine included) from an unbroken chain of snapshots.
-    const reconcileDue = reconcileMs !== null && startedAt.getTime() - (prev?.fullAt ?? 0) >= reconcileMs;
     const canDelta =
       t.incremental === true && existing.has(target) && !!prev?.cursor && prev.signature.split("/")[0] === shape && !reconcileDue;
 
     const tally = { bytes: 0 };
-    let mode: TableResult["mode"] = canDelta ? "incremental" : "full";
+    let mode: TableResult["mode"] = canDelta ? "incremental" : reconcileDue ? "reconcile" : "full";
     try {
       let pulled: { rows: number; bytes: number; cursor: string } | null = null;
       if (canDelta) {
@@ -1115,18 +1146,20 @@ export async function runOnce(
         else console.error(`pg-mirror: ${source}: ${d.mismatch} — full reload`);
       }
       let fullAt = prev?.fullAt ?? 0;
+      let deltas = (prev?.deltas ?? 0) + (pulled && pulled.rows > 0 ? 1 : 0);
       if (pulled === null) {
-        mode = "full";
+        if (mode === "incremental") mode = "full"; // a delta that fell back
         const f = await mirrorTable(pg, ch, t, existing, { tally });
         // a delta that fell back still pulled its rows — the ledger gets both
         pulled = { rows: f.rows, bytes: tally.bytes, cursor: f.cursor };
         fullAt = startedAt.getTime();
+        deltas = 0;
       }
       results.push({ target, source, rows: pulled.rows, bytes: pulled.bytes, status: "ok", error: "", mode });
       // Only after a successful pull — a failure keeps the old state so the
       // table retries next pass (from the old boundary) instead of skipping
       // on a stale mirror.
-      await saveMirrorState(ch, target, source, { signature, cursor: pulled.cursor, fullAt }).catch((e) =>
+      await saveMirrorState(ch, target, source, { signature, cursor: pulled.cursor, fullAt, deltas }).catch((e) =>
         console.error(`pg-mirror: could not save state for ${target}: ${e}`),
       );
     } catch (e) {
@@ -1249,6 +1282,18 @@ export function intervalFor(now: Date, c: Cadence): number {
   return inQuietHours(wallClockHour(now, c.tz), c.quiet) ? c.quietMs : c.baseMs;
 }
 
+/** Epoch ms at which the quiet window containing `nowMs` began, or null when
+ *  `nowMs` is outside the window (or there is none). Walks back a minute at a
+ *  time on the wall clock of `c.tz`, so DST shifts land where they should. */
+export function quietWindowStart(nowMs: number, c: Cadence): number | null {
+  const inside = (ms: number): boolean => inQuietHours(wallClockHour(new Date(ms), c.tz), c.quiet);
+  if (!c.quiet || !inside(nowMs)) return null;
+  const step = 60_000;
+  let t = nowMs - (nowMs % step);
+  for (let i = 0; i < 24 * 60 && inside(t - step); i++) t -= step;
+  return t;
+}
+
 /** When the next pass is due after one ending at `lastEndMs`: the first
  *  minute at which the elapsed time covers the interval in force AT THAT
  *  MINUTE. Re-evaluating per minute (not once at sleep time) is what makes the
@@ -1283,8 +1328,8 @@ export function parseDailyCap(raw: string | undefined): number | null {
   return n > 0 ? n : null;
 }
 
-/** Default reconcile backstop: a changed incremental table full-reloads once
- *  a day. */
+/** Default reconcile backstop (age mode, when no quiet window is set): a
+ *  mirror that absorbed deltas full-reloads once a day. */
 export const DEFAULT_RECONCILE_MS = 24 * 3_600_000;
 
 /** SETOKU_MIRROR_RECONCILE_HOURS: unset/blank → the default, "0" → never
@@ -1373,7 +1418,9 @@ async function main(): Promise<void> {
       : "") +
     (CAP ? `, daily cap ${CAP} bytes` : "") +
     (INCREMENTAL
-      ? `, incremental (xmin) where eligible, reconcile ${RECONCILE === null ? "never" : `every ${RECONCILE / 3_600_000}h`}`
+      ? `, incremental (xmin) where eligible, reconcile ${
+          RECONCILE === null ? "never" : cadence.quiet ? "nightly in the quiet window" : `every ${RECONCILE / 3_600_000}h`
+        }`
       : ", full reloads only (SETOKU_MIRROR_INCREMENTAL=0)");
   console.error(
     `pg-mirror: mirror ${cadenceText} → ${ch.url} db ${ch.mirrorDb} ` +
@@ -1457,7 +1504,13 @@ async function main(): Promise<void> {
             (s) => {
               state = s;
             },
-            { budgetBytes: budget, incremental: INCREMENTAL, reconcileMs: RECONCILE },
+            {
+              budgetBytes: budget,
+              incremental: INCREMENTAL,
+              reconcileMs: RECONCILE,
+              // with a quiet window, reconcile there (off-peak, fresh ledger day)
+              reconcileWindowStart: cadence.quiet ? (now) => quietWindowStart(now.getTime(), cadence) : undefined,
+            },
           );
           if (r.capped) {
             paused = "daily egress cap";

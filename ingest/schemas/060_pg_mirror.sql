@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS setoku.pg_mirror_runs
     bytes        UInt64                  COMMENT 'NDJSON bytes streamed — the box''s own source-egress ledger (0 on unchanged; on error, what streamed before the failure)',
     status       LowCardinality(String)  COMMENT 'ok | unchanged | capped | error',
     error        String                  COMMENT 'failure detail (empty on ok/unchanged)',
-    mode         LowCardinality(String)  COMMENT 'full | incremental (xmin delta) | empty when nothing was pulled'
+    mode         LowCardinality(String)  COMMENT 'full | reconcile (daily backstop) | incremental (xmin delta) | empty when nothing was pulled'
 )
 ENGINE = MergeTree
 ORDER BY (finished_at, target_table)
@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS setoku.pg_mirror_state
     signature  String                  COMMENT 'schema-hash/ins:upd:del:live at last reload or verified-unchanged check',
     checked_at DateTime64(3)           COMMENT 'when the signature was last confirmed (UTC)',
     cursor     String                  COMMENT 'incremental tables: xmin boundary (decimal xid8) the next pass pulls from; empty otherwise',
-    full_at    DateTime64(3)           COMMENT 'last FULL reload (UTC) — the reconcile backstop clock'
+    full_at    DateTime64(3)           COMMENT 'last FULL reload (UTC) — the reconcile backstop clock',
+    deltas     UInt32                  COMMENT 'incremental pulls that moved rows since that full reload (0 = nothing to reconcile)'
 )
 ENGINE = ReplacingMergeTree(checked_at)
 ORDER BY target;
