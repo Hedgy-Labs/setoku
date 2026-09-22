@@ -11,6 +11,13 @@
 //
 // So these tests assert the property that actually failed: a personal-finance
 // box must SAY personal finance, in the strings a client reads for free.
+//
+// Then it failed a second way, which the budget tests below pin. Saying it is
+// not enough when the host TRUNCATES it: a campsh tool description rendered as
+// "software development activity: issues, pull reque…" and the reader concluded
+// there was no email on the box — while a Gmail lake sat behind it — and sent
+// the user off to connect the Gmail connector instead. Every domain has to fit
+// inside the preview, or the ones past the cut may as well not be written.
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";
 import fs from "node:fs";
@@ -25,7 +32,9 @@ import {
   FAMILY_DOMAIN,
   connectedFamilies,
   rosterFrom,
+  rosterKeywords,
   rosterLine,
+  rosterTitle,
   serverInstructions,
   type BoxRoster,
 } from "../plugin/gateway/lib/roster";
@@ -117,11 +126,139 @@ describe("rosterLine", () => {
   });
 });
 
+/** A hedgy-shaped box: every family at once, plus a 64-table mirror. The worst
+ *  case for the head budget — if the list fits here it fits anywhere. */
+const crowdedRoster = (): BoxRoster => ({
+  box: "hedgy",
+  families: ["Vercel", "Render", "Slack", "First-party events", "Mercury", "GitHub"],
+  mirrored: 64,
+  docs: 40,
+});
+
+/** What a truncating host actually shows. The observed cut on claude.ai. */
+const PREVIEW = 90;
+/** The head is everything up to the detail hand-off. */
+const headOf = (line: string) => line.slice(0, line.indexOf(". In detail:") + 1);
+
+describe("rosterLine fits the preview (the truncation bug)", () => {
+  test("every connected domain is inside the first 90 characters", () => {
+    // THE regression. The old line spent 190 chars on GitHub prose and email
+    // never appeared before the cut, so the reader offered to connect Gmail.
+    const preview = rosterLine(campshRoster())!.slice(0, PREVIEW);
+    expect(preview).toContain("email");
+    expect(preview).toContain("finance");
+    expect(preview).toContain("code");
+  });
+
+  test("the head survives even on a box with every source connected", () => {
+    const line = rosterLine(crowdedRoster())!;
+    expect(headOf(line).length).toBeLessThanOrEqual(PREVIEW);
+    for (const short of ["web logs", "server logs", "chat", "analytics", "banking", "code"]) {
+      expect(line.slice(0, PREVIEW)).toContain(short);
+    }
+    expect(line.slice(0, PREVIEW)).toContain("biz.*");
+  });
+
+  test("vendors ride the head when there is room — they stop 'shall I connect Gmail?'", () => {
+    expect(headOf(rosterLine(campshRoster())!)).toContain("Gmail");
+  });
+
+  test("vendors are dropped, not truncated, when the head would overrun", () => {
+    // The tail still carries them, so the head can spend its budget on domains.
+    const head = headOf(rosterLine(crowdedRoster())!);
+    expect(head).not.toContain("Vercel");
+    expect(head.length).toBeLessThanOrEqual(PREVIEW);
+  });
+
+  test("an impossible head counts the rest instead of being cut mid-family", () => {
+    // A head cut mid-word reads as "that's all there is" — the failure mode.
+    const many = { box: "x", families: Array.from({ length: 30 }, (_, i) => `Family${i}`), mirrored: 0, docs: 0 };
+    const head = headOf(rosterLine(many)!);
+    expect(head.length).toBeLessThanOrEqual(PREVIEW);
+    expect(head).toContain("more (list_sources)");
+  });
+
+  test("the full phrases still follow, for a client with room", () => {
+    const line = rosterLine(campshRoster())!;
+    expect(line).toContain("personal email: senders, subjects, bodies");
+  });
+});
+
+describe("rosterKeywords (the retrieval tail)", () => {
+  test("names the vendors — the anchors a tool search actually matches", () => {
+    // The screenshot's first failure was retrieval: "google drive search files"
+    // matched the K-1 question and Setoku's tools never surfaced at all.
+    const tail = rosterKeywords(campshRoster())!;
+    expect(tail).toContain("Gmail");
+    expect(tail).toContain("Monarch Money");
+  });
+
+  test("carries the words a question uses, not the words we use", () => {
+    expect(rosterKeywords(campshRoster())!).toContain("inbox");
+  });
+
+  test("every family gets an anchor before any family gets a second one", () => {
+    // Round-robin: a budget cut must not cost the last family everything.
+    const tail = rosterKeywords(crowdedRoster())!;
+    for (const vendor of ["Vercel", "Render", "Slack", "Mercury", "GitHub"]) {
+      expect(tail).toContain(vendor);
+    }
+  });
+
+  test("no duplicates, and bounded", () => {
+    const tail = rosterKeywords(crowdedRoster())!;
+    const words = tail.replace("Also matches: ", "").replace(/\.$/, "").split(", ");
+    expect(new Set(words).size).toBe(words.length);
+    expect(tail.length).toBeLessThan(320);
+  });
+
+  test("says nothing about an empty box", () => {
+    expect(rosterKeywords(campshRoster({ families: [], mirrored: 0 }))).toBeNull();
+    expect(rosterKeywords(null)).toBeNull();
+  });
+});
+
+describe("rosterTitle", () => {
+  test("a picker showing only titles still says what the box holds", () => {
+    // Order follows the probe (LAKE_SOURCES order in production), so assert the
+    // contents, not the sequence.
+    const title = rosterTitle(campshRoster())!;
+    expect(title.split(", ").sort()).toEqual(["code", "email", "finance"]);
+  });
+
+  test("bounded, and marks what it dropped", () => {
+    const title = rosterTitle(crowdedRoster())!;
+    expect(title.length).toBeLessThanOrEqual(60);
+    if (title.endsWith("\u2026")) expect(title.length).toBeGreaterThan(20);
+  });
+
+  test("nothing connected, nothing claimed", () => {
+    expect(rosterTitle(campshRoster({ families: [], mirrored: 0 }))).toBeNull();
+    expect(rosterTitle(null)).toBeNull();
+  });
+});
+
 describe("serverInstructions", () => {
   test("the regression: a personal-finance box says so before any tool call", () => {
     const out = serverInstructions(campshRoster(), ANALYST);
     expect(out).toContain("personal finance");
     expect(out).toContain("personal email");
+  });
+
+  test("names the vendor behind each domain", () => {
+    // Without this a client offers to CONNECT Gmail for a box that has polled
+    // Gmail for months — it can see "personal email" but not that it's the same
+    // thing as the Gmail connector sitting next to it in the picker.
+    const out = serverInstructions(campshRoster(), ANALYST);
+    expect(out).toContain("(via Gmail)");
+    expect(out).toContain("(via Monarch Money)");
+  });
+
+  test("leads the source list with the compact head", () => {
+    // Instructions get truncated too, by hosts we haven't seen yet.
+    expect(serverInstructions(campshRoster(), ANALYST)).toMatch(
+      /Connected right now — .*email \(Gmail\).*:\n- /,
+    );
   });
 
   test("carries the box name once", () => {
@@ -170,8 +307,8 @@ describe("serverInstructions", () => {
 });
 
 describe("FAMILY_DOMAIN covers the catalog", () => {
-  test("every source family has a plain-language phrase", () => {
-    // Drift guard: a new connector whose family lands here with no phrase would
+  test("every source family has a plain-language entry", () => {
+    // Drift guard: a new connector whose family lands here with no entry would
     // silently fall back to its vendor label, reintroducing the original bug for
     // that source. Adding a table to an EXISTING family needs nothing.
     const missing = [...new Set(LAKE_SOURCES.map((s) => familyOf(s.source)))]
@@ -181,9 +318,19 @@ describe("FAMILY_DOMAIN covers the catalog", () => {
   });
 
   test("phrases describe the data, never just repeat the vendor", () => {
-    for (const [family, phrase] of Object.entries(FAMILY_DOMAIN)) {
-      expect(phrase.toLowerCase()).not.toBe(family.toLowerCase());
-      expect(phrase.length).toBeGreaterThan(family.length);
+    for (const [family, d] of Object.entries(FAMILY_DOMAIN)) {
+      expect(d.long.toLowerCase()).not.toBe(family.toLowerCase());
+      expect(d.long.length).toBeGreaterThan(family.length);
+    }
+  });
+
+  test("every short is short enough to survive a head with six siblings", () => {
+    // A `short` that runs long doesn't just cost itself — it pushes every
+    // family after it out of the preview.
+    for (const [family, d] of Object.entries(FAMILY_DOMAIN)) {
+      expect(d.short.length).toBeLessThanOrEqual(12);
+      expect(d.short.toLowerCase()).not.toBe((d.vendor ?? "").toLowerCase());
+      expect(d.short.length, `${family} short`).toBeLessThan(d.long.length);
     }
   });
 });
@@ -266,6 +413,35 @@ describe("the roster reaches an MCP client", () => {
     await client.close();
   });
 
+  test("and a client that reads only the first 90 chars comes away with all of it", async () => {
+    // The truncation bug, end to end: the preview a host renders has to carry
+    // every domain, on every entry point, not just the one that sorted first.
+    const client = await connect(BASE, "tok-ann");
+    for (const tool of ["find_context", "list_sources", "get_schema", "run_query"]) {
+      const preview = (await describeOf(client, tool)).slice(0, PREVIEW);
+      expect(preview, `${tool} preview`).toContain("email");
+      expect(preview, `${tool} preview`).toContain("finance");
+    }
+    await client.close();
+  });
+
+  test("descriptions carry the vendor anchors a tool search matches on", async () => {
+    const client = await connect(BASE, "tok-ann");
+    const d = await describeOf(client, "find_context");
+    expect(d).toContain("Gmail");
+    expect(d).toContain("inbox"); // the word the user's question uses
+    await client.close();
+  });
+
+  test("titles say it too, for a picker that shows no description", async () => {
+    const client = await connect(BASE, "tok-ann");
+    const { tools } = await client.listTools();
+    const title = tools.find((t) => t.name === "find_context")?.title ?? "";
+    expect(title).toContain("email");
+    expect(title).toContain("finance");
+    await client.close();
+  });
+
   test("a never-connected source is not advertised", async () => {
     const client = await connect(BASE, "tok-ann");
     const d = await describeOf(client, "find_context");
@@ -278,6 +454,7 @@ describe("the roster reaches an MCP client", () => {
     const client = await connect(BASE, "tok-dana");
     const d = await describeOf(client, "find_context");
     expect(d).not.toContain("personal finance");
+    expect(d).not.toContain("Monarch"); // nor through the retrieval tail
     expect(d).toContain("personal email"); // Gmail is not denied
     expect(client.getInstructions() ?? "").not.toContain("personal finance");
     await client.close();

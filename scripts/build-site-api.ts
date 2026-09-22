@@ -91,9 +91,16 @@ async function tools(): Promise<
   while ((m = re.exec(src))) {
     const at = m.index;
     const chunk = src.slice(at, at + 1200);
-    const title = chunk.match(/title:\s*"((?:[^"\\]|\\.)*)"/)?.[1] ?? "";
+    // The literal, whether or not it's wrapped: `title: withDomains("…")` adds
+    // the box's live source domains at runtime, and the published spec wants the
+    // generic title underneath (a real box's roster must never reach site/, I3).
+    const title = chunk.match(/title:\s*(?:[A-Za-z_$][\w$]*\()?"((?:[^"\\]|\\.)*)"/)?.[1] ?? "";
     const readOnly = /readOnlyHint:\s*true/.test(chunk.slice(0, 400));
     const gate = gates.find(([, r]) => r && at > r[0] && at < r[1]);
+    // Every registered tool has a title, so an empty one means the parse missed
+    // — which is how a `title: withDomains(...)` wrapper once emptied four of
+    // them in the published spec while the build stayed green.
+    if (!title) throw new Error(`build-site-api: no title parsed for tool "${m[1]}" — the extractor is out of date with app.ts`);
     out.push({
       name: m[1],
       title: title.replace(/\\"/g, '"'),
