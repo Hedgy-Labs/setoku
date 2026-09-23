@@ -63,17 +63,23 @@ its full size many times a day. So a table that changed is pulled
   off). It runs even if the table is quiet at that moment, since a table busy
   all day and idle at night is exactly the one to check. Tables that never
   took a delta are never reconciled; they are already an exact full reload.
-- Each reconcile also **audits** the incremental path. It first catches the
-  mirror up with one last delta, then, before swapping in the fresh full copy,
-  diffs the two inside ClickHouse: keys only in the fresh copy (missing), keys
-  only in the live mirror (extra: a missed delete), and keys whose rows differ
-  (changed: a missed update), comparing a hash of every mirrored column
-  (`formatRow`, so NULL stays distinct from '' and separators are escaped).
-  The total lands in `setoku.pg_mirror_runs.drift` (NULL when not measured) and
-  a non-zero result is logged with the breakdown. The reload fixes it either
-  way. On a very busy table a row written in the second between the catch-up
-  delta and the full copy can show up as a false positive, so look for drift
-  that repeats, not a one-off.
+- Each reconcile also **audits** the incremental path. Inside the full copy's
+  own snapshot it first catches the live mirror up with a delta, then, before
+  swapping in the fresh copy, diffs the two inside ClickHouse by key, comparing
+  a hash of every mirrored column (`formatRow`, so NULL stays distinct from ''
+  and separators are escaped):
+  - **missing**: a row the source has that the mirror never got,
+  - **changed**: a row whose contents differ,
+  - **extra**: a key only the mirror has.
+
+  Because both sides reflect the same snapshot, missing and changed rows can
+  only come from a bug in the incremental path; their sum lands in
+  `setoku.pg_mirror_runs.drift` (NULL when not measured). Extra keys are also
+  what a delete or key change since the last pass leaves behind, which the
+  per-pass count check already handles, so they are logged but not counted.
+  The reload fixes all of it either way, and if the audited reload fails for
+  any reason the table is reloaded again without the audit, so the check can
+  never block the repair.
 
   ```sql
   SELECT finished_at, target_table, drift FROM setoku.pg_mirror_runs

@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS setoku.pg_mirror_runs
     status       LowCardinality(String)  COMMENT 'ok | unchanged | capped | error',
     error        String                  COMMENT 'failure detail (empty on ok/unchanged)',
     mode         LowCardinality(String)  COMMENT 'full | reconcile (daily backstop) | incremental (xmin delta) | empty when nothing was pulled',
-    drift        Nullable(UInt64)        COMMENT 'reconcile only: rows the fresh copy disagreed with the caught-up incremental mirror on (0 = exact; NULL = not measured)'
+    drift        Nullable(UInt64)        COMMENT 'reconcile only: rows the incremental path got wrong (missing + changed vs a same-snapshot fresh copy; 0 = exact, NULL = not measured)'
 )
 ENGINE = MergeTree
 ORDER BY (finished_at, target_table)
