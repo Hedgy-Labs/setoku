@@ -420,8 +420,11 @@ export async function chCommand(ch: ChOptions, sql: string): Promise<void> {
 }
 
 /** SELECT returning rows (FORMAT JSON). */
-export async function chSelect(ch: ChOptions, sql: string): Promise<Record<string, unknown>[]> {
-  const text = await chFetch(ch, new URLSearchParams({ default_format: "JSON" }), sql, 60_000);
+export async function chSelect(ch: ChOptions, sql: string, timeoutMs = 60_000): Promise<Record<string, unknown>[]> {
+  // cancel on client close: a timed-out HTTP SELECT otherwise keeps running
+  // server-side, holding memory and table locks after we've given up on it
+  const params = new URLSearchParams({ default_format: "JSON", cancel_http_readonly_queries_on_client_close: "1" });
+  const text = await chFetch(ch, params, sql, timeoutMs);
   if (!text) return [];
   const parsed = JSON.parse(text) as { data?: Record<string, unknown>[] };
   return parsed.data ?? [];
@@ -485,6 +488,7 @@ export async function ensureMirrorObjects(ch: ChOptions): Promise<void> {
   // ensureColumn.
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS bytes UInt64 AFTER rows`);
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS mode LowCardinality(String)`);
+  await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS drift Nullable(UInt64)`);
   // Incremental bookkeeping: the xmin boundary the next pass pulls from, and
   // when the table was last FULLY reloaded (the reconcile backstop).
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_state ADD COLUMN IF NOT EXISTS cursor String`);
@@ -778,12 +782,12 @@ export interface MirrorState {
 export async function loadMirrorState(ch: ChOptions): Promise<Map<string, MirrorState>> {
   const rows = await chSelect(
     ch,
-    `SELECT target, signature, cursor, toUnixTimestamp64Milli(full_at) AS full_at, deltas FROM ${chIdent(ch.db)}.pg_mirror_state FINAL`,
+    `SELECT target, signature, cursor, toString(full_at) AS full_at, deltas FROM ${chIdent(ch.db)}.pg_mirror_state FINAL`,
   );
   return new Map(
     rows.map((r) => [
       String(r.target),
-      { signature: String(r.signature), cursor: String(r.cursor ?? ""), fullAt: Number(r.full_at ?? 0) || 0, deltas: Number(r.deltas ?? 0) || 0 },
+      { signature: String(r.signature), cursor: String(r.cursor ?? ""), fullAt: fromRunStamp(r.full_at), deltas: Number(r.deltas ?? 0) || 0 },
     ]),
   );
 }
@@ -830,6 +834,10 @@ export interface TableResult {
    *  daily backstop forced it), or only rows past the xmin boundary. "" for
    *  unchanged/capped (nothing pulled). */
   mode: "full" | "reconcile" | "incremental" | "";
+  /** Reconcile only: rows the incremental path demonstrably got wrong —
+   *  missing + changed vs a fresh copy taken in the same snapshot (see
+   *  reconcileAudit). 0 = exact; null = not measured. */
+  drift?: number | null;
 }
 
 /** Every mirror read runs in one REPEATABLE READ, READ ONLY transaction: one
@@ -905,6 +913,15 @@ export async function mirrorTable(
      *  the ledger must see it even when the failure hits before the first
      *  ClickHouse flush. */
     tally?: { bytes: number };
+    /** Incremental tables being reconciled: before streaming the fresh copy,
+     *  upsert rows past this xmin boundary into the LIVE mirror — in the same
+     *  snapshot — so the two copies are comparable row for row. */
+    catchUpFrom?: bigint;
+    /** Runs on the verified staging copy just before it replaces an EXISTING
+     *  mirror (the reconcile drift check). `caughtUp` = the catch-up above
+     *  ran, so the live mirror reflects the same snapshot as staging. Should
+     *  not throw — a throw here fails the reload. */
+    beforeSwap?: (staging: string, caughtUp: boolean) => Promise<void>;
   },
 ): Promise<{ rows: number; bytes: number; cursor: string }> {
   const target = bizTableName(t.schema, t.name);
@@ -918,9 +935,18 @@ export async function mirrorTable(
 
   const tally = opts?.tally ?? { bytes: 0 };
   let cursor = "";
+  let caughtUp = false;
   const { rows: streamed, bytes } = await pg.begin(async (tx) => {
     await tx.unsafe(SNAPSHOT_TXN);
-    if (t.incremental) cursor = String((await snapshotBoundary(tx)).xmin);
+    if (t.incremental) {
+      const snap = await snapshotBoundary(tx);
+      cursor = String(snap.xmin);
+      const where = opts?.catchUpFrom !== undefined && existing.has(target) ? xminWindow(opts.catchUpFrom, snap.xmax) : null;
+      if (where !== null) {
+        await streamInto(tx, ch, t, `${buildSelect(t)} WHERE ${where}`, target, tally);
+        caughtUp = true;
+      }
+    }
     return streamInto(tx, ch, t, buildSelect(t), staging, tally, opts?.onProgress);
   });
 
@@ -931,6 +957,7 @@ export async function mirrorTable(
   if (c !== streamed) throw new Error(`row-count mismatch after load: streamed ${streamed}, staged ${c}`);
 
   if (existing.has(target)) {
+    await opts?.beforeSwap?.(staging, caughtUp);
     await chCommand(ch, `EXCHANGE TABLES ${chIdent(db)}.${chIdent(target)} AND ${chIdent(db)}.${chIdent(staging)}`);
     // staging now holds the previous copy — the swap already succeeded, so a
     // failed cleanup must not record this reload as an error (next run's
@@ -993,7 +1020,81 @@ export async function mirrorDelta(
   return { rows: res.rows, bytes: res.bytes, cursor: res.cursor, mismatch };
 }
 
+/** How far an incrementally-maintained mirror had drifted from a fresh full
+ *  copy of the source taken in the SAME snapshot: keys only in the fresh copy
+ *  (missing), keys only in the live mirror (extra — a missed delete), and keys
+ *  whose row contents differ (changed — a missed update). Rows hash via
+ *  formatRow('TabSeparated', …), which is deterministic for every mapped type,
+ *  keeps NULL distinct from '' and escapes separators; `_mirrored_at` is left
+ *  out (it differs by design). A GROUP BY over UNION ALL rather than a join,
+ *  so a big table spills to disk instead of holding a hash table in memory;
+ *  aliases are `__setoku_`-prefixed so no source column can collide with
+ *  them. Runs entirely inside ClickHouse — no source egress. */
+export interface Drift {
+  missing: number;
+  extra: number;
+  changed: number;
+}
+
+export function driftSQL(db: string, live: string, fresh: string, t: MirrorTable): string {
+  const keys = t.pk.map(chIdent).join(", ");
+  const hash = `cityHash64(formatRow('TabSeparated', ${t.columns.map((c) => chIdent(c.name)).join(", ")}))`;
+  // side 0 = live mirror (deduped with FINAL), side 1 = the fresh copy
+  const side = (table: string, n: 0 | 1): string =>
+    `SELECT ${keys}, ${hash} AS __setoku_h, ${n} AS __setoku_side FROM ${chIdent(db)}.${chIdent(table)}${n === 0 ? " FINAL" : ""}`;
+  return (
+    `SELECT countIf(__setoku_nl = 0) AS missing, countIf(__setoku_nf = 0) AS extra, ` +
+    `countIf(__setoku_nl > 0 AND __setoku_nf > 0 AND __setoku_hl != __setoku_hf) AS changed ` +
+    `FROM (SELECT ${keys}, countIf(__setoku_side = 0) AS __setoku_nl, countIf(__setoku_side = 1) AS __setoku_nf, ` +
+    `anyIf(__setoku_h, __setoku_side = 0) AS __setoku_hl, anyIf(__setoku_h, __setoku_side = 1) AS __setoku_hf ` +
+    `FROM (${side(live, 0)} UNION ALL ${side(fresh, 1)}) GROUP BY ${keys}) ` +
+    `SETTINGS max_bytes_before_external_group_by = 268435456`
+  );
+}
+
+/** Bounded like an insert, not a lookup: a whole-table scan of both copies. */
+const DRIFT_TIMEOUT_MS = 300_000;
+
+export async function measureDrift(ch: ChOptions, live: string, fresh: string, t: MirrorTable): Promise<Drift> {
+  const rows = await chSelect(ch, driftSQL(ch.mirrorDb, live, fresh, t), DRIFT_TIMEOUT_MS);
+  return { missing: Number(rows[0]?.missing ?? 0), extra: Number(rows[0]?.extra ?? 0), changed: Number(rows[0]?.changed ?? 0) };
+}
+
+/** Metadata timestamps are written as zone-less UTC wall-clock strings and
+ *  read back with toString() + "Z" — the convention every Setoku reader of
+ *  these tables uses (gateway lib/mirror.ts, the heartbeat readers, the
+ *  UTC-day egress ledger), and one that round-trips on a ClickHouse server in
+ *  any timezone. Never read one back through a function that interprets the
+ *  server timezone (toUnixTimestamp64Milli, dateDiff) and write it again: on a
+ *  non-UTC server the instant would shift by the offset on every round trip. */
+/** Run the drift check for a reconcile and turn it into the recorded figure:
+ *  missing + changed. With the live mirror caught up in the fresh copy's own
+ *  snapshot, neither can come from legitimate source activity — both mean the
+ *  incremental path lost or garbled a row. EXTRA keys can: a delete or key
+ *  change since the last pass leaves one, and the per-pass count check
+ *  already exists for exactly that, so extras are logged, not counted.
+ *  Best-effort: a failed check returns null (not measured) and the reload
+ *  proceeds. */
+async function reconcileAudit(ch: ChOptions, source: string, live: string, fresh: string, t: MirrorTable): Promise<number | null> {
+  try {
+    const d = await measureDrift(ch, live, fresh, t);
+    const drift = d.missing + d.changed;
+    if (drift > 0 || d.extra > 0)
+      console.error(
+        `pg-mirror: ${source}: reconcile ${drift > 0 ? "found DRIFT" : "found stale keys"} — ${d.missing} missing, ${d.changed} changed, ` +
+          `${d.extra} extra (extra = deletes/key changes since the last pass, normally the count check's job) — fixed by this reload`,
+      );
+    return drift;
+  } catch (e) {
+    console.error(`pg-mirror: ${source}: drift check failed: ${String(e).slice(0, 200)}`);
+    return null;
+  }
+}
+
 const runStamp = (d: Date): string => d.toISOString().replace("T", " ").replace("Z", "");
+
+/** Inverse of runStamp for a value read back via toString(). */
+const fromRunStamp = (s: unknown): number => Date.parse(String(s ?? "").replace(" ", "T") + "Z") || 0;
 
 async function recordRun(ch: ChOptions, startedAt: Date, r: TableResult): Promise<void> {
   const params = new URLSearchParams({ query: `INSERT INTO ${chIdent(ch.db)}.pg_mirror_runs FORMAT JSONEachRow` });
@@ -1007,6 +1108,7 @@ async function recordRun(ch: ChOptions, startedAt: Date, r: TableResult): Promis
     status: r.status,
     error: r.error,
     mode: r.mode,
+    drift: r.drift ?? null,
   });
   await chFetch(ch, params, line + "\n", 10_000);
 }
@@ -1133,11 +1235,12 @@ export async function runOnce(
 
     // The delta is only ever applied to a mirror built with this exact shape
     // (engine included) from an unbroken chain of snapshots.
-    const canDelta =
-      t.incremental === true && existing.has(target) && !!prev?.cursor && prev.signature.split("/")[0] === shape && !reconcileDue;
+    const chainIntact = t.incremental === true && existing.has(target) && !!prev?.cursor && prev.signature.split("/")[0] === shape;
+    const canDelta = chainIntact && !reconcileDue;
 
     const tally = { bytes: 0 };
     let mode: TableResult["mode"] = canDelta ? "incremental" : reconcileDue ? "reconcile" : "full";
+    let drift: number | null = null;
     try {
       let pulled: { rows: number; bytes: number; cursor: string } | null = null;
       if (canDelta) {
@@ -1149,13 +1252,36 @@ export async function runOnce(
       let deltas = (prev?.deltas ?? 0) + (pulled && pulled.rows > 0 ? 1 : 0);
       if (pulled === null) {
         if (mode === "incremental") mode = "full"; // a delta that fell back
-        const f = await mirrorTable(pg, ch, t, existing, { tally });
+        let f: { rows: number; bytes: number; cursor: string };
+        if (reconcileDue && chainIntact) {
+          // Reconcile doubles as the audit of the incremental path: inside the
+          // full copy's own snapshot, first catch the live mirror up with a
+          // delta, then diff the two before the swap (see reconcileAudit).
+          try {
+            f = await mirrorTable(pg, ch, t, existing, {
+              tally,
+              catchUpFrom: BigInt(prev!.cursor),
+              beforeSwap: async (staging, caughtUp) => {
+                if (caughtUp) drift = await reconcileAudit(ch, source, target, staging, t);
+              },
+            });
+          } catch (e) {
+            // The audit must never block the repair it rides on: a catch-up
+            // that can't write to the live mirror is exactly the kind of
+            // breakage reconcile exists to fix. Reload without it.
+            console.error(`pg-mirror: ${source}: audited reconcile failed (${String(e).slice(0, 200)}) — reloading without the audit`);
+            drift = null;
+            f = await mirrorTable(pg, ch, t, existing, { tally });
+          }
+        } else {
+          f = await mirrorTable(pg, ch, t, existing, { tally });
+        }
         // a delta that fell back still pulled its rows — the ledger gets both
         pulled = { rows: f.rows, bytes: tally.bytes, cursor: f.cursor };
         fullAt = startedAt.getTime();
         deltas = 0;
       }
-      results.push({ target, source, rows: pulled.rows, bytes: pulled.bytes, status: "ok", error: "", mode });
+      results.push({ target, source, rows: pulled.rows, bytes: pulled.bytes, status: "ok", error: "", mode, drift });
       // Only after a successful pull — a failure keeps the old state so the
       // table retries next pass (from the old boundary) instead of skipping
       // on a stale mirror.
@@ -1172,7 +1298,7 @@ export async function runOnce(
       // table retries every pass, which is the most expensive egress pattern
       // there is. Recording 0 here would blind the ledger (and the alert) to
       // exactly the overage it exists to catch.
-      results.push({ target, source, rows: 0, bytes: tally.bytes, status: "error", error: (e as Error).message.slice(0, 500), mode });
+      results.push({ target, source, rows: 0, bytes: tally.bytes, status: "error", error: (e as Error).message.slice(0, 500), mode, drift });
       console.error(`pg-mirror: ${source} failed: ${(e as Error).message}`);
     }
     await recordRun(ch, startedAt, results[results.length - 1]).catch((e) =>

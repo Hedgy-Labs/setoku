@@ -63,6 +63,28 @@ its full size many times a day. So a table that changed is pulled
   off). It runs even if the table is quiet at that moment, since a table busy
   all day and idle at night is exactly the one to check. Tables that never
   took a delta are never reconciled; they are already an exact full reload.
+- Each reconcile also **audits** the incremental path. Inside the full copy's
+  own snapshot it first catches the live mirror up with a delta, then, before
+  swapping in the fresh copy, diffs the two inside ClickHouse by key, comparing
+  a hash of every mirrored column (`formatRow`, so NULL stays distinct from ''
+  and separators are escaped):
+  - **missing**: a row the source has that the mirror never got,
+  - **changed**: a row whose contents differ,
+  - **extra**: a key only the mirror has.
+
+  Because both sides reflect the same snapshot, missing and changed rows can
+  only come from a bug in the incremental path; their sum lands in
+  `setoku.pg_mirror_runs.drift` (NULL when not measured). Extra keys are also
+  what a delete or key change since the last pass leaves behind, which the
+  per-pass count check already handles, so they are logged but not counted.
+  The reload fixes all of it either way, and if the audited reload fails for
+  any reason the table is reloaded again without the audit, so the check can
+  never block the repair.
+
+  ```sql
+  SELECT finished_at, target_table, drift FROM setoku.pg_mirror_runs
+  WHERE mode = 'reconcile' AND drift > 0 ORDER BY finished_at DESC
+  ```
 
 This relies on no column names (no `updatedAt` convention) and no extra grants.
 A table qualifies when it is a plain heap table (or a partitioned table whose
