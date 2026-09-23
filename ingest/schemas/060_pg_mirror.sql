@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS setoku.pg_mirror_runs
     bytes        UInt64                  COMMENT 'NDJSON bytes streamed — the box''s own source-egress ledger (0 on unchanged; on error, what streamed before the failure)',
     status       LowCardinality(String)  COMMENT 'ok | unchanged | capped | error',
     error        String                  COMMENT 'failure detail (empty on ok/unchanged)',
-    mode         LowCardinality(String)  COMMENT 'full | reconcile (daily backstop) | incremental (xmin delta) | empty when nothing was pulled'
+    mode         LowCardinality(String)  COMMENT 'full | reconcile (daily backstop) | incremental (xmin delta) | empty when nothing was pulled',
+    drift        Nullable(UInt64)        COMMENT 'reconcile only: rows the fresh copy disagreed with the caught-up incremental mirror on (0 = exact; NULL = not measured)'
 )
 ENGINE = MergeTree
 ORDER BY (finished_at, target_table)

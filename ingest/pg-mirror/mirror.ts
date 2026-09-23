@@ -441,10 +441,24 @@ export async function chInsert(ch: ChOptions, db: string, table: string, ndjson:
   await chFetch(ch, params, ndjson, 300_000);
 }
 
+/** A timestamp for the metadata tables: ISO with an explicit Z, parsed
+ *  best_effort (see metaInsert). A zone-less "YYYY-MM-DD HH:MM:SS" would be
+ *  read in the ClickHouse SERVER's timezone — on a non-UTC server every
+ *  instant shifts by its offset, and a value read back and re-saved (full_at)
+ *  keeps shifting on every pass. */
+const runStamp = (d: Date): string => d.toISOString();
+
+/** Insert rows into a metadata table, parsing timestamps by their offset. */
+async function metaInsert(ch: ChOptions, table: string, rows: Record<string, unknown>[], timeoutMs = 10_000): Promise<void> {
+  const params = new URLSearchParams({
+    query: `INSERT INTO ${chIdent(ch.db)}.${chIdent(table)} FORMAT JSONEachRow`,
+    date_time_input_format: "best_effort",
+  });
+  await chFetch(ch, params, rows.map((r) => JSON.stringify(r) + "\n").join(""), timeoutMs);
+}
+
 export async function beatHeartbeat(ch: ChOptions, detail: string): Promise<void> {
-  const beat_at = new Date().toISOString().replace("T", " ").replace("Z", "");
-  const params = new URLSearchParams({ query: `INSERT INTO ${chIdent(ch.db)}.ingest_heartbeats FORMAT JSONEachRow` });
-  await chFetch(ch, params, JSON.stringify({ connector: "pg-mirror", beat_at, detail }) + "\n", 10_000);
+  await metaInsert(ch, "ingest_heartbeats", [{ connector: "pg-mirror", beat_at: runStamp(new Date()), detail }]);
 }
 
 /** Startup self-heal (the numbered schema files only run on a FRESH ClickHouse,
@@ -485,6 +499,7 @@ export async function ensureMirrorObjects(ch: ChOptions): Promise<void> {
   // ensureColumn.
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS bytes UInt64 AFTER rows`);
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS mode LowCardinality(String)`);
+  await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_runs ADD COLUMN IF NOT EXISTS drift Nullable(UInt64)`);
   // Incremental bookkeeping: the xmin boundary the next pass pulls from, and
   // when the table was last FULLY reloaded (the reconcile backstop).
   await chCommand(ch, `ALTER TABLE ${chIdent(ch.db)}.pg_mirror_state ADD COLUMN IF NOT EXISTS cursor String`);
@@ -494,7 +509,7 @@ export async function ensureMirrorObjects(ch: ChOptions): Promise<void> {
 
 /** Upsert settings/state rows (latest updated_at wins per key). */
 export async function publishSettings(ch: ChOptions, kv: Record<string, string>): Promise<void> {
-  const updated_at = new Date().toISOString().replace("T", " ").replace("Z", "");
+  const updated_at = runStamp(new Date());
   const ndjson = Object.entries(kv)
     .map(([key, value]) => JSON.stringify({ key, value, updated_at }))
     .join("\n");
@@ -792,17 +807,17 @@ export async function loadMirrorState(ch: ChOptions): Promise<Map<string, Mirror
  *  target, so a re-stamp that dropped the cursor would silently cost the next
  *  change a full reload. */
 async function saveMirrorState(ch: ChOptions, target: string, source: string, st: MirrorState): Promise<void> {
-  const params = new URLSearchParams({ query: `INSERT INTO ${chIdent(ch.db)}.pg_mirror_state FORMAT JSONEachRow` });
-  const line = JSON.stringify({
-    target,
-    source,
-    signature: st.signature,
-    cursor: st.cursor,
-    full_at: runStamp(new Date(st.fullAt)),
-    deltas: st.deltas,
-    checked_at: runStamp(new Date()),
-  });
-  await chFetch(ch, params, line + "\n", 10_000);
+  await metaInsert(ch, "pg_mirror_state", [
+    {
+      target,
+      source,
+      signature: st.signature,
+      cursor: st.cursor,
+      full_at: runStamp(new Date(st.fullAt)),
+      deltas: st.deltas,
+      checked_at: runStamp(new Date()),
+    },
+  ]);
 }
 
 /* ----------------------------- reload ------------------------------- */
@@ -830,6 +845,10 @@ export interface TableResult {
    *  daily backstop forced it), or only rows past the xmin boundary. "" for
    *  unchanged/capped (nothing pulled). */
   mode: "full" | "reconcile" | "incremental" | "";
+  /** Reconcile only: rows the fresh copy disagreed with the caught-up
+   *  incremental mirror on (missing + extra + changed). 0 = the incremental
+   *  path was exact; null = not measured. */
+  drift?: number | null;
 }
 
 /** Every mirror read runs in one REPEATABLE READ, READ ONLY transaction: one
@@ -905,6 +924,10 @@ export async function mirrorTable(
      *  the ledger must see it even when the failure hits before the first
      *  ClickHouse flush. */
     tally?: { bytes: number };
+    /** Runs on the verified staging copy just before it replaces an EXISTING
+     *  mirror (the reconcile drift check). Must not throw on its own account —
+     *  a failure here fails the reload. */
+    beforeSwap?: (staging: string) => Promise<void>;
   },
 ): Promise<{ rows: number; bytes: number; cursor: string }> {
   const target = bizTableName(t.schema, t.name);
@@ -931,6 +954,7 @@ export async function mirrorTable(
   if (c !== streamed) throw new Error(`row-count mismatch after load: streamed ${streamed}, staged ${c}`);
 
   if (existing.has(target)) {
+    await opts?.beforeSwap?.(staging);
     await chCommand(ch, `EXCHANGE TABLES ${chIdent(db)}.${chIdent(target)} AND ${chIdent(db)}.${chIdent(staging)}`);
     // staging now holds the previous copy — the swap already succeeded, so a
     // failed cleanup must not record this reload as an error (next run's
@@ -993,11 +1017,38 @@ export async function mirrorDelta(
   return { rows: res.rows, bytes: res.bytes, cursor: res.cursor, mismatch };
 }
 
-const runStamp = (d: Date): string => d.toISOString().replace("T", " ").replace("Z", "");
+/** How far an incrementally-maintained mirror had drifted from a fresh full
+ *  copy of the source: keys only in the fresh copy (missing), keys only in the
+ *  live mirror (extra — a missed delete), and keys whose row contents differ
+ *  (changed — a missed update). Rows hash via formatRow('TabSeparated', …),
+ *  which is deterministic for every mapped type, keeps NULL distinct from ''
+ *  and escapes separators; `_mirrored_at` is left out (it differs by design).
+ *  Runs entirely inside ClickHouse — no source egress. */
+export interface Drift {
+  missing: number;
+  extra: number;
+  changed: number;
+}
+
+export function driftSQL(db: string, live: string, fresh: string, t: MirrorTable): string {
+  const keys = t.pk.map(chIdent).join(", ");
+  const hash = `cityHash64(formatRow('TabSeparated', ${t.columns.map((c) => chIdent(c.name)).join(", ")}))`;
+  const side = (table: string, final: boolean): string =>
+    `(SELECT ${keys}, ${hash} AS h FROM ${chIdent(db)}.${chIdent(table)}${final ? " FINAL" : ""})`;
+  return (
+    `SELECT countIf(l.h IS NULL) AS missing, countIf(f.h IS NULL) AS extra, countIf(l.h != f.h) AS changed ` +
+    `FROM ${side(live, true)} AS l FULL OUTER JOIN ${side(fresh, false)} AS f USING (${keys}) ` +
+    `SETTINGS join_use_nulls = 1`
+  );
+}
+
+export async function measureDrift(ch: ChOptions, live: string, fresh: string, t: MirrorTable): Promise<Drift> {
+  const rows = await chSelect(ch, driftSQL(ch.mirrorDb, live, fresh, t));
+  return { missing: Number(rows[0]?.missing ?? 0), extra: Number(rows[0]?.extra ?? 0), changed: Number(rows[0]?.changed ?? 0) };
+}
 
 async function recordRun(ch: ChOptions, startedAt: Date, r: TableResult): Promise<void> {
-  const params = new URLSearchParams({ query: `INSERT INTO ${chIdent(ch.db)}.pg_mirror_runs FORMAT JSONEachRow` });
-  const line = JSON.stringify({
+  await metaInsert(ch, "pg_mirror_runs", [{
     started_at: runStamp(startedAt),
     finished_at: runStamp(new Date()),
     target_table: r.target,
@@ -1007,8 +1058,8 @@ async function recordRun(ch: ChOptions, startedAt: Date, r: TableResult): Promis
     status: r.status,
     error: r.error,
     mode: r.mode,
-  });
-  await chFetch(ch, params, line + "\n", 10_000);
+    drift: r.drift ?? null,
+  }]);
 }
 
 export interface RunOptions {
@@ -1133,11 +1184,12 @@ export async function runOnce(
 
     // The delta is only ever applied to a mirror built with this exact shape
     // (engine included) from an unbroken chain of snapshots.
-    const canDelta =
-      t.incremental === true && existing.has(target) && !!prev?.cursor && prev.signature.split("/")[0] === shape && !reconcileDue;
+    const chainIntact = t.incremental === true && existing.has(target) && !!prev?.cursor && prev.signature.split("/")[0] === shape;
+    const canDelta = chainIntact && !reconcileDue;
 
     const tally = { bytes: 0 };
     let mode: TableResult["mode"] = canDelta ? "incremental" : reconcileDue ? "reconcile" : "full";
+    let drift: number | null = null;
     try {
       let pulled: { rows: number; bytes: number; cursor: string } | null = null;
       if (canDelta) {
@@ -1145,17 +1197,43 @@ export async function runOnce(
         if (d.mismatch === null) pulled = d;
         else console.error(`pg-mirror: ${source}: ${d.mismatch} — full reload`);
       }
+      // Reconcile doubles as the audit of the incremental path: catch the
+      // mirror up with one last delta, then diff the fresh full copy against
+      // it before the swap. Anything left over is drift the deltas + count
+      // check missed. (A count mismatch here is already handled — and
+      // explained — by the per-pass check, so it isn't measured as drift.)
+      let measure = false;
+      if (reconcileDue && chainIntact) {
+        const d = await mirrorDelta(pg, ch, t, BigInt(prev!.cursor), { tally });
+        if (d.mismatch === null) measure = true;
+        else console.error(`pg-mirror: ${source}: ${d.mismatch} — reconciling without a drift check`);
+      }
       let fullAt = prev?.fullAt ?? 0;
       let deltas = (prev?.deltas ?? 0) + (pulled && pulled.rows > 0 ? 1 : 0);
       if (pulled === null) {
         if (mode === "incremental") mode = "full"; // a delta that fell back
-        const f = await mirrorTable(pg, ch, t, existing, { tally });
+        const beforeSwap = measure
+          ? async (staging: string): Promise<void> => {
+              try {
+                const dr = await measureDrift(ch, target, staging, t);
+                drift = dr.missing + dr.extra + dr.changed;
+                if (drift > 0)
+                  console.error(
+                    `pg-mirror: ${source}: reconcile found DRIFT — ${dr.missing} missing, ${dr.extra} extra, ${dr.changed} changed row(s) vs the incremental mirror (fixed by this reload)`,
+                  );
+              } catch (e) {
+                // the audit is best-effort; the reload itself still proceeds
+                console.error(`pg-mirror: ${source}: drift check failed: ${String(e).slice(0, 200)}`);
+              }
+            }
+          : undefined;
+        const f = await mirrorTable(pg, ch, t, existing, { tally, beforeSwap });
         // a delta that fell back still pulled its rows — the ledger gets both
         pulled = { rows: f.rows, bytes: tally.bytes, cursor: f.cursor };
         fullAt = startedAt.getTime();
         deltas = 0;
       }
-      results.push({ target, source, rows: pulled.rows, bytes: pulled.bytes, status: "ok", error: "", mode });
+      results.push({ target, source, rows: pulled.rows, bytes: pulled.bytes, status: "ok", error: "", mode, drift });
       // Only after a successful pull — a failure keeps the old state so the
       // table retries next pass (from the old boundary) instead of skipping
       // on a stale mirror.

@@ -365,12 +365,30 @@ class FakeClickHouse {
       // ReplacingMergeTree(checked_at) ORDER BY target — last write per target wins
       const latest = new Map<string, Record<string, unknown>>();
       for (const r of this.state) latest.set(String(r.target), r);
-      const ms = (stamp: unknown): string => String(Date.parse(String(stamp).replace(" ", "T") + "Z") || 0);
+      const ms = (stamp: unknown): string => {
+        const t = String(stamp);
+        return String(Date.parse(/Z$/.test(t) ? t : t.replace(" ", "T") + "Z") || 0);
+      };
       return ok(
         JSON.stringify({
           data: [...latest.values()].map((r) => ({ target: r.target, signature: r.signature, cursor: r.cursor ?? "", full_at: ms(r.full_at), deltas: r.deltas ?? 0 })),
         }),
       );
+    }
+    if ((m = q.match(/^SELECT countIf\(l\.h IS NULL\) AS missing.*? FROM (\S+) FINAL\) AS l FULL OUTER JOIN .*? FROM (\S+)\) AS f /i))) {
+      // drift: key-joined row comparison, _mirrored_at excluded
+      const live = this.tables.get(this.key(m[1]))!;
+      const fresh = this.tables.get(this.key(m[2]))!;
+      const keyCols = this.engines.get(this.key(m[1]))!.key;
+      const id = (r: Record<string, unknown>): string => JSON.stringify(keyCols.map((k) => r[k]));
+      const body = (r: Record<string, unknown>): string =>
+        JSON.stringify(Object.keys(r).filter((k) => k !== "_mirrored_at").sort().map((k) => [k, r[k]]));
+      const l = new Map(live.map((r) => [id(r), body(r)]));
+      const f = new Map(fresh.map((r) => [id(r), body(r)]));
+      let missing = 0, extra = 0, changed = 0;
+      for (const [k, v] of f) if (!l.has(k)) missing++; else if (l.get(k) !== v) changed++;
+      for (const k of l.keys()) if (!f.has(k)) extra++;
+      return ok(JSON.stringify({ data: [{ missing: String(missing), extra: String(extra), changed: String(changed) }] }));
     }
     if ((m = q.match(/^SELECT name FROM system\.tables WHERE database = '([^']*)'/i))) {
       const db = m[1];
@@ -907,6 +925,45 @@ describe("incremental pull (real Postgres → FakeClickHouse)", () => {
     expect(lastRun("tokens").status).toBe("unchanged");
   });
 
+  it("reconcile audits the incremental mirror: drift 0 when the deltas were exact", async () => {
+    await write([`UPDATE public.events SET payload = 'audited' WHERE id = 4`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("incremental");
+    ifake.queries.length = 0;
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, { reconcileMs: 1 });
+    const run = lastRun("events");
+    expect(run.mode).toBe("reconcile");
+    expect(run.drift).toBe(0);
+    // the diff ran against the staged copy BEFORE the swap
+    const diffAt = ifake.queries.findIndex((q) => q.startsWith("SELECT countIf(l.h IS NULL)") && q.includes("`biz`.`events__staging`"));
+    const swapAt = ifake.queries.findIndex((q) => q.startsWith("EXCHANGE TABLES `biz`.`events`"));
+    expect(diffAt).toBeGreaterThanOrEqual(0);
+    expect(diffAt).toBeLessThan(swapAt);
+    // a table that never went through the incremental path isn't reconciled, so no drift figure
+    expect(lastRun("loose").drift ?? null).toBeNull();
+  });
+
+  it("reconcile reports — and repairs — drift the incremental path missed", async () => {
+    await write([`INSERT INTO public.events VALUES (7200, 'r', 'x')`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("incremental");
+    // corrupt the live mirror behind the mirror's back, keeping the row count
+    // equal so the per-pass count check can't see it: one changed row, one
+    // missing (a lost insert), one extra (a lost delete)
+    const live = events();
+    live.find((e) => Number(e.id) === 5)!.payload = "corrupt";
+    live.splice(live.findIndex((e) => Number(e.id) === 6), 1);
+    live.push({ id: "424242", kind: "ghost", payload: "never existed" });
+    await runOnce(ipg as never, ich, INCR_CFG, undefined, { reconcileMs: 1 });
+    const run = lastRun("events");
+    expect(run.mode).toBe("reconcile");
+    expect(run.drift).toBe(3);
+    // and the reload fixed it
+    expect(events().find((e) => Number(e.id) === 5)!.payload).not.toBe("corrupt");
+    expect(eventIds()).toContain(6);
+    expect(eventIds()).not.toContain(424242);
+  });
+
   it("window mode: reconcile only inside the quiet window, once per window", async () => {
     await write([`INSERT INTO public.events VALUES (7100, 'r', 'x')`]);
     const outside = { reconcileMs: 1, reconcileWindowStart: (): number | null => null };
@@ -1112,6 +1169,16 @@ describe.skipIf(!CH_URL)("incremental e2e (real ClickHouse)", () => {
         `INSERT INTO public.events SELECT g, 'v1' FROM generate_series(1, 1000) g`,
         `CREATE TABLE public.loose (v text)`,
         `INSERT INTO public.loose VALUES ('a'), ('a')`,
+        // every mapped type family, so a clean reconcile proves the row hash
+        // has no false positives (NULLs, NaN, arrays, json, enums, decimals…)
+        `CREATE TYPE mood AS ENUM ('ok', 'meh')`,
+        `CREATE TABLE public.typed (
+           id int PRIMARY KEY, amount numeric(10,2), loose numeric, placed timestamptz, day date,
+           meta jsonb, tags text[], nums int4[], m mood, m2 mood, flag boolean, uid uuid, note text,
+           blob bytea, ratio float8)`,
+        `INSERT INTO public.typed VALUES
+           (1, 12.34, 0.000000001, '2026-05-01T10:00:00Z', '2026-05-01', '{"a":[1,{"b":null}]}', ARRAY['x','y\tz'], ARRAY[1,2], 'ok', NULL, true, 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11', '', '\\xdead', 'NaN'),
+           (2, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'meh', 'ok', NULL, NULL, NULL, NULL, '-Infinity')`,
       ],
       PG_DB,
     );
@@ -1130,7 +1197,7 @@ describe.skipIf(!CH_URL)("incremental e2e (real ClickHouse)", () => {
 
   it("upserts deltas into a ReplacingMergeTree that readers see deduped under final=1", async () => {
     const r1 = await runOnce(epg as never, ech, INCR_CFG);
-    expect(r1.ok).toBe(2);
+    expect(r1.ok).toBe(3); // events, loose, typed
     const eng = await chq(`SELECT engine FROM system.tables WHERE database = '${ech.mirrorDb}' AND name = 'events'`);
     expect(eng[0].engine).toBe("ReplacingMergeTree");
 
@@ -1158,9 +1225,45 @@ describe.skipIf(!CH_URL)("incremental e2e (real ClickHouse)", () => {
     expect([Number(after[0].c), Number(after[0].gone)]).toEqual([1000, 0]);
     const modes = await chq(`SELECT mode FROM ${ech.db}.pg_mirror_runs WHERE target_table = 'events' ORDER BY finished_at`);
     expect(modes.map((m) => m.mode)).toEqual(["full", "incremental", "full"]);
-    const state = await chq(`SELECT cursor, full_at > now() - INTERVAL 1 MINUTE AS recent FROM ${ech.db}.pg_mirror_state FINAL WHERE target = 'events'`);
+    // |full_at - now| < 1 min: on a non-UTC server a zone-less stamp would land hours off
+    const state = await chq(`SELECT cursor, abs(dateDiff('second', full_at, now())) < 60 AS recent FROM ${ech.db}.pg_mirror_state FINAL WHERE target = 'events'`);
     expect(String(state[0].cursor)).toMatch(/^\d+$/);
     expect(Number(state[0].recent)).toBe(1);
+  });
+
+  it("reconcile's drift check: 0 on an exact mirror of every type, exact counts on a tampered one", async () => {
+    const runOf = async (target: string): Promise<{ mode: string; drift: number | null }> => {
+      const r = await chq(
+        `SELECT mode, drift FROM ${ech.db}.pg_mirror_runs WHERE target_table = '${target}' ORDER BY finished_at DESC LIMIT 1`,
+      );
+      return { mode: String(r[0].mode), drift: r[0].drift === null ? null : Number(r[0].drift) };
+    };
+    // both tables take a delta, so both are reconcile candidates
+    const before = await fetchChangeCounters(epg as never, "public", "typed");
+    await pgAdmin([`UPDATE public.typed SET note = 'touched' WHERE id = 2`], PG_DB);
+    await waitForCounterChange(epg, "public", "typed", before);
+    await write([`UPDATE public.events SET payload = 'v3' WHERE id = 20`]);
+    await runOnce(epg as never, ech, INCR_CFG);
+    expect((await runOf("typed")).mode).toBe("incremental");
+    expect((await runOf("events")).mode).toBe("incremental");
+
+    // tamper with the live events mirror, keeping its FINAL count unchanged so
+    // only the reconcile can notice: a newer bogus version of id 5 (changed),
+    // a row that never existed (extra), and a real row dropped (missing)
+    await chq(`INSERT INTO ${ech.mirrorDb}.events (id, payload) VALUES (5, 'corrupt'), (424242, 'ghost')`);
+    await chq(`ALTER TABLE ${ech.mirrorDb}.events DELETE WHERE id IN (7, 8) SETTINGS mutations_sync = 2`);
+    // re-add 8 exactly as the source has it (ids ≤ 10 were updated to 'v2'
+    // above): not drift. (The check caught this line when it said 'v1'.)
+    await chq(`INSERT INTO ${ech.mirrorDb}.events (id, payload) VALUES (8, 'v2')`);
+
+    await runOnce(epg as never, ech, INCR_CFG, undefined, { reconcileMs: 1 });
+    expect(await runOf("typed")).toEqual({ mode: "reconcile", drift: 0 });
+    expect(await runOf("events")).toEqual({ mode: "reconcile", drift: 3 });
+    // repaired by the swap
+    const fixed = await chq(
+      `SELECT countIf(id = 5 AND payload = 'corrupt') AS corrupt, countIf(id = 424242) AS ghost, countIf(id = 7) AS seven FROM ${ech.mirrorDb}.events SETTINGS final = 1`,
+    );
+    expect([Number(fixed[0].corrupt), Number(fixed[0].ghost), Number(fixed[0].seven)]).toEqual([0, 0, 1]);
   });
 });
 
