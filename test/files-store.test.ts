@@ -174,7 +174,7 @@ describe("parseJsonTable", () => {
   it("renders an array of flat objects, unioning keys in first-seen order", () => {
     const t = parseJsonTable('[{"a":1,"b":"x"},{"b":"y","c":null,"d":{"k":1}}]');
     expect(t?.columns).toEqual(["a", "b", "c", "d"]);
-    expect(t?.rows[1]).toEqual({ b: "y", c: "", d: '{"k":1}' });
+    expect(t?.rows[1]).toEqual({ a: "", b: "y", c: "", d: '{"k":1}' }); // every row carries every column
   });
   it("anything else is not a table", () => {
     expect(parseJsonTable('{"a":1}')).toBeNull();

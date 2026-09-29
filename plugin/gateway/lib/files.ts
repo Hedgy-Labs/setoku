@@ -32,6 +32,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { isTabularMime } from "./table-parse";
 
 /** Inline `content` cap on publish_file — bigger than this goes over the upload URL. */
 export const MAX_INLINE_BYTES = 1_000_000;
@@ -163,12 +164,13 @@ export function inlineAllowed(mime: string): boolean {
   return INLINE_MIMES.has(mime);
 }
 
-/** How the viewer treats a file. `table` parses into rows for Setoku.table,
- *  `markdown`/`text` render in the sandboxed frame, `image` inlines as a data:
- *  URI (the frame CSP allows it), everything else is a download card. */
+/** How the viewer treats a file. A `table` is parsed IN THE BROWSER by the grid
+ *  (web/app/grid/, from the raw bytes), `markdown`/`text` render in the sandboxed
+ *  frame, `image` inlines as a data: URI (the frame CSP allows it), everything
+ *  else is a download card. */
 export type FileKind = "table" | "markdown" | "text" | "image" | "pdf" | "other";
 export function fileKind(mime: string): FileKind {
-  if (mime === "text/csv" || mime === "text/tab-separated-values" || mime === "application/json") return "table";
+  if (isTabularMime(mime)) return "table";
   if (mime === "text/markdown") return "markdown";
   if (mime === "text/plain") return "text";
   if (mime === "image/png" || mime === "image/jpeg" || mime === "image/gif" || mime === "image/webp") return "image";
@@ -197,134 +199,9 @@ export function decodeBase64Strict(input: string): Buffer | null {
 
 /* ------------------------------- parsing ---------------------------------- */
 
-export interface ParsedTable {
-  columns: string[];
-  rows: Record<string, string>[];
-  /** More rows existed than `maxRows`; the rows are a prefix. */
-  truncated: boolean;
-}
-
-/**
- * RFC 4180 CSV/TSV → columns + rows. Quoted fields, doubled-quote escapes,
- * newlines inside quotes, CRLF or LF, a leading BOM. The first record is the
- * header; duplicate or empty header cells get a stable suffix so every column
- * has a distinct key (Setoku.table indexes rows by column name). Parsing stops
- * after `maxRows` data rows — a 50 MB CSV is never materialized as objects.
- */
-export function parseDelimited(text: string, delim: string, maxRows = 25_000): ParsedTable {
-  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
-  const records: string[][] = [];
-  let field = "";
-  let record: string[] = [];
-  let quoted = false;
-  let i = 0;
-  const n = text.length;
-  const endRecord = (): boolean => {
-    record.push(field);
-    field = "";
-    // A blank line (one empty field) between records is ignored, as is the
-    // trailing newline every well-formed file ends with.
-    if (!(record.length === 1 && record[0] === "")) records.push(record);
-    record = [];
-    // Stop once we hold header + maxRows + ONE extra record: the extra is how
-    // we know the file went on (truncated) without parsing the rest of it.
-    return records.length > maxRows + 1;
-  };
-  let broke = false;
-  while (i < n) {
-    const c = text[i];
-    if (quoted) {
-      if (c === '"') {
-        if (text[i + 1] === '"') {
-          field += '"';
-          i += 2;
-          continue;
-        }
-        quoted = false;
-        i++;
-        continue;
-      }
-      field += c;
-      i++;
-      continue;
-    }
-    if (c === '"' && field === "") {
-      quoted = true;
-      i++;
-      continue;
-    }
-    if (c === delim) {
-      record.push(field);
-      field = "";
-      i++;
-      continue;
-    }
-    if (c === "\r") {
-      i++;
-      continue;
-    }
-    if (c === "\n") {
-      i++;
-      if (endRecord()) {
-        broke = true;
-        break;
-      }
-      continue;
-    }
-    field += c;
-    i++;
-  }
-  if (!broke && (field !== "" || record.length)) endRecord(); // no trailing newline
-  const truncated = records.length > maxRows + 1;
-  if (truncated) records.length = maxRows + 1;
-  if (!records.length) return { columns: [], rows: [], truncated: false };
-  const seen = new Set<string>();
-  const columns = records[0].map((h, idx) => {
-    const base = h.trim() || `col${idx + 1}`;
-    let name = base;
-    // A suffixed name can itself collide with a literal header ("a,a,a_2"),
-    // so keep going until the candidate is genuinely unused.
-    for (let k = 2; seen.has(name); k++) name = `${base}_${k}`;
-    seen.add(name);
-    return name;
-  });
-  const rows = records.slice(1).map((r) => {
-    const o: Record<string, string> = {};
-    columns.forEach((c, idx) => (o[c] = r[idx] ?? ""));
-    return o;
-  });
-  return { columns, rows, truncated };
-}
-
-/** A JSON file that is an ARRAY OF FLAT OBJECTS renders as a table; anything
- *  else (an object, nested values) is shown as text. Column order is first
- *  appearance across the rows. */
-export function parseJsonTable(text: string, maxRows = 25_000): ParsedTable | null {
-  let v: unknown;
-  try {
-    v = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!Array.isArray(v) || !v.length) return null;
-  if (!v.every((r) => r && typeof r === "object" && !Array.isArray(r))) return null;
-  const columns: string[] = [];
-  const seen = new Set<string>();
-  const rows: Record<string, string>[] = [];
-  const truncated = v.length > maxRows;
-  for (const r of v.slice(0, maxRows) as Record<string, unknown>[]) {
-    const o: Record<string, string> = {};
-    for (const [k, val] of Object.entries(r)) {
-      if (!seen.has(k)) {
-        seen.add(k);
-        columns.push(k);
-      }
-      o[k] = val == null ? "" : typeof val === "object" ? JSON.stringify(val) : String(val);
-    }
-    rows.push(o);
-  }
-  return { columns, rows, truncated };
-}
+// Tabular parsing lives in table-parse.ts (no Node deps) so the browser viewer
+// runs the same code; re-exported here for server callers and the tests.
+export { parseDelimited, parseJsonTable, type ParsedTable } from "./table-parse";
 
 /* ------------------------------- markdown --------------------------------- */
 

@@ -14,6 +14,8 @@ import { Menu, MenuItem } from "../components/Menu";
 import { Confirm } from "../components/Confirm";
 import { appShareUrl, downloadFile, relTime } from "../format";
 import { formatBytes } from "../../../lib/format";
+import { isTabularMime } from "../../../lib/table-parse";
+import { FileViewer } from "../grid/FileViewer";
 import type { AppData, AppParam, AppRevision, PanelProvenance } from "../types";
 
 /** The per-panel numbers the frame echoes up for the variant it rendered — the
@@ -211,6 +213,9 @@ export function AppView() {
   const isFile = data?.format === "file";
   const theFile = isFile ? (data?.files?.[0] ?? null) : null;
   const filePath = (name: string): string => `/admin/files/${encodeURIComponent(id)}/${encodeURIComponent(name)}`;
+  // A CSV/TSV/JSON-rows file renders in the grid, parsed here from its raw bytes
+  // (no frame): the sandbox exists to contain agent-authored HTML, not a table.
+  const tableFile = theFile && isTabularMime(theFile.mime) ? theFile : null;
   const canForce = mine || isAdmin; // mirrors the server's /admin/frame force gate
   const active = !!data && !data.archivedAt;
   // Locked = frozen against AGENT edits (update_app/unpublish_app). Human
@@ -612,7 +617,23 @@ export function AppView() {
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
           </span>
         ) : null}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {theFile ? (
+            // The primary action on a shared file, so it sits in the header, not
+            // just the ⋮ menu. A real anchor click (downloadFile): the session
+            // cookie rides along and `download` saves even inline-served types.
+            <button
+              type="button"
+              onClick={() => downloadFile(filePath(theFile.name), theFile.name)}
+              title={`Download ${theFile.name} (${formatBytes(theFile.size)})`}
+              className="btn btn-primary px-3 py-1.5"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10" />
+              </svg>
+              Download
+            </button>
+          ) : null}
           <Menu label="App actions">
             {isApp ? (
               <MenuItem onSelect={() => setShowCalc((v) => !v)}>
@@ -683,6 +704,10 @@ export function AppView() {
               Couldn’t load the latest data, so this is the last view. Try refreshing.
             </div>
           ) : null}
+          {tableFile ? (
+            // ?v=<hash>: the bytes are cached (max-age=300), and a replaced file keeps its URL.
+            <FileViewer key={tableFile.sha256} src={`${filePath(tableFile.name)}?v=${tableFile.sha256.slice(0, 16)}`} name={tableFile.name} mime={tableFile.mime} />
+          ) : (
           <div className="relative min-h-0 w-full flex-1">
             <iframe
               key={frame.n}
@@ -713,6 +738,7 @@ export function AppView() {
               </div>
             </div>
           </div>
+          )}
           {!isFile && data.files?.length ? (
             // Attachments (publish_file with appId) — rendered in THIS trusted
             // chrome as plain links; the sandboxed frame never fetches them.

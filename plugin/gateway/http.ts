@@ -45,7 +45,7 @@ import {
   type PublishedMeta,
   type PublishedReport,
 } from "./lib/store";
-import { MAX_RENDER_ROW_BYTES, newestComputedAt, renderApp, trimRowsToBytes, type RenderedPanel } from "./lib/apps";
+import { newestComputedAt, renderApp, type RenderedPanel } from "./lib/apps";
 import { emitAppChanged, subscribeAppEvents } from "./lib/app-events";
 import { mirroredTables, mirrorAsOf, referencedBizTables } from "./lib/mirror";
 import { APP_RUNTIME } from "./lib/app-runtime";
@@ -58,11 +58,10 @@ import {
   defaultFileDbPath,
   fileKind,
   inlineAllowed,
-  parseDelimited,
-  parseJsonTable,
   renderMarkdown,
   type StoredFileMeta,
 } from "./lib/files";
+import { isTabularMime } from "./lib/table-parse";
 import { formatBytes } from "./lib/format";
 import { resolveParams, type AppParam } from "./lib/params";
 import {
@@ -122,6 +121,18 @@ const ADMIN_JS = ((): string => {
   }
 })();
 const ADMIN_JS_VER = Bun.hash(ADMIN_JS).toString(36);
+
+// The grid bundle for a PUBLIC tabular file (web/app/file-viewer.tsx →
+// web/dist/file-viewer.js, committed; built by the same script). The admin app
+// carries the grid inside app.js; the public /p/<id> page loads only this.
+const FILE_VIEWER_JS = ((): string => {
+  try {
+    return fs.readFileSync(path.join(import.meta.dir, "web", "dist", "file-viewer.js"), "utf8");
+  } catch {
+    return "";
+  }
+})();
+const FILE_VIEWER_JS_VER = Bun.hash(FILE_VIEWER_JS).toString(36);
 
 // DEMO instances (SETOKU_DEMO=1) expose the console READ-ONLY to anonymous
 // visitors — no login wall — and show a "this is a demo" banner. Off by default,
@@ -1235,10 +1246,10 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
 const MAX_INLINE_IMAGE_BYTES = 8_000_000;
 
 /**
- * The viewer for a shared FILE, rendered through the SAME sandboxed frame an app
- * uses (frameDocument + the Setoku.* runtime), so the public shell and the SPA
- * need no second frame URL. Tabular files parse server-side into a synthetic
- * `file` panel that Setoku.table renders; markdown/text render as a document;
+ * The viewer for a shared NON-TABULAR file, rendered through the SAME sandboxed
+ * frame an app uses (frameDocument), so the public shell and the SPA need no
+ * second frame URL. (A CSV/TSV/JSON-rows file doesn't come here: the grid parses
+ * it in the browser, see publicFileShell.) Markdown/text render as a document;
  * an image inlines as data:; everything else is a stone download card whose link
  * opens a top-level tab (the sandbox allows popups; the frame itself has no
  * network and never fetches the bytes). `filePath` is the download URL for the
@@ -1265,7 +1276,6 @@ function fileViewerFrame(
     `<a href="${escapeHtml(opts.filePath)}" target="_blank" rel="noopener"${kind === "pdf" ? "" : ` download="${escapeHtml(file.name)}"`} style="display:inline-block;font-weight:500;color:#fafaf9;background:#1c1917;border-radius:.4rem;padding:.45rem .9rem;text-decoration:none">${label}</a>` +
     `</div></div>`;
   let body: string;
-  let panels: RenderedPanel[] = [];
   // Text-like kinds decode a bounded PREFIX: a 50 MB log is never escaped and
   // inlined whole (that's several hundred MB of allocation per anonymous view).
   const capped = bytes.byteLength > MAX_VIEW_TEXT_BYTES;
@@ -1274,39 +1284,10 @@ function fileViewerFrame(
     ? `<div style="padding:.5rem 1rem;color:#78716c;font-size:.8rem;border-top:1px solid #e7e5e4">Showing the first ${formatBytes(MAX_VIEW_TEXT_BYTES)} of ${formatBytes(file.size)} — download the file for the rest.</div>`
     : "";
   if (kind === "table") {
-    const parsed =
-      file.mime === "application/json"
-        ? capped
-          ? null // a JSON array cut mid-way doesn't parse; show the prefix as text
-          : parseJsonTable(text())
-        : parseDelimited(text(), file.mime === "text/tab-separated-values" ? "\t" : ",");
-    if (parsed && parsed.columns.length) {
-      if (capped && parsed.rows.length) {
-        parsed.rows.pop(); // the last record of a cut prefix is partial
-        parsed.truncated = true;
-      }
-      const fit = trimRowsToBytes(parsed.rows, MAX_RENDER_ROW_BYTES);
-      panels = [
-        {
-          key: "file",
-          dialect: "clickhouse",
-          columns: parsed.columns,
-          rows: fit.rows,
-          rowCount: fit.rows.length,
-          truncated: parsed.truncated || fit.truncated,
-          computedAt: file.uploadedAt,
-          error: null,
-        },
-      ];
-      body =
-        head(`.wrap{overflow:auto;padding:.25rem .5rem 1rem}`) +
-        `<div class="wrap"><div id="t"></div></div>` +
-        `<script>Setoku.table('t','file',{columns:window.__SETOKU__.panels.file.columns})</script>` +
-        capNote;
-    } else {
-      // JSON that isn't an array of rows (or a CSV with no header) — show it as text.
-      body = head(`pre{margin:0;padding:1rem;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>` + capNote;
-    }
+    // Tables render in the browser (web/app/grid/, from the raw bytes) on both
+    // surfaces, never through this frame. Should anything still ask for it, show
+    // the bounded prefix as text rather than parse per view.
+    body = head(`pre{margin:0;padding:1rem;white-space:pre;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>` + capNote;
   } else if (kind === "markdown") {
     body =
       head(
@@ -1323,7 +1304,7 @@ function fileViewerFrame(
   } else {
     body = card(kind === "pdf" ? "Open PDF" : "Download");
   }
-  return frameDocument({ ...dash, body }, panels, { team: opts.team, params: {} });
+  return frameDocument({ ...dash, body }, [], { team: opts.team, params: {} });
 }
 
 /** Response headers for serving a file's bytes, on either surface. The mime is
@@ -1469,6 +1450,15 @@ function escapeHtml(s: string): string {
 const SHELL_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; frame-src 'self'; img-src data:; base-uri 'none'";
 
+// The public page of a shared TABULAR file: no frame at all (there is no agent
+// template to contain — the grid renders the file's cells as text via React), so
+// it runs the grid bundle from our own origin ('self'; the box serves no other
+// script: published files are nosniff with an allowlisted, non-script mime) and
+// fetches the file's bytes same-origin. Blob downloads (the filtered CSV) are a
+// navigation, not a fetch.
+const FILE_SHELL_CSP =
+  "default-src 'none'; style-src 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'";
+
 // The password gate in front of a protected public app: a plain form, no script
 // at all, and `form-action 'self'` so the field can only ever post back here.
 const GATE_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'";
@@ -1549,6 +1539,60 @@ function parseFrameParams(reqUrl: string | undefined): Record<string, string> {
   return out;
 }
 
+/** The public pages' shared chrome: the header, its title, the attribution, the
+ *  Admin link, and a shared file's Download button. Stone only (neutral chrome). */
+const SHELL_CHROME_CSS = `  :root{color-scheme:light}
+  *{box-sizing:border-box}
+  body{margin:0;display:flex;flex-direction:column;height:100vh;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fafaf9}
+  header{flex:none;display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1rem;padding:.7rem 1.1rem;border-bottom:1px solid #e7e5e4}
+  h1{margin:0;font-size:1.02rem;font-weight:600}
+  .muted{color:#78716c;font-size:.8rem}
+  /* very subtle attribution — stone-family, no accent (neutral-chrome rule) */
+  .brand{margin-left:auto;font-size:.72rem;color:#a8a29e;text-decoration:none;letter-spacing:.01em;white-space:nowrap}
+  .brand:hover{color:#78716c;text-decoration:underline}
+  .adminbtn{display:none;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
+  .adminbtn:hover{background:#f5f5f4}
+  /* a shared file's primary action: solid stone, the one filled button here */
+  .dlbtn{align-self:center;display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;font-weight:500;text-decoration:none;color:#fafaf9;background:#1c1917;padding:.35rem .8rem;border-radius:.5rem}
+  .dlbtn:hover{background:#44403c}
+`;
+
+/** A shared file's primary action in a public header. */
+function downloadButtonHtml(d: { name: string; path: string }): string {
+  return (
+    `<a class="dlbtn" href="${escapeHtml(d.path)}" download="${escapeHtml(d.name)}" title="Download ${escapeHtml(d.name)}">` +
+    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg>Download</a>`
+  );
+}
+
+/**
+ * The public page of a shared TABULAR file (CSV/TSV/JSON rows): the same header
+ * as publicAppShell, then the React grid (web/dist/file-viewer.js), which fetches
+ * the file's public download URL and parses it in the browser. No frame and no
+ * server-side parse: a view costs the box one cached, budgeted byte download.
+ * Served under FILE_SHELL_CSP.
+ */
+function publicFileShell(opts: { title: string; file: { name: string; mime: string; path: string }; adminPath: string; guarded: boolean }): string {
+  const title = escapeHtml(opts.title || opts.file.name);
+  // `creds`: an open link fetches credential-free (as every public fetch does);
+  // a password-gated one must carry its unlock cookie.
+  const cfg = jsonForScript({ src: opts.file.path, name: opts.file.name, mime: opts.file.mime, creds: opts.guarded ? "same-origin" : "omit" });
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title>
+<style>
+${SHELL_CHROME_CSS}  main{flex:1;min-height:0;display:flex;flex-direction:column;background:#fff}
+</style></head><body>
+<header><h1>${title}</h1><a class="brand" href="https://setoku.com" target="_blank" rel="noopener noreferrer">Made with Setoku</a>${downloadButtonHtml(opts.file)}<a id="adminlink" class="adminbtn" href="${escapeHtml(opts.adminPath)}">Admin view →</a></header>
+<main id="fg"></main>
+<script>window.__SETOKU_FILE__=${cfg};
+// Reveal the Admin link only for a viewer with a box session (the cookie is
+// HttpOnly, so probe the session endpoint; a 200 means signed in).
+fetch('/admin/api/session',{credentials:'include'}).then(function(r){ if(r.ok) document.getElementById('adminlink').style.display='inline-block'; }).catch(function(){});</script>
+<script type="module" src="/admin/file-viewer.js?v=${FILE_VIEWER_JS_VER}"></script>
+</body></html>`;
+}
+
 function publicAppShell(opts: {
   title: string;
   framePath: string;
@@ -1574,9 +1618,7 @@ function publicAppShell(opts: {
   download?: { name: string; path: string };
 }): string {
   const title = escapeHtml(opts.title || "App");
-  const dl = opts.download
-    ? `<a class="adminbtn" style="display:inline-block" href="${escapeHtml(opts.download.path)}" download="${escapeHtml(opts.download.name)}">Download ${escapeHtml(opts.download.name)}</a>`
-    : "";
+  const dl = opts.download ? downloadButtonHtml(opts.download) : "";
   const files = opts.files?.length
     ? `<footer><span class="muted">Files</span>${opts.files
         .map((f) => `<a href="${escapeHtml(f.path)}" download="${escapeHtml(f.name)}">${escapeHtml(f.name)}<span class="muted"> ${formatBytes(f.size)}</span></a>`)
@@ -1590,17 +1632,7 @@ function publicAppShell(opts: {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${title}</title>
 <style>
-  :root{color-scheme:light}
-  *{box-sizing:border-box}
-  body{margin:0;display:flex;flex-direction:column;height:100vh;font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#1c1917;background:#fafaf9}
-  header{flex:none;display:flex;flex-wrap:wrap;align-items:baseline;gap:.4rem 1rem;padding:.7rem 1.1rem;border-bottom:1px solid #e7e5e4}
-  h1{margin:0;font-size:1.02rem;font-weight:600}
-  .muted{color:#78716c;font-size:.8rem}
-  /* very subtle attribution — stone-family, no accent (neutral-chrome rule) */
-  .brand{margin-left:auto;font-size:.72rem;color:#a8a29e;text-decoration:none;letter-spacing:.01em;white-space:nowrap}
-  .brand:hover{color:#78716c;text-decoration:underline}
-  .adminbtn{display:none;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
-  .adminbtn:hover{background:#f5f5f4}
+${SHELL_CHROME_CSS}
   main{flex:1;min-height:0;display:flex;position:relative}
   iframe{flex:1;width:100%;border:0;background:#fff}
   /* loader over the reloading frame (param change / refresh) — the transition
@@ -2112,6 +2144,32 @@ const httpServer = http.createServer(async (req, res) => {
       if (sub) return notFound(); // unknown subpath
 
       store.audit("public", "published_viewed_public", { id });
+      // A shared TABULAR file gets the grid page (no frame; parsed in the browser).
+      const first = meta.format === "file" ? fileStore.list(id)[0] : undefined;
+      const tableFile = first && isTabularMime(first.mime) ? first : undefined;
+      if (tableFile) {
+        res.writeHead(200, {
+          "content-type": "text/html; charset=utf-8",
+          "content-security-policy": FILE_SHELL_CSP,
+          "x-content-type-options": "nosniff",
+          "referrer-policy": "no-referrer",
+          ...noStore,
+        });
+        res.end(
+          publicFileShell({
+            title: meta.title,
+            file: {
+              name: tableFile.name,
+              mime: tableFile.mime,
+              // ?v=<hash>: the bytes are cached (max-age=300) and a replaced file keeps its URL.
+              path: `/p/${encodeURIComponent(id)}/files/${encodeURIComponent(tableFile.name)}?v=${tableFile.sha256.slice(0, 16)}`,
+            },
+            adminPath: `/apps/${encodeURIComponent(id)}`,
+            guarded: meta.hasPassword,
+          }),
+        );
+        return;
+      }
       // Serve the trusted outer shell (frames /p/<id>/frame, polls /p/<id>/data).
       // The agent template never runs in this top-level origin.
       res.writeHead(200, {
@@ -2165,12 +2223,12 @@ const httpServer = http.createServer(async (req, res) => {
         res.end(ADMIN_CSS);
         return;
       }
-      if (reqPath === "/admin/app.js") {
+      if (reqPath === "/admin/app.js" || reqPath === "/admin/file-viewer.js") {
         res.writeHead(200, {
           "content-type": "text/javascript; charset=utf-8",
           "cache-control": "public, max-age=31536000, immutable",
         });
-        res.end(ADMIN_JS);
+        res.end(reqPath === "/admin/app.js" ? ADMIN_JS : FILE_VIEWER_JS);
         return;
       }
 
