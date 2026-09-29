@@ -33,7 +33,7 @@ bun run deploy:site          # rsync site/ to the box (runs build:site first, th
 
 The fast suite's gateway tests run against a fake in-process lake (`test/lib/fakelake.ts`); only the `ingest/` tests (pg-mirror) need a reachable Postgres (defaults to a unix socket in `/tmp`; override with `SETOKU_E2E_PG_HOST`, `SETOKU_E2E_DB_URL`, `SETOKU_E2E_PG_MAINTENANCE_DB`). Real-ClickHouse suites gate on `SETOKU_E2E_CH_URL`. The browser e2e is deliberately **not** in the pre-push gate.
 
-The admin CSS/JS bundles in `plugin/gateway/web/{app.css,dist/app.js}` are **committed build artifacts** served at startup — re-run `bun run build:admin` and commit them after changing `web/app/` or `web/input.css`.
+The admin CSS/JS bundles in `plugin/gateway/web/{app.css,dist/app.js,dist/file-viewer.js}` are **committed build artifacts** served at startup — re-run `bun run build:admin` and commit them after changing `web/app/` or `web/input.css`.
 
 `site/openapi.json` and `site/api/*.json` are **committed build artifacts** too: `scripts/build-site-api.ts` derives them from the plugin manifest (version), `gateway/app.ts` (the tool surface and its capability gating), and `ingest/schemas/` (connectors), so the published spec can't drift from the shipped product. Re-run `bun run build:site` and commit after changing the tool surface or adding a connector; `test/site-api.test.ts` fails the pre-push gate if you forget. The site's Caddy block lives at `deploy/caddy.d/setoku-com.caddy` — changing *content* just needs `deploy:site`, but changing that *block* needs a caddy force-recreate on the box.
 

@@ -543,17 +543,28 @@ same-origin`, a strong ETag (the sha256) with 304. `.html`/`.js` are refused at
 publish (that's an app); `.svg`/`.xml` are stored but only ever downloaded.
 Untrusted bytes never execute on the box origin.
 
-**Viewing.** A `file` row renders through the **same sandboxed frame** an app
-uses (`frameDocument` + the `Setoku.*` runtime), so neither the public shell nor
-the SPA needs a second frame URL. CSV/TSV/JSON parse server-side into a synthetic
-`file` panel rendered by a spreadsheet-style grid (`lib/file-grid.ts`: frozen
-header and row numbers, truncating cells, drag-to-resize columns and rows, a
-formula bar showing the selected cell in full, per-column sort and filter-by-values,
-range selection with Sum/Avg/Count, Cmd/Ctrl+C copying a range as TSV; rows
-virtualized past 1,500 so small files stay findable with Cmd/Ctrl+F); markdown renders via a small built-in
-subset (every character escaped first); text shows as `<pre>`; an image inlines
-as a `data:` URI (the frame CSP allows `img-src data:`); PDF and everything else
-are a download card whose link opens a top-level tab. **The frame never fetches
+**Viewing.** A **tabular** file (CSV, TSV, a JSON array of flat objects) is
+parsed **in the browser**, not on the box: the grid (`web/app/grid/`, React)
+fetches the file's raw bytes from its normal download URL (content-hash ETag,
+`?v=<hash>` so a replaced file never shows stale; on a public link it spends the
+same per-record budget as a download) and parses them with the same code the
+server uses (`lib/table-parse.ts`). So a view costs the box one cached byte
+download and nothing else, and there is no view-time size cap below the upload
+cap. The grid reads like a Sheets tab: frozen header and row numbers, truncating
+cells, drag-to-resize columns and rows, a formula bar with the active cell in
+full, per-column sort and filter-by-values, range selection with Sum/Avg/Count,
+Cmd/Ctrl+C copying a range as TSV + HTML, and "Download N rows" for a filtered
+view (a client-side CSV). Rows are virtualized past 1,500, so a small file stays
+findable with Cmd/Ctrl+F. The admin app renders it inline; the public `/p/<id>`
+page is a slim server-rendered header plus the `file-viewer.js` bundle, under a
+CSP that adds `script-src 'self'` for that page only (no frame: there is no agent
+template to contain, and cells render as text).
+
+Every **other** file renders through the **same sandboxed frame** an app uses
+(`frameDocument`), so neither surface needs a second frame URL: markdown renders
+via a small built-in subset (every character escaped first); text shows as
+`<pre>`; an image inlines as a `data:` URI (the frame CSP allows `img-src data:`);
+PDF and everything else are a download card whose link opens a top-level tab. **The frame never fetches
 files**: its origin is opaque (no session cookie) and its CSP is `default-src
 'none'`. Attachments on an app are listed by the trusted shell under the frame
 as download links — for people, not for the template. Data an app renders still

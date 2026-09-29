@@ -129,22 +129,20 @@ describe("publish_file — inline", () => {
     const notMod = await fetch(`${BASE}/admin/files/${id}/q2.csv`, { headers: { cookie: s.cookie, "if-none-match": etag } });
     expect(notMod.status).toBe(304);
 
-    // the team frame renders the viewer: a synthetic `file` panel for Setoku.table
+    // A table is parsed in the BROWSER (the SPA's grid fetches the bytes above), so
+    // the server never parses it per view: the frame, if asked, is plain text.
     const frame = await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: s.cookie } });
     expect(frame.status).toBe(200);
     const html = await frame.text();
-    const data = setokuOf(html);
-    expect(data.panels.file.columns).toEqual(["region", "total"]);
-    expect(data.panels.file.rows).toEqual([
-      { region: "NA", total: "300" },
-      { region: "EMEA", total: "100" },
-    ]);
-    // …rendered by the spreadsheet grid (frozen header, formula bar), not Setoku.table
-    expect(html).toContain('<div id="fx">');
-    expect(html).toContain("window.__SETOKU__.panels.file");
-    expect(html).not.toContain("Setoku.table(");
+    expect(html).toContain("<pre>region,total\nNA,300\nEMEA,100\n</pre>");
+    expect(setokuOf(html).panels).toEqual({});
     // the frame carries no download bar of its own — the chrome does that
     expect(html).not.toContain(`/admin/files/${id}/q2.csv`);
+    // the admin app ships the grid; the public page's bundle is served beside it
+    const js = await fetch(`${BASE}/admin/file-viewer.js`);
+    expect(js.status).toBe(200);
+    expect(js.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    expect((await js.text()).length).toBeGreaterThan(1000);
 
     // the /apps/<id>/files/… shape is NOT a file route (the SPA owns /apps/*)
     const spa = await fetch(`${BASE}/apps/${id}/files/q2.csv`, { headers: { cookie: s.cookie } });
@@ -304,13 +302,21 @@ describe("public surface", () => {
     const shell = await fetch(`${BASE}/p/${id}`);
     expect(shell.status).toBe(200);
     const shellHtml = await shell.text();
-    expect(shellHtml).toContain(`href="/p/${id}/files/pub.tsv"`);
+    // a tabular file gets the grid page: no frame, the bundle, and a config
+    // pointing at the (hash-versioned) public download URL it fetches and parses
+    const csp = shell.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("script-src 'self' 'unsafe-inline'");
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).not.toContain("frame-src");
+    expect(shellHtml).not.toContain("<iframe");
+    expect(shellHtml).toContain('<main id="fg"></main>');
+    expect(shellHtml).toMatch(/<script type="module" src="\/admin\/file-viewer\.js\?v=[0-9a-z]+"><\/script>/);
+    const cfg = JSON.parse(shellHtml.split("window.__SETOKU_FILE__=")[1].split(";\n")[0]);
+    expect(cfg).toEqual({ src: expect.stringMatching(new RegExp(`^/p/${id}/files/pub\\.tsv\\?v=[0-9a-f]{16}$`)), name: "pub.tsv", mime: "text/tab-separated-values", creds: "omit" });
+    expect(shellHtml).toContain(`href="${cfg.src}" download="pub.tsv"`);
     expect(shellHtml).toContain("Download pub.tsv");
-
-    const frame = await fetch(`${BASE}/p/${id}/frame`);
-    expect(frame.status).toBe(200);
-    const data = setokuOf(await frame.text());
-    expect(data.panels.file.columns).toEqual(["x", "y"]);
+    // …and that URL (query and all) is the bytes
+    expect(await (await fetch(`${BASE}${cfg.src}`)).text()).toBe("x\ty\n1\t2\n");
 
     const dl = await fetch(`${BASE}/p/${id}/files/pub.tsv`);
     expect(dl.status).toBe(200);
