@@ -63,6 +63,7 @@ import {
   renderMarkdown,
   type StoredFileMeta,
 } from "./lib/files";
+import { FILE_GRID_CSS, FILE_GRID_HTML, FILE_GRID_RUNTIME } from "./lib/file-grid";
 import { formatBytes } from "./lib/format";
 import { resolveParams, type AppParam } from "./lib/params";
 import {
@@ -1298,11 +1299,10 @@ function fileViewerFrame(
           error: null,
         },
       ];
-      body =
-        head(`.wrap{overflow:auto;padding:.25rem .5rem 1rem}`) +
-        `<div class="wrap"><div id="t"></div></div>` +
-        `<script>Setoku.table('t','file',{columns:window.__SETOKU__.panels.file.columns})</script>` +
-        capNote;
+      // A spreadsheet-style grid (frozen header + row numbers, truncating cells,
+      // resizable columns/rows, a formula bar for the full value), not the app
+      // Setoku.table: a shared file is read like a sheet. See lib/file-grid.ts.
+      body = head(FILE_GRID_CSS) + FILE_GRID_HTML + `<script>${FILE_GRID_RUNTIME}</script>` + capNote;
     } else {
       // JSON that isn't an array of rows (or a CSV with no header) — show it as text.
       body = head(`pre{margin:0;padding:1rem;white-space:pre-wrap;word-break:break-word;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace}`) + `<pre>${escapeHtml(text())}</pre>` + capNote;
@@ -1575,7 +1575,8 @@ function publicAppShell(opts: {
 }): string {
   const title = escapeHtml(opts.title || "App");
   const dl = opts.download
-    ? `<a class="adminbtn" style="display:inline-block" href="${escapeHtml(opts.download.path)}" download="${escapeHtml(opts.download.name)}">Download ${escapeHtml(opts.download.name)}</a>`
+    ? `<a class="dlbtn" href="${escapeHtml(opts.download.path)}" download="${escapeHtml(opts.download.name)}" title="Download ${escapeHtml(opts.download.name)}">` +
+      `<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10"/></svg>Download</a>`
     : "";
   const files = opts.files?.length
     ? `<footer><span class="muted">Files</span>${opts.files
@@ -1601,6 +1602,9 @@ function publicAppShell(opts: {
   .brand:hover{color:#78716c;text-decoration:underline}
   .adminbtn{display:none;font-size:.8rem;text-decoration:none;color:#44403c;border:1px solid #d6d3d1;background:#fafaf9;padding:.2rem .6rem;border-radius:.4rem}
   .adminbtn:hover{background:#f5f5f4}
+  /* a shared file's primary action: solid stone, the one filled button here */
+  .dlbtn{align-self:center;display:inline-flex;align-items:center;gap:.4rem;font-size:.85rem;font-weight:500;text-decoration:none;color:#fafaf9;background:#1c1917;padding:.35rem .8rem;border-radius:.5rem}
+  .dlbtn:hover{background:#44403c}
   main{flex:1;min-height:0;display:flex;position:relative}
   iframe{flex:1;width:100%;border:0;background:#fff}
   /* loader over the reloading frame (param change / refresh) — the transition

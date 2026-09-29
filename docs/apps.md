@@ -546,7 +546,11 @@ Untrusted bytes never execute on the box origin.
 **Viewing.** A `file` row renders through the **same sandboxed frame** an app
 uses (`frameDocument` + the `Setoku.*` runtime), so neither the public shell nor
 the SPA needs a second frame URL. CSV/TSV/JSON parse server-side into a synthetic
-`file` panel that `Setoku.table` renders; markdown renders via a small built-in
+`file` panel rendered by a spreadsheet-style grid (`lib/file-grid.ts`: frozen
+header and row numbers, truncating cells, drag-to-resize columns and rows, a
+formula bar showing the selected cell in full, per-column sort and filter-by-values,
+range selection with Sum/Avg/Count, Cmd/Ctrl+C copying a range as TSV; rows
+virtualized past 1,500 so small files stay findable with Cmd/Ctrl+F); markdown renders via a small built-in
 subset (every character escaped first); text shows as `<pre>`; an image inlines
 as a `data:` URI (the frame CSP allows `img-src data:`); PDF and everything else
 are a download card whose link opens a top-level tab. **The frame never fetches

@@ -139,7 +139,10 @@ describe("publish_file — inline", () => {
       { region: "NA", total: "300" },
       { region: "EMEA", total: "100" },
     ]);
-    expect(html).toContain("Setoku.table('t','file'");
+    // …rendered by the spreadsheet grid (frozen header, formula bar), not Setoku.table
+    expect(html).toContain('<div id="fx">');
+    expect(html).toContain("window.__SETOKU__.panels.file");
+    expect(html).not.toContain("Setoku.table(");
     // the frame carries no download bar of its own — the chrome does that
     expect(html).not.toContain(`/admin/files/${id}/q2.csv`);
 

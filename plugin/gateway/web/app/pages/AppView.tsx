@@ -612,7 +612,23 @@ export function AppView() {
             {isApp && data.refreshSeconds ? ` · auto-refreshes every ${fmtInterval(data.refreshSeconds)}` : ""}
           </span>
         ) : null}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-2">
+          {theFile ? (
+            // The primary action on a shared file, so it sits in the header, not
+            // just the ⋮ menu. A real anchor click (downloadFile): the session
+            // cookie rides along and `download` saves even inline-served types.
+            <button
+              type="button"
+              onClick={() => downloadFile(filePath(theFile.name), theFile.name)}
+              title={`Download ${theFile.name} (${formatBytes(theFile.size)})`}
+              className="btn btn-primary px-3 py-1.5"
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M8 2.5v8M4.5 7 8 10.5 11.5 7M3 13.5h10" />
+              </svg>
+              Download
+            </button>
+          ) : null}
           <Menu label="App actions">
             {isApp ? (
               <MenuItem onSelect={() => setShowCalc((v) => !v)}>
