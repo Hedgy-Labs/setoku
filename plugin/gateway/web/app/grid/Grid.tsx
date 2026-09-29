@@ -238,7 +238,14 @@ export function Grid({ columns, rows, name }: { columns: string[]; rows: string[
     setSel(null);
     setMenu(null);
     say(null);
-    if (scRef.current) scRef.current.scrollTop = 0;
+    const sc = scRef.current;
+    if (sc) {
+      sc.scrollTop = 0;
+      // Record the jump ourselves: onScroll ignores a non-virtual view, so a
+      // filter that drops below VIRTUAL_AT and back would otherwise window the
+      // rows around a stale offset (a blank viewport until the next scroll).
+      setVp({ top: 0, h: sc.clientHeight });
+    }
   }
 
   // ---- pointer: resize handles, header menus, range selection
