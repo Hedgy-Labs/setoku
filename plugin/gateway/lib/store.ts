@@ -1658,11 +1658,15 @@ export class KnowledgeStore {
     const cacheRows = (
       this.db.query("SELECT COUNT(*) AS n FROM app_cache WHERE app_id = ?").get(appId) as { n: number }
     ).n;
+    // Never evict the row just written, and break computed_at ties (a burst of
+    // writes in one millisecond) by insert order — without both, the sort among
+    // ties is arbitrary and can drop the newest variant (or keep the oldest).
     if (cacheRows > MAX_CACHE_ROWS_PER_APP)
       this.db.run(
-        `DELETE FROM app_cache WHERE app_id = ? AND panel_key NOT IN (
-           SELECT panel_key FROM app_cache WHERE app_id = ? ORDER BY computed_at DESC LIMIT ?)`,
-        [appId, appId, MAX_CACHE_ROWS_PER_APP],
+        `DELETE FROM app_cache WHERE app_id = ? AND panel_key != ? AND panel_key NOT IN (
+           SELECT panel_key FROM app_cache WHERE app_id = ? AND panel_key != ?
+           ORDER BY computed_at DESC, rowid DESC LIMIT ?)`,
+        [appId, panelKey, appId, panelKey, MAX_CACHE_ROWS_PER_APP - 1],
       );
     return computedAt;
   }
