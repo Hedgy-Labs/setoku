@@ -26,7 +26,7 @@ COPY plugin/.claude-plugin/plugin.json ./plugin.json
 ARG BAKE_EMBEDDINGS=1
 ENV SETOKU_EMBED_CACHE=/app/.fastembed
 RUN if [ "$BAKE_EMBEDDINGS" = "1" ]; then \
-      echo "baking bge-small-en-v1.5 into the image…" && \
+      echo "baking bge-small-en-v1.5 (HuggingFace, quantized) into the image…" && \
       bun -e 'import { FlagEmbedding, EmbeddingModel } from "fastembed"; await FlagEmbedding.init({ model: EmbeddingModel.BGESmallENV15, cacheDir: "/app/.fastembed" }); console.log("baked")'; \
     fi
 

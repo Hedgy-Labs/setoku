@@ -11,9 +11,17 @@
  *   • graceful — any init failure (missing native, OOM, download fail) returns
  *                null; callers fall back to keyword retrieval and keep serving
  *
- * Model: BGE-small-en-v1.5 (~130MB, 384-dim) — CPU, ~120ms/query. Asymmetric:
- * docs via embed(), queries via queryEmbed() (the BGE retrieval instruction).
+ * Model: BGE-small-en-v1.5, Qdrant's int8-quantized ONNX build (~66MB, 384-dim)
+ * from HuggingFace — CPU, ~120ms/query. Asymmetric: docs via embed(), queries
+ * via queryEmbed() (the BGE retrieval instruction).
  */
+
+/** The tag persisted vectors carry. NOT fastembed's enum value: that stayed
+ *  "fast-bge-small-en-v1.5" when fastembed 3 moved from the (now 403ing) GCS
+ *  tarball to the quantized HuggingFace build, i.e. different weights under the
+ *  same name. Naming the build here makes the switch re-embed instead of mixing
+ *  vectors from two embedding spaces. Change it whenever the weights change. */
+const MODEL_ID = "Qdrant/bge-small-en-v1.5-onnx-Q";
 
 export interface Embedder {
   /** Model identifier — combined with `dim` to tag persisted vectors so a model
@@ -67,7 +75,7 @@ async function init(): Promise<Embedder | null> {
     });
     const warm = await model.queryEmbed("warmup");
     const dim = (warm as ArrayLike<number>).length;
-    const id = String(modelKey);
+    const id = MODEL_ID;
     console.error(`[embeddings] enabled — ${id}, dim ${dim}`);
     return {
       id,
