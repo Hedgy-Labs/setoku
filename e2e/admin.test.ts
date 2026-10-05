@@ -198,6 +198,38 @@ describe.skipIf(!CHROME)("admin SPA (browser e2e)", () => {
     await page.context().close();
   }, 20_000);
 
+  it("pins an app, groups it, and the layout survives a reload — for that person only", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "e2e-pins");
+    for (const title of ["Pin e2e A", "Pin e2e B"])
+      expect((await call(c, "publish_app", { title, html: "<div>pin</div>" })).isError).toBeFalsy();
+
+    const { page, errors } = await open({ user: "boss", pass: "s3cret-pass" });
+    await page.waitForSelector('h1:has-text("Apps")');
+    await page.click('button[aria-label="Pin Pin e2e A"]');
+    await page.waitForSelector("text=Pinned (1)");
+    // B into a new group via the row menu's picker
+    await page.click('button[aria-label="Actions for Pin e2e B"]');
+    await page.click('[role="menuitem"]:has-text("Pin to group")');
+    await page.fill('input[aria-label="New group name"]', "E2E group");
+    await page.click('[role="dialog"] button:has-text("Create")');
+    await page.waitForSelector("text=Pinned (2)");
+    await page.waitForTimeout(300); // let the save land before reloading
+
+    await page.reload({ waitUntil: "networkidle" });
+    await page.waitForSelector("text=Pinned (2)");
+    expect(await page.locator("text=E2E group").isVisible()).toBe(true);
+    expect(await page.locator('button[aria-label="Unpin Pin e2e B"]').isVisible()).toBe(true);
+    expect(errors).toEqual([]);
+    await page.context().close();
+
+    // pins are personal: another signed-in person sees a plain list
+    const other = await open({ user: "viewer", pass: "viewer-pass" });
+    await other.page.waitForSelector('h1:has-text("Apps")');
+    await other.page.waitForSelector('button[aria-label="Pin Pin e2e A"]');
+    expect(await other.page.locator("text=Pinned (").count()).toBe(0);
+    await other.page.context().close();
+  }, 30_000);
+
   it("an open app view live-refreshes when the agent updates it (SSE), and history shows the model", async () => {
     // The agent publishes a STATIC app (no panels — the e2e box has no lake),
     // self-reporting its model.

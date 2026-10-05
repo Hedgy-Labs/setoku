@@ -196,6 +196,8 @@ export interface PublishedMeta {
   /** Set when the app is locked — agents can't edit or archive it. */
   lockedAt: string | null;
   lockedBy: string | null;
+  /** When the signed-in person last opened it (the Apps page's Recent sort). */
+  openedAt?: string | null;
 }
 
 /** One panel as the team provenance drawer sees it (server: appProvenance).

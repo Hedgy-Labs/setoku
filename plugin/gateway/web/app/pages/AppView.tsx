@@ -70,7 +70,14 @@ export function AppView() {
   // id; the LIVE per-variant numbers (row count / freshness) come from the frame's
   // own echo below — not a second server render — so the drawer can't disagree with
   // what the iframe shows.
-  const { data, loading, error, reload } = useApi<AppData>(() => api.appData(id), [id]);
+  // The first load per app is the "open" (Recent sort); reload() re-runs this
+  // same fn for SSE nudges/reconnects, which mustn't count as opening it again.
+  const openedRef = useRef<string | null>(null);
+  const { data, loading, error, reload } = useApi<AppData>(() => {
+    const first = openedRef.current !== id;
+    openedRef.current = id;
+    return api.appData(id, first);
+  }, [id]);
   // The calc drawer toggles in/out; collapsed lets the iframe take full height.
   const [showCalc, setShowCalc] = useState(false);
   const [editOpen, setEditOpen] = useState(false);

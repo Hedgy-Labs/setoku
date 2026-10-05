@@ -17,6 +17,7 @@ import path from "node:path";
 import { parseFrontmatter } from "./artifact";
 import { setokuDir } from "./config";
 import type { AppParam } from "./params";
+import { emptyPins, normalizePins, type PinLayout } from "./pins";
 
 export type DocType = "entity" | "metric" | "query" | "overview" | "gotcha";
 
@@ -549,6 +550,27 @@ export class KnowledgeStore {
       created_at TEXT NOT NULL
     )`);
     this.db.run("CREATE INDEX IF NOT EXISTS app_access_app ON app_access(app_id)");
+    // Per-person pinned apps (lib/pins.ts): one JSON layout per identity —
+    // ordered groups of app ids that reorder THAT person's Apps page. A UI
+    // preference, not an authority: it grants nothing and nobody else sees it.
+    this.db.run(`CREATE TABLE IF NOT EXISTS app_pins (
+      identity TEXT PRIMARY KEY,
+      layout TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`);
+    // Revision counter for compare-and-set saves: a client saves against the
+    // rev it last read, so a stale tab (or a save built before the layout
+    // loaded) can't silently replace newer pins.
+    this.ensureColumn("app_pins", "rev", "INTEGER NOT NULL DEFAULT 1");
+    // When each person last opened each app — feeds the Apps page's "Recent"
+    // sort. One row per (person, app), overwritten on every open, so it stays
+    // small (unlike deriving it from the append-only audit log).
+    this.db.run(`CREATE TABLE IF NOT EXISTS app_opens (
+      identity TEXT NOT NULL,
+      app_id TEXT NOT NULL,
+      opened_at TEXT NOT NULL,
+      PRIMARY KEY (identity, app_id)
+    )`);
     // Every app now renders through the runtime shell, so the format column is
     // effectively always 'app'. Boxes that published before the Dashboards→Apps
     // rename hold format='dashboard'; backfill those to 'app' (a no-op on a fresh
@@ -1173,6 +1195,77 @@ export class KnowledgeStore {
    *  the default: full access). Returns how many rows were cleared. */
   clearSourceDenies(identity: string): number {
     return this.db.run("DELETE FROM source_denies WHERE identity = ?", [identity]).changes;
+  }
+
+  /** One person's pin layout (empty when they've never pinned) and its
+   *  revision (0 = never saved). Ids are returned as stored; the Apps page
+   *  skips any it can't match to an app. */
+  getPins(identity: string): { layout: PinLayout; rev: number } {
+    const row = this.db.query("SELECT layout, rev FROM app_pins WHERE identity = ?").get(identity) as
+      | { layout: string; rev: number }
+      | null;
+    if (!row) return { layout: emptyPins(), rev: 0 };
+    try {
+      return { layout: normalizePins(JSON.parse(row.layout)), rev: row.rev };
+    } catch {
+      return { layout: emptyPins(), rev: row.rev };
+    }
+  }
+
+  /** Replace a person's pin layout wholesale (the client sends its full,
+   *  already-moved layout), but only if `base` is still the stored revision —
+   *  else null (a conflict: the caller must re-read). Normalized here, and ids
+   *  that name no app at all are dropped so a stale tab can't grow the row
+   *  forever. Archived apps keep their pin: unarchiving one puts it back where
+   *  it was. */
+  setPins(identity: string, layout: unknown, base: number): { layout: PinLayout; rev: number } | null {
+    const ids = normalizePins(layout).groups.flatMap((g) => g.ids);
+    const known = new Set(
+      ids.length
+        ? (this.db
+            .query(`SELECT id FROM published WHERE id IN (${ids.map(() => "?").join(",")})`)
+            .all(...ids) as { id: string }[]).map((r) => r.id)
+        : [],
+    );
+    const clean = normalizePins(layout, (id) => known.has(id));
+    const now = new Date().toISOString();
+    const json = JSON.stringify(clean);
+    const changed =
+      base === 0
+        ? this.db.run(
+            "INSERT INTO app_pins (identity, layout, updated_at, rev) VALUES (?, ?, ?, 1) ON CONFLICT(identity) DO NOTHING",
+            [identity, json, now],
+          ).changes
+        : this.db.run("UPDATE app_pins SET layout = ?, updated_at = ?, rev = rev + 1 WHERE identity = ? AND rev = ?", [
+            json,
+            now,
+            identity,
+            base,
+          ]).changes;
+    return changed ? { layout: clean, rev: base + 1 } : null;
+  }
+
+  /** Drop a person's pins and open history (person removed). */
+  clearPins(identity: string): void {
+    this.db.run("DELETE FROM app_pins WHERE identity = ?", [identity]);
+    this.db.run("DELETE FROM app_opens WHERE identity = ?", [identity]);
+  }
+
+  /** Stamp that `identity` just opened app `id` (the Recent sort). */
+  noteAppOpened(identity: string, id: string): void {
+    this.db.run("INSERT OR REPLACE INTO app_opens (identity, app_id, opened_at) VALUES (?, ?, ?)", [
+      identity,
+      id,
+      new Date().toISOString(),
+    ]);
+  }
+
+  /** app id → when `identity` last opened it. */
+  appOpenedAt(identity: string): Map<string, string> {
+    const rows = this.db
+      .query("SELECT app_id, opened_at FROM app_opens WHERE identity = ?")
+      .all(identity) as { app_id: string; opened_at: string }[];
+    return new Map(rows.map((r) => [r.app_id, r.opened_at]));
   }
 
   /** Drop cached panel rows of every app THIS identity created. Published
