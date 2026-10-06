@@ -273,8 +273,9 @@ implementation:
 - **Index** `lib/embed-index.ts` — one vector per non-gotcha doc, built in the
   background at startup, updated on upsert. Inert until ready (fallback meanwhile).
 - **Fusion** `retrieve(... embedScores)` — reciprocal-rank fusion of the keyword
-  and embedding rankings, **keyword-weighted 5:1** so embeddings *rescue* keyword
-  misses without overriding confident exact matches.
+  and embedding rankings, **keyword-weighted 1.5:1** (`DEFAULT_KEYWORD_WEIGHT`), so
+  confident exact matches still win ties while embeddings carry the ranking when
+  keyword evidence is thin (see [Fusion weight](#fusion-weight)).
 
 Production-path benchmark (`SETOKU_EMBEDDINGS=1 bun run eval:embed`):
 
@@ -289,6 +290,26 @@ from unusable to near-perfect. Doc embeddings are computed offline/at upsert (of
 the hot path); only the ~120 ms/query embed runs live (bge-small, CPU). The model
 is baked into the image (`--build-arg BAKE_EMBEDDINGS=1`) or cached on the data
 volume, so the box never downloads at request time.
+
+### Fusion weight
+
+The weight was first set to 5:1 on the curated demo, where keyword retrieval is
+already strong (90% before embeddings), so embeddings had little left to rescue.
+A freshly onboarded store looks nothing like that: its docs carry no curated
+keywords or summaries yet. `eval:embed` now also scores a **thin** copy of the
+demo (keywords and summaries stripped) across weights:
+
+| corpus | split | keyword | +synonyms | +map-first | 1:1 | **1.5:1** | 2:1 | 5:1 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| curated | dev | 90% | 93% | 95% | 93% | **93%** | 93% | 93% |
+| curated | held-out | 90% | 100% | 100% | 95% | **100%** | 95% | 100% |
+| thin | dev | 40% | 55% | 70% | 83% | **73%** | 73% | 68% |
+| thin | held-out | 45% | 57% | 83% | 80% | **80%** | 80% | 73% |
+
+1.5:1 is the only weight that matches 5:1 on every curated split while gaining
+5 to 7 points on the thin corpus. A private production store's logged questions
+(not in the repo, I3) agreed: recall was flat from 0.75:1 to 2:1 and lowest at
+5:1. 1:1 gains more on thin dev but costs a curated held-out case.
 
 ## Measuring value (gotcha traps)
 

@@ -9,7 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { KnowledgeStore } from "../plugin/gateway/lib/store";
-import { applyApprovalAction, defaultDraft } from "../plugin/gateway/lib/approval";
+import { applyApprovalAction, defaultDraft, foldIntoBody } from "../plugin/gateway/lib/approval";
 
 const dbs: string[] = [];
 function freshStore(): KnowledgeStore {
@@ -53,12 +53,13 @@ describe("cockpit: accept commits the drafted doc for non-gotcha kinds", () => {
     expect(store.listCorrections("pending")).toHaveLength(0);
   });
 
-  it("approving a non-gotcha correction with NO draft commits nothing (records only) until one is supplied", () => {
+  it("approving a non-gotcha correction with no draft and no parent doc lands as a gotcha, not a stub", () => {
     const store = freshStore();
     const id = store.addCorrection({ user: "alice@co.test", kind: "entity", fact: "orders excludes test accounts" });
     const flash = applyApprovalAction(store, "boss", { id, action: "accepted" });
-    expect(store.docCount).toBe(0); // no doc synthesized from free text
-    expect(flash).toContain("no draft");
+    expect(store.listDocs().map((d) => d.type)).toEqual(["gotcha"]);
+    expect(store.gotchas().some((g) => g.includes("excludes test accounts"))).toBe(true);
+    expect(flash).toContain("[gotcha]");
     expect(store.listCorrections("accepted")).toHaveLength(1);
   });
 
@@ -70,14 +71,69 @@ describe("cockpit: accept commits the drafted doc for non-gotcha kinds", () => {
     expect(gotchas.some((g) => g.includes("GC top-ups"))).toBe(true);
   });
 
-  it("defaultDraft surfaces a gotcha's synthesized draft and null for an undrafted non-gotcha", () => {
+  it("defaultDraft surfaces a gotcha's synthesized draft, and a gotcha for a non-gotcha with nothing to fold into", () => {
     const store = freshStore();
     const gid = store.addCorrection({ user: "a", kind: "gotcha", fact: "x is y", relatesTo: "x" });
     const eid = store.addCorrection({ user: "a", kind: "entity", fact: "e excludes z" });
     const g = store.getCorrection(gid)!;
     const e = store.getCorrection(eid)!;
-    expect(defaultDraft(g)?.type).toBe("gotcha");
-    expect(defaultDraft(e)).toBeNull();
+    expect(defaultDraft(g).type).toBe("gotcha");
+    expect(defaultDraft(e).type).toBe("gotcha");
+    expect(defaultDraft(e).body).toBe("e excludes z");
+  });
+});
+
+describe("cockpit: a correction FOLDS into the doc it refines", () => {
+  const sql = "SELECT count(*) FROM orders WHERE status = 'PAID'";
+
+  it("keeps the parent doc's body and appends the claim under Curation notes", () => {
+    const store = freshStore();
+    store.upsertDoc({ type: "metric", name: "paid-orders", body: sql, meta: { summary: "orders paid", keywords: ["orders"] } }, "gen");
+    // relatesTo is the doc's own name: the case the old cockpit seed turned into an overwrite
+    const id = store.addCorrection({ user: "alice@co.test", kind: "metric", fact: "refunded orders still count as paid here", relatesTo: "paid-orders" });
+    applyApprovalAction(store, "boss", { id, action: "accepted" });
+    const doc = store.getDoc("metric", "paid-orders")!;
+    expect(doc.body.startsWith(sql)).toBe(true);
+    expect(doc.body).toContain("## Curation notes");
+    expect(doc.body).toContain(`### #${id} (alice@co.test, `);
+    expect(doc.body).toContain("refunded orders still count as paid here");
+    expect(doc.meta.summary).toBe("orders paid"); // parent meta kept
+    expect(store.docCount).toBe(1); // no stub alongside
+  });
+
+  it("folds across kinds and case (a metric-kind note about entity Order) but never by substring", () => {
+    const store = freshStore();
+    store.upsertDoc({ type: "entity", name: "Order", body: "One row per order.", meta: {} }, "gen");
+    store.upsertDoc({ type: "entity", name: "OrderItem", body: "A line item.", meta: {} }, "gen");
+    const id = store.addCorrection({ user: "a", kind: "metric", fact: "status comes from the payments table", relatesTo: "order" });
+    const d = defaultDraft(store.getCorrection(id)!, store.listDocs());
+    expect([d.type, d.name]).toEqual(["entity", "Order"]);
+    expect(d.body).toContain("One row per order.");
+    const other = store.addCorrection({ user: "a", kind: "entity", fact: "x", relatesTo: "Item" });
+    expect(defaultDraft(store.getCorrection(other)!, store.listDocs()).type).toBe("gotcha");
+  });
+
+  it("a second note appends under the same heading, and re-drafting the same correction is idempotent", () => {
+    const store = freshStore();
+    store.upsertDoc({ type: "metric", name: "hires", body: sql, meta: {} }, "gen");
+    const a = store.addCorrection({ user: "a", kind: "metric", fact: "first", relatesTo: "hires" });
+    applyApprovalAction(store, "boss", { id: a, action: "accepted" });
+    const b = store.addCorrection({ user: "b", kind: "metric", fact: "second", relatesTo: "hires" });
+    const draft = defaultDraft(store.getCorrection(b)!, store.listDocs());
+    expect(draft.body.split("## Curation notes")).toHaveLength(2);
+    expect(draft.body.indexOf("first")).toBeLessThan(draft.body.indexOf("second"));
+    applyApprovalAction(store, "boss", { id: b, action: "accepted" });
+    const body = store.getDoc("metric", "hires")!.body;
+    expect(foldIntoBody(body, store.getCorrection(b)!)).toBe(body);
+  });
+
+  it("hands the committed doc to onCommit (so the semantic index can re-embed it)", () => {
+    const store = freshStore();
+    store.upsertDoc({ type: "metric", name: "hires", body: sql, meta: {} }, "gen");
+    const id = store.addCorrection({ user: "a", kind: "metric", fact: "note", relatesTo: "hires" });
+    const seen: string[] = [];
+    applyApprovalAction(store, "boss", { id, action: "accepted" }, (doc) => seen.push(`${doc.type}:${doc.name}:${doc.body.includes("note")}`));
+    expect(seen).toEqual(["metric:hires:true"]);
   });
 });
 
@@ -99,7 +155,7 @@ describe("cockpit: draft + flags persistence (piece B)", () => {
     expect(corr.flags).toEqual(["lint", "dupe"]);
     expect(corr.draftedBy).toBe("janitor@bot");
     // and a persisted draft wins over the synthesized default
-    expect(defaultDraft(corr)?.body).toBe("SELECT 1");
+    expect(defaultDraft(corr).body).toBe("SELECT 1");
   });
 });
 

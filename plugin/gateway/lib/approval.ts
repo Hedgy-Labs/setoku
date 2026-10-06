@@ -17,7 +17,7 @@
  * COMMIT (applyApprovalAction): the human's accept/reject decision is applied
  * here, driven by their authenticated POST — outside any agent loop (I2/I9).
  */
-import type { Correction, CorrectionDraft, KnowledgeStore } from "./store";
+import type { Correction, CorrectionDraft, KnowledgeDoc, KnowledgeStore } from "./store";
 
 /**
  * Short, word-boundary name for a gotcha doc. Avoids the mid-word truncation of a
@@ -39,33 +39,71 @@ function gotchaDocName(relatesTo: string | null | undefined, fact: string): stri
 }
 
 /**
+ * The existing doc a non-gotcha correction refines: the non-gotcha doc whose
+ * name IS its `relatesTo` (exact case first, then case-insensitive). Exact only —
+ * `store.getDoc`'s substring fallback would fold a note about "Order" into
+ * "OrderItem".
+ */
+export function parentDoc(corr: Correction, docs: KnowledgeDoc[]): KnowledgeDoc | null {
+  const target = corr.relatesTo?.trim();
+  if (!target) return null;
+  const candidates = docs.filter((d) => d.type !== "gotcha");
+  return (
+    candidates.find((d) => d.name === target) ??
+    candidates.find((d) => d.name.toLowerCase() === target.toLowerCase()) ??
+    null
+  );
+}
+
+const NOTES_HEADING = "## Curation notes";
+
+/**
+ * Append a correction to its parent doc's body under a "Curation notes" section,
+ * attributed and keyed by correction id (so re-drafting is idempotent). The
+ * parent's existing body is kept verbatim: accepting a refinement must never
+ * replace the doc it refines.
+ */
+export function foldIntoBody(body: string, corr: Correction): string {
+  const key = `### #${corr.id} (`;
+  if (body.includes(key)) return body;
+  const claim = (corr.fact?.trim() || corr.content).trim();
+  const note = `${key}${corr.user}, ${corr.ts.slice(0, 10)})\n\n${claim}`;
+  const base = body.trimEnd();
+  return base.includes(NOTES_HEADING) ? `${base}\n\n${note}\n` : `${base}\n\n${NOTES_HEADING}\n\n${note}\n`;
+}
+
+/** A bare claim as a gotcha doc: the concise FACT is the knowledge (#10, avenue
+ *  1); the supporting context stays in the corrections record. */
+function gotchaDraft(corr: Correction): CorrectionDraft {
+  const knowledge = corr.fact?.trim() || corr.content;
+  const meta: Record<string, string | string[]> = { proposed_by: corr.user };
+  if (corr.relatesTo) meta.relates_to = corr.relatesTo;
+  return { type: "gotcha", name: gotchaDocName(corr.relatesTo, knowledge), body: knowledge, meta };
+}
+
+/**
  * The drafted doc-edit a correction would commit on accept (curation-cockpit
  * piece A/B). Order of precedence: an explicit draft persisted on the row
- * (auto-draft job, piece B) wins; otherwise we synthesize the obvious default —
- * for a `gotcha` that's the long-standing fold (concise fact → a gotcha doc);
- * for other kinds we have no model-free way to synthesize a structured doc, so
- * there is no default draft until the auto-draft job (or a human in the cockpit)
- * supplies one. Returns null when nothing can be drafted yet.
+ * (auto-draft job, piece B) wins; otherwise the model-free default:
+ * - a `gotcha` folds to a gotcha doc (the long-standing behavior);
+ * - any other kind whose `relatesTo` names an existing doc FOLDS into that doc:
+ *   the doc unchanged, plus the claim under "Curation notes". This replaced the
+ *   cockpit's old client-side seed (a new doc of the correction's kind named
+ *   after `relatesTo`, body = the bare claim), which left stub docs behind and,
+ *   when `relatesTo` was the doc's own name, overwrote it with the claim;
+ * - otherwise there is no doc to refine, so the bare claim lands as a gotcha
+ *   rather than as a stub metric/entity with no SQL or semantics.
  *
- * Pure + model-free (I8) — it never commits, so it's safe to call when merely
- * RENDERING the pending queue (the cockpit shows this as the editable draft).
+ * `docs` is the doc set the caller may see (for the pending listing, the
+ * session's visible docs). Pure + model-free (I8): it never commits, so it's
+ * safe to call when merely RENDERING the pending queue.
  */
-export function defaultDraft(corr: Correction): CorrectionDraft | null {
+export function defaultDraft(corr: Correction, docs: KnowledgeDoc[] = []): CorrectionDraft {
   if (corr.status === "pending" && corr.draft) return corr.draft;
-  if (corr.kind === "gotcha") {
-    // store only the concise FACT as knowledge (#10, avenue 1); the supporting
-    // context stays in the corrections record, not the gotcha doc.
-    const knowledge = corr.fact?.trim() || corr.content;
-    const meta: Record<string, string | string[]> = { proposed_by: corr.user };
-    if (corr.relatesTo) meta.relates_to = corr.relatesTo;
-    return {
-      type: "gotcha",
-      name: gotchaDocName(corr.relatesTo, knowledge),
-      body: knowledge,
-      meta,
-    };
-  }
-  return null;
+  if (corr.kind === "gotcha") return gotchaDraft(corr);
+  const parent = parentDoc(corr, docs);
+  if (!parent) return gotchaDraft(corr);
+  return { type: parent.type, name: parent.name, body: foldIntoBody(parent.body, corr), meta: { ...parent.meta } };
 }
 
 /* ------------------------------ sessions ------------------------------ */
@@ -230,15 +268,15 @@ export interface Invite {
  * Apply a human approve/reject decision. Returns a flash message for the API to
  * relay. The COMMIT happens here, driven by the human's authenticated POST.
  *
- * On ACCEPT we upsert the DRAFTED doc into curated context for ALL kinds, not
- * just gotchas (curation-cockpit piece A.1 — closes the "accept does nothing for
- * a non-gotcha" gap). The draft is, in order of precedence: the one the human
- * edited in the cockpit (params.draft), else the draft the auto-draft job
- * persisted on the row, else the synthesized default (gotcha fold). If no draft
- * exists for a non-gotcha kind, we still mark it accepted but commit nothing —
- * the same "shape it in a curator session" message as before, until the
- * auto-draft job fills it in. Either way the membrane holds: this commit happens
- * only behind the human's password-gated POST (I2/I9).
+ * On ACCEPT we upsert the DRAFTED doc into curated context for ALL kinds
+ * (curation-cockpit piece A.1). The draft is, in order of precedence: the one the
+ * human edited in the cockpit (params.draft), else the draft the auto-draft job
+ * persisted on the row, else the model-free default (`defaultDraft`: fold into
+ * the doc the correction refines, else a gotcha). The membrane holds: this commit
+ * happens only behind the human's password-gated POST (I2/I9).
+ *
+ * `onCommit` receives the committed doc so the caller can refresh derived state
+ * (the semantic index re-embeds it, as `upsert_context` does).
  */
 export function applyApprovalAction(
   store: KnowledgeStore,
@@ -249,6 +287,7 @@ export function applyApprovalAction(
     draft?: CorrectionDraft;
     reason?: string;
   },
+  onCommit?: (doc: KnowledgeDoc) => void,
 ): string {
   const { id, action, draft, reason } = params;
   const corr = store.getCorrection(id);
@@ -262,32 +301,25 @@ export function applyApprovalAction(
     return `#${id} rejected.`;
   }
 
+  // draft BEFORE resolving: defaultDraft reads the row's persisted draft, which
+  // only a pending correction carries
+  const effective = draft ?? defaultDraft(corr, store.listDocs());
   const ok = store.resolveCorrection(id, action, identity);
   if (!ok) return `#${id} could not be resolved (already resolved?).`;
 
-  // commit the drafted doc-edit (the cockpit edit wins, else persisted/default)
-  const effective = draft ?? defaultDraft(corr);
-  let committed = false;
-  if (effective) {
-    // attribution: the doc's updated_by (= identity, the approver) records who
-    // accepted it; the draft's meta.proposed_by records who originally proposed.
-    const meta: Record<string, string | string[]> = { ...(effective.meta ?? {}) };
-    if (!meta.proposed_by) meta.proposed_by = corr.user;
-    store.upsertDoc(
-      { type: effective.type, name: effective.name, body: effective.body, meta },
-      identity,
-    );
-    committed = true;
-  }
+  // attribution: the doc's updated_by (= identity, the approver) records who
+  // accepted it; the draft's meta.proposed_by records who originally proposed.
+  const meta: Record<string, string | string[]> = { ...(effective.meta ?? {}) };
+  if (!meta.proposed_by) meta.proposed_by = corr.user;
+  store.upsertDoc({ type: effective.type, name: effective.name, body: effective.body, meta }, identity);
+  const committed = store.getDoc(effective.type, effective.name);
+  if (committed && onCommit) onCommit(committed);
   store.audit(identity, "approval_accepted", {
     id,
     kind: corr.kind,
-    committed,
-    doc: committed && effective ? `${effective.type}:${effective.name}` : null,
+    committed: true,
+    doc: `${effective.type}:${effective.name}`,
     reason: reason || null,
   });
-
-  return committed && effective
-    ? `#${id} approved — committed [${effective.type}] ${effective.name} to verified context.`
-    : `#${id} approved (recorded; no draft yet — shape it into a doc in a curator session or run the auto-draft job).`;
+  return `#${id} approved — committed [${effective.type}] ${effective.name} to verified context.`;
 }

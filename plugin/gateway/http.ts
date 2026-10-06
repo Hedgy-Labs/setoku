@@ -2549,13 +2549,17 @@ const httpServer = http.createServer(async (req, res) => {
           );
         // read endpoints — any signed-in user (members included) may view the
         // pending list for the cockpit: each item carries the best-available
-        // DRAFT (persisted auto-draft, else the synthesized gotcha default) so a
+        // DRAFT (persisted auto-draft, else the model-free fold default) so a
         // review card can render a finished, editable change. Advisory only.
-        if (api === "pending" && req.method === "GET")
+        if (api === "pending" && req.method === "GET") {
+          // fold drafts read only docs this session may see, so a draft can't
+          // carry a hidden doc's body to a member
+          const visible = docsForSession();
           return json(
             200,
-            correctionsForSession("pending").map((c) => ({ ...c, draft: defaultDraft(c) })),
+            correctionsForSession("pending").map((c) => ({ ...c, draft: defaultDraft(c, visible) })),
           );
+        }
         // bot-rejected items the cockpit can review + un-reject (piece C: soft,
         // reversible, audited — a janitor suppressing good proposals is undoable).
         if (api === "rejected" && req.method === "GET")
@@ -3188,12 +3192,12 @@ const httpServer = http.createServer(async (req, res) => {
             const draft = parseDraft(body?.draft);
             if (action === "accepted" && body?.draft !== undefined && !draft)
               return json(400, { ok: false, error: "invalid draft (need type, name, body)" });
-            const flash = applyApprovalAction(store, session.identity, {
-              id,
-              action,
-              draft,
-              reason: body?.reason,
-            });
+            const flash = applyApprovalAction(
+              store,
+              session.identity,
+              { id, action, draft, reason: body?.reason },
+              (doc) => void embedIndex.upsert(doc),
+            );
             return json(200, { ok: true, flash });
           }
 
