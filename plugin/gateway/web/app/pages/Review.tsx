@@ -20,13 +20,6 @@ const FLAG_TONE: Record<string, "down" | "idle"> = {
   provenance: "idle",
 };
 
-/** Map a correction kind to the doc type a hand-authored draft should default to. */
-function defaultTypeForKind(kind: string): CorrectionDraft["type"] {
-  return (DOC_TYPES as readonly string[]).includes(kind)
-    ? (kind as CorrectionDraft["type"])
-    : "gotcha";
-}
-
 function slug(s: string): string {
   return s
     .toLowerCase()
@@ -37,14 +30,14 @@ function slug(s: string): string {
     .join("-");
 }
 
-/** A draft to seed the editor when a correction has none yet (non-gotcha kinds
- *  before the auto-draft job runs). Pre-fills from the proposal so the human
- *  only tweaks, never types from scratch. */
+/** Fallback only: the server always sends a draft (a fold into the doc the
+ *  correction refines, else a gotcha). If one is ever missing, seed a gotcha;
+ *  never a doc named after `relatesTo`, which would replace that doc. */
 function seedDraft(c: Correction): CorrectionDraft {
   const claim = c.fact ?? c.content;
   return {
-    type: defaultTypeForKind(c.kind),
-    name: slug(c.relatesTo || claim) || `note-${c.id}`,
+    type: "gotcha",
+    name: slug(claim) || `note-${c.id}`,
     body: claim,
     meta: c.relatesTo ? { relates_to: c.relatesTo, proposed_by: c.user } : { proposed_by: c.user },
   };

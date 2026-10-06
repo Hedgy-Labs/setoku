@@ -344,11 +344,13 @@ export interface RetrieveOpts {
    *  rankings (hybrid retrieval). Computed by the caller (the local embed index /
    *  the offline eval) — search.ts itself never embeds (I8). */
   embedScores?: Map<string, number>;
-  /** RRF weight on the keyword ranking relative to embeddings (default 2). >1 lets
-   *  embeddings RESCUE keyword misses without overriding confident exact matches —
-   *  so hybrid doesn't regress where keyword retrieval is already strong. */
+  /** RRF weight on the keyword ranking relative to embeddings (default
+   *  DEFAULT_KEYWORD_WEIGHT). */
   keywordWeight?: number;
 }
+
+/** Default RRF weight on the keyword ranking relative to the embedding ranking. */
+export const DEFAULT_KEYWORD_WEIGHT = 1.5;
 
 /**
  * Reciprocal-rank fusion: combine several ranked lists into one. Robust and
@@ -396,7 +398,7 @@ export function retrieve<T extends ScorableDoc>(
     const emRanked = [...opts.embedScores.entries()]
       .sort((a, b) => b[1] - a[1])
       .map((e) => e[0]);
-    direct = fuseRRF([kwRanked, emRanked], 60, [opts.keywordWeight ?? 5, 1])
+    direct = fuseRRF([kwRanked, emRanked], 60, [opts.keywordWeight ?? DEFAULT_KEYWORD_WEIGHT, 1])
       .slice(0, k)
       .map((ref) => byRef.get(ref))
       .filter((d): d is T => !!d)
