@@ -19,6 +19,7 @@ import type {
   AppData,
   AppRevision,
 } from "./types";
+import type { PinLayout } from "../../lib/pins";
 
 let csrf = "";
 /** Stash the CSRF token after login / session fetch; sent on every mutation. */
@@ -130,10 +131,18 @@ export const api = {
   gmailDisconnect: (email: string) =>
     req<MutationResult>("gmail_disconnect", { method: "POST", body: { email } }),
   apps: () => req<PublishedMeta[]>("published"),
+  // The signed-in person's own pinned-apps layout. A save sends the whole
+  // layout against the rev it was built on; a stale one 409s (re-read).
+  pins: () => req<{ layout: PinLayout; rev: number }>("app_pins"),
+  setPins: (layout: PinLayout, base: number) =>
+    req<{ ok: boolean; layout: PinLayout; rev: number }>("app_pins", { method: "POST", body: { layout, base } }),
   // App metadata + per-panel SQL/description (param-independent). The LIVE per-variant
   // numbers come from the frame's own provenance echo (postMessage), not this
   // endpoint, so the drawer can't disagree with what the iframe actually renders.
-  appData: (id: string) => req<AppData>(`app_data?id=${encodeURIComponent(id)}`),
+  // `open` marks a real open (the viewer's first load) for the Recent sort;
+  // live-refresh reloads leave it off.
+  appData: (id: string, open = false) =>
+    req<AppData>(`app_data?id=${encodeURIComponent(id)}${open ? "&open=1" : ""}`),
   rename: (id: string, title: string) =>
     req<MutationResult & { title?: string }>("rename", { method: "POST", body: { id, title } }),
   // Version history for the header's version drawer (#58): every edit, newest

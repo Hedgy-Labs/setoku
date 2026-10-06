@@ -64,6 +64,7 @@ import {
 import { isTabularMime } from "./lib/table-parse";
 import { formatBytes } from "./lib/format";
 import { resolveParams, type AppParam } from "./lib/params";
+import { emptyPins } from "./lib/pins";
 import {
   type Invite,
   applyApprovalAction,
@@ -168,7 +169,7 @@ const VIEWER_READ_APIS = new Set([
   // doc names, SQL, and identities), matching the admin-only Audit tab.
   "session", "pending", "rejected", "knowledge", "knowledge_view",
   "sources", "source_series", "egress", "team",
-  "published", "app_data", "app_history", "app_state", "app_events",
+  "published", "app_data", "app_history", "app_state", "app_events", "app_pins",
 ]);
 
 // The live lake-probe endpoints (sources / source_series / egress) each fan out
@@ -182,6 +183,21 @@ const VIEWER_READ_APIS = new Set([
 // (each distinct deny-set caches separately; an undenied admin and the undenied
 // viewer share one entry, which is correct).
 const PROBE_TTL_MS = 10_000;
+
+// Pinned-tile previews are audited at most once per person+app per hour (see
+// the frame handler): the trail still says who saw what, without a row per pin
+// on every Apps-page load. In-memory, so a restart just audits the next one.
+const PREVIEW_AUDIT_MS = 60 * 60_000;
+const previewAudited = new Map<string, number>();
+function previewAuditDue(identity: string, id: string): boolean {
+  const k = `${identity}\u0000${id}`;
+  const now = Date.now();
+  const last = previewAudited.get(k);
+  if (last != null && now - last < PREVIEW_AUDIT_MS) return false;
+  if (previewAudited.size > 10_000) previewAudited.clear(); // bound it; worst case one extra audit row each
+  previewAudited.set(k, now);
+  return true;
+}
 const probeCache = new Map<string, { at: number; value: unknown }>();
 // In-flight requests share one produce() call: without this, N concurrent cache
 // misses (a crawler on the demo box, a burst of tabs) each run the full fan-out,
@@ -2256,6 +2272,14 @@ const httpServer = http.createServer(async (req, res) => {
         }
         const id = decodeURIComponent(reqPath.slice("/admin/frame/".length));
         const rep = store.getPublished(id);
+        // ?preview=1 is the Apps page's pinned-tile thumbnail: CACHE-ONLY (it
+        // never runs a query, so a home page full of pins costs the lake
+        // nothing). Still audited (it shows real rows), as its own action and
+        // at most hourly per person+app, so every Apps-page load doesn't add a
+        // row per pin. Files have no preview (the page shows a placeholder); a
+        // ?preview=1 on one is just a normal, normally-audited view.
+        const preview =
+          new URL(req.url ?? "", "http://x").searchParams.get("preview") === "1" && rep?.format !== "file";
         if (!rep || rep.archivedAt) {
           res.writeHead(404, { "content-type": "text/plain" });
           res.end("not found\n");
@@ -2284,6 +2308,7 @@ const httpServer = http.createServer(async (req, res) => {
         // admin only, so a member (or a stale tab) can't hammer prod through the
         // iframe. The React viewer adds it for an explicit "Refresh data".
         const force =
+          !preview &&
           new URL(req.url ?? "", "http://x").searchParams.get("force") === "1" &&
           (rep.createdBy === session.identity || canApprove(session.role));
         // NB: published apps are a TEAM-tier surface and do NOT enforce per-user
@@ -2294,11 +2319,16 @@ const httpServer = http.createServer(async (req, res) => {
         // in docs/invariants.md. (This is why the built-in Mirror-egress app is
         // team-visible; fencing the business family from a member does not hide
         // team dashboards built over it.)
-        const panels = (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams: raw, force }) : [];
+        const panels =
+          (rep.panels?.length ?? 0) > 0
+            ? await renderApp(store, projectDir, rep, { rawParams: raw, force, cacheOnly: preview })
+            : [];
         // Don't audit anonymous demo-viewer reads — a crawler on a public demo
         // box would otherwise grow the append-only audit log without bound.
-        if (session !== DEMO_VIEWER)
-          store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
+        if (session !== DEMO_VIEWER) {
+          if (!preview) store.audit(session.identity, force ? "app_frame_refreshed" : "app_frame_viewed", { id });
+          else if (previewAuditDue(session.identity, id)) store.audit(session.identity, "app_frame_previewed", { id });
+        }
         // The app template needs no network (data is injected) → strict CSP.
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
@@ -2637,16 +2667,24 @@ const httpServer = http.createServer(async (req, res) => {
           const hideLink = (mid: unknown): boolean =>
             metricDocHidden(mid ? store.getDoc("metric", String(mid)) : null, denied);
           const fileSummaries = fileStore.summaries();
+          // The caller's own last-open times (the "Recent" sort); none for the demo viewer.
+          const opened = actor === DEMO_VIEWER ? new Map<string, string>() : store.appOpenedAt(actor.identity);
           return json(
             200,
             store.listPublished().map((r) => ({
               ...r,
+              openedAt: opened.get(r.id) ?? null,
               files: fileSummaries.get(r.id) ?? null,
               panels: r.panels
                 ? r.panels.map((p) => ({ ...p, sql: "", metricId: hideLink(p.metricId) ? null : p.metricId }))
                 : null,
             })),
           );
+        }
+        // The caller's own pin layout (lib/pins.ts). The anonymous demo viewer
+        // has no person to pin for, so it always reads the empty layout.
+        if (api === "app_pins" && req.method === "GET") {
+          return json(200, actor === DEMO_VIEWER ? { layout: emptyPins(), rev: 0 } : store.getPins(actor.identity));
         }
         // Provenance + rendered panel metadata for the team viewer's drawer.
         // Includes raw SQL — a signed-in team surface, PLUS the anonymous demo
@@ -2680,7 +2718,13 @@ const httpServer = http.createServer(async (req, res) => {
           }
           // Skip anonymous demo-viewer reads (see the frame handler) — no
           // crawler-driven growth of the append-only audit log.
-          if (actor !== DEMO_VIEWER) store.audit(actor.identity, "app_viewed", { id });
+          if (actor !== DEMO_VIEWER) {
+            store.audit(actor.identity, "app_viewed", { id });
+            // Only the viewer's first load says "opened" (?open=1). Its live-
+            // refresh reloads (SSE nudges, reconnects after a deploy) re-fetch
+            // this endpoint too, and must not keep bumping the Recent sort.
+            if (url.searchParams.get("open") === "1") store.noteAppOpened(actor.identity, id);
+          }
           return json(200, prov);
         }
 
@@ -2822,6 +2866,24 @@ const httpServer = http.createServer(async (req, res) => {
               if (e instanceof AppStoreQuotaError) return json(413, { ok: false, error: e.message });
               throw e;
             }
+          }
+
+          // Pins — any signed-in person, their OWN layout only (keyed by the
+          // session identity, never a body field). A personal view preference:
+          // it changes no app and no access, so it skips the admin gate below
+          // and isn't audited (every drag would otherwise land a row).
+          // Compare-and-set on `base` (the rev the client last read): a stale
+          // tab, or a save built before the layout loaded, gets a 409 and
+          // re-reads instead of replacing newer pins.
+          if (api === "app_pins") {
+            const body = (await readBody(req)) as { layout?: unknown; base?: unknown } | undefined;
+            if (!body || typeof body.layout !== "object" || body.layout === null)
+              return json(400, { ok: false, error: "layout is required" });
+            if (!Number.isInteger(body.base) || (body.base as number) < 0)
+              return json(400, { ok: false, error: "base revision is required" });
+            const saved = store.setPins(session.identity, body.layout, body.base as number);
+            if (!saved) return json(409, { ok: false, error: "Your pins changed somewhere else. Reloaded the latest." });
+            return json(200, { ok: true, ...saved });
           }
 
           // Self-service password change (#73) — any signed-in user, own account
@@ -3254,6 +3316,7 @@ const httpServer = http.createServer(async (req, res) => {
               // A removed person's source denies go too — a later re-invite
               // starts at the default (full access), not a stale restriction.
               const deniesCleared = store.clearSourceDenies(uname);
+              store.clearPins(uname);
               store.audit(session.identity, "person_removed", {
                 username: uname,
                 accountDeleted: !!acct,

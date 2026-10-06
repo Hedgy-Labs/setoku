@@ -536,6 +536,79 @@ describe("app_state datastore", () => {
   });
 });
 
+describe("app pins", () => {
+  it("saves the caller's own layout (normalized, revisioned), reads it back, and needs a session + CSRF", async () => {
+    const { cookie, csrf } = await login();
+    const H = { "content-type": "application/json", "x-csrf-token": csrf, cookie };
+    const get = () => fetch(`${BASE}/admin/api/app_pins`, { headers: { cookie } }).then((r) => r.json());
+    const post = (b: unknown) => fetch(`${BASE}/admin/api/app_pins`, { method: "POST", headers: H, body: JSON.stringify(b) });
+    expect(await get()).toEqual({ layout: { groups: [{ name: "", ids: [] }] }, rev: 0 });
+
+    const layout = { groups: [{ name: "Ops", ids: ["legacy-pg", "not-an-app"] }] };
+    const r = await post({ layout, base: 0 });
+    expect(r.status).toBe(200);
+    const want = { groups: [{ name: "", ids: [] }, { name: "Ops", ids: ["legacy-pg"] }] }; // unknown id dropped
+    expect(await r.json()).toEqual({ ok: true, layout: want, rev: 1 });
+    expect(await get()).toEqual({ layout: want, rev: 1 });
+
+    // a stale base is a 409, not an overwrite
+    expect((await post({ layout: { groups: [] }, base: 0 })).status).toBe(409);
+    expect((await get()).layout).toEqual(want);
+
+    expect((await fetch(`${BASE}/admin/api/app_pins`)).status).toBe(401);
+    const noCsrf = await fetch(`${BASE}/admin/api/app_pins`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ layout, base: 1 }),
+    });
+    expect(noCsrf.status).toBe(403);
+    expect((await post({})).status).toBe(400);
+    expect((await post({ layout })).status).toBe(400); // base is required
+  });
+});
+
+describe("Apps page previews + Recent sort", () => {
+  it("a ?preview=1 frame is cache-only (never queries the lake, no rate-limit noise) and audited at most hourly", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "Preview app", html: "<div id=kpi></div>", panels: [REGION_PANEL], params: [REGION_PARAM] })).text);
+    const { cookie } = await login();
+    // APAC was never rendered (the publish dry-run seeded only the NA default)
+    const before = lake.calls.length;
+    const prev = await fetch(`${BASE}/admin/frame/${id}?preview=1&p.region=APAC`, { headers: { cookie } });
+    expect(prev.status).toBe(200);
+    const kpi = setokuOf(await prev.text()).panels.kpi as { rows: unknown[]; error: string | null; refreshError?: string };
+    expect(kpi.rows).toEqual([]);
+    expect(kpi.error).toBeNull(); // an uncached thumbnail is just empty, not "too many queries"
+    expect(kpi.refreshError ?? null).toBeNull();
+    await fetch(`${BASE}/admin/frame/${id}?preview=1&p.region=APAC`, { headers: { cookie } }); // within the hour
+    expect(lake.calls.length).toBe(before); // no query ran
+    // the real frame does run it
+    await fetch(`${BASE}/admin/frame/${id}?p.region=APAC`, { headers: { cookie } });
+    expect(lake.calls.length).toBeGreaterThan(before);
+
+    const audit = new KnowledgeStore(path.join(tmp, "knowledge.db"));
+    const count = (tool: string) =>
+      (audit.db.query("SELECT COUNT(*) AS n FROM audit WHERE tool = ? AND json_extract(payload, '$.id') = ?").get(tool, id) as { n: number }).n;
+    expect(count("app_frame_viewed")).toBe(1); // the real view
+    expect(count("app_frame_previewed")).toBe(1); // two previews, one row (hourly throttle)
+    audit.db.close();
+  });
+
+  it("opening an app (open=1) stamps the caller's openedAt on the list", async () => {
+    const c = await gwConnect(BASE, "tok_boss", "pub");
+    const id = idOf((await call(c, "publish_app", { title: "Opened app", html: "<div>x</div>" })).text);
+    const { cookie } = await login();
+    const list = async () =>
+      ((await (await fetch(`${BASE}/admin/api/published`, { headers: { cookie } })).json()) as { id: string; openedAt: string | null }[]).find((r) => r.id === id)!;
+    expect((await list()).openedAt).toBeNull();
+    // a live-refresh reload (no open=1) doesn't count as opening it
+    await fetch(`${BASE}/admin/api/app_data?id=${id}`, { headers: { cookie } });
+    expect((await list()).openedAt).toBeNull();
+    await fetch(`${BASE}/admin/api/app_data?id=${id}&open=1`, { headers: { cookie } });
+    expect((await list()).openedAt).toBeTruthy();
+  });
+});
+
 describe("panel cache is bounded per app (open-domain param can't grow it forever)", () => {
   it("keeps at most ~256 variant rows, evicting the oldest by last write", () => {
     const store = new KnowledgeStore(":memory:");

@@ -269,6 +269,11 @@ export function renderApp(
      *  supplied params can't amplify load against prod without bound — and,
      *  because it's charged per ACTUAL execution, cached hits never spend budget. */
     tryFreshRun?: () => boolean;
+    /** Serve ONLY what's cached: never run a query, never start a background
+     *  refresh, and say nothing about staleness or budgets (no refreshError /
+     *  rate-limit error). An uncached panel renders empty. For thumbnails (the
+     *  Apps page's pinned-tile previews), which must cost the lake nothing. */
+    cacheOnly?: boolean;
   } = {},
 ): Promise<RenderedPanel[]> {
   if (!(dash.panels ?? []).length) return Promise.resolve([]);
@@ -281,7 +286,7 @@ export function renderApp(
   const pv = paramsVariant(declared.map((p) => p.name), resolved);
   // The budget flag is part of the key so a budgeted (public) render never shares
   // an execution with a non-budgeted (admin/dry-run) one.
-  const key = `${dash.id}:${opts.force ? 1 : 0}:${opts.denyLakeRead ? 1 : 0}:${opts.tryFreshRun ? 1 : 0}:${pv}`;
+  const key = `${dash.id}:${opts.force ? 1 : 0}:${opts.denyLakeRead ? 1 : 0}:${opts.tryFreshRun ? 1 : 0}:${opts.cacheOnly ? 1 : 0}:${pv}`;
   const existing = inFlight.get(key);
   if (existing) return existing;
   const p = renderUncoalesced(store, projectDir, dash, resolved, opts).finally(() => inFlight.delete(key));
@@ -294,7 +299,7 @@ async function renderUncoalesced(
   projectDir: string,
   dash: RenderInput,
   resolved: Map<string, ParamValue>,
-  opts: { force?: boolean; denyLakeRead?: boolean; now?: number; tryFreshRun?: () => boolean },
+  opts: { force?: boolean; denyLakeRead?: boolean; now?: number; tryFreshRun?: () => boolean; cacheOnly?: boolean },
 ): Promise<RenderedPanel[]> {
   const panels = dash.panels ?? [];
   const declared = dash.params ?? [];
@@ -335,6 +340,11 @@ async function renderUncoalesced(
         const variant = paramsVariant(compiled.referenced, resolved);
         const cacheKey = variant ? `${panel.key}::${variant}` : panel.key;
         const cached = store.getPanelCache(dash.id, cacheKey);
+        if (opts.cacheOnly) {
+          return cached && !cached.error
+            ? { ...base, columns: cached.columns, rows: cached.rows, rowCount: cached.rowCount, truncated: cached.truncated, computedAt: cached.computedAt, error: null, durationMs: cached.durationMs }
+            : { ...base, columns: [], rows: [], rowCount: 0, computedAt: new Date(now).toISOString(), error: null };
+        }
         // An errored cache row is retried sooner than the full refresh TTL.
         const cacheLimit = cached?.error ? Math.min(ERROR_TTL_MS, limit) : limit;
         const fresh = !opts.force && cached != null && now - Date.parse(cached.computedAt) < cacheLimit;
