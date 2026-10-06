@@ -349,6 +349,32 @@ export interface RetrieveOpts {
   keywordWeight?: number;
 }
 
+/** The section a folded correction lands in (lib/approval.ts foldIntoBody). */
+export const NOTES_HEADING = "## Curation notes";
+
+/**
+ * A long doc's preview for find_context: the first `head` chars of the body
+ * proper, then its Curation notes. Folded notes sit at the END of a doc, so a
+ * plain head slice would hide exactly the rulings that override the body above
+ * them. Notes over `notesCap` keep the newest that fit.
+ */
+export function previewBody(body: string, head = 600, notesCap = 1200): string {
+  const at = body.startsWith(NOTES_HEADING) ? 0 : body.indexOf(`\n${NOTES_HEADING}`);
+  if (at < 0) return body.slice(0, head) + " …";
+  const main = body.slice(0, at).trimEnd();
+  const preview = main.length > head ? main.slice(0, head) + " …" : main;
+  const notes = body.slice(at).trim().slice(NOTES_HEADING.length).trim().split(/\n(?=### )/);
+  const kept: string[] = [];
+  let size = 0;
+  for (const n of notes.reverse()) {
+    if (kept.length && size + n.length > notesCap) break;
+    kept.unshift(n.length > notesCap ? n.trim().slice(0, notesCap) + " …" : n.trim());
+    size += n.length;
+  }
+  const earlier = notes.length > kept.length ? "(earlier notes in the full doc)\n\n" : "";
+  return `${preview}\n\n${NOTES_HEADING}\n\n${earlier}${kept.join("\n\n")}`.trimStart();
+}
+
 /** Default RRF weight on the keyword ranking relative to the embedding ranking. */
 export const DEFAULT_KEYWORD_WEIGHT = 1.5;
 
