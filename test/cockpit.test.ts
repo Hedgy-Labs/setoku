@@ -9,6 +9,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { KnowledgeStore } from "../plugin/gateway/lib/store";
+import { previewBody } from "../plugin/gateway/lib/search";
 import { applyApprovalAction, defaultDraft, foldIntoBody } from "../plugin/gateway/lib/approval";
 
 const dbs: string[] = [];
@@ -182,5 +183,34 @@ describe("cockpit: reject is soft, audited, reversible (piece C)", () => {
     // back to pending — a pending correction simply has no reject info (the union
     // makes "pending with a reject reason" unrepresentable).
     expect(store.getCorrection(id)?.status).toBe("pending");
+  });
+});
+
+describe("find_context preview keeps a long doc's Curation notes", () => {
+  const long = "x".repeat(2000);
+
+  it("a doc without notes previews as before (head slice)", () => {
+    expect(previewBody(long)).toBe("x".repeat(600) + " …");
+  });
+
+  it("shows the notes after the truncated head, so a ruling isn't hidden by the cut", () => {
+    const store = freshStore();
+    store.upsertDoc({ type: "metric", name: "paid-orders", body: long, meta: {} }, "gen");
+    const id = store.addCorrection({ user: "a", kind: "metric", fact: "count refunds as paid", relatesTo: "paid-orders" });
+    applyApprovalAction(store, "boss", { id, action: "accepted" });
+    const p = previewBody(store.getDoc("metric", "paid-orders")!.body);
+    expect(p.startsWith("x".repeat(600) + " …")).toBe(true);
+    expect(p).toContain("## Curation notes");
+    expect(p).toContain("count refunds as paid");
+    expect(p.length).toBeLessThan(800);
+  });
+
+  it("over the cap, keeps the newest notes and says earlier ones exist", () => {
+    const notes = [1, 2, 3].map((i) => `### #${i} (a, 2026-01-0${i})\n\n${String(i).repeat(500)}`).join("\n\n");
+    const p = previewBody(`${long}\n\n## Curation notes\n\n${notes}\n`, 600, 1200);
+    expect(p).toContain("(earlier notes in the full doc)");
+    expect(p).not.toContain("### #1 ");
+    expect(p).toContain("### #2 ");
+    expect(p).toContain("### #3 ");
   });
 });

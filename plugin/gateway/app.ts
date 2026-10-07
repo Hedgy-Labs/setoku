@@ -15,7 +15,7 @@ import {
   type SetokuConfig,
 } from "./lib/config";
 import { runLakeQuery } from "./lib/lake";
-import { buildLinkGraph, docRef, matchByTokens, retrieve, selectGotchas, uncoveredTerms } from "./lib/search";
+import { buildLinkGraph, docRef, matchByTokens, previewBody, retrieve, selectGotchas, uncoveredTerms } from "./lib/search";
 import { EMPTY_CATALOG, EVENTS_TABLE, catalogDetail, catalogSummary, eventCatalog, structuralMatches, type EventCatalog, type StructuralHit, type StructuralTable } from "./lib/catalog";
 import { combineSynonyms, synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
@@ -646,7 +646,7 @@ server.registerTool(
       } else {
         out.push(
           "",
-          doc.body.slice(0, 600) + " …",
+          previewBody(doc.body),
           `(truncated — call ${doc.type === "metric" ? `get_metric("${doc.name}")` : `describe_entity("${doc.name}")`} for the full doc)`,
           "",
         );

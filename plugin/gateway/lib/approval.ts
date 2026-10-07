@@ -17,6 +17,7 @@
  * COMMIT (applyApprovalAction): the human's accept/reject decision is applied
  * here, driven by their authenticated POST — outside any agent loop (I2/I9).
  */
+import { NOTES_HEADING } from "./search";
 import type { Correction, CorrectionDraft, KnowledgeDoc, KnowledgeStore } from "./store";
 
 /**
@@ -54,8 +55,6 @@ export function parentDoc(corr: Correction, docs: KnowledgeDoc[]): KnowledgeDoc 
     null
   );
 }
-
-const NOTES_HEADING = "## Curation notes";
 
 /**
  * Append a correction to its parent doc's body under a "Curation notes" section,
