@@ -527,16 +527,29 @@ export interface ServerInfo {
   replica: boolean;
 }
 
-/** Fails soft: a Postgres-compatible engine that can't answer gets version 0
- *  (no incremental) and replica false (today's behavior). */
+/** True when Postgres REJECTED the statement as unsupported (SQLSTATE class 42:
+ *  undefined function/object/column, syntax; class 0A: feature not supported)
+ *  — a lasting property of the engine. Anything else (a dropped pooler
+ *  connection, a timeout, a cancel) is transient and says nothing about it. */
+export function engineCannotAnswer(e: unknown): boolean {
+  const state = (e as { errno?: unknown } | null)?.errno; // Bun.SQL puts the SQLSTATE here
+  return typeof state === "string" && (state.startsWith("42") || state.startsWith("0A"));
+}
+
+/** Fails soft only where the engine can't answer: a Postgres-compatible engine
+ *  without these functions gets version 0 (no incremental) and replica false.
+ *  A transient failure THROWS (the pass is skipped): reading it as version 0
+ *  would flip every incremental mirror's shape and cost two back-to-back full
+ *  reloads of the whole source, one down to MergeTree and one back up. */
 export async function fetchServerInfo(pg: Pg): Promise<ServerInfo> {
   try {
     const rows: { v: number | string; r: boolean }[] = await pg.unsafe(
       `SELECT current_setting('server_version_num')::int AS v, pg_is_in_recovery() AS r`,
     );
     return { version: Number(rows[0]?.v ?? 0) || 0, replica: rows[0]?.r === true };
-  } catch {
-    return { version: 0, replica: false };
+  } catch (e) {
+    if (engineCannotAnswer(e)) return { version: 0, replica: false };
+    throw e;
   }
 }
 
@@ -630,7 +643,9 @@ export async function discoverTables(
   // Which tables store rows in plain heap (where xmin means "last writer"): a
   // heap table, or a partitioned table whose every leaf is one. Catalog shape
   // differs by version (relam ≥ 12, pg_partition_tree ≥ 12), so this only runs
-  // where incremental is possible at all, and a failure just means "no".
+  // where incremental is possible at all, and an engine that can't answer just
+  // means "no". A transient failure aborts the pass instead: "no" for one pass
+  // would full-reload every incremental mirror twice (see fetchServerInfo).
   const heap = new Set<string>();
   if (allowIncremental) {
     const heapRows: { schema: string; name: string }[] = await pg
@@ -649,7 +664,8 @@ export async function discoverTables(
                    WHERE pt.isleaf AND (lc.relkind <> 'r' OR coalesce(la.amname, '') <> 'heap'))
             END`)
       .catch((e: unknown) => {
-        console.error(`pg-mirror: heap-storage check failed, incremental disabled this pass: ${e}`);
+        if (!engineCannotAnswer(e)) throw e;
+        console.error(`pg-mirror: heap-storage check unsupported, incremental disabled this pass: ${e}`);
         return [];
       });
     for (const r of heapRows) heap.add(`${r.schema}.${r.name}`);
@@ -1168,10 +1184,10 @@ export async function runOnce(
 
   // State the CURRENT mirror tables were built from. A state row whose biz
   // table is gone is ignored (both the skip and the delta also require the
-  // table to exist), so pruned tables need no state cleanup.
+  // table to exist), so pruned tables need no state cleanup. Unreadable state
+  // skips the pass: an empty map would full-reload every table at once.
   const state = await loadMirrorState(ch).catch((e) => {
-    console.error(`pg-mirror: could not load mirror state (skip + incremental disabled this pass): ${e}`);
-    return new Map<string, MirrorState>();
+    throw new Error(`could not load mirror state, pass skipped: ${e}`);
   });
 
   const results: TableResult[] = [];
