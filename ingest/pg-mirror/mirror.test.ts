@@ -47,6 +47,7 @@ import {
   xminWindow,
   parseReconcileHours,
   quietWindowStart,
+  engineCannotAnswer,
   fetchServerInfo,
   INCREMENTAL_MIN_VERSION,
   type Cadence,
@@ -271,6 +272,7 @@ class FakeClickHouse {
   state: Record<string, unknown>[] = []; // pg_mirror_state, insert order
   failInserts = false;
   failInsertsInto: string | null = null; // fail only inserts into this "db.table"
+  failStateLoad = false;
 
   constructor() {
     this.server = Bun.serve({
@@ -365,6 +367,7 @@ class FakeClickHouse {
     if ((m = q.match(/^SELECT target, signature, cursor, toString\(full_at\) AS full_at, deltas FROM \S+\.pg_mirror_state FINAL/i))) {
       // ReplacingMergeTree(checked_at) ORDER BY target — last write per target
       // wins; toString(full_at) hands back the stored UTC wall-clock string
+      if (this.failStateLoad) return new Response("boom", { status: 500 });
       const latest = new Map<string, Record<string, unknown>>();
       for (const r of this.state) latest.set(String(r.target), r);
       return ok(
@@ -1055,6 +1058,47 @@ describe("incremental pull (real Postgres → FakeClickHouse)", () => {
     await runOnce(ipg as never, ich, INCR_CFG);
     expect(lastRun("events").status).toBe("ok");
     expect(events().find((e) => Number(e.id) === 3)!.payload).toBe("retry-me");
+  });
+
+  /** The real connection, except statements matching `match` reject with `err`. */
+  const failing = (match: RegExp, err: Error): unknown => {
+    const real = ipg as unknown as { unsafe(q: string): Promise<unknown>; begin(fn: unknown): Promise<unknown> };
+    return {
+      unsafe: (q: string) => (match.test(q) ? Promise.reject(err) : real.unsafe(q)),
+      begin: (fn: unknown) => real.begin(fn),
+      end: async () => {},
+    };
+  };
+  const blip = (): Error => Object.assign(new Error("Connection closed"), { code: "ERR_POSTGRES_CONNECTION_CLOSED" });
+  const unsupported = (): Error => Object.assign(new Error("function pg_is_in_recovery() does not exist"), { errno: "42883" });
+
+  it("an engine that can't answer the server probe fails soft; a transient failure throws", async () => {
+    expect(await fetchServerInfo(failing(/server_version_num/, unsupported()) as never)).toEqual({ version: 0, replica: false });
+    await expect(fetchServerInfo(failing(/server_version_num/, blip()) as never)).rejects.toThrow(/Connection closed/);
+    expect(engineCannotAnswer(Object.assign(new Error("x"), { errno: "0A000" }))).toBe(true);
+    expect(engineCannotAnswer(Object.assign(new Error("x"), { errno: "57014" }))).toBe(false); // query_canceled
+    expect(engineCannotAnswer(blip())).toBe(false);
+  });
+
+  it("a transient probe/heap/state failure skips the pass — it never demotes the mirrors to full reloads", async () => {
+    const runsBefore = ifake.runs.length;
+    const stateBefore = eventsState();
+    for (const pg of [failing(/server_version_num/, blip()), failing(/pg_am/, blip())])
+      await expect(runOnce(pg as never, ich, INCR_CFG)).rejects.toThrow(/Connection closed/);
+    ifake.failStateLoad = true;
+    try {
+      await expect(runOnce(ipg as never, ich, INCR_CFG)).rejects.toThrow(/mirror state/);
+    } finally {
+      ifake.failStateLoad = false;
+    }
+    expect(ifake.runs.length).toBe(runsBefore); // nothing pulled, nothing recorded
+    expect(ifake.engines.get("biz.events")!.replacing).toBe(true);
+    expect(eventsState()).toEqual(stateBefore); // boundary untouched
+    // the next healthy pass carries on incrementally
+    await write([`INSERT INTO public.events VALUES (9100, 'r', 'x')`]);
+    await runOnce(ipg as never, ich, INCR_CFG);
+    expect(lastRun("events").mode).toBe("incremental");
+    expect(eventIds()).toContain(9100);
   });
 });
 
