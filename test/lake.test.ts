@@ -8,7 +8,7 @@
  * Gated on SETOKU_E2E_CH_URL (e.g. http://default:pass@127.0.0.1:18123/default)
  * — skipped when no ClickHouse is reachable. CI provides a service container;
  * locally: docker run --rm -d -p 18123:8123 -e CLICKHOUSE_PASSWORD=pw \
- *            clickhouse/clickhouse-server:25.3
+ *            clickhouse/clickhouse-server:26.3
  */
 import { describe, it, expect, beforeAll, afterAll } from "bun:test";
 import type { Subprocess } from "bun";

@@ -48,7 +48,7 @@ services:
   # production ClickHouse configs (small preset, setoku_ro lake user, schemas).
   # Default passwords are fine here: synthetic data, never exposed.
   demo-clickhouse:
-    image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
+    image: clickhouse/clickhouse-server:26.3@sha256:de3e47c64078aa196dae2349e048fc98ba81947f651f5c20e06e46baea8ae40a
     restart: unless-stopped
     environment:
       CLICKHOUSE_USER: setoku
