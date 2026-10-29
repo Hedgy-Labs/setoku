@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useState, type ReactNode } from "react";
-import { AlertDialog } from "@base-ui-components/react/alert-dialog";
+import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { api, type MutationResult } from "../api";
 import { useApi } from "../hooks";
 import { useAuth } from "../auth";

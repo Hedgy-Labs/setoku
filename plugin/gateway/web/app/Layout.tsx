@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-import { Menu as BaseMenu } from "@base-ui-components/react/menu";
-import { Dialog } from "@base-ui-components/react/dialog";
+import { Menu as BaseMenu } from "@base-ui/react/menu";
+import { Dialog } from "@base-ui/react/dialog";
 import { useState } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api } from "./api";
