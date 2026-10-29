@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertDialog } from "@base-ui-components/react/alert-dialog";
+import { AlertDialog } from "@base-ui/react/alert-dialog";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api";
 import { useApi } from "../hooks";
