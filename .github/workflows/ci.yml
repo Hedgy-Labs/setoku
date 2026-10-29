@@ -22,7 +22,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
       clickhouse:
-        image: clickhouse/clickhouse-server:25.3
+        image: clickhouse/clickhouse-server:26.3
         env:
           CLICKHOUSE_USER: ci
           CLICKHOUSE_PASSWORD: ci

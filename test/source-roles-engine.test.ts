@@ -5,7 +5,7 @@
  * clickhouse-server container; locally (the CREATE ROLE setup needs the
  * default user to hold access_management):
  *   docker run --rm -d -p 18123:8123 -e CLICKHOUSE_PASSWORD=pw \
- *     -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 clickhouse/clickhouse-server:25.3
+ *     -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 clickhouse/clickhouse-server:26.3
  * ).
  *
  * This pins the three facts deploy/clickhouse/lake-users.xml relies on:

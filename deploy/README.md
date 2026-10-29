@@ -140,7 +140,7 @@ The net loop: canary + generate + triage turn every pending item into a linted, 
 Per-user data access (the Team page "Data access…" dialog) rides on ClickHouse
 roles defined in [`clickhouse/lake-users.xml`](./clickhouse/lake-users.xml) —
 one `setoku_src_<family>` role per source family, activated per request via the
-HTTP `role` parameter (ClickHouse ≥ 24.5; the compose pins 25.3). Deploy order
+HTTP `role` parameter (ClickHouse ≥ 24.5; the compose pins 26.3). Deploy order
 on an existing box (rsync via `scripts/deploy.sh` already carries the XML):
 
 1. After the rsync, confirm ClickHouse picked up the users.d change (it

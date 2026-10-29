@@ -32,7 +32,7 @@ x-logging: &default-logging
 
 services:
   caddy:
-    image: caddy:2-alpine@sha256:77c07d5ebfa5be9fd6c820d2094ae662c9e7eeb9bf98346b7f639900263ee2a2
+    image: caddy:2-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
     restart: unless-stopped
     logging: *default-logging
     ports:
@@ -153,7 +153,7 @@ services:
   clickhouse:
     logging: *default-logging
     profiles: [lake, ingest, slack, render, mercury, github, monarch, gmail, mirror]
-    image: clickhouse/clickhouse-server:25.3@sha256:b627d7a9bc0e0c1bac26cdbe9d2fc6316faa29c5d8a174f28f5abd57d0fa6ba2
+    image: clickhouse/clickhouse-server:26.3@sha256:de3e47c64078aa196dae2349e048fc98ba81947f651f5c20e06e46baea8ae40a
     restart: unless-stopped
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
@@ -188,11 +188,17 @@ services:
   vector:
     logging: *default-logging
     profiles: [ingest, render, mercury, github, monarch, gmail]
-    image: timberio/vector:0.49.0-alpine@sha256:2a31648e67280953aaf6b219c1b04729ac5ed12820ec2bfb698630b2d989d135
+    image: timberio/vector:0.61.0-alpine@sha256:3bb7ed5152910ed51729e256937b1d8a4bf67ff624e9d565e8e5877bffd015c7
     restart: unless-stopped
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+      # Vector >= 0.57 no longer expands ${VAR} in config files by default; without
+      # this every sink authenticates as the literal "${CLICKHOUSE_USER}", gets a 403,
+      # and Vector DROPS the batch (403 is non-retriable). The interpolated values are
+      # only the two credentials above, from our own .env — the same trust as before.
+      # Pinned by test/vector-compose.test.ts.
+      VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION: "true"
     volumes:
       - ./deploy/vector/vector.yaml:/etc/vector/vector.yaml:ro
       - vector_buffer:/var/lib/vector # disk buffer survives restarts (I4)
@@ -451,7 +457,7 @@ services:
   clickhouse-backup:
     logging: *default-logging
     profiles: [backup]
-    image: altinity/clickhouse-backup:2.6.5@sha256:d970be663360e8c4cfa1bb4cac21898e434c7bec3e196599d2b39ff55a20f841
+    image: altinity/clickhouse-backup:2.8.2@sha256:bc32794f2bd95d780bf6a0fea093d0ee463ec8e7dc486ccb845ce47b3406fad5
     environment:
       CLICKHOUSE_HOST: clickhouse
       CLICKHOUSE_USERNAME: ${CLICKHOUSE_USER:-setoku}
@@ -474,7 +480,7 @@ services:
   rclone:
     logging: *default-logging
     profiles: [backup]
-    image: rclone/rclone:1.69@sha256:1f497a86a6466395e62a5886613a14b7b18809543566ef9fa35fa1371a7ecc0f
+    image: rclone/rclone:1.75@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5
     environment:
       RCLONE_CONFIG_REMOTE_TYPE: s3
       RCLONE_CONFIG_REMOTE_PROVIDER: ${SETOKU_BACKUP_S3_PROVIDER:-Other}
