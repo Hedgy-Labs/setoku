@@ -193,6 +193,12 @@ services:
     environment:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER:-setoku}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set in .env}
+      # Vector >= 0.57 no longer expands ${VAR} in config files by default; without
+      # this every sink authenticates as the literal "${CLICKHOUSE_USER}", gets a 403,
+      # and Vector DROPS the batch (403 is non-retriable). The interpolated values are
+      # only the two credentials above, from our own .env — the same trust as before.
+      # Pinned by test/vector-compose.test.ts.
+      VECTOR_DANGEROUSLY_ALLOW_ENV_VAR_INTERPOLATION: "true"
     volumes:
       - ./deploy/vector/vector.yaml:/etc/vector/vector.yaml:ro
       - vector_buffer:/var/lib/vector # disk buffer survives restarts (I4)
