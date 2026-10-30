@@ -145,11 +145,12 @@ ssh "$SSH" "cd ${DIR} && docker compose exec -T server bun gateway/knowledge-lin
   || echo "   (lint reported issues or could not run — review above; deploy NOT blocked)"
 
 # Every `--build` above leaves layers in the BuildKit cache, which nothing else
-# ever trims (boxes carry no cron): campsh's reached 13 GB of a 38 GB disk. Keep
+# ever trims (boxes carry no cron): one box's reached 13 GB of a 38 GB disk. Keep
 # the last week so the next rebuild stays warm; older layers are dead weight.
-# Warn-only — a failed prune must not fail a deploy that already shipped.
+# Warn-only — a failed prune must not fail a deploy that already shipped. Capture
+# then tail (not a pipe) so a failed prune still reaches the `||`.
 echo "→ prune build cache older than 7 days…"
-ssh "$SSH" "docker builder prune -f --filter until=168h | tail -1" \
+ssh "$SSH" 'out=$(docker builder prune -f --filter until=168h) && echo "   $out" | tail -1' \
   || echo "   (build-cache prune failed — deploy NOT blocked)"
 
 echo "✓ deployed."
