@@ -29,7 +29,8 @@
  *   CLICKHOUSE_DB        — default setoku
  *   SETOKU_SPOOL_DIR     — default /spool
  *
- * Health: GET /health on :8686 → { connected, spool_depth, inserted_total }.
+ * Health: GET /health on :8686 → { connected, last_socket_activity_s, spool_depth, inserted_total }.
+ * `connected` means the socket answered within socketTimeoutMs, not just that it once said hello.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -304,6 +305,15 @@ export interface ListenerOptions {
   retryMaxMs?: number; // default 30000
   /** How often to emit a liveness beat while connected. Default 60000. */
   heartbeatIntervalMs?: number; // default 60000
+  /** How often to ping Slack over the socket. 0 = never ping. Default 30000. */
+  pingIntervalMs?: number; // default 30000
+  /**
+   * Tear the socket down and reconnect when nothing (no frame, no pong) has
+   * arrived for this long. A TCP connection that dies without a FIN never fires
+   * onclose, so without this a dead socket reads "connected" forever. 0 = off.
+   * Default 120000.
+   */
+  socketTimeoutMs?: number; // default 120000
 }
 
 export class SlackListener {
@@ -323,6 +333,11 @@ export class SlackListener {
   private chFailures = 0;
   private nextRetryAt = 0;
   private reconnectFailures = 0;
+  private livenessTimer: ReturnType<typeof setInterval> | null = null;
+  /** Last time the socket proved it was alive (any frame or pong). */
+  private lastSocketActivityAt = 0;
+  /** Ends the current socket session from outside its own callbacks. */
+  private endSession: (() => void) | null = null;
 
   constructor(options: ListenerOptions) {
     this.o = {
@@ -333,6 +348,8 @@ export class SlackListener {
       retryBaseMs: 1000,
       retryMaxMs: 30_000,
       heartbeatIntervalMs: 60_000,
+      pingIntervalMs: 30_000,
+      socketTimeoutMs: 120_000,
       ...options,
     };
     this.spool = new Spool(this.o.spoolDir);
@@ -355,7 +372,10 @@ export class SlackListener {
             return new Response("not found", { status: 404 });
           }
           return Response.json({
-            connected: this.connected,
+            connected: this.socketAlive,
+            last_socket_activity_s: this.lastSocketActivityAt
+              ? Math.round((Date.now() - this.lastSocketActivityAt) / 1000)
+              : null,
             spool_depth: this.spool.depth,
             spool_backlog_bytes: this.spool.backlogBytes,
             inserted_total: this.insertedTotal,
@@ -376,13 +396,49 @@ export class SlackListener {
         .catch((e) => console.error(`slack-listener: heartbeat init failed: ${e}`));
       this.heartbeatTimer = setInterval(() => void this.beat(), this.o.heartbeatIntervalMs);
     }
+    const livenessEvery = Math.min(
+      ...[this.o.pingIntervalMs, this.o.socketTimeoutMs].filter((ms) => ms > 0),
+    );
+    if (Number.isFinite(livenessEvery)) {
+      this.livenessTimer = setInterval(() => this.checkLiveness(), livenessEvery);
+    }
     void this.connectLoop();
+  }
+
+  /** True while connected AND the socket has shown signs of life recently. */
+  private get socketAlive(): boolean {
+    if (!this.connected) return false;
+    if (this.o.socketTimeoutMs <= 0) return true;
+    return Date.now() - this.lastSocketActivityAt <= this.o.socketTimeoutMs;
+  }
+
+  /**
+   * Ping the open socket, and end a session that has gone silent. Ending it
+   * here (not via ws.close(), which waits on a closing handshake a dead peer
+   * never answers) hands control straight back to connectLoop to reconnect.
+   */
+  private checkLiveness(): void {
+    const ws = this.ws;
+    if (!ws || !this.connected) return;
+    if (!this.socketAlive) {
+      const silentS = Math.round((Date.now() - this.lastSocketActivityAt) / 1000);
+      console.error(`slack-listener: socket silent for ${silentS}s, reconnecting`);
+      this.endSession?.();
+      return;
+    }
+    if (this.o.pingIntervalMs > 0 && ws.readyState === WebSocket.OPEN) {
+      try {
+        (ws as WebSocket & { ping?: () => void }).ping?.();
+      } catch {
+        // A failed ping on a dying socket is what the timeout is for.
+      }
+    }
   }
 
   /** Emit a liveness beat — only while connected, so a dead/disconnected listener
    *  stops beating and the source correctly goes stale. Best-effort. */
   private async beat(): Promise<void> {
-    if (!this.connected) return;
+    if (!this.socketAlive) return;
     try {
       await beatHeartbeat(this.o.clickhouse, "slack-listener", "connected");
     } catch (e) {
@@ -396,6 +452,9 @@ export class SlackListener {
     this.flushTimer = null;
     if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
+    if (this.livenessTimer) clearInterval(this.livenessTimer);
+    this.livenessTimer = null;
+    this.endSession?.();
     this.ws?.close();
     this.ws = null;
     this.healthServer?.stop(true);
@@ -454,11 +513,39 @@ export class SlackListener {
     await new Promise<void>((resolve, reject) => {
       const ws = new WebSocket(body.url!);
       this.ws = ws;
-      ws.onmessage = (ev) => this.onSocketMessage(ws, String(ev.data));
-      ws.onclose = () => resolve();
+      this.lastSocketActivityAt = Date.now();
+      let ended = false;
+      const end = () => {
+        if (ended) return;
+        ended = true;
+        if (this.endSession === end) this.endSession = null;
+        if (this.ws === ws) this.ws = null;
+        // Detach first: a late close/message from this socket must not touch
+        // the next session's state.
+        ws.onmessage = null;
+        ws.onclose = null;
+        ws.onerror = null;
+        try {
+          ws.close();
+        } catch {
+          // already closed
+        }
+        resolve();
+      };
+      this.endSession = end;
+      ws.onmessage = (ev) => {
+        this.lastSocketActivityAt = Date.now();
+        this.onSocketMessage(ws, String(ev.data));
+      };
+      ws.addEventListener("pong", () => {
+        this.lastSocketActivityAt = Date.now();
+      });
+      ws.onclose = () => end();
       ws.onerror = (ev) => {
         // onclose follows onerror; reject only if the socket never opened.
-        if (ws.readyState === WebSocket.CLOSED && !this.connected) {
+        if (ws.readyState === WebSocket.CLOSED && !this.connected && !ended) {
+          ended = true;
+          if (this.endSession === end) this.endSession = null;
           reject(new Error(`websocket error: ${ev.type}`));
         }
       };
