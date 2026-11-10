@@ -499,3 +499,46 @@ test("spool caps the in-memory queue and reloads overflow from disk", () => {
   expect(spool.backlogBytes).toBe(0);
   expect(fs.readFileSync(path.join(dir, "slack-events.ndjson"), "utf8")).toBe("");
 });
+
+// ---------------------------------------------------------------------------
+// Dead-socket watchdog: a TCP drop with no FIN never fires onclose
+// ---------------------------------------------------------------------------
+
+test("silent socket: reconnects and stops beating instead of reading 'connected' forever", async () => {
+  const slack = new FakeSlack();
+  const ch = new FakeClickHouse();
+  // No pings, so after hello the fake goes silent, like a half-open socket.
+  const listener = makeListener(slack, ch, tmpSpoolDir(), {
+    pingIntervalMs: 0,
+    socketTimeoutMs: 150,
+  });
+  listener.start();
+
+  await waitFor(() => slack.socketsOpened === 1, "first socket");
+  await waitFor(() => slack.openCalls >= 2, "reconnect after silence", 3000);
+  await waitFor(() => slack.socketsOpened >= 2, "second socket");
+
+  // The new socket still ingests.
+  slack.send(envelope("env-w", { channel: "C001", ts: "1718000300.000000", user: "U001", text: "after watchdog" }));
+  await waitFor(() => ch.rows.length === 1, "row after watchdog reconnect");
+
+  await listener.stop();
+});
+
+test("quiet but alive socket: pongs keep it connected, no reconnect", async () => {
+  const slack = new FakeSlack();
+  const ch = new FakeClickHouse();
+  const listener = makeListener(slack, ch, tmpSpoolDir(), {
+    pingIntervalMs: 30,
+    socketTimeoutMs: 150,
+  });
+  listener.start();
+
+  await waitFor(() => listener.connected, "connected");
+  await Bun.sleep(500); // > 3x the timeout with no Slack frames, only pongs
+  expect(slack.openCalls).toBe(1);
+  const health = (await (await fetch(listener.healthUrl!)).json()) as Record<string, unknown>;
+  expect(health.connected).toBe(true);
+
+  await listener.stop();
+});
