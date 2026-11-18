@@ -11,6 +11,16 @@
  * no-network frame). Its behavior is covered by test/app-runtime.test.ts
  * via a minimal DOM stub.
  */
+import { esc as mdEsc, inline as mdInline, renderMarkdown } from "./markdown";
+
+// The SAME markdown renderer the shared-file viewer uses, embedded as source so
+// Setoku.markdown renders an attached .md identically in the frame. markdown.ts
+// keeps these functions self-contained so their source stands alone.
+const MARKDOWN_JS = `var renderMarkdown = (function () {
+var esc = ${mdEsc.toString()};
+var inline = ${mdInline.toString()};
+${renderMarkdown.toString()}
+return renderMarkdown; })();`;
 
 /** Browser runtime: defines `window.Setoku` with bar/table/stat/line + fmt. Reads
  *  panel data lazily from `window.__SETOKU__` so it's injected after the data. */
@@ -165,8 +175,27 @@ export const APP_RUNTIME = `(function () {
   function setParam(name, value) {
     try { parent.postMessage({ __setoku_set_param: true, name: String(name), value: value == null ? "" : String(value) }, "*"); } catch (e) { /* no parent */ }
   }
+  // Attached TEXT files (md/txt/csv/json). The box inlines \`setoku-file:<name>\`
+  // as a base64 data: URL before the template runs; these decode it (UTF-8).
+  // A reference that didn't resolve (not attached / too big) is still the raw
+  // token: text() returns null and says why in the console, never throws.
+  function fileText(ref) {
+    var m = /^data:[^,]*;base64,(.*)$/.exec(String(ref == null ? "" : ref));
+    if (!m) { try { console.warn("Setoku.text: " + String(ref).slice(0, 80) + " is not an attached file (attach it with publish_file + appId)"); } catch (e) { /* no console */ } return null; }
+    var bin = atob(m[1]), bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+  function fileJson(ref) { var t = fileText(ref); return t == null ? null : JSON.parse(t); }
+  ${MARKDOWN_JS}
+  function markdown(target, ref) {
+    var el = elOf(target), t = fileText(ref);
+    if (!el) return;
+    el.innerHTML = t == null ? '<div style="color:#78716c">File not attached.</div>' : renderMarkdown(t);
+  }
   window.Setoku = { bar: bar, table: table, stat: stat, line: line, fmt: fmt, num: num,
-    rows: function (k) { return resolve(k).rows; }, state: state, setParam: setParam };
+    rows: function (k) { return resolve(k).rows; }, state: state, setParam: setParam,
+    text: fileText, json: fileJson, markdown: markdown };
   // Echo the RESOLVED param values to the parent shell so the control bar reflects
   // what actually ran — a viewer value the server rejected shows as the default
   // here, not what was typed. The parent resets its controls to these.

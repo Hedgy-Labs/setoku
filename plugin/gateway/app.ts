@@ -54,10 +54,15 @@ import {
   MIME_BY_EXT,
   REFUSED_EXT,
   UPLOAD_TTL_MS,
+  type AssetClass,
+  assetClass,
+  assetProblem,
+  assetRefs,
   decodeBase64Strict,
   extOf,
   mimeForName,
-  sanitizeFileName,
+  normalizeFileName,
+  rewriteCssRefs,
 } from "./lib/files";
 import { formatBytes } from "./lib/format";
 import { mintAppAccessToken } from "./lib/app-access";
@@ -1733,6 +1738,60 @@ const clampRefresh = (refreshSeconds: number | undefined, hasPanels: boolean): n
     ? Math.min(MAX_REFRESH_SECONDS, Math.max(MIN_REFRESH_SECONDS, Math.round(refreshSeconds ?? DEFAULT_REFRESH_SECONDS)))
     : null;
 
+// `setoku-file:<name>` references (lib/files.ts inlineAppAssets) that won't
+// resolve on the next render — the agent can't see a font silently fall back.
+function assetNotes(appId: string, html: string): string {
+  const refs = assetRefs(html);
+  if (!refs.length) return "";
+  const files = new Map(fileStore.list(appId).map((f) => [f.name, f]));
+  const lines: string[] = [];
+  const check = (name: string, via: string): void => {
+    const problem = assetProblem(files.get(name));
+    if (!problem) return;
+    lines.push(
+      problem === "not attached"
+        ? `- setoku-file:${name}${via} isn't attached yet — publish_file({ name: "${name}", appId: "${appId}" }) (omit content and curl it for a file on disk).`
+        : `- setoku-file:${name}${via} won't inline: ${problem}.`,
+    );
+  };
+  for (const name of refs) {
+    check(name, "");
+    // An attached stylesheet is expanded into the template at render, so ITS
+    // references count too (a font a brand.css points at).
+    const f = files.get(name);
+    if (f?.mime !== "text/css" || assetProblem(f)) continue;
+    const raw = fileStore.bytes(appId, name);
+    if (!raw) continue;
+    const { css, unresolved } = rewriteCssRefs(new TextDecoder().decode(raw), new Set(files.keys()));
+    for (const inner of assetRefs(css)) check(inner, ` (in ${name})`);
+    for (const rel of unresolved)
+      lines.push(
+        `- ${name} has url(${rel}) — attach that file to this app (spaces become "-") and it maps automatically; ` +
+          "external URLs can't load (no network).",
+      );
+  }
+  return lines.length ? `\n\nAsset references:\n${lines.join("\n")}` : "";
+}
+
+// After attaching a font/image to an APP: how to use it from the template.
+function assetHint(target: { format: string } | null, fname: string, mime: string): string {
+  if (!target || target.format === "file") return "";
+  const use: Record<AssetClass, string> = {
+    font: `@font-face{font-family:X;src:url(setoku-file:${fname})}`,
+    style: `<link rel="stylesheet" href="setoku-file:${fname}">`,
+    script: `<script src="setoku-file:${fname}"></script>`,
+    image: `<img src="setoku-file:${fname}"> or url(setoku-file:${fname})`,
+    media: mime.startsWith("video/") ? `<video controls src="setoku-file:${fname}"></video>` : `<audio controls src="setoku-file:${fname}"></audio>`,
+    text: mime === "text/markdown"
+      ? `Setoku.markdown('<element id>', 'setoku-file:${fname}')`
+      : mime === "application/json"
+        ? `Setoku.json('setoku-file:${fname}')`
+        : `Setoku.text('setoku-file:${fname}')`,
+  };
+  const cls = assetClass(mime);
+  return cls ? `\n\nUse it in the template: ${use[cls]} — the box inlines it at render (see app_guide).` : "";
+}
+
 // Non-blocking warnings the agent can't see for itself (it publishes blind):
 // missing curated metric links + static render-lint of the template.
 async function publishNotes(html: string, panels: AppPanel[]): Promise<string> {
@@ -1889,11 +1948,41 @@ const APP_GUIDE = [
   "- A file that already exists on disk: OMIT `content`. You get a one-time upload URL and the exact",
   "  `curl -T` line — run it. NEVER retype a file's bytes into a tool call.",
   "- Attach to an app you authored with `appId`: viewers get it as a download under the app. The frame",
-  "  itself has NO network and cannot read attachments — data an app renders comes from panels (SQL).",
+  "  itself has NO network — data an app renders comes from panels (SQL), not attached files.",
   "- What viewers see: csv/tsv/json → a table; md/txt → a document; png/jpg/gif/webp → the image;",
   "  pdf → open in a tab; anything else → a download. .html is refused (that's an app: publish_app).",
   "- Files are NOT knowledge: find_context never returns them. Capture what a file MEANS (the",
   "  definition it established, the caveat it found) with report_correction.",
+  "",
+  "## Your own files — fonts, logos, images, audio, video, markdown — `setoku-file:<name>`",
+  "The frame can't fetch anything, so don't link a font CDN, an external image, or a hosted mp3 (it",
+  "silently fails). Instead attach the file to the app with publish_file({ name, appId }) — on disk: omit",
+  "`content` and curl it to the upload URL — and reference it in the template as `setoku-file:<name>`.",
+  "The box swaps each reference for the file's bytes (a data: URL) when it renders. Anywhere a URL goes:",
+  "  <style>@font-face{font-family:Brand;src:url(setoku-file:Brand.woff2) format('woff2')}",
+  "         body{font-family:Brand,system-ui,sans-serif}</style>",
+  "  <img src=\"setoku-file:logo.svg\" alt=\"\">   ·   el.style.backgroundImage = 'url(setoku-file:bg.webp)'",
+  "  <audio controls src=\"setoku-file:intro.mp3\"></audio>   ·   new Audio('setoku-file:ding.wav').play()",
+  "  <video controls muted loop src=\"setoku-file:demo.mp4\"></video>",
+  "CSS / JS files: the usual tags work — the box expands each into an inline <style>/<script> block, so",
+  "a design-system stylesheet or a chart library loads like you'd expect (url(setoku-file:…) inside the",
+  "CSS resolves too, and so does a stock stylesheet's RELATIVE url(\"../fonts/Brand.woff2\") once a file of",
+  "that name is attached — attach the CSS and its fonts/images as-is):",
+  "  <link rel=\"stylesheet\" href=\"setoku-file:brand.css\">   ·   <script src=\"setoku-file:chart.umd.js\"></script>",
+  "  (A library that fetches more files at runtime — lazy chunks, a CDN — still can't: no network.)",
+  "TEXT files (md, txt, csv, tsv, json, xml) are read in script — the reference becomes a data: URL the",
+  "helpers decode:",
+  "  Setoku.markdown('notes', 'setoku-file:notes.md')        // renders into #notes (same renderer as file links)",
+  "  var cfg = Setoku.json('setoku-file:config.json')         // parsed JSON",
+  "  var raw = Setoku.text('setoku-file:list.csv')            // string; parse it yourself",
+  "  (each returns null / renders a note if the file isn't attached)",
+  "Types: fonts (woff2/woff/ttf/otf), images (png/jpg/gif/webp/avif/svg), audio (mp3/wav/ogg/m4a/aac/flac),",
+  "video (mp4/webm/mov), css, js, text (md/txt/csv/tsv/json/xml). ≤ 8 MB each, ~16 MB per app — every view re-sends",
+  "them, so prefer woff2, compressed audio, short clips. Live DATA still comes from panels, not files.",
+  "Publish the app first (you need its id), then attach — the reference resolves on the next render.",
+  "Names with spaces are stored with \"-\" (\"Acme Display.ttf\" → setoku-file:Acme-Display.ttf); a stylesheet's",
+  "url(\"Acme Display.ttf\") maps to it automatically. get_app lists any reference still unresolved — in the",
+  "template OR inside an attached stylesheet — so check it after your uploads.",
   "",
   "## Minimal example",
   'panels: [{ key: "rev", title: "Revenue (2025)", description: "Sum of paid ticket prices, test excluded",',
@@ -2004,7 +2093,8 @@ server.registerTool(
         (publishBase ? "" : "(Prefix the path above with your box URL.) ") +
         `\n\nEdit it with update_app("${id}", …) — same link. Manage: get_app / unpublish_app("${id}"). ` +
         "(An admin can make this app public from /admin.)" +
-        (await publishNotes(html, normalized)),
+        (await publishNotes(html, normalized)) +
+        assetNotes(id, html),
     );
   },
 );
@@ -2167,7 +2257,8 @@ server.registerTool(
     const finalPanels = normalized ?? meta.panels ?? [];
     return text(
       `Updated "${meta.title}" → ${publishUrl(tid, meta.visibility)} (same link).` +
-        (await publishNotes(finalHtml, finalPanels)),
+        (await publishNotes(finalHtml, finalPanels)) +
+        assetNotes(tid, finalHtml),
     );
   },
 );
@@ -2274,7 +2365,15 @@ server.registerTool(
       return text(lines.join("\n"));
     }
     if (attachments.length)
-      lines.push("## attachments (downloadable files listed under the app — the frame cannot fetch them)", ...attachments.map(fileLine), "");
+      lines.push(
+        "## attachments (downloads under the app; fonts/images/media/css/js/text ones are usable in the template as setoku-file:<name>)",
+        ...attachments.map(fileLine),
+        "",
+      );
+    {
+      const notes = assetNotes(dash.id, dash.body);
+      if (notes) lines.push(notes.trim(), "");
+    }
     // Params first — update_app REPLACES the whole param set, so a round-trip
     // must carry them back VERBATIM. Emit them as the exact `params` arg JSON
     // (labels, options, min/max/maxLength and all) rather than a lossy human
@@ -2375,9 +2474,11 @@ server.registerTool(
       "listed beside the apps. Team-only; an admin can make it public. Two ways to send the bytes: " +
       `pass \`content\` inline for small content you just produced (≤ ${MAX_INLINE_BYTES / 1e6} MB), or OMIT \`content\` ` +
       "for a file that already exists on disk — you get a one-time upload URL and a `curl -T` line to run, so you " +
-      "never retype the bytes. Pass `appId` to attach the file to an app you authored (a download under the app) " +
+      "never retype the bytes. Pass `appId` to attach the file to an app you authored (a download under the app; " +
+      "a font, image, audio/video clip, css/js file, or md/csv/json file attached this way can be used IN the app's template as " +
+      "`setoku-file:<name>` — see app_guide) " +
       "or to replace a file you shared before (same name). The extension sets the type (csv, tsv, json, md, txt, " +
-      "png, jpg, gif, webp, pdf, xlsx, docx, parquet, zip …); .html is refused — that's an app (publish_app). " +
+      "png, jpg, gif, webp, svg, pdf, xlsx, docx, parquet, zip, woff2, ttf, otf, mp3, wav, m4a, mp4, webm, css, js …); .html is refused — that's an app (publish_app). " +
       "Files are not knowledge: find_context never returns them.",
     inputSchema: {
       name: z.string().describe("File name with extension, e.g. report.csv — letters, digits, `.`, `_`, `-` only; no path"),
@@ -2398,11 +2499,14 @@ server.registerTool(
     },
   },
   async ({ name, title, content, encoding, appId, model }) => {
-    const fname = sanitizeFileName(name);
+    const fname = normalizeFileName(name);
     if (!fname)
       return errorText(
-        `"${name}" isn't a usable file name. Use letters, digits, ".", "_" and "-" (no spaces, no path, no leading dot), ≤ 120 chars, e.g. q2-report.csv.`,
+        `"${name}" isn't a usable file name. Use letters, digits, ".", "_" and "-" (no path, no leading dot), ≤ 120 chars, e.g. q2-report.csv.`,
       );
+    // Spaces are folded to "-" rather than refused; say so, since the template
+    // must reference the STORED name.
+    const renamed = fname !== name.trim() ? ` (stored as ${fname} — spaces aren't allowed in names; reference it by that name)` : "";
     const ext = extOf(fname);
     if (REFUSED_EXT[ext]) return errorText(REFUSED_EXT[ext]);
     const mime = mimeForName(fname);
@@ -2476,11 +2580,13 @@ server.registerTool(
       });
       return text(
         (target
-          ? `Attached ${fname} (${formatBytes(buf.byteLength)}) to "${target.title}" → ${shareUrl}`
-          : `Shared ${fname} (${formatBytes(buf.byteLength)}) → ${shareUrl}`) +
+          ? `Attached ${fname}${renamed} (${formatBytes(buf.byteLength)}) to "${target.title}" → ${shareUrl}`
+          : `Shared ${fname}${renamed} (${formatBytes(buf.byteLength)}) → ${shareUrl}`) +
           audience +
           (publishBase ? "" : " (Prefix the path with your box URL.)") +
-          `\n\nDownload: ${fileUrl(id, fname, target?.visibility ?? "team")}\nManage: get_app("${id}") / unpublish_app("${id}").`,
+          `\n\nDownload: ${fileUrl(id, fname, target?.visibility ?? "team")}\nManage: get_app("${id}") / unpublish_app("${id}").` +
+          assetHint(target, fname, mime) +
+          (target && target.format !== "file" ? assetNotes(target.id, store.getPublished(target.id)?.body ?? "") : ""),
       );
     }
 
@@ -2503,12 +2609,15 @@ server.registerTool(
     const uploadUrl = `${publishBase}/u/${nonce}`;
     store.audit(user, "publish_file_url", { id, name: fname, mime, appId: target?.id ?? null });
     return text(
-      `Upload URL minted for ${fname} — valid ${UPLOAD_TTL_MS / 60_000} minutes, one file, ≤ ${MAX_UPLOAD_BYTES / 1e6} MB. Run:\n\n` +
-        `  curl -fsS -T "./${fname}" "${uploadUrl}"\n\n` +
+      `Upload URL minted for ${fname}${renamed} — valid ${UPLOAD_TTL_MS / 60_000} minutes, one file, ≤ ${MAX_UPLOAD_BYTES / 1e6} MB. Run:\n\n` +
+        // The LOCAL file keeps its original name (spaces and all) even when the
+        // box stores it renamed, so the curl line names what's actually on disk.
+        `  curl -fsS -T "./${name.trim().replace(/"/g, '\\"')}" "${uploadUrl}"\n\n` +
         "(adjust the path to where the file is). " +
         (publishBase ? "" : "Prefix the URL with your box URL. ") +
         `When curl returns, the file is live${target ? ` on "${target.title}"` : ""} at ${shareUrl}.${audience}\n` +
-        `Then: get_app("${id}") to confirm, unpublish_app("${id}") to archive.`,
+        `Then: get_app("${id}") to confirm (it lists any template references still unresolved), unpublish_app("${id}") to archive.` +
+        assetHint(target, fname, mime),
     );
   },
 );
