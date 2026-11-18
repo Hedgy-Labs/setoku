@@ -45,6 +45,8 @@ const manifest = JSON.parse(await read("plugin/.claude-plugin/plugin.json")) as 
   description: string;
 };
 const VERSION = manifest.version;
+/** What an optional tool needs from the box (it's absent from tools/list otherwise). */
+const PREVIEW_REQUIRES = "the box’s optional preview renderer (compose profile `preview`)";
 
 /**
  * The tool surface, read out of `buildServer()`. Capability gating is derived
@@ -54,7 +56,7 @@ const VERSION = manifest.version;
  * point of publishing which role a tool needs).
  */
 async function tools(): Promise<
-  { name: string; title: string; role: string; readOnly: boolean }[]
+  { name: string; title: string; role: string; readOnly: boolean; requires?: string }[]
 > {
   const src = await read("plugin/gateway/app.ts");
   // THROW rather than degrade. These markers are only comments, so a refactor can
@@ -80,8 +82,11 @@ async function tools(): Promise<
     ["janitor", blockRange("if (canDraft) {", "} // end canDraft")],
     ["janitor", blockRange("if (canReject) {", "} // end canReject")],
   ];
+  // Not a role (the role is analyst): registered only when the box runs the
+  // optional preview renderer, and never on a curator session.
+  const previewRange = blockRange("if (preview && !denyLakeRead) {", "} // end preview");
 
-  const out: { name: string; title: string; role: string; readOnly: boolean }[] = [];
+  const out: { name: string; title: string; role: string; readOnly: boolean; requires?: string }[] = [];
   // Tool names are conventionally lower_snake_case, but the regex must not be
   // NARROWER than what registerTool accepts: a name with a digit (get_metric_v2)
   // silently vanished from the catalog, and the test reused this same pattern so
@@ -106,6 +111,7 @@ async function tools(): Promise<
       title: title.replace(/\\"/g, '"'),
       role: gate ? gate[0] : "analyst",
       readOnly,
+      ...(at > previewRange[0] && at < previewRange[1] ? { requires: PREVIEW_REQUIRES } : {}),
     });
   }
   return out;
@@ -546,7 +552,7 @@ function openapi(toolNames: string[]) {
 
 /* ----------------------------- agent discovery ---------------------------- */
 
-type Tool = { name: string; title: string; role: string; readOnly: boolean };
+type Tool = { name: string; title: string; role: string; readOnly: boolean; requires?: string };
 type Skill = { id: string; name: string; description: string };
 type Connector = { id: string; name: string; data: string };
 
@@ -1048,7 +1054,11 @@ ${steps(WHEN_TO_USE.how_to_call)}
 
 **Every session** — the analyst surface. Reads data and curated context, and may only *propose* knowledge changes:
 
-${byRole("analyst").map((t) => `- \`${t.name}\`${t.readOnly ? "" : " (writes)"} — ${prose(t.title)}`).join("\n")}
+${byRole("analyst").filter((t) => !t.requires).map((t) => `- \`${t.name}\`${t.readOnly ? "" : " (writes)"} — ${prose(t.title)}`).join("\n")}
+
+**Optional, analyst sessions on boxes that run the preview renderer** (compose profile \`preview\`; not the demo box):
+
+${toolList.filter((t) => t.requires).map((t) => `- \`${t.name}\` — ${prose(t.title)}`).join("\n")}
 
 **Curator sessions only.** Commits curated knowledge:
 

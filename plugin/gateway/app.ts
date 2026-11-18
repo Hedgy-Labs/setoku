@@ -21,7 +21,7 @@ import { combineSynonyms, synonymsOf } from "./lib/synonyms";
 import type { EmbedIndex } from "./lib/embed-index";
 import type { DerivedSynonyms } from "./lib/derived-synonyms";
 import { KnowledgeStore, mintShareId, type AppPanel, type DocType } from "./lib/store";
-import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, MAX_RENDER_ROW_BYTES, RENDER_FETCH_CEILING, PG_RETIRED_ERROR, runPanel, trimRowsToBytes, compilePanel, isFullDoc } from "./lib/apps";
+import { MAX_PANELS, MIN_REFRESH_SECONDS, MAX_REFRESH_SECONDS, DEFAULT_REFRESH_SECONDS, MAX_RENDER_ROW_BYTES, RENDER_FETCH_CEILING, PG_RETIRED_ERROR, runPanel, trimRowsToBytes, compilePanel, isFullDoc, type RenderedPanel } from "./lib/apps";
 import { queryErrorHint, extractTableRefs, extractUnknownColumn, matchReferencedTables, renderColumnHint } from "./lib/queryhint";
 import { resolveParams, paramsVariant, type AppParam } from "./lib/params";
 import { lintAppTemplate } from "./lib/app-runtime";
@@ -46,6 +46,7 @@ import {
 } from "./lib/access";
 import { notifyActivity } from "./lib/notify";
 import { emitAppChanged } from "./lib/app-events";
+import { PreviewLimitError, type PreviewShot, type Viewport } from "./lib/preview";
 import {
   FileStore,
   FileStoreQuotaError,
@@ -110,7 +111,20 @@ export function capabilitiesFor(role: TokenRole): Capabilities {
   }
 }
 
+/** Renders an app in the headless previewer (http.ts wires it when the box's
+ *  `preview` renderer is up; lib/preview.ts). Null → the tool isn't offered. */
+export interface AppPreview {
+  render(
+    id: string,
+    viewport: Viewport,
+    params: Record<string, string>,
+    identity: string,
+  ): Promise<{ shot: PreviewShot; panels: RenderedPanel[] } | null>;
+}
+
 export interface GatewayDeps {
+  /** App screenshots (preview_app). Null when no renderer is running. */
+  preview?: AppPreview | null;
   projectDir: string;
   store: KnowledgeStore;
   /** Shared files (files.db) — the bytes behind `format='file'` rows and app
@@ -233,6 +247,7 @@ export function buildServer({
   embedIndex = null,
   derivedSynonyms = null,
   roster = null,
+  preview = null,
 }: GatewayDeps): McpServer {
 const { canWrite, denyLakeRead, canDraft, canReject } = capabilitiesFor(role);
 // Server-level instructions ride the initialize response — read once, before
@@ -1773,6 +1788,13 @@ function assetNotes(appId: string, html: string): string {
   return lines.length ? `\n\nAsset references:\n${lines.join("\n")}` : "";
 }
 
+// You published blind; look before you report done.
+function previewNudge(appId: string): string {
+  return preview && !denyLakeRead
+    ? `\n\nSee it before you hand it over: preview_app("${appId}") returns a screenshot + any JS errors, blocked fetches, or broken fonts/images.`
+    : "";
+}
+
 // After attaching a font/image to an APP: how to use it from the template.
 function assetHint(target: { format: string } | null, fname: string, mime: string): string {
   if (!target || target.format === "file") return "";
@@ -1984,6 +2006,11 @@ const APP_GUIDE = [
   "url(\"Acme Display.ttf\") maps to it automatically. get_app lists any reference still unresolved — in the",
   "template OR inside an attached stylesheet — so check it after your uploads.",
   "",
+  "## Check your work — preview_app",
+  "If this box offers preview_app, call it after publish_app / update_app (and after uploading files):",
+  "it renders the app like a viewer's browser and returns a screenshot + JS errors, blocked fetches,",
+  "failed fonts/images, empty panels, overflow. It's rate-limited: batch fixes, then preview once.",
+  "",
   "## Minimal example",
   'panels: [{ key: "rev", title: "Revenue (2025)", description: "Sum of paid ticket prices, test excluded",',
   '          sql: "SELECT sum(amount_cents)/100.0 AS dollars FROM ..." }]',
@@ -2094,7 +2121,8 @@ server.registerTool(
         `\n\nEdit it with update_app("${id}", …) — same link. Manage: get_app / unpublish_app("${id}"). ` +
         "(An admin can make this app public from /admin.)" +
         (await publishNotes(html, normalized)) +
-        assetNotes(id, html),
+        assetNotes(id, html) +
+        previewNudge(id),
     );
   },
 );
@@ -2258,7 +2286,8 @@ server.registerTool(
     return text(
       `Updated "${meta.title}" → ${publishUrl(tid, meta.visibility)} (same link).` +
         (await publishNotes(finalHtml, finalPanels)) +
-        assetNotes(tid, finalHtml),
+        assetNotes(tid, finalHtml) +
+        previewNudge(tid),
     );
   },
 );
@@ -2459,6 +2488,85 @@ server.registerTool(
       : errorText(`No active app with id "${id}" (already archived, or unknown id). Call list_apps to check.`);
   },
 );
+
+// preview_app: the agent SEES what it published. Lake data is on the screenshot
+// (panels render from cache), so it's an analyst/janitor tool — a curator
+// session is walled off from lake reads (I2), and this would be a side door.
+if (preview && !denyLakeRead) {
+  server.registerTool(
+    "preview_app",
+    {
+      annotations: { readOnlyHint: true },
+      title: "Screenshot an app + report what broke",
+      description:
+        "Renders an app exactly as viewers get it (same sandbox, panels from cache) in a headless browser and " +
+        "returns a SCREENSHOT plus a problem report: JS errors, console errors, fetches the no-network frame " +
+        "blocked (CDN fonts/scripts/images), fonts/images that failed, panel errors or empty panels, horizontal " +
+        "overflow, a blank page. Call it after publish_app / update_app (and after attaching files) instead of " +
+        "assuming the page works. Rate-limited per person and per box — fix several things, then preview once; " +
+        "re-previewing an unchanged app is free.",
+      inputSchema: {
+        id: z.string().describe("The app id from publish_app / list_apps"),
+        viewport: z.enum(["desktop", "mobile"]).optional().describe("desktop = 1280px wide (default); mobile = 390px"),
+        params: z
+          .record(z.string())
+          .optional()
+          .describe("Viewer param values to render with (name → value); defaults otherwise. Uncached variants render empty."),
+      },
+    },
+    async ({ id, viewport, params }) => {
+      const vp: Viewport = viewport ?? "desktop";
+      const meta = store.getPublishedMeta(id.trim());
+      if (!meta || meta.archivedAt) return errorText(`No active app "${id}" (archived or unknown). Call list_apps.`);
+      if (meta.format === "file") return errorText(`"${meta.title}" is a shared file, not an app — nothing to render.`);
+      let out: Awaited<ReturnType<AppPreview["render"]>>;
+      try {
+        out = await preview.render(meta.id, vp, params ?? {}, user);
+      } catch (e) {
+        if (e instanceof PreviewLimitError) return errorText(e.message);
+        store.audit(user, "preview_app", { id: meta.id, viewport: vp, ok: false });
+        return errorText(`The preview failed to render (${(e as Error).message.split("\n")[0].slice(0, 200)}). The app itself is unaffected; try again shortly.`);
+      }
+      if (!out) return errorText(`No active app "${id}". Call list_apps.`);
+      const { shot, panels } = out;
+      store.audit(user, "preview_app", { id: meta.id, viewport: vp, ok: true, cached: shot.cached });
+      const d = shot.diagnostics;
+      const problems: string[] = [];
+      for (const e of d.errors) problems.push(`JS error — ${e}`);
+      for (const b of d.blocked)
+        problems.push(`Blocked by the no-network frame — ${b}. Attach the file and reference it as setoku-file:<name> (app_guide).`);
+      // Chrome also logs each CSP block to the console; don't say it twice.
+      for (const c of d.console) if (!(d.blocked.length && /Content Security Policy/i.test(c))) problems.push(`console ${c}`);
+      for (const f of d.fonts) problems.push(`Font ${f}`);
+      for (const i of d.images) problems.push(i);
+      for (const p of panels) {
+        if (p.error) problems.push(`Panel "${p.key}" errored: ${p.error.slice(0, 200)}`);
+        else if (!p.rows.length) problems.push(`Panel "${p.key}" rendered with 0 rows (empty result, or this param variant isn't cached yet).`);
+      }
+      if (d.overflowPx > 4) problems.push(`Horizontal overflow: content is ${d.width}px wide in a ${vp === "mobile" ? 390 : 1280}px viewport.`);
+      if (d.blank) problems.push("The page rendered BLANK (no text or images).");
+      const notes: string[] = [];
+      for (const m of d.media)
+        notes.push(`${m} (headless Chromium lacks some codecs, e.g. H.264; it may still play in Chrome/Safari)`);
+      const assetIssues = assetNotes(meta.id, store.getPublished(meta.id)?.body ?? "").trim();
+      const report =
+        `Rendered "${meta.title}" at ${vp} (${vp === "mobile" ? "390" : "1280"}px) — page ${d.width}×${d.height}px` +
+        (d.clipped ? `, screenshot clipped to the top 4000px` : "") +
+        (shot.cached ? " · unchanged since the last preview (cached)" : "") +
+        ". Panels shown from cache.\n\n" +
+        (problems.length ? `Problems (${problems.length}):\n${problems.map((p) => `- ${p}`).join("\n")}` : "No problems detected.") +
+        (notes.length ? `\n\nNotes:\n${notes.map((n) => `- ${n}`).join("\n")}` : "") +
+        (assetIssues ? `\n\n${assetIssues}` : "") +
+        "\n\nThe screenshot doesn't show interaction (clicks, audio playback) — read the template for those.";
+      return {
+        content: [
+          { type: "image" as const, data: shot.jpeg.toString("base64"), mimeType: "image/jpeg" },
+          { type: "text" as const, text: report },
+        ],
+      };
+    },
+  );
+} // end preview
 
 // Files: the other kind of published thing (lib/files.ts). Same membrane
 // story as publish_app — publishing a file commits no knowledge and grants
