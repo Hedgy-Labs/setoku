@@ -173,7 +173,7 @@ services:
     mem_limit: 768m
     pids_limit: 512
     read_only: true
-    tmpfs: [/tmp]
+    tmpfs: [/tmp, /root/.cache]  # chrome scratch + fontconfig's cache
 
   clickhouse:
     logging: *default-logging
