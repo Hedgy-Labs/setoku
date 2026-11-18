@@ -8,6 +8,7 @@
 #   ingest  → vector (+ lake implied)    (log/event receiver; slack-listener lands in Phase 3)
 #   backup  → clickhouse-backup, rclone  (one-shots driven by deploy/backup/*.sh)
 #   pgstore → postgres                   (reserved for the future SQLite→Postgres store migration; unused today, OFF by default)
+#   preview → preview                    (headless Chromium for the preview_app screenshot tool; ~60 MB idle, capped at 768 MB)
 # Enable in .env:  COMPOSE_PROFILES=lake,ingest
 #
 # Images are pinned by multi-arch manifest-list digest (arm64 prototype box,
@@ -114,6 +115,10 @@ services:
       # full-privilege ingest user. NB: secrets here should be URL-safe
       # (openssl rand -hex is) — they ride in a URL.
       SETOKU_LAKE_URL: "http://setoku_ro:${CLICKHOUSE_RO_PASSWORD}@clickhouse:8123/setoku"
+      # The `preview` renderer (profile preview). Harmless when the profile is
+      # off: the gateway probes it and simply doesn't offer preview_app.
+      SETOKU_PREVIEW_URL: ${SETOKU_PREVIEW_URL:-http://preview:9222}
+    networks: [default, preview]
     volumes:
       - setoku_data:/data
     healthcheck:
@@ -149,6 +154,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Headless Chromium for preview_app (lib/preview.ts): the agent gets a
+  # screenshot + problem report of an app before anyone opens it. Isolated on
+  # purpose: its own container (an exploited renderer lands somewhere with no
+  # secrets), on an INTERNAL network shared only with the gateway (no internet,
+  # nothing else reachable), driven over CDP. The browser never fetches: the
+  # gateway hands it the frame document and aborts every other request.
+  # Load is bounded in the gateway (cache, per-user + box buckets, one render at
+  # a time); these limits bound the container if a page misbehaves anyway.
+  preview:
+    logging: *default-logging
+    profiles: [preview]
+    image: chromedp/headless-shell:157.0.8103.27@sha256:7bee201478b2f6266aae01243740ee85c16281e32f42d3aed9fdf04f4eace7a1
+    restart: unless-stopped
+    networks: [preview]
+    shm_size: 256m
+    mem_limit: 768m
+    pids_limit: 512
+    read_only: true
+    tmpfs: [/tmp]
 
   clickhouse:
     logging: *default-logging
@@ -489,6 +514,11 @@ services:
       RCLONE_CONFIG_REMOTE_SECRET_ACCESS_KEY: ${SETOKU_BACKUP_S3_SECRET_KEY:-}
     volumes:
       - ./backups:/backups
+
+networks:
+  # Gateway ↔ preview renderer only. internal: no route out to the internet.
+  preview:
+    internal: true
 
 volumes:
   caddy_data:

@@ -305,14 +305,17 @@ curl https://setoku.com/api/tools.json</pre>
             <dt>
               Apps<span class="t"
                 >app_guide · publish_app · update_app · list_apps · get_app ·
-                unpublish_app · publish_file</span
+                unpublish_app · publish_file · preview_app</span
               >
             </dt>
             <dd>
               Turn an answer into a small web app on live data, published at a
               link the team can open. Or share a file (a CSV, a memo, an image,
               a PDF) at the same kind of link with
-              <span class="cmd">publish_file</span>.
+              <span class="cmd">publish_file</span>. On a box that runs the
+              optional preview renderer, <span class="cmd">preview_app</span>
+              hands the agent a screenshot of the app and a list of what broke,
+              before anyone opens the link.
             </dd>
             <dt>
               Curate<span class="t">upsert_context · resolve_correction</span>
