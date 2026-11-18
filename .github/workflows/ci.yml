@@ -62,6 +62,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
+      - name: Plugin lockfile in sync (the gateway image installs from it)
+        working-directory: plugin
+        run: bun install --frozen-lockfile --lockfile-only
       - name: SPDX headers (1.2)
         run: bash scripts/check-spdx.sh
       - name: Dependency license audit (1.4)

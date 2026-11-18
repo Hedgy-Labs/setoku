@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && (bun --silent -e \"await import('@modelcontextprotocol/sdk/server/mcp.js'); await import('pg'); await import('zod');\" >/dev/null 2>&1 || (rm -rf node_modules bun.lock && ONNXRUNTIME_NODE_INSTALL_CUDA=skip bun install --silent --no-progress >/dev/null 2>&1)) || true"
+            "command": "cd \"${CLAUDE_PLUGIN_ROOT}\" && (bun --silent -e \"await import('@modelcontextprotocol/sdk/server/mcp.js'); await import('zod');\" >/dev/null 2>&1 || (rm -rf node_modules && ONNXRUNTIME_NODE_INSTALL_CUDA=skip bun install --silent --no-progress >/dev/null 2>&1)) || true"
           }
         ]
       }

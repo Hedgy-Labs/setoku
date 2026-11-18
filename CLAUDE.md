@@ -13,7 +13,7 @@ Runtime is **Bun** throughout (`bun:sqlite`, `Bun.hash`, etc.) — not Node. Typ
 ## Commands
 
 ```bash
-bun install                  # deps (root); plugin deps are separate (plugin/package.json)
+bun install                  # deps (root); plugin deps are separate (plugin/package.json + committed plugin/bun.lock — after editing it, `cd plugin && bun install` and commit the lock)
 bun run typecheck            # tsc --noEmit — the only "build" for the gateway
 bun test                     # fast suite: test/ + ingest/ (~4s) — ingest/ needs a local Postgres
 bun test test/http.test.ts   # a single test file
