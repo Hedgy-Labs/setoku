@@ -2,7 +2,7 @@
   "name": "setoku",
   "title": "Setoku",
   "description": "Self-hosted MCP knowledge server: a read-only, audited view of one operator's own data (a company's, a household's, or one person's), plus the curated context needed to use it correctly.",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "license": "Apache-2.0",
   "repository": {
     "url": "https://github.com/Hedgy-Labs/setoku",
@@ -181,6 +181,13 @@
       "title": "Archive a published app",
       "role": "analyst",
       "readOnly": false
+    },
+    {
+      "name": "preview_app",
+      "title": "Screenshot an app + report what broke",
+      "role": "analyst",
+      "readOnly": true,
+      "requires": "the box’s optional preview renderer (compose profile `preview`)"
     },
     {
       "name": "publish_file",
