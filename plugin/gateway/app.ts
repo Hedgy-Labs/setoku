@@ -975,7 +975,7 @@ server.registerTool(
         .describe("Doc name (entity/metric name, or a short slug for gotchas)"),
       body: z.string().describe("Markdown body (the full doc content)"),
       meta: z
-        .record(z.union([z.string(), z.array(z.string())]))
+        .record(z.string(), z.union([z.string(), z.array(z.string())]))
         .optional()
         .describe(
           "Frontmatter-style fields: table, summary, keywords, question, sources, links (array of doc names " +
@@ -1058,7 +1058,7 @@ server.registerTool(
       name: z.string().describe("Doc name the draft would upsert (entity/metric name, or gotcha slug)"),
       body: z.string().describe("The full drafted doc body (for a metric, the canonical SQL)"),
       meta: z
-        .record(z.union([z.string(), z.array(z.string())]))
+        .record(z.string(), z.union([z.string(), z.array(z.string())]))
         .optional()
         .describe(
           "Frontmatter fields: table, summary, keywords, relates_to, expect, unit, links (array of existing doc names the drafted doc references)",
@@ -2509,7 +2509,7 @@ if (preview && !denyLakeRead) {
         id: z.string().describe("The app id from publish_app / list_apps"),
         viewport: z.enum(["desktop", "mobile"]).optional().describe("desktop = 1280px wide (default); mobile = 390px"),
         params: z
-          .record(z.string())
+          .record(z.string(), z.string())
           .optional()
           .describe("Viewer param values to render with (name → value); defaults otherwise. Uncached variants render empty."),
       },
