@@ -92,6 +92,8 @@ import {
   parseUnlockForm,
 } from "./lib/app-access";
 import { buildKnowledgeView } from "./lib/facts";
+import { releaseNotesFor } from "./lib/release-notes";
+import { Previewer, type Viewport } from "./lib/preview";
 import { VERSION } from "./lib/version";
 import { resolveLakeUrl } from "./lib/config";
 import { runLakeQuery } from "./lib/lake";
@@ -479,6 +481,28 @@ const appStore = new AppStore(defaultAppDbPath(process.env.SETOKU_DB_PATH ?? sto
 // attachments. Its own db file too (files.db): blobs stay out of the nightly
 // knowledge snapshot, and the backup script snapshots it on its own line (I4).
 const fileStore = new FileStore(defaultFileDbPath(process.env.SETOKU_DB_PATH ?? storePath()));
+
+// App previews (preview_app): a headless Chromium in its own container
+// (compose profile `preview`), driven over CDP. Off unless SETOKU_PREVIEW_URL
+// points at it; the tool is offered only while the renderer answers, so a box
+// without the profile simply doesn't list it. Probed at boot and every minute.
+const previewer = process.env.SETOKU_PREVIEW_URL ? new Previewer({ cdpUrl: process.env.SETOKU_PREVIEW_URL }) : null;
+if (previewer) {
+  void previewer.probe();
+  setInterval(() => void previewer.probe(), 60_000).unref();
+}
+
+/** The exact frame document a team viewer would get — panels from CACHE only
+ *  (a preview never queries the lake) — rendered by the previewer. */
+async function previewApp(id: string, viewport: Viewport, rawParams: Record<string, string>, identity: string) {
+  if (!previewer) return null;
+  const rep = store.getPublished(id);
+  if (!rep || rep.archivedAt || rep.format === "file") return null;
+  const panels = (rep.panels?.length ?? 0) > 0 ? await renderApp(store, projectDir, rep, { rawParams, cacheOnly: true }) : [];
+  const html = frameDocument(withAssets(rep), panels, { team: true, params: resolvedParamValues(rep.params ?? [], rawParams) });
+  const shot = await previewer.render(html, `${FRAME_CSP}; sandbox allow-scripts allow-forms`, viewport, identity);
+  return { shot, panels };
+}
 
 /** An app's template with its `setoku-file:<name>` references swapped for the
  *  attachments' data: URLs (lib/files.ts inlineAppAssets) — how a template gets
@@ -3489,6 +3513,7 @@ const httpServer = http.createServer(async (req, res) => {
       // Deny-scoped like every other probe: a restricted member's tool
       // descriptions must not advertise a family they can't query.
       roster: await rosterFor(deniedFamiliesFor(store.sourceDenies(auth.identity))),
+      preview: previewer?.available ? { render: previewApp } : null,
     });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
@@ -3526,6 +3551,7 @@ httpServer.listen(PORT, () => {
       version: VERSION,
       previous: previousVersion,
       box: cfg.ok ? cfg.config.name ?? null : null,
+      notes: releaseNotesFor(previousVersion, VERSION),
     });
   }
 

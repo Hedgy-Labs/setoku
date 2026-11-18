@@ -67,6 +67,8 @@ export interface DeployEvent {
   previous: string | null;
   /** Human box name (config.name), for a multi-box channel. */
   box?: string | null;
+  /** What's new (gateway/RELEASES.md) for every version since `previous`, newest first. */
+  notes?: { version: string; bullets: string[] }[];
 }
 
 /** The mirror pulled more from the business DB today than the operator's daily
@@ -92,6 +94,34 @@ const NOTIFY_TIMEOUT_MS = 5_000;
 function changeSummary(changed: string[]): string {
   const clean = changed.filter(Boolean);
   return clean.length ? clean.join(", ") : "no visible fields";
+}
+
+/** Caps so a box that skipped many versions posts a digest, not a wall. */
+const MAX_NOTE_BULLETS = 12;
+const MAX_NOTES_CHARS = 2_500;
+
+/** Release notes as Slack mrkdwn: one block per version (headed only when
+ *  there are several), `**bold**` → `*bold*`, truncated with a count. */
+export function formatReleaseNotes(notes: { version: string; bullets: string[] }[]): string {
+  if (!notes.length) return "";
+  const multi = notes.length > 1;
+  const lines: string[] = [];
+  let shown = 0;
+  let total = 0;
+  for (const n of notes) {
+    total += n.bullets.length;
+    if (shown >= MAX_NOTE_BULLETS) continue;
+    if (multi) lines.push(`*v${n.version}*`);
+    for (const b of n.bullets) {
+      if (shown >= MAX_NOTE_BULLETS) break;
+      lines.push(`• ${b.replace(/\*\*(.+?)\*\*/g, "*$1*")}`);
+      shown++;
+    }
+  }
+  let text = lines.join("\n");
+  if (text.length > MAX_NOTES_CHARS) text = `${text.slice(0, MAX_NOTES_CHARS).replace(/\s+\S*$/, "")}…`;
+  const more = total - shown;
+  return `\n${text}` + (more > 0 ? `\n_…and ${more} more_` : "");
 }
 
 /** Render an event as the Slack message text. Exported for tests and so a future
@@ -123,7 +153,8 @@ export function formatEvent(event: ActivityEvent): string {
     case "deploy":
       return (
         `🚀 *Setoku ${event.box ? `(${event.box}) ` : ""}updated* to v${event.version}` +
-        (event.previous ? ` (was v${event.previous})` : "")
+        (event.previous ? ` (was v${event.previous})` : "") +
+        formatReleaseNotes(event.notes ?? [])
       );
     case "egress_alert":
       return (

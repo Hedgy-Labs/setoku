@@ -1,6 +1,9 @@
 # Setoku gateway — deployed (HTTP) profile. One container per company.
 # Build from the repo root:  docker build -f deploy/Dockerfile -t setoku-gateway .
-FROM oven/bun:1-slim
+# Minor-pinned, not `1-slim`: a box keeps whatever `1-slim` it cached first, and
+# an old Bun's WebSocket client can't hold the CDP connection preview_app needs
+# (a 1.3.x box timed out where 1.4.x connects). A new minor tag forces the pull.
+FROM oven/bun:1.4-slim
 
 # libgomp1 is needed by onnxruntime-node (the local embedder's CPU backend, the
 # I8 opt-in). Cheap to include; the runtime is only loaded when SETOKU_EMBEDDINGS=1.

@@ -1,6 +1,6 @@
 # Setoku API reference
 
-The HTTP API, authentication, and the MCP tool surface for Setoku 0.23.0. This is the markdown twin of <https://setoku.com/docs>.
+The HTTP API, authentication, and the MCP tool surface for Setoku 0.24.0. This is the markdown twin of <https://setoku.com/docs>.
 
 Setoku is single-tenant and self-hosted: **there is no setoku.com API**. Everything below describes the API *your own box* exposes once you deploy it, and the public demo box (`https://demo.setoku.com`) is a real instance of it.
 
@@ -78,6 +78,10 @@ Callable right now against the demo box:
 - `get_app` — Inspect an app — its full template and panels
 - `unpublish_app` (writes) — Archive a published app
 - `publish_file` (writes) — Share a file to the box
+
+**Optional, analyst sessions on boxes that run the preview renderer** (compose profile `preview`; not the demo box):
+
+- `preview_app` — Screenshot an app + report what broke
 
 **Curator sessions only.** Commits curated knowledge:
 
