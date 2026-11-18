@@ -12,6 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
 
 WORKDIR /app
 COPY plugin/package.json ./package.json
+# Committed lockfile: the image installs exactly what CI tested, not whatever
+# the ranges resolve to on build day (unlocked, it once shipped two zods).
+COPY plugin/bun.lock ./bun.lock
 # plugin/package.json lists onnxruntime-node in trustedDependencies so its native
 # postinstall runs here (Bun blocks untrusted postinstalls by default, which would
 # leave the embedder unable to load).
@@ -20,7 +23,7 @@ COPY plugin/package.json ./package.json
 # on CPU (no GPU on a box), so skip it. (Was masked by a cached layer until
 # plugin/package.json next changed.)
 ENV ONNXRUNTIME_NODE_INSTALL_CUDA=skip
-RUN bun install --production --silent --no-progress
+RUN bun install --production --frozen-lockfile --silent --no-progress
 
 COPY plugin/gateway ./gateway
 # the plugin manifest — single source of truth for the version (lib/version.ts);
