@@ -6,6 +6,11 @@ on:
     branches: [main]
   pull_request:
 
+# onnxruntime-node's postinstall fetches a CUDA build on linux-x64 from a GitHub
+# release asset that now 404s, failing `bun install`. CI has no GPU; skip it.
+env:
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
+
 jobs:
   test:
     name: typecheck + e2e

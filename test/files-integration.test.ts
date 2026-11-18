@@ -166,6 +166,14 @@ describe("publish_file — inline", () => {
     expect((await call(bob, "publish_file", { name: "memo.md", content: "hijack", appId: id })).text).toMatch(/Only the author/);
   });
 
+  it("a shared audio file plays in the viewer frame", async () => {
+    const wav = Buffer.from("RIFF0000WAVEfmt ");
+    const id = idOf((await call(ana, "publish_file", { name: "clip.wav", content: wav.toString("base64"), encoding: "base64" })).text);
+    const s = await login();
+    const frame = await (await fetch(`${BASE}/admin/frame/${id}`, { headers: { cookie: s.cookie } })).text();
+    expect(frame).toContain(`<audio controls preload="metadata" src="data:audio/wav;base64,${wav.toString("base64")}">`);
+  });
+
   it("binary content rides base64 and an image inlines into the frame", async () => {
     const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"); // a PNG header, enough for the viewer
     const r = await call(ana, "publish_file", { name: "chart.png", content: png.toString("base64"), encoding: "base64" });
@@ -209,6 +217,105 @@ describe("attachments on an app", () => {
     // lock → no more attachments
     expect((await adminPost("set_locked", { id: appId, locked: true })).status).toBe(200);
     expect((await call(ana, "publish_file", { name: "more.txt", content: "y", appId })).text).toMatch(/locked/);
+  });
+
+  it("setoku-file:<name> in a template inlines attached fonts/images/audio/text as data: into the frame", async () => {
+    const html =
+      "<style>@font-face{font-family:Brand;src:url(setoku-file:Brand.woff2) format('woff2')}</style>" +
+      '<img src="setoku-file:logo.svg"><audio src="setoku-file:ding.mp3"></audio>' +
+      "<div id=n></div><script>Setoku.markdown('n','setoku-file:notes.md')</script>" +
+      "<p>See setoku-file:brief.pdf.</p><i>setoku-file:missing.png</i>";
+    const app = await call(ana, "publish_app", { title: "Branded", html });
+    const appId = app.text.match(/update_app\("([^"]+)"/)?.[1] ?? "";
+    // publish warns about every reference that won't resolve yet
+    expect(app.text).toContain(`setoku-file:Brand.woff2 isn't attached yet — publish_file({ name: "Brand.woff2", appId: "${appId}" })`);
+    const font = Buffer.from([0x77, 0x4f, 0x46, 0x32, 1, 2, 3, 4]);
+    const f = await call(ana, "publish_file", { name: "Brand.woff2", content: font.toString("base64"), encoding: "base64", appId });
+    expect(f.isError).toBe(false);
+    expect(f.text).toContain("url(setoku-file:Brand.woff2)");
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>';
+    await call(ana, "publish_file", { name: "logo.svg", content: svg, appId });
+    const mp3 = Buffer.from([0x49, 0x44, 0x33, 3, 0, 0, 0]);
+    const a = await call(ana, "publish_file", { name: "ding.mp3", content: mp3.toString("base64"), encoding: "base64", appId });
+    expect(a.text).toContain('<audio controls src="setoku-file:ding.mp3">');
+    const m = await call(ana, "publish_file", { name: "notes.md", content: "# Héllo", appId });
+    expect(m.text).toContain("Setoku.markdown('<element id>', 'setoku-file:notes.md')");
+    await call(ana, "publish_file", { name: "brief.pdf", content: Buffer.from("%PDF-1.4").toString("base64"), encoding: "base64", appId });
+
+    const s = await login();
+    const res = await fetch(`${BASE}/admin/frame/${appId}`, { headers: { cookie: s.cookie } });
+    // still the no-network frame: only data: fonts/images/media
+    const csp = res.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("media-src data:");
+    const frame = await res.text();
+    expect(frame).toContain(`url(data:font/woff2;base64,${font.toString("base64")}) format('woff2')`);
+    expect(frame).toContain(`src="data:image/svg+xml;base64,${Buffer.from(svg).toString("base64")}"`);
+    expect(frame).toContain(`src="data:audio/mpeg;base64,${mp3.toString("base64")}"`);
+    expect(frame).toContain(`'data:text/markdown;base64,${Buffer.from("# Héllo").toString("base64")}'`);
+    expect(frame).toContain("See setoku-file:brief.pdf."); // a PDF can't be used in a template → left as-is
+    expect(frame).toContain("setoku-file:missing.png"); // not attached → left as-is
+
+    // update_app re-checks: only the still-broken references are reported
+    const up = await call(ana, "update_app", { id: appId, html });
+    expect(up.text).not.toContain("Brand.woff2");
+    expect(up.text).toContain("setoku-file:brief.pdf won't inline: application/pdf can't be used in a template");
+    expect(up.text).not.toContain("notes.md");
+    expect(up.text).toContain("setoku-file:missing.png isn't attached yet");
+  });
+
+  it("css/js attach, expand inline into the frame (tag-escaped), and download as inert text/plain", async () => {
+    const html =
+      '<link rel="stylesheet" href="setoku-file:brand.css"><div id=x></div>' +
+      '<script type="module" src="setoku-file:lib.js"></script><script src="setoku-file:gone.js"></script>';
+    const app = await call(ana, "publish_app", { title: "Styled", html });
+    const appId = app.text.match(/update_app\("([^"]+)"/)?.[1] ?? "";
+    const css = "body{color:red}@font-face{font-family:B;src:url(setoku-file:B.woff2)}/* </style><img src=x> */";
+    const js = "document.getElementById('x').textContent='ok';// </script><script>alert(1)</script>";
+    const c = await call(ana, "publish_file", { name: "brand.css", content: css, appId });
+    expect(c.isError).toBe(false);
+    expect(c.text).toContain('<link rel="stylesheet" href="setoku-file:brand.css">');
+    expect((await call(ana, "publish_file", { name: "lib.js", content: js, appId })).text).toContain('<script src="setoku-file:lib.js">');
+    const font = Buffer.from([1, 2, 3]);
+    await call(ana, "publish_file", { name: "B.woff2", content: font.toString("base64"), encoding: "base64", appId });
+
+    const s = await login();
+    const frame = await (await fetch(`${BASE}/admin/frame/${appId}`, { headers: { cookie: s.cookie } })).text();
+    // stylesheet → inline <style>, its own font reference resolved, closing tag defused
+    expect(frame).toContain("<style>body{color:red}@font-face{font-family:B;src:url(data:font/woff2;base64,AQID)}/* <\\/style><img src=x> */</style>");
+    // script → inline <script> keeping its other attributes, closing tag defused
+    expect(frame).toContain(`<script type="module">document.getElementById('x').textContent='ok';// <\\/script><script>alert(1)<\\/script></script>`);
+    expect(frame).not.toContain("setoku-file:lib.js");
+
+    // the download is never executable on the box origin
+    const dl = await fetch(`${BASE}/admin/files/${appId}/lib.js`, { headers: { cookie: s.cookie } });
+    expect(dl.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+    expect(dl.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(dl.headers.get("content-disposition")).toStartWith("attachment");
+    // .html is still an app, not a file
+    expect((await call(ana, "publish_file", { name: "page.html", content: "<p>x</p>" })).text).toContain("publish_app");
+  });
+
+  it("a stock stylesheet works as-is: spaced names fold to '-', relative url()s map to attachments, nested refs are checked", async () => {
+    const html = '<link rel="stylesheet" href="setoku-file:brand.css"><h1 class=t>Hi</h1>';
+    const app = await call(ana, "publish_app", { title: "Stock CSS", html });
+    const appId = app.text.match(/update_app\("([^"]+)"/)?.[1] ?? "";
+    const css = '@font-face{font-family:A;src:url("../fonts/Acme Display.ttf") format("truetype")}.t{background:url(img/bg.png)}';
+    const c = await call(ana, "publish_file", { name: "brand.css", content: css, appId });
+    // the font the CSS points at isn't attached yet → named, with the fix
+    expect(c.text).toContain('brand.css has url(../fonts/Acme Display.ttf) — attach that file');
+    const f = await call(ana, "publish_file", { name: "Acme Display.ttf", content: Buffer.from([9, 9]).toString("base64"), encoding: "base64", appId });
+    expect(f.isError).toBe(false);
+    expect(f.text).toContain("stored as Acme-Display.ttf");
+    // get_app still flags the one that's missing, not the one now attached
+    const g = (await call(ana, "get_app", { id: appId })).text;
+    expect(g).toContain("brand.css has url(img/bg.png)");
+    expect(g).not.toContain("Acme Display.ttf) — attach");
+
+    const s = await login();
+    const frame = await (await fetch(`${BASE}/admin/frame/${appId}`, { headers: { cookie: s.cookie } })).text();
+    expect(frame).toContain("src:url(data:font/ttf;base64,CQk=) format(\"truetype\")");
+    expect(frame).toContain("url(img/bg.png)"); // unmatched → left as-is
   });
 
   it("unpublish_app is author-only", async () => {

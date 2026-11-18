@@ -97,6 +97,14 @@ export function sanitizeFileName(name: string): string | null {
   return NAME_RE.test(n) ? n : null;
 }
 
+/** A user's file name as the box stores it: whitespace runs become "-" (so
+ *  "Acme Display.ttf" → "Acme-Display.ttf" instead of a refusal), then the
+ *  usual sanitize. publish_file reports the rename; a stylesheet's relative
+ *  url("Acme Display.ttf") maps the same way (see rewriteCssRefs). */
+export function normalizeFileName(name: string): string | null {
+  return sanitizeFileName(name.trim().replace(/\s+/g, "-"));
+}
+
 /** The mime a file is STORED and SERVED with, by extension. The client never
  *  supplies one: an untrusted mime on the box origin is how "a CSV" becomes a
  *  script. Anything not listed is refused at publish. */
@@ -126,14 +134,48 @@ export const MIME_BY_EXT: Record<string, string> = {
   zip: "application/zip",
   gz: "application/gzip",
   xml: "application/xml",
+  // Fonts: attached to an app and referenced from its template as
+  // `setoku-file:<name>` (see inlineAppAssets). Never inline on the box origin.
+  woff2: "font/woff2",
+  woff: "font/woff",
+  ttf: "font/ttf",
+  otf: "font/otf",
+  // Audio / video: play in the file viewer, and inline into an app template
+  // via `setoku-file:<name>` like a font.
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  opus: "audio/ogg",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  flac: "audio/flac",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
+  avif: "image/avif",
+  // Stylesheets / scripts: an app template pulls them in with
+  // <link href="setoku-file:x.css"> / <script src="setoku-file:x.js"> (expanded
+  // inline at render). Downloads always serve them as text/plain (see
+  // EXECUTABLE_MIMES), so the box origin never executes uploaded code.
+  css: "text/css",
+  js: "text/javascript",
+  mjs: "text/javascript",
 };
+
+/** Stored mimes a browser would EXECUTE or apply from the box origin (a
+ *  <script src>/<link href> on a 'self'-scripted page). Their bytes are always
+ *  served as text/plain; nosniff then makes them inert. */
+const EXECUTABLE_MIMES = new Set(["text/javascript", "text/css"]);
+export function servedMime(mime: string): string {
+  return EXECUTABLE_MIMES.has(mime) ? "text/plain" : mime;
+}
 
 /** Extensions refused outright, with the steer the agent gets. */
 export const REFUSED_EXT: Record<string, string> = {
   html: "An .html file would run on the box's origin. Publish it as an app instead (publish_app takes the fragment).",
   htm: "An .htm file would run on the box's origin. Publish it as an app instead (publish_app takes the fragment).",
-  js: "Scripts aren't shareable files. If it's an app, publish_app; if it's source to read, rename it .txt.",
-  mjs: "Scripts aren't shareable files. If it's an app, publish_app; if it's source to read, rename it .txt.",
 };
 
 export function extOf(name: string): string {
@@ -168,12 +210,14 @@ export function inlineAllowed(mime: string): boolean {
  *  (web/app/grid/, from the raw bytes), `markdown`/`text` render in the sandboxed
  *  frame, `image` inlines as a data: URI (the frame CSP allows it), everything
  *  else is a download card. */
-export type FileKind = "table" | "markdown" | "text" | "image" | "pdf" | "other";
+export type FileKind = "table" | "markdown" | "text" | "image" | "audio" | "video" | "pdf" | "other";
 export function fileKind(mime: string): FileKind {
   if (isTabularMime(mime)) return "table";
   if (mime === "text/markdown") return "markdown";
-  if (mime === "text/plain") return "text";
-  if (mime === "image/png" || mime === "image/jpeg" || mime === "image/gif" || mime === "image/webp") return "image";
+  if (mime === "text/plain" || mime === "text/css" || mime === "text/javascript") return "text";
+  if (mime === "image/png" || mime === "image/jpeg" || mime === "image/gif" || mime === "image/webp" || mime === "image/avif") return "image";
+  if (mime.startsWith("audio/")) return "audio";
+  if (mime.startsWith("video/")) return "video";
   if (mime === "application/pdf") return "pdf";
   return "other";
 }
@@ -205,131 +249,9 @@ export { parseDelimited, parseJsonTable, type ParsedTable } from "./table-parse"
 
 /* ------------------------------- markdown --------------------------------- */
 
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-/** Inline markdown on ALREADY-ESCAPED text: code, bold, italic, links. A link
- *  href must be http(s)/mailto or it renders as plain text — never javascript:. */
-function inline(s: string): string {
-  // Code spans and links are lifted out FIRST and put back LAST: their markup
-  // (`target="_blank"`, a URL's underscores) must never be seen by the emphasis
-  // pass. The NUL sentinel can't occur in the escaped source.
-  const held: string[] = [];
-  const hold = (html: string): string => {
-    held.push(html);
-    return `\u0000${held.length - 1}\u0000`;
-  };
-  s = s.replace(/`([^`]+)`/g, (_, c: string) => hold(`<code>${c}</code>`));
-  // The whole source was escaped up front, so `href` already reads &amp; / &quot;
-  // — it goes into the attribute verbatim (re-escaping would double it).
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, label: string, href: string) =>
-    /^(https?:\/\/|mailto:)/i.test(href) ? hold(`<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`) : m,
-  );
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/__([^_]+)__/g, "<strong>$1</strong>");
-  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*/g, "$1<em>$2</em>").replace(/(^|[^_\w])_([^_\n]+)_/g, "$1<em>$2</em>");
-  return s.replace(/\u0000(\d+)\u0000/g, (_, i: string) => held[Number(i)]);
-}
-
-/**
- * A small, dependency-free markdown subset → HTML: headings, paragraphs,
- * bullet and numbered lists, blockquotes, fenced code, horizontal rules, GFM
- * pipe tables, and the inline forms above. Every character of the source is
- * HTML-escaped BEFORE any markup is applied, so the output can't smuggle a
- * tag; it renders inside the sandboxed frame regardless (same threat model as
- * an app body). Good enough for the memos and reports agents write; not a
- * CommonMark implementation.
- */
-export function renderMarkdown(md: string): string {
-  const lines = md.replace(/\r\n?/g, "\n").split("\n");
-  const out: string[] = [];
-  let i = 0;
-  const isTableRow = (l: string): boolean => /^\s*\|.*\|\s*$/.test(l);
-  const isSep = (l: string): boolean => /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$/.test(l);
-  while (i < lines.length) {
-    const line = lines[i];
-    if (!line.trim()) {
-      i++;
-      continue;
-    }
-    const fence = line.match(/^\s*```/);
-    if (fence) {
-      const buf: string[] = [];
-      i++;
-      while (i < lines.length && !/^\s*```/.test(lines[i])) buf.push(lines[i++]);
-      i++; // closing fence
-      out.push(`<pre><code>${esc(buf.join("\n"))}</code></pre>`);
-      continue;
-    }
-    const h = line.match(/^\s*(#{1,6})\s+(.*?)\s*#*\s*$/);
-    if (h) {
-      out.push(`<h${h[1].length}>${inline(esc(h[2]))}</h${h[1].length}>`);
-      i++;
-      continue;
-    }
-    if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
-      out.push("<hr>");
-      i++;
-      continue;
-    }
-    if (isTableRow(line) && i + 1 < lines.length && isSep(lines[i + 1])) {
-      const cells = (l: string): string[] =>
-        l
-          .trim()
-          .replace(/^\|/, "")
-          .replace(/\|$/, "")
-          .split("|")
-          .map((c) => inline(esc(c.trim())));
-      const head = cells(line);
-      i += 2;
-      const body: string[][] = [];
-      while (i < lines.length && isTableRow(lines[i])) body.push(cells(lines[i++]));
-      out.push(
-        `<table><thead><tr>${head.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>` +
-          body.map((r) => `<tr>${head.map((_, k) => `<td>${r[k] ?? ""}</td>`).join("")}</tr>`).join("") +
-          "</tbody></table>",
-      );
-      continue;
-    }
-    if (/^\s*>/.test(line)) {
-      const buf: string[] = [];
-      while (i < lines.length && /^\s*>/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ""));
-      out.push(`<blockquote>${renderMarkdown(buf.join("\n"))}</blockquote>`);
-      continue;
-    }
-    const li = line.match(/^\s*([-*+]|\d+[.)])\s+/);
-    if (li) {
-      const ordered = /\d/.test(li[1]);
-      const items: string[] = [];
-      while (i < lines.length) {
-        const m = lines[i].match(/^\s*([-*+]|\d+[.)])\s+(.*)$/);
-        if (!m || /\d/.test(m[1]) !== ordered) break;
-        let item = m[2];
-        i++;
-        // continuation lines (indented) belong to the item
-        while (i < lines.length && /^\s{2,}\S/.test(lines[i]) && !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i]))
-          item += " " + lines[i++].trim();
-        items.push(`<li>${inline(esc(item))}</li>`);
-      }
-      out.push(`<${ordered ? "ol" : "ul"}>${items.join("")}</${ordered ? "ol" : "ul"}>`);
-      continue;
-    }
-    // paragraph: run of non-blank, non-block lines
-    const buf: string[] = [];
-    while (
-      i < lines.length &&
-      lines[i].trim() &&
-      !/^\s*```/.test(lines[i]) &&
-      !/^\s*#{1,6}\s/.test(lines[i]) &&
-      !/^\s*>/.test(lines[i]) &&
-      !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i]) &&
-      !(isTableRow(lines[i]) && i + 1 < lines.length && isSep(lines[i + 1]))
-    )
-      buf.push(lines[i++]);
-    out.push(`<p>${inline(esc(buf.join("\n")))}</p>`);
-  }
-  return out.join("\n");
-}
+// Lives in markdown.ts (no deps) so the app frame runtime can embed the same
+// renderer for Setoku.markdown; re-exported here for server callers and tests.
+export { renderMarkdown } from "./markdown";
 
 /* -------------------------------- store ----------------------------------- */
 
@@ -519,4 +441,191 @@ export class FileStore {
   consumeUpload(nonce: string): boolean {
     return this.db.run("DELETE FROM file_uploads WHERE nonce = ?", [nonce]).changes > 0;
   }
+}
+
+// ---- app assets: `setoku-file:<name>` in an app template ----
+// The app frame has NO network (its CSP is default-src 'none' with only
+// `img-src data:` / `font-src data:`), so a template can't link a font or logo
+// the usual way. Instead the template names an attachment with the token
+// `setoku-file:<name>` (in CSS url(), an <img src>, a JS string…) and the box
+// swaps each token for that attachment's bytes as a data: URL when it renders
+// the frame. The frame stays fetch-free; the bytes live on the box like any
+// other attachment.
+
+/** Matches a `setoku-file:<name>` reference; group 1 is the (candidate) name. */
+export const ASSET_REF_RE = /setoku-file:([A-Za-z0-9][A-Za-z0-9._-]{0,119})/g;
+/** `<script …src="setoku-file:x.js"…></script>` → pre-attrs, name, post-attrs. */
+const SCRIPT_TAG_RE = /<script\b([^>]*?)\s+src\s*=\s*["']?setoku-file:([A-Za-z0-9][A-Za-z0-9._-]{0,119})["']?([^>]*)>\s*<\/script\s*>/gi;
+/** `<link …href="setoku-file:x.css"…>` → name (rel=stylesheet checked by the caller). */
+const LINK_TAG_RE = /<link\b[^>]*?\bhref\s*=\s*["']?setoku-file:([A-Za-z0-9][A-Za-z0-9._-]{0,119})["']?[^>]*>/gi;
+
+/** Text attachments a template reads with Setoku.text / json / markdown (the
+ *  runtime decodes the inlined data: URL). */
+const TEXT_ASSET_MIMES = new Set([
+  "text/markdown",
+  "text/plain",
+  "text/csv",
+  "text/tab-separated-values",
+  "application/json",
+  "application/x-ndjson",
+  "application/xml",
+]);
+
+/** What a template can inline: fonts, images, audio/video, and text. Office
+ *  docs, PDFs and archives stay downloads under the app (the sandboxed frame
+ *  can't open them). SVG is fine: as a data: image it renders in an image
+ *  context (no script), and the frame CSP blocks it from loading as a document. */
+export type AssetClass = "font" | "image" | "media" | "text" | "style" | "script";
+export function assetClass(mime: string): AssetClass | null {
+  if (mime === "text/css") return "style";
+  if (mime === "text/javascript") return "script";
+  if (mime.startsWith("font/")) return "font";
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("audio/") || mime.startsWith("video/")) return "media";
+  if (TEXT_ASSET_MIMES.has(mime)) return "text";
+  return null;
+}
+export function isAppAssetMime(mime: string): boolean {
+  return assetClass(mime) !== null;
+}
+
+/** Per-asset and per-frame inline caps: every view re-sends the frame, and a
+ *  data: URL is ~4/3 the raw size. A web font is ~20–150 KB; the caps are sized
+ *  for a short clip or a few minutes of compressed audio, not a film. */
+export const MAX_ASSET_BYTES = 8_000_000;
+export const MAX_ASSET_BYTES_PER_FRAME = 16_000_000;
+
+/** The distinct attachment names a template references (trailing dots trimmed,
+ *  so a reference that ends a sentence still resolves). */
+export function assetRefs(body: string): string[] {
+  const out = new Set<string>();
+  for (const m of body.matchAll(ASSET_REF_RE)) out.add(m[1].replace(/\.+$/, ""));
+  return [...out];
+}
+
+/** `url(...)` in CSS; group 2 is the raw value (quotes stripped). */
+const CSS_URL_RE = /url\(\s*(["']?)([^"')]+?)\1\s*\)/gi;
+/** The attachment name a stylesheet's RELATIVE url() means — its last path
+ *  segment, normalized like an upload ("fonts/Acme Display.ttf" →
+ *  "Acme-Display.ttf") — or null for data:/http(s):/setoku-file:/#/absolute. */
+function cssRelativeName(value: string): string | null {
+  const v = value.trim();
+  if (/^(data:|https?:|setoku-file:|#|\/\/|blob:)/i.test(v)) return null;
+  let base = v.split(/[?#]/)[0].split("/").pop() ?? "";
+  try {
+    base = decodeURIComponent(base);
+  } catch {
+    /* keep it raw */
+  }
+  return base ? normalizeFileName(base) : null;
+}
+
+/**
+ * A design team's stylesheet points at its fonts/images by RELATIVE path
+ * (url("../fonts/Brand.woff2")). Map each such url() whose file name is an
+ * attachment to `setoku-file:<name>`, so stock CSS works unmodified once its
+ * files are attached alongside it. Returns the rewritten CSS and the relative
+ * names that matched no attachment (for the publish-time notes).
+ */
+export function rewriteCssRefs(css: string, attached: Set<string>): { css: string; unresolved: string[] } {
+  const unresolved = new Set<string>();
+  const out = css.replace(CSS_URL_RE, (whole, _q: string, value: string) => {
+    const name = cssRelativeName(value);
+    if (!name) return whole;
+    if (attached.has(name)) return `url(setoku-file:${name})`;
+    unresolved.add(value.trim());
+    return whole;
+  });
+  return { css: out, unresolved: [...unresolved] };
+}
+
+/** Why a referenced name won't inline, or null when it will. */
+export function assetProblem(file: StoredFileMeta | undefined): string | null {
+  if (!file) return "not attached";
+  if (!isAppAssetMime(file.mime)) return `${file.mime} can't be used in a template (fonts, images, audio/video, css/js, and text/md/csv/json only)`;
+  if (file.size > MAX_ASSET_BYTES) return `over the ${MAX_ASSET_BYTES / 1e6} MB per-asset cap`;
+  return null;
+}
+
+// data: URLs keyed by content hash, so a popular app doesn't re-base64 its font
+// on every view. Bounded by total characters held (oldest evicted first), so
+// a few big audio clips can't pin hundreds of MB on a small box.
+const dataUrlCache = new Map<string, string>();
+const DATA_URL_CACHE_CHARS = 48_000_000;
+let dataUrlCacheChars = 0;
+function cacheDataUrl(key: string, url: string): void {
+  if (url.length > DATA_URL_CACHE_CHARS / 4) return; // too big to be worth holding
+  dataUrlCache.set(key, url);
+  dataUrlCacheChars += url.length;
+  for (const [k, v] of dataUrlCache) {
+    if (dataUrlCacheChars <= DATA_URL_CACHE_CHARS) break;
+    dataUrlCache.delete(k);
+    dataUrlCacheChars -= v.length;
+  }
+}
+
+/**
+ * Replace each `setoku-file:<name>` in an app template with the attachment's
+ * data: URL. A token that doesn't resolve (not attached, wrong type, over a cap)
+ * is left as-is: it fails to load in the browser, harmlessly, and publish_app /
+ * update_app / publish_file already told the author why.
+ */
+export function inlineAppAssets(
+  body: string,
+  files: StoredFileMeta[],
+  bytesOf: (name: string) => Uint8Array | null,
+): string {
+  if (!body.includes("setoku-file:")) return body;
+  const byName = new Map(files.map((f) => [f.name, f]));
+  // Charged against the same per-frame budget as the data: URLs below.
+  let budget = MAX_ASSET_BYTES_PER_FRAME;
+  const sourceOf = (raw: string, cls: AssetClass): string | null => {
+    const name = raw.replace(/\.+$/, "");
+    const f = byName.get(name);
+    if (assetProblem(f) || assetClass(f!.mime) !== cls || f!.size > budget) return null;
+    const bytes = bytesOf(name);
+    if (!bytes) return null;
+    budget -= f!.size;
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  };
+  // A stylesheet / script can't ride a data: URL (the frame CSP allows only
+  // inline <style>/<script>), so its TAG is expanded into an inline block —
+  // exactly what the author could have pasted into the template. The closing
+  // tag is escaped so file content can't end the block early. Runs first, so
+  // `setoku-file:` references INSIDE the css/js (a font url()) resolve below.
+  body = body.replace(SCRIPT_TAG_RE, (whole, pre: string, raw: string, post: string) => {
+    const js = sourceOf(raw, "script");
+    return js == null ? whole : `<script${pre}${post}>${js.replace(/<\/(script)/gi, "<\\/$1").replace(/<!--/g, "<\\!--")}</script>`;
+  });
+  body = body.replace(LINK_TAG_RE, (whole, raw: string) => {
+    if (!/\brel\s*=\s*["']?stylesheet/i.test(whole)) return whole;
+    const src = sourceOf(raw, "style");
+    if (src == null) return whole;
+    const css = rewriteCssRefs(src, new Set(byName.keys())).css;
+    return `<style>${css.replace(/<\/(style)/gi, "<\\/$1")}</style>`;
+  });
+  const resolved = new Map<string, string | null>();
+  const resolve = (name: string): string | null => {
+    if (resolved.has(name)) return resolved.get(name)!;
+    const f = byName.get(name);
+    let url: string | null = null;
+    if (!assetProblem(f) && f!.size <= budget) {
+      url = dataUrlCache.get(f!.sha256) ?? null;
+      if (!url) {
+        const bytes = bytesOf(name);
+        if (bytes) {
+          url = `data:${f!.mime};base64,${Buffer.from(bytes).toString("base64")}`;
+          cacheDataUrl(f!.sha256, url);
+        }
+      }
+      if (url) budget -= f!.size;
+    }
+    resolved.set(name, url);
+    return url;
+  };
+  return body.replace(ASSET_REF_RE, (whole, raw: string) => {
+    const name = raw.replace(/\.+$/, "");
+    const url = resolve(name);
+    return url ? url + raw.slice(name.length) : whole;
+  });
 }

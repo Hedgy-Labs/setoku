@@ -58,7 +58,9 @@ import {
   defaultFileDbPath,
   fileKind,
   inlineAllowed,
+  inlineAppAssets,
   renderMarkdown,
+  servedMime,
   type StoredFileMeta,
 } from "./lib/files";
 import { isTabularMime } from "./lib/table-parse";
@@ -477,6 +479,14 @@ const appStore = new AppStore(defaultAppDbPath(process.env.SETOKU_DB_PATH ?? sto
 // attachments. Its own db file too (files.db): blobs stay out of the nightly
 // knowledge snapshot, and the backup script snapshots it on its own line (I4).
 const fileStore = new FileStore(defaultFileDbPath(process.env.SETOKU_DB_PATH ?? storePath()));
+
+/** An app's template with its `setoku-file:<name>` references swapped for the
+ *  attachments' data: URLs (lib/files.ts inlineAppAssets) — how a template gets
+ *  a custom font or logo while its frame stays network-free. */
+function withAssets(rep: PublishedReport): PublishedReport {
+  if (!rep.body.includes("setoku-file:")) return rep;
+  return { ...rep, body: inlineAppAssets(rep.body, fileStore.list(rep.id), (name) => fileStore.bytes(rep.id, name)) };
+}
 if (store.empty) {
   const imported = seedFromFiles(store, projectDir);
   if (imported > 0) store.audit("system", "seed_from_files", { imported });
@@ -1064,8 +1074,11 @@ async function gatherSourceSeries(denied: Set<string> = new Set()): Promise<Sour
 // (so an app's <form> submit handler fires — the natural app pattern), but this
 // directive blocks any ACTUAL submission from leaving the sandbox. The app's JS
 // handles the submit in-page; nothing posts out.
+// img/font/media-src data: carry an app's attached assets (`setoku-file:<name>`,
+// inlined by the box — lib/files.ts inlineAppAssets) and the file viewer's
+// image/audio/video; a data: URL is bytes already in the document, not a fetch.
 const FRAME_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'";
+  "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; base-uri 'none'; form-action 'none'";
 
 // Per-app FRESH-execution budget for the CREDENTIAL-FREE surface. The per-panel
 // cache shields repeated views, but viewer-supplied params (?p.<name>=) create
@@ -1257,8 +1270,8 @@ function frameDocument(dash: PublishedReport, panels: RenderedPanel[], opts: { t
   );
 }
 
-/** Images up to this size inline into the frame as a data: URI (the frame CSP
- *  allows `img-src data:` and nothing else); bigger ones get a download card. */
+/** Images/audio/video up to this size inline into the frame as a data: URI (the
+ *  frame CSP allows only data: for them); bigger ones get a download card. */
 const MAX_INLINE_IMAGE_BYTES = 8_000_000;
 
 /**
@@ -1317,6 +1330,11 @@ function fileViewerFrame(
     body =
       head(`.img{display:flex;justify-content:center;padding:1rem}.img img{max-width:100%;height:auto}`) +
       `<div class="img"><img alt="${escapeHtml(file.name)}" src="data:${escapeHtml(file.mime)};base64,${Buffer.from(bytes).toString("base64")}"></div>`;
+  } else if ((kind === "audio" || kind === "video") && file.size <= MAX_INLINE_IMAGE_BYTES) {
+    const src = `data:${escapeHtml(file.mime)};base64,${Buffer.from(bytes).toString("base64")}`;
+    body =
+      head(`.media{display:flex;justify-content:center;padding:2rem 1rem}.media audio{width:min(36rem,100%)}.media video{max-width:100%;max-height:80vh}`) +
+      `<div class="media">${kind === "audio" ? `<audio controls preload="metadata" src="${src}"></audio>` : `<video controls preload="metadata" src="${src}"></video>`}</div>`;
   } else {
     body = card(kind === "pdf" ? "Open PDF" : "Download");
   }
@@ -1330,9 +1348,12 @@ function fileViewerFrame(
  *  type served without `sandbox` (Chrome's viewer won't render under it) — it
  *  still gets default-src 'none'. Strong ETag = the content hash. */
 function fileHeaders(file: StoredFileMeta, extra: Record<string, string>): Record<string, string> {
-  const textual = file.mime.startsWith("text/") || file.mime === "application/json";
+  // css/js are stored as such (the template expands them) but always SERVED as
+  // text/plain: with nosniff, nothing on the box origin can execute them.
+  const mime = servedMime(file.mime);
+  const textual = mime.startsWith("text/") || mime === "application/json";
   return {
-    "content-type": textual ? `${file.mime}; charset=utf-8` : file.mime,
+    "content-type": textual ? `${mime}; charset=utf-8` : mime,
     "content-length": String(file.size),
     "content-disposition": `${inlineAllowed(file.mime) ? "inline" : "attachment"}; filename="${file.name}"`,
     "x-content-type-options": "nosniff",
@@ -2145,6 +2166,11 @@ const httpServer = http.createServer(async (req, res) => {
           rawParams: raw,
           tryFreshRun: () => spendFreshRun(id, Date.now()),
         });
+        // Inlined attachments make a frame as heavy as a download, so on this
+        // credential-free link they draw from the same per-record budget. Once
+        // spent, the app still renders — its setoku-file: references just stay
+        // unresolved (system font, no logo) until the bucket refills.
+        const assetsOk = !rep.body.includes("setoku-file:") || fileDownloads.spend(id, Date.now());
         store.audit("public", "app_frame_public", { id });
         res.writeHead(200, {
           "content-type": "text/html; charset=utf-8",
@@ -2153,7 +2179,7 @@ const httpServer = http.createServer(async (req, res) => {
           "referrer-policy": "no-referrer",
           ...noStore,
         });
-        res.end(frameDocument(rep, panels, { team: false, params: resolvedParamValues(rep.params ?? [], raw) }));
+        res.end(frameDocument(assetsOk ? withAssets(rep) : rep, panels, { team: false, params: resolvedParamValues(rep.params ?? [], raw) }));
         return;
       }
 
@@ -2336,7 +2362,7 @@ const httpServer = http.createServer(async (req, res) => {
           "x-content-type-options": "nosniff",
           "referrer-policy": "no-referrer",
         });
-        res.end(frameDocument(rep, panels, { team: true, params: resolvedParamValues(rep.params ?? [], raw) }));
+        res.end(frameDocument(withAssets(rep), panels, { team: true, params: resolvedParamValues(rep.params ?? [], raw) }));
         return;
       }
 

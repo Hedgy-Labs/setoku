@@ -12,6 +12,11 @@ COPY plugin/package.json ./package.json
 # plugin/package.json lists onnxruntime-node in trustedDependencies so its native
 # postinstall runs here (Bun blocks untrusted postinstalls by default, which would
 # leave the embedder unable to load).
+# onnxruntime-node's postinstall also tries to fetch a CUDA build on linux-x64,
+# and that release asset now 404s, failing the whole install. The embedder runs
+# on CPU (no GPU on a box), so skip it. (Was masked by a cached layer until
+# plugin/package.json next changed.)
+ENV ONNXRUNTIME_NODE_INSTALL_CUDA=skip
 RUN bun install --production --silent --no-progress
 
 COPY plugin/gateway ./gateway

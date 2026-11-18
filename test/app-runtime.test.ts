@@ -4,6 +4,7 @@
 // coercion, correct sizing, empty/error states — is covered in CI.
 import { describe, it, expect } from "bun:test";
 import { APP_RUNTIME, lintAppTemplate } from "../plugin/gateway/lib/app-runtime";
+import { renderMarkdown } from "../plugin/gateway/lib/markdown";
 
 function runRuntime(
   panels: Record<string, unknown>,
@@ -30,6 +31,29 @@ function runRuntime(
     messages,
   };
 }
+
+describe("Setoku file helpers (attached text files)", () => {
+  const dataUrl = (mime: string, text: string) => `data:${mime};base64,${Buffer.from(text).toString("base64")}`;
+
+  it("text/json decode an inlined data: URL as UTF-8; an unresolved reference is null, not a throw", () => {
+    const { Setoku } = runRuntime({});
+    const S = Setoku as unknown as Record<string, (...a: unknown[]) => unknown>;
+    expect(S.text(dataUrl("text/plain", "naïve — ok"))).toBe("naïve — ok");
+    expect(S.json(dataUrl("application/json", '{"a":[1,2]}'))).toEqual({ a: [1, 2] });
+    expect(S.text("setoku-file:missing.md")).toBeNull();
+    expect(S.json("setoku-file:missing.json")).toBeNull();
+  });
+
+  it("markdown renders exactly like the shared-file viewer (same renderer)", () => {
+    const md = "# Title\n\n- one **bold**\n- two\n\n[x](javascript:alert(1)) <b>raw</b>";
+    const { Setoku, html } = runRuntime({});
+    Setoku.markdown("out", dataUrl("text/markdown", md));
+    expect(html("out")).toBe(renderMarkdown(md));
+    expect(html("out")).not.toContain("<b>");
+    Setoku.markdown("gone", "setoku-file:nope.md");
+    expect(html("gone")).toContain("File not attached");
+  });
+});
 
 describe("Setoku chart runtime", () => {
   it("bar: coerces numeric STRINGS and sizes the fill with display:block", () => {
